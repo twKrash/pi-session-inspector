@@ -52,7 +52,7 @@ Before implementation, pin source **line ranges** from the downloaded tarballs i
 | 21 | What Lens data is passive? | Generic tool calls are native. Versioned `pilens:*` public events can enrich diagnostics when supported; richer Lens view is v1.x. | Lens public API doc; documented |
 | 22 | Is Hermes in v1? | No. Its session/request/tool/skill/approval/subagent observer vocabulary maps to canonical records later. | Hermes hooks; documented |
 | 23 | What competing projects already solve? | `pi-stats-ext`, Radian and token stats cover usage; `@ygncode/pi-insights` covers HTML; tracing/OTEL packages cover payload tracing/export. Inspector differentiates with branch-correct, confidence-aware, crash-safe local reconstruction. | Ecosystem survey; observed |
-| 24 | What storage design meets crash/concurrency constraints? | Pi source + append-only per-writer WAL, maintenance lease, atomic checkpoint, replay/reconcile, 14-day sealed hot retention. No daemon/SQLite. | Derived design from answers 5, 9–12 |
+| 24 | What storage design meets crash/concurrency constraints? | Pi source + append-only per-writer dated WAL segments, maintenance lease, atomic checkpoint, replay/reconcile, and maximum 14-calendar-day detailed-data retention. No daemon/SQLite. | Derived design from answers 5, 9–12 |
 | 25 | What privacy boundary is defensible? | Local-only metadata, never prompts/outputs/raw args/results; redaction/allowlists before WAL. Exports warn that local metadata can still be sensitive. | Product requirement; enforce with tests |
 
 ## Lifecycle hook matrix
@@ -112,4 +112,4 @@ Hook names and payload fields must be checked against the exact `0.85.1` declara
 - Download exact source tarballs into test-fixture provenance records before coding.
 - Record declaration symbol and line range for each used Pi hook/type.
 - Add sanitized real JSONL fixtures; never check prompts, outputs, paths, secrets, or account IDs into Git.
-- Revalidate package versions, Pi API surfaces, npm name availability, trusted publishing rules, and current Hermes API at release time.
+- Revalidate package versions, Pi API surfaces, npm name availability, trusted publishing rules, current Hermes API, and benchmark baselines at release time.

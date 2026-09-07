@@ -15,4 +15,4 @@ Pi Session Inspector uses small, explicit ADRs. Canonical behavior lives in [v1 
 | [0009](adr/0009-hybrid-integrations.md) | evidence-aware integrations |
 | [0010](adr/0010-telemetry-protocol-v1.md) | bounded local telemetry protocol |
 | [0011](adr/0011-local-only-privacy.md) | local-only/redacted metadata |
-| [0012](adr/0012-hot-retention.md) | sealed 14-day hot retention |
+| [0012](adr/0012-hot-retention.md) | maximum 14-day detailed retention |

@@ -10,12 +10,12 @@ Pi Session Inspector is currently a design baseline. Do not add production code 
 
 ## Rules
 
-- Read [spec](docs/specs/pi-session-inspector-v1.md), [research](docs/research/pi-ecosystem.md), [ADRs](docs/architecture/README.md), and `AGENTS.md` first.
+- Read [research](docs/research/pi-ecosystem.md), [spec](docs/specs/pi-session-inspector-v1.md), [implementation plan](docs/plans/pi-session-inspector-v1-implementation.md), [ADRs](docs/architecture/README.md), and `AGENTS.md` first. These are canonical; do not create a competing planning source.
 - Tests precede implementation changes. Keep one small deterministic fixture/check per non-trivial behavior.
 - Sanitize fixtures: never commit prompts, outputs, tool payloads, user paths, credentials, account IDs, or real session telemetry.
 - Do not add a runtime dependency, database, server, LLM step, or raw-content persistence without an ADR and measured need.
 - Keep Pi observer-only. Never modify Pi events/control flow or session files except namespaced tracking marker.
-- Schema, privacy, scope, persistence, and source-precedence changes require spec/ADR updates and migration proof.
+- Schema, privacy, scope, persistence, source-precedence, telemetry-state, retention, and performance-gate changes require spec/ADR updates and migration proof where persisted data changes.
 
 ## Planned verification
 

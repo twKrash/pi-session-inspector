@@ -97,7 +97,7 @@ Subscribe only to observer lifecycle surfaces: session, agent, turn, message, to
 ```ts
 type TelemetryEnvelope = {
   schemaVersion: 1;
-  source: string; metric: string; value: number | boolean;
+  source: string; metric: string; value: number | string | boolean;
   unit?: string; kind: "event" | "counter" | "gauge";
   dimensions?: Record<string, string | number | boolean>;
   timestamp?: number;
@@ -105,7 +105,7 @@ type TelemetryEnvelope = {
 };
 ```
 
-Validation before clone/stringify: envelope <=8 KiB; source <=64 bytes; metric <=96; unit <=24; <=12 dimensions; key <=48, string value <=128; attribution IDs <=128; numbers/timestamps finite; identity keys satisfy conservative ASCII-token grammar. Every accepted string is redacted before cardinality, aggregation, WAL, and diagnostics. Invalid/oversize input is discarded with rate-limited code-only diagnostics. At most 256 redacted dimension signatures per source/metric/session; overflow increments a counter without storing supplied values. Counters may coalesce; events never do; gauges retain last value per window.
+Validation before clone/stringify: envelope <=8 KiB; source <=64 bytes; metric <=96; unit <=24; string `value` <=128; <=12 dimensions; key <=48, string dimension value <=128; attribution IDs <=128; numbers/timestamps finite; identity keys satisfy conservative ASCII-token grammar. String values are bounded **state values** (for example `"full"` for `caveman` mode), not arbitrary payload text; they are redacted before cardinality, aggregation, WAL, and diagnostics. `counter` requires numeric value; `event` and `gauge` may use redacted string/boolean state. Invalid/oversize input is discarded with rate-limited code-only diagnostics. At most 256 redacted dimension signatures per source/metric/session; overflow increments a counter without storing supplied values. Counters may coalesce; events never do; gauges retain last value per window.
 
 Producer and consumer both swallow failures. No acknowledgement, retries, cross-process delivery, schema negotiation, or exact-once claim exists.
 
@@ -125,11 +125,11 @@ Each process creates an immutable random writer ID, exclusively claims its activ
 
 Checkpoint/reconcile/retention acquire one short per-session maintenance lease via atomic create/mkdir with PID/writer/timestamp. Stale recovery requires dead PID and age threshold. Holder rereads cursors, writes/validates temp in same directory, atomically renames, releases in `finally`. Contenders skip maintenance and replay. Bad/partial checkpoint replays valid durable input. Partial final WAL line is ignored and diagnosed. Unmatched starts stay `running` while active, become `interrupted` only at terminal reconciliation.
 
-After 14 inactive days, lease holder replays, validates sealed checkpoint, confirms no writer/source change, then deletes Inspector WAL only. Reports are regenerable `0600` cache, atomically replaced, expire after 14 inactive days, and are capped at 100 MiB oldest-first. Explicit `--output` files are user-owned and never pruned.
+Detailed Inspector data has a **maximum 14-calendar-day window from record creation**, not 14 days after a session becomes inactive. Each writer owns a logical WAL shard and rotates immutable dated segments at least daily; an active writer rotates before its current segment can cross the cutoff. Under maintenance lease, a segment is deleted only after a validated checkpoint includes it and its newest record is older than the cutoff. Checkpoints retain aggregates and cursors, not detailed telemetry. Regenerable report cache expires 14 days after generation (access does not extend it) and is capped at 100 MiB oldest-first. Explicit `--output` files are user-owned and never pruned. This bounds Inspector-held detailed metadata even for long-running sessions, at cost of cold reports showing aggregate/native data only.
 
 ## 8. Privacy and security
 
-Default local-only means no network calls, analytics, external assets, or native-content duplication. WAL permits IDs, times, statuses, bounded numeric/boolean metrics, and redacted bounded metadata only. UI reads local source detail only on demand; exports omit bodies and redact commands/paths.
+Default local-only means no network calls, analytics, external assets, or native-content duplication. WAL permits IDs, times, statuses, bounded numeric/boolean metrics, bounded redacted string state, and redacted bounded metadata only. UI reads local source detail only on demand; exports omit bodies and redact commands/paths.
 
 Redact secret-like keys, bearer/authorization values, JWT/token/private-key shapes, credential URLs, environment assignments, and `.env`/credential paths. Redaction is defense-in-depth, not a safe-sharing guarantee. Reports show warning. Create Inspector directories/files user-only when supported.
 
@@ -141,9 +141,9 @@ Tabs: Overview, Models, Tools, Commands, Agents, Skills, Integrations, Errors, L
 
 HTML inlines escaped report JSON, CSS and vanilla JS. v1 charts: daily sessions/cost/tokens and model/tool bars. Browser opening failure returns path, not command failure.
 
-Release targets: observer scheduling p95 <1 ms/p99 <5 ms; no high-frequency synchronous disk; <=10 MiB incremental memory for 10k records; current TUI warm paint <150 ms; 10k delta reconcile <250 ms; cold 100-MiB replay <2 s; global fold 1,000 checkpoints <2 s; HTML <3 s/<5 MiB; startup p95 <25 ms warm/<75 ms cold.
+Initial target SLOs (not v1 release blockers until measured): observer scheduling p95 <1 ms/p99 <5 ms; no high-frequency synchronous disk; <=10 MiB incremental memory for 10k records; current TUI warm paint <150 ms; 10k delta reconcile <250 ms; cold 100-MiB replay <2 s; global fold 1,000 checkpoints <2 s; HTML <3 s/<5 MiB; startup p95 <25 ms warm/<75 ms cold.
 
-Benchmark corpus is fixed seed/versioned. CI smoke fails timeout or 5x regression only. Release job runs 10 warm/3 cold samples on pinned Node/image, records artifact, requires CV <=20%, and blocks absolute target or >20% median/p95 regression unless baseline exception is reviewed/changeloged.
+Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, correctness failure, or gross 5x regression. Release jobs run 10 warm/3 cold samples on pinned Node/image and publish machine/image/variance artifacts. After two accepted release artifacts establish variance, maintainers may promote stable targets to hard SLOs; then an absolute-SLO breach or >20% median/p95 regression blocks release unless a reviewed baseline exception and changelog note exist. Safety, privacy, source-precedence, and recovery tests remain hard blockers from the first release.
 
 ## 10. Integration policy
 

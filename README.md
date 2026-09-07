@@ -2,7 +2,7 @@
 
 Deterministic, local-only session analytics for [Pi](https://github.com/earendil-works/pi). Reconstructs Pi-native session data with confidence-aware live/cooperative metadata. No LLM analytics. No cloud. No daemon.
 
-> **Status: design baseline. No production implementation yet.**
+> **Status: design baseline. Production implementation is intentionally deferred.**
 
 ## Planned install
 
@@ -29,14 +29,17 @@ Current defaults to active branch/TUI. History/global resource views default to 
 
 Reports may still reveal project metadata. Treat exports as sensitive.
 
-## Documentation
+## Canonical design documentation
 
+- [Pi ecosystem research](docs/research/pi-ecosystem.md)
 - [v1 specification](docs/specs/pi-session-inspector-v1.md)
 - [implementation plan](docs/plans/pi-session-inspector-v1-implementation.md)
-- [Pi ecosystem research](docs/research/pi-ecosystem.md)
 - [architecture decisions](docs/architecture/README.md)
-- [contributing](CONTRIBUTING.md), [security](SECURITY.md), [agent guidance](AGENTS.md)
+
+These documents and ADRs are canonical. Planning scratch files are not retained as competing authority.
+
+See [contributing](CONTRIBUTING.md), [security](SECURITY.md), and [agent guidance](AGENTS.md).
 
 ## License
 
-Planned: MIT © twKrash. `LICENSE` arrives with package implementation.
+[MIT](LICENSE) © twKrash.
