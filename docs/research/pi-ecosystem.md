@@ -25,6 +25,8 @@ Navigation links may follow `main`; implementation decisions rely on pinned sour
 
 Before implementation, pin source **line ranges** from the downloaded tarballs in fixtures. GitHub line numbers move with formatting even at a commit; symbols plus tarball integrity are reproducible.
 
+Implementation evidence recorded against installed package `0.85.1` with the integrity above: `ExtensionAPI.on()` observer overloads and `appendEntry()` at `dist/core/extensions/types.d.ts:906-985`; read-only `ExtensionContext.sessionManager` at `:209-246`; session directory/read APIs at `dist/core/session-manager.d.ts:167-176,183-241,317-355`; and `getAgentDir()` at `dist/config.d.ts:69-82`. No public subscription reports every persisted session append or exposes file-tail changes; live observer facts therefore remain bounded best-effort evidence.
+
 ## Answers to required research questions
 
 | # | Question | Answer | Evidence |
