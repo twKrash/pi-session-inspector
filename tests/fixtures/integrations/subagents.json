@@ -1,0 +1,48 @@
+{
+  "foreground": {
+    "version": 1,
+    "runs": [
+      {
+        "id": "foreground-child",
+        "parentId": "parent-run",
+        "status": "complete",
+        "usage": { "totalTokens": 20, "cost": 1 }
+      },
+      {
+        "id": "nested-child",
+        "parentId": "foreground-child",
+        "status": "failed",
+        "usage": { "totalTokens": 40, "cost": 2 }
+      }
+    ]
+  },
+  "async": {
+    "version": 1,
+    "runs": [
+      { "id": "async-child", "parentId": "parent-run", "status": "running" }
+    ]
+  },
+  "status": {
+    "version": 1,
+    "runs": [
+      { "id": "queued-child", "parentId": "parent-run", "status": "queued" },
+      { "id": "stopped-child", "parentId": "parent-run", "status": "stopped" },
+      { "id": "partial-child", "parentId": "parent-run", "status": "partial" },
+      { "id": "unrecognized-child", "parentId": "parent-run", "status": "future-status" }
+    ]
+  },
+  "toolResult": {
+    "version": 1,
+    "runs": [
+      {
+        "id": "tool-result-child",
+        "parentId": "parent-run",
+        "status": "complete",
+        "usage": { "totalTokens": 12, "cost": 0.5 }
+      }
+    ]
+  },
+  "malformed": { "version": 1, "runs": [{ "id": "bad", "status": "complete", "raw": "raw-tool-result-sentinel" }] },
+  "missingLink": { "version": 1, "runs": [{ "id": "orphan", "status": "complete" }] },
+  "unknownVersion": { "version": 99, "runs": [] }
+}
