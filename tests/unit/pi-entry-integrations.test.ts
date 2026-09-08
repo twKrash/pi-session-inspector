@@ -16,6 +16,10 @@ test("reads allowlisted, sanitized Pi-entry integration evidence", async () => {
 
   const rows = readPiEntryEvidence(entries);
 
+  assert.equal(
+    JSON.stringify(rows).includes("raw-tool-result-sentinel"),
+    false,
+  );
   assert.deepEqual(
     rows.map((row) => row.integration),
     ["context", "rtk", "mode", "permission", "lens"],
@@ -59,6 +63,37 @@ test("reads allowlisted, sanitized Pi-entry integration evidence", async () => {
   assert.deepEqual(rows.find((row) => row.integration === "lens")?.counters, {
     calls: 1,
   });
+});
+
+test("marks RTK evidence unsupported when aggregated counters overflow", () => {
+  const rtk = (id: string, sourceChars: number) =>
+    ({
+      type: "message",
+      id,
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: {
+        role: "toolResult",
+        details: {
+          rtkCompaction: {
+            schemaVersion: 1,
+            sourceChars,
+            compactedChars: 0,
+            sourceLines: 0,
+            compactedLines: 0,
+            truncated: false,
+          },
+        },
+      },
+    }) satisfies SessionEntry;
+
+  assert.deepEqual(
+    readPiEntryEvidence([
+      rtk("rtk-safe-limit", Number.MAX_SAFE_INTEGER),
+      rtk("rtk-overflow", 1),
+    ]),
+    [{ integration: "rtk", version: 1, state: "unsupported" }],
+  );
 });
 
 test("reports unknown supported-integration versions and omits unrelated entries", () => {

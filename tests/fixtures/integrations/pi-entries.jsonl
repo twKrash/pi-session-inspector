@@ -1,5 +1,5 @@
 {"type":"custom","id":"context-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"ctx_status","data":{"schemaVersion":1,"active":true}}
-{"type":"message","id":"rtk-1","parentId":"context-1","timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"toolResult","toolCallId":"tool-rtk","details":{"rtkCompaction":{"schemaVersion":1,"sourceChars":100,"compactedChars":60,"sourceLines":10,"compactedLines":6,"truncated":false}}}}
+{"type":"message","id":"rtk-1","parentId":"context-1","timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"toolResult","toolCallId":"tool-rtk","content":"raw-tool-result-sentinel","details":{"rtkCompaction":{"schemaVersion":1,"sourceChars":100,"compactedChars":60,"sourceLines":10,"compactedLines":6,"truncated":false}}}}
 {"type":"custom","id":"mode-1","parentId":"rtk-1","timestamp":"2026-01-01T00:00:02.000Z","customType":"caveman-level","data":{"schemaVersion":1,"enabled":true}}
 {"type":"custom","id":"permission-1","parentId":"mode-1","timestamp":"2026-01-01T00:00:03.000Z","customType":"permissions:decision","data":{"schemaVersion":1,"granted":true}}
 {"type":"message","id":"lens-1","parentId":"permission-1","timestamp":"2026-01-01T00:00:04.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-lens","name":"lens"}]}}

@@ -181,11 +181,16 @@ class PiEntryEvidence {
     }
 
     const combined = mergeCounters(prior?.counters, result.counters);
+    if (combined === undefined) {
+      this.#rows.set(integration, unsupported(integration, version));
+      return;
+    }
+
     this.#rows.set(integration, {
       integration,
       version,
       state: "supported",
-      ...(combined === undefined ? {} : { counters: combined }),
+      counters: combined,
     });
   }
 }
@@ -200,10 +205,13 @@ function mergeCounters(
   const counters: Record<string, number | boolean> = { ...previous };
   for (const [key, value] of Object.entries(next)) {
     const prior = counters[key];
-    counters[key] =
-      typeof value === "number" && typeof prior === "number"
-        ? prior + value
-        : value === true || prior === true;
+    if (typeof value === "number" && typeof prior === "number") {
+      const total = prior + value;
+      if (!Number.isSafeInteger(total)) return undefined;
+      counters[key] = total;
+    } else {
+      counters[key] = value === true || prior === true;
+    }
   }
   return counters;
 }
