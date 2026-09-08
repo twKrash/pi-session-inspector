@@ -11,6 +11,8 @@ import { setupSessionWal } from "./pi/session-wal.ts";
 import { trackPiSession } from "./pi/tracking-pi.ts";
 import { createWalWriter } from "./storage/wal.ts";
 import { scheduleMaintenance } from "./storage/maintenance.ts";
+import { createCurrentTuiComponent } from "./ui/current-tui.ts";
+import { loadCurrentSessionReport } from "./ui/load-current.ts";
 
 type SessionStartTrackingApi = Parameters<
   typeof registerSessionStartTracking
@@ -100,6 +102,16 @@ function setupProductionSessionWal(input: {
   });
 }
 
+function notifyCurrentUnavailable(ctx: {
+  ui: { notify(message: string, level: "info"): void };
+}): void {
+  try {
+    ctx.ui.notify("Current session Inspector data is unavailable.", "info");
+  } catch {
+    // Command-side UI failures must not affect Pi.
+  }
+}
+
 export default function registerSessionInspector(pi: ExtensionAPI): void {
   registerTracking(pi as unknown as SessionStartTrackingApi, {
     agentDir: getAgentDir(),
@@ -111,23 +123,33 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
     pi.registerCommand(name, {
       description,
       handler: async (_args, ctx) => {
-        if (ctx.mode !== "tui") {
-          ctx.ui.notify("Pi Session Inspector is not implemented yet.", "info");
-          return;
-        }
+        try {
+          if (ctx.mode !== "tui") {
+            notifyCurrentUnavailable(ctx);
+            return;
+          }
 
-        await ctx.ui.custom((_tui, theme, _keybindings, done) => ({
-          render: (width) =>
-            [
-              theme.fg("accent", "Pi Session Inspector"),
-              "",
-              "Placeholder UI. Replay and tracking arrive in later milestones.",
-              "",
-              theme.fg("dim", "Press any key to close."),
-            ].map((line) => line.slice(0, width)),
-          invalidate: () => {},
-          handleInput: () => done(undefined),
-        }));
+          const model = await loadCurrentSessionReport(
+            ctx.sessionManager.getSessionFile(),
+            "active",
+            ctx.sessionManager.getLeafId(),
+          );
+          if (!model) {
+            notifyCurrentUnavailable(ctx);
+            return;
+          }
+
+          await ctx.ui.custom((tui, theme, _keybindings, done) =>
+            createCurrentTuiComponent({
+              model,
+              theme,
+              requestRender: () => tui.requestRender(),
+              done: () => done(undefined),
+            }),
+          );
+        } catch {
+          notifyCurrentUnavailable(ctx);
+        }
       },
     });
   }
