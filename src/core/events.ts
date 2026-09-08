@@ -1,5 +1,30 @@
 export type Scope = "active" | "tree";
 
+export type EvidenceState = "supported" | "unavailable" | "unsupported";
+
+export type IntegrationKey =
+  | "context"
+  | "rtk"
+  | "mode"
+  | "permission"
+  | "subagents"
+  | "lens";
+
+export type IntegrationObservation = {
+  integration: IntegrationKey;
+  version: number;
+  state: EvidenceState;
+  counters?: Readonly<Record<string, number | boolean>>;
+};
+
+export type AgentRun = {
+  id: string;
+  parentId?: string;
+  status: "running" | "succeeded" | "failed" | "interrupted" | "unknown";
+  confidence: EvidenceState;
+  usage?: Usage;
+};
+
 export type Usage = {
   totalTokens: number;
   cost: number;
