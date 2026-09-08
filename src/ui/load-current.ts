@@ -17,6 +17,12 @@ export async function loadCurrentSessionReport(
   try {
     const session = parseSessionJsonl(await readFile(sessionFile, "utf8"));
     if (!session.hasSessionHeader) return undefined;
+    if (
+      scope === "active" &&
+      (leafId === null || !session.entries.some((entry) => entry.id === leafId))
+    ) {
+      return undefined;
+    }
     const entries = selectScope(session.entries, leafId, scope);
     return createCurrentTuiModel(
       toSessionReport(reduceEntries(session.id, entries)),

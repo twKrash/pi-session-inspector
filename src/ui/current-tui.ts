@@ -48,6 +48,7 @@ export function createCurrentTuiComponent({
   let currentModel = model;
   let state: CurrentTuiState = { tab: "overview", scope: model.scope };
   let ledger: ReturnType<typeof buildLedger> | undefined;
+  let latestScopeReload = 0;
 
   function update(action: Parameters<typeof reduceCurrentTui>[1]): void {
     state = reduceCurrentTui(state, action);
@@ -55,9 +56,10 @@ export function createCurrentTuiComponent({
   }
 
   async function reloadScope(scope: CurrentTuiModel["scope"]): Promise<void> {
+    const requestId = ++latestScopeReload;
     try {
       const nextModel = await load(scope);
-      if (!nextModel) return;
+      if (requestId !== latestScopeReload || !nextModel) return;
       currentModel = nextModel;
       ledger = undefined;
       update({ type: "set-scope", scope });

@@ -119,6 +119,50 @@ test("reloads the report when the scope changes", async () => {
   );
 });
 
+test("applies only the latest scope reload completion", async () => {
+  let resolveTree:
+    | ((model: ReturnType<typeof createCurrentTuiModel>) => void)
+    | undefined;
+  let resolveActive:
+    | ((model: ReturnType<typeof createCurrentTuiModel>) => void)
+    | undefined;
+  const component = createCurrentTuiComponent({
+    model: createCurrentTuiModel(report, "active"),
+    load: (scope) =>
+      new Promise((resolve) => {
+        if (scope === "tree") resolveTree = resolve;
+        else resolveActive = resolve;
+      }),
+    theme,
+    requestRender: () => {},
+    done: () => {},
+  });
+
+  component.handleInput("t");
+  component.handleInput("a");
+  assert.ok(resolveTree);
+  assert.ok(resolveActive);
+
+  resolveActive(
+    createCurrentTuiModel(
+      { ...report, usage: { totalTokens: 42, cost: 0.01 } },
+      "active",
+    ),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  resolveTree(
+    createCurrentTuiModel(
+      { ...report, usage: { totalTokens: 72, cost: 0.086 } },
+      "tree",
+    ),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const lines = component.render(120);
+  assert.ok(lines.some((line) => line.includes("Scope: Active")));
+  assert.ok(lines.some((line) => line.includes("Total tokens: 42")));
+});
+
 test("keeps fixed tabs visible when their content is unavailable", () => {
   const component = createCurrentTuiComponent({
     model: createCurrentTuiModel(report, "active"),

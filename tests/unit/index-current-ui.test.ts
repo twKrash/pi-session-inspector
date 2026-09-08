@@ -66,6 +66,24 @@ test("uses Pi's active leaf rather than the latest appended branch", async () =>
   assert.equal(model?.report.usage.totalTokens, 42);
 });
 
+test("leaves active scope unavailable when Pi has no known active leaf", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const file = join(directory, "branching.jsonl");
+  await writeFile(
+    file,
+    await readFile("tests/fixtures/pi/0.85.1/branching.jsonl", "utf8"),
+  );
+
+  assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
+  assert.equal(
+    await loadCurrentSessionReport(file, "active", "unknown-leaf"),
+    undefined,
+  );
+
+  const tree = await loadCurrentSessionReport(file, "tree", null);
+  assert.equal(tree?.report.usage.totalTokens, 72);
+});
+
 test("opens the current-session TUI through Pi's public session lookup", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const file = join(directory, "session.jsonl");
@@ -155,7 +173,31 @@ test("notifies and does not throw when public session lookup or replay is unavai
   registerCommand(handlerRef);
 
   let notifications = 0;
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const file = join(directory, "session.jsonl");
+  await writeFile(
+    file,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z"}',
+    ].join("\n"),
+  );
   assert.ok(handlerRef.current);
+  await assert.doesNotReject(
+    handlerRef.current("", {
+      mode: "tui",
+      sessionManager: {
+        getLeafId: () => null,
+        getSessionFile: () => file,
+      },
+      ui: {
+        notify: () => {
+          notifications++;
+        },
+        custom: async () => assert.fail("must not open without a session"),
+      },
+    } as unknown as ExtensionCommandContext),
+  );
   await assert.doesNotReject(
     handlerRef.current("", {
       mode: "tui",
@@ -186,5 +228,5 @@ test("notifies and does not throw when public session lookup or replay is unavai
       },
     } as unknown as ExtensionCommandContext),
   );
-  assert.equal(notifications, 2);
+  assert.equal(notifications, 3);
 });

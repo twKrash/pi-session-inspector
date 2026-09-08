@@ -10,7 +10,7 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Changed
 
-- Deferred history UI selection and drill-down to the next web UI milestone; the current TUI intentionally covers only the active session.
+- Deferred history UI selection and drill-down to the next web UI milestone; the current TUI intentionally covers only the current session.
 
 ## [0.1.0]
 
