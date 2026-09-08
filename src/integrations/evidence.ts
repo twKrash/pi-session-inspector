@@ -62,26 +62,31 @@ export function createEvidenceRegistry(
       try {
         if (input === undefined || input === null)
           return { state: "unavailable" };
-        if (!isEvidenceInput(input)) return invalidEvidence();
-
-        const integration = normalizeIntegration(input.integration);
-        if (integration === undefined || !isVersion(input.version)) {
+        const evidenceInput = materializeOwnDataProperties(input);
+        if (evidenceInput === undefined || !isEvidenceInput(evidenceInput)) {
           return invalidEvidence();
         }
-        const value = toBoundedValue(input.value);
+
+        const integration = normalizeIntegration(evidenceInput.integration);
+        if (integration === undefined || !isVersion(evidenceInput.version)) {
+          return invalidEvidence();
+        }
+        const value = toBoundedValue(evidenceInput.value);
         if (value === undefined) return invalidEvidence();
 
-        const adapter = registered.get(adapterKey(integration, input.version));
+        const adapter = registered.get(
+          adapterKey(integration, evidenceInput.version),
+        );
         if (adapter === undefined) {
           return { state: "unsupported", diagnostic: "unsupported-version" };
         }
 
-        const output = adapter.read(value);
-        if (!isAdapterOutput(output)) return adapterRejected();
+        const output = toAdapterOutput(adapter.read(value));
+        if (output === undefined) return adapterRejected();
 
         const observation: IntegrationObservation = {
           integration,
-          version: input.version,
+          version: evidenceInput.version,
           state: "supported",
         };
         if (output.counters !== undefined) {
@@ -103,8 +108,7 @@ function isAdapter(adapter: EvidenceAdapter): boolean {
   );
 }
 
-function isEvidenceInput(value: unknown): value is Record<string, unknown> {
-  if (!isPlainRecord(value)) return false;
+function isEvidenceInput(value: Record<string, unknown>): boolean {
   const keys = Object.keys(value);
   return (
     keys.length === 3 &&
@@ -121,11 +125,13 @@ function normalizeIntegration(value: unknown): IntegrationKey | undefined {
 }
 
 function toBoundedValue(value: unknown): BoundedEvidenceValue | undefined {
-  return isBoundedValue(value) ? value : undefined;
+  const snapshot = materializeOwnDataProperties(value);
+  return snapshot !== undefined && isBoundedValue(snapshot)
+    ? (snapshot as BoundedEvidenceValue)
+    : undefined;
 }
 
-function isBoundedValue(value: unknown): value is BoundedEvidenceValue {
-  if (!isPlainRecord(value)) return false;
+function isBoundedValue(value: Record<string, unknown>): boolean {
   const entries = Object.entries(value);
   return (
     entries.length <= MAX_COUNTERS &&
@@ -142,31 +148,47 @@ function isBoundedValue(value: unknown): value is BoundedEvidenceValue {
   );
 }
 
-function isAdapterOutput(
+function toAdapterOutput(
   value: unknown,
-): value is { counters?: BoundedEvidenceValue } {
-  if (!isPlainRecord(value)) return false;
-  const keys = Object.keys(value);
-  return (
-    keys.length <= 1 &&
-    keys.every((key) => key === "counters") &&
-    (value.counters === undefined || isBoundedValue(value.counters))
-  );
+): { counters?: BoundedEvidenceValue } | undefined {
+  const output = materializeOwnDataProperties(value);
+  if (output === undefined) return undefined;
+  const keys = Object.keys(output);
+  if (keys.length > 1 || !keys.every((key) => key === "counters")) {
+    return undefined;
+  }
+  if (output.counters === undefined) return {};
+
+  const counters = toBoundedValue(output.counters);
+  return counters === undefined ? undefined : { counters };
 }
 
 function snapshotCounters(value: BoundedEvidenceValue): BoundedEvidenceValue {
   return Object.freeze({ ...value });
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object") return false;
+/**
+ * Takes a single descriptor-based snapshot so a Proxy cannot change values after
+ * structural validation but before an adapter or validator consumes them.
+ */
+function materializeOwnDataProperties(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object") return undefined;
   const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return false;
-  return Reflect.ownKeys(value).every((key) => {
-    if (typeof key !== "string") return false;
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return descriptor?.enumerable === true && "value" in descriptor;
-  });
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const snapshot: Record<string, unknown> = Object.create(null);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string") return undefined;
+    const descriptor = descriptors[key];
+    if (descriptor?.enumerable !== true || !("value" in descriptor)) {
+      return undefined;
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return Object.freeze(snapshot);
 }
 
 function isVersion(value: unknown): value is number {

@@ -61,6 +61,47 @@ test("rejects hidden, symbol, and accessor local evidence without reading it", (
   }
 });
 
+test("materializes proxy evidence descriptors once before validation", () => {
+  let descriptorReads = 0;
+  let observedValue: Readonly<Record<string, number | boolean>> | undefined;
+  const value = new Proxy(
+    {},
+    {
+      ownKeys: () => ["calls"],
+      getOwnPropertyDescriptor: () => {
+        descriptorReads += 1;
+        return {
+          configurable: true,
+          enumerable: true,
+          value: descriptorReads === 1 ? 1 : 99,
+        };
+      },
+    },
+  );
+  const evidence = createEvidenceRegistry([
+    {
+      integration: "context",
+      version: 1,
+      read: (adapterValue) => {
+        observedValue = adapterValue;
+        return { counters: adapterValue };
+      },
+    },
+  ]);
+
+  assert.deepEqual(
+    evidence.read({ integration: "context", version: 1, value }),
+    {
+      integration: "context",
+      version: 1,
+      state: "supported",
+      counters: { calls: 1 },
+    },
+  );
+  assert.equal(descriptorReads, 1);
+  assert.equal(Object.isFrozen(observedValue), true);
+});
+
 test("snapshots validated adapter counters", () => {
   const counters = { calls: 2 };
   const evidence = createEvidenceRegistry([
