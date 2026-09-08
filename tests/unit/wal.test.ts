@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 type CreateWriter = (options: {
   root: string;
-  writerId: string;
+  writerId?: string;
   now: () => Date;
+  write?: (path: string, data: string) => Promise<void>;
 }) => Promise<{
   append(event: { eventId: string; timestamp: string; kind: string }): void;
   flush(): Promise<void>;
@@ -22,6 +30,26 @@ async function loadWriter(): Promise<CreateWriter | undefined> {
     return undefined;
   }
 }
+
+test("generates an immutable UUID writer shard when no ID is supplied", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    await createWalWriter({
+      root,
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+    });
+
+    assert.match(
+      (await readdir(join(root, "wal")))[0] ?? "",
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[4][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
 
 test("rejects a second writer claim for the same writer ID", async () => {
   const createWalWriter = await loadWriter();
@@ -117,6 +145,41 @@ test("drops non-string event fields before WAL persistence", async () => {
   }
 });
 
+test("snapshots hostile producer fields before validation and persistence", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+    });
+    let reads = 0;
+    const event = {
+      get eventId() {
+        reads += 1;
+        return reads === 1 ? "event-1" : "secret-after-validation";
+      },
+      kind: "tool-end",
+      timestamp: "2026-09-07T12:00:00.000Z",
+    };
+
+    assert.doesNotThrow(() => writer.append(event));
+    await writer.flush();
+
+    const contents = await readFile(
+      join(root, "wal", "writer-1", "2026-09-07.jsonl"),
+      "utf8",
+    );
+    assert.match(contents, /"eventId":"event-1"/);
+    assert.equal(contents.includes("secret-after-validation"), false);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("drains events appended during an in-flight flush", async () => {
   const createWalWriter = await loadWriter();
   assert.ok(createWalWriter);
@@ -145,6 +208,138 @@ test("drains events appended during an in-flight flush", async () => {
       await readFile(join(root, "wal", "writer-1", "2026-09-07.jsonl"), "utf8"),
       /"eventId":"event-2"/,
     );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("flushes records appended at the end of an in-flight flush", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    let releaseFirstWrite: (() => void) | undefined;
+    const firstWriteReleased = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    const writes: string[] = [];
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+      write: (_path, data) => {
+        writes.push(data);
+        return writes.length === 1 ? firstWriteReleased : Promise.resolve();
+      },
+    });
+    writer.append({
+      eventId: "event-1",
+      timestamp: "2026-09-07T12:00:00.000Z",
+      kind: "tool-start",
+    });
+    const firstFlush = writer.flush();
+    releaseFirstWrite?.();
+    queueMicrotask(() => {
+      writer.append({
+        eventId: "event-2",
+        timestamp: "2026-09-07T12:00:01.000Z",
+        kind: "tool-end",
+      });
+    });
+    await firstFlush;
+
+    assert.equal(writes.length, 2);
+    assert.match(writes[1] ?? "", /"eventId":"event-2"/);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("flushes after 200 ms without keeping the process alive", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  const segment = join(root, "wal", "writer-1", "2026-09-07.jsonl");
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+    });
+    writer.append({
+      eventId: "event-1",
+      timestamp: "2026-09-07T12:00:00.000Z",
+      kind: "tool-end",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.match(await readFile(segment, "utf8"), /"eventId":"event-1"/);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("flushes asynchronously after 64 queued records", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    let writes = 0;
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+      write: async () => {
+        writes += 1;
+      },
+    });
+    for (let index = 0; index < 64; index += 1) {
+      writer.append({
+        eventId: `event-${index}`,
+        timestamp: "2026-09-07T12:00:00.000Z",
+        kind: "tool-end",
+      });
+    }
+
+    await Promise.resolve();
+    assert.equal(writes, 1);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("disables and sheds pending records after the 1 MiB queue cap", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  const segment = join(root, "wal", "writer-1", "2026-09-07.jsonl");
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+    });
+    for (let index = 0; index < 4_300; index += 1) {
+      writer.append({
+        eventId: `event-${index}`,
+        timestamp: "2026-09-07T12:00:00.000Z",
+        kind: "x".repeat(128),
+      });
+    }
+
+    await writer.flush();
+    writer.append({
+      eventId: "after-cap",
+      timestamp: "2026-09-07T12:00:00.000Z",
+      kind: "tool-end",
+    });
+    await writer.flush();
+
+    await assert.rejects(readFile(segment, "utf8"), { code: "ENOENT" });
   } finally {
     await rm(root, { force: true, recursive: true });
   }

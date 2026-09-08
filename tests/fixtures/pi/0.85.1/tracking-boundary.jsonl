@@ -1,0 +1,10 @@
+{"type":"session","version":3,"id":"tracking-boundary-session","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/fixture"}
+{"type":"message","id":"old-root","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":10,"cost":{"total":0.01}}}}
+{"type":"message","id":"old-parent","parentId":"old-root","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":20,"cost":{"total":0.02}}}}
+{"type":"custom","id":"malformed-marker","parentId":"old-parent","timestamp":"2026-01-01T00:00:03.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":"1"}}
+{"type":"message","id":"pre-boundary","parentId":"old-parent","timestamp":"2026-01-01T00:00:04.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":30,"cost":{"total":0.03}}}}
+{"type":"custom","id":"tracking-marker","parentId":"old-parent","timestamp":"2026-01-01T00:00:05.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}
+{"type":"message","id":"active-parent","parentId":"tracking-marker","timestamp":"2026-01-01T00:00:06.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":40,"cost":{"total":0.04}}}}
+{"type":"message","id":"abandoned-sibling","parentId":"tracking-marker","timestamp":"2026-01-01T00:00:07.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":50,"cost":{"total":0.05}}}}
+{"type":"custom","id":"duplicate-marker","parentId":"active-parent","timestamp":"2026-01-01T00:00:08.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}
+{"type":"message","id":"active-leaf","parentId":"active-parent","timestamp":"2026-01-01T00:00:09.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":60,"cost":{"total":0.06}}}}
