@@ -9,6 +9,7 @@ test("package declares Pi extension and ships entrypoint", () => {
   assert.equal(pkg.engines.node, ">=22.19.0");
   assert.deepEqual(pkg.keywords.includes("pi-package"), true);
   assert.deepEqual(pkg.pi.extensions, ["./src/index.ts"]);
+  assert.equal(pkg.peerDependencies["@earendil-works/pi-tui"], "^0.85.1");
   assert.ok(existsSync("src/index.ts"), "missing Pi extension entrypoint");
 });
 
