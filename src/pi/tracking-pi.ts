@@ -6,15 +6,18 @@ export async function trackPiSession({
   root,
   sessionId,
   appendEntry,
+  revalidateSession,
 }: {
   root: string;
   sessionId: string;
   appendEntry(type: string, data: unknown): void;
+  revalidateSession(): boolean;
 }): Promise<boolean> {
   try {
     return await startTracking(
       createTrackingStorage({ root, sessionId, appendEntry }),
       sessionId,
+      revalidateSession,
     );
   } catch {
     return false;

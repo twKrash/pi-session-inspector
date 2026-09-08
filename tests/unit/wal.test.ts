@@ -18,6 +18,7 @@ type CreateWriter = (options: {
   write?: (path: string, data: string) => Promise<void>;
 }) => Promise<{
   append(event: { eventId: string; timestamp: string; kind: string }): void;
+  appendTelemetry(envelope: unknown): void;
   flush(): Promise<void>;
 }>;
 
@@ -305,6 +306,58 @@ test("flushes asynchronously after 64 queued records", async () => {
     }
 
     await Promise.resolve();
+    assert.equal(writes, 1);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("flushes asynchronously when pending WAL bytes reach 256 KiB", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    let writes = 0;
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+      write: async () => {
+        writes += 1;
+      },
+    });
+    const dimensions = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => [
+        `dimension-${String(index).padStart(2, "0")}-${"k".repeat(35)}`,
+        "d".repeat(128),
+      ]),
+    );
+    const attribution = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => [
+        `attribution-${String(index).padStart(2, "0")}-${"k".repeat(33)}`,
+        "a".repeat(128),
+      ]),
+    );
+
+    let appended = 0;
+    for (let index = 0; index < 64; index += 1) {
+      writer.appendTelemetry({
+        schemaVersion: 1,
+        source: "source",
+        metric: "metric",
+        value: index,
+        kind: "counter",
+        dimensions,
+        attribution,
+      });
+      appended += 1;
+      await Promise.resolve();
+      if (writes > 0) break;
+    }
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(appended < 64);
     assert.equal(writes, 1);
   } finally {
     await rm(root, { force: true, recursive: true });

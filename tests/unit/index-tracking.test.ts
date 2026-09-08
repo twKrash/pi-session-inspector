@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+type SessionManager = {
+  getSessionId(): string;
+  getSessionFile(): string | undefined;
+};
+
 type SessionStartApi = {
   on(
     event: "session_start",
     handler: (
       event: unknown,
-      context: { sessionManager: { getSessionId(): string } },
+      context: { sessionManager: SessionManager },
     ) => Promise<void>,
   ): void;
   appendEntry(type: string, data: unknown): void;
@@ -38,6 +43,11 @@ async function loadRegisterTracking(): Promise<RegisterTracking | undefined> {
   }
 }
 
+const durableManager = (): SessionManager => ({
+  getSessionId: () => "session-1",
+  getSessionFile: () => "/sessions/session-1.jsonl",
+});
+
 test("wires session-start tracking beneath Pi's public agent directory", async () => {
   const registerTracking = await loadRegisterTracking();
   assert.ok(registerTracking);
@@ -45,7 +55,7 @@ test("wires session-start tracking beneath Pi's public agent directory", async (
   let handler:
     | ((
         event: unknown,
-        context: { sessionManager: { getSessionId(): string } },
+        context: { sessionManager: SessionManager },
       ) => Promise<void>)
     | undefined;
   const calls: string[] = [];
@@ -69,9 +79,7 @@ test("wires session-start tracking beneath Pi's public agent directory", async (
   });
 
   assert.ok(handler);
-  await handler(undefined, {
-    sessionManager: { getSessionId: () => "session-1" },
-  });
+  await handler(undefined, { sessionManager: durableManager() });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(calls, [
     "/agent/session-inspector/v1:session-1",
@@ -87,7 +95,7 @@ test("does not set up a WAL when tracking is not promoted", async () => {
   let handler:
     | ((
         event: unknown,
-        context: { sessionManager: { getSessionId(): string } },
+        context: { sessionManager: SessionManager },
       ) => Promise<void>)
     | undefined;
   let setups = 0;
@@ -108,9 +116,7 @@ test("does not set up a WAL when tracking is not promoted", async () => {
   );
 
   assert.ok(handler);
-  await handler(undefined, {
-    sessionManager: { getSessionId: () => "session-1" },
-  });
+  await handler(undefined, { sessionManager: durableManager() });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(setups, 0);
 });
@@ -122,7 +128,7 @@ test("does not set up a WAL when tracking rejects", async () => {
   let handler:
     | ((
         event: unknown,
-        context: { sessionManager: { getSessionId(): string } },
+        context: { sessionManager: SessionManager },
       ) => Promise<void>)
     | undefined;
   let setups = 0;
@@ -146,7 +152,7 @@ test("does not set up a WAL when tracking rejects", async () => {
 
   assert.ok(handler);
   await assert.doesNotReject(
-    handler(undefined, { sessionManager: { getSessionId: () => "session-1" } }),
+    handler(undefined, { sessionManager: durableManager() }),
   );
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(setups, 0);

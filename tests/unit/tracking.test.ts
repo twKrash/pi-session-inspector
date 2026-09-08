@@ -8,6 +8,7 @@ type StartTracking = (
     promote(sessionId: string): Promise<void>;
   },
   sessionId: string,
+  revalidateSession?: () => boolean,
 ) => Promise<boolean>;
 
 async function loadStartTracking(): Promise<StartTracking | undefined> {
@@ -40,6 +41,31 @@ test("creates pending metadata before its namespaced Pi marker and promotion", a
 
   assert.equal(started, true);
   assert.deepEqual(calls, ["pending:session-1", "marker", "promote:session-1"]);
+});
+
+test("does not append or promote when the public session changes after pending metadata", async () => {
+  const startTracking = await loadStartTracking();
+  assert.ok(startTracking);
+
+  const calls: string[] = [];
+  const started = await startTracking(
+    {
+      writePending: async () => {
+        calls.push("pending");
+      },
+      appendMarker: () => {
+        calls.push("marker");
+      },
+      promote: async () => {
+        calls.push("promote");
+      },
+    },
+    "session-1",
+    () => false,
+  );
+
+  assert.equal(started, false);
+  assert.deepEqual(calls, ["pending"]);
 });
 
 test("swallows transaction failures without attempting later tracking steps", async () => {

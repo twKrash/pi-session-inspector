@@ -8,13 +8,24 @@ const ASCII_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MAX_TOKEN_LENGTH = 128;
 const MAX_PENDING_BYTES = 1024 * 1024;
 const MAX_PENDING_EVENTS = 64;
+const MAX_PENDING_FLUSH_BYTES = 256 * 1024;
 const FLUSH_INTERVAL_MS = 200;
 const MAX_TELEMETRY_MAP_ENTRIES = 12;
+
+type LiveTiming = {
+  category: "agent" | "turn" | "tool" | "provider" | "model";
+  status: "running" | "unknown" | "unsupported";
+  confidence: "live" | "unsupported";
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+};
 
 type WalEvent = {
   eventId: string;
   timestamp: string;
   kind: string;
+  timing?: LiveTiming;
 };
 
 type StoredWalEvent = WalEvent & {
@@ -52,8 +63,31 @@ function isSupportedEvent(event: WalEvent): boolean {
     isAsciiToken(event.kind) &&
     typeof event.timestamp === "string" &&
     event.timestamp.length <= 64 &&
-    !Number.isNaN(Date.parse(event.timestamp))
+    !Number.isNaN(Date.parse(event.timestamp)) &&
+    (event.timing === undefined || isLiveTiming(event.timing))
   );
+}
+
+function isLiveTiming(value: LiveTiming): boolean {
+  return (
+    (value.category === "agent" ||
+      value.category === "turn" ||
+      value.category === "tool" ||
+      value.category === "provider" ||
+      value.category === "model") &&
+    (value.status === "running" ||
+      value.status === "unknown" ||
+      value.status === "unsupported") &&
+    (value.confidence === "live" || value.confidence === "unsupported") &&
+    (value.startedAt === undefined || isTimestamp(value.startedAt)) &&
+    (value.endedAt === undefined || isTimestamp(value.endedAt)) &&
+    (value.durationMs === undefined ||
+      (Number.isFinite(value.durationMs) && value.durationMs >= 0))
+  );
+}
+
+function isTimestamp(value: string): boolean {
+  return value.length <= 64 && !Number.isNaN(Date.parse(value));
 }
 
 export async function createWalWriter({
@@ -141,6 +175,9 @@ export async function createWalWriter({
           eventId: event.eventId,
           timestamp: event.timestamp,
           kind: event.kind,
+          ...(event.timing === undefined
+            ? {}
+            : { timing: { ...event.timing } }),
         };
       } catch {
         return;
@@ -153,6 +190,9 @@ export async function createWalWriter({
         eventId: snapshot.eventId,
         timestamp: snapshot.timestamp,
         kind: snapshot.kind,
+        ...(snapshot.timing === undefined
+          ? {}
+          : { timing: { ...snapshot.timing } }),
         writerId: immutableWriterId,
         writerSequence: sequence + 1,
       });
@@ -204,7 +244,11 @@ export async function createWalWriter({
     sequence += 1;
     pending.push({ event, bytes: recordBytes });
     pendingBytes += recordBytes;
-    if (pending.length === MAX_PENDING_EVENTS && !thresholdFlushQueued) {
+    if (
+      (pending.length >= MAX_PENDING_EVENTS ||
+        pendingBytes >= MAX_PENDING_FLUSH_BYTES) &&
+      !thresholdFlushQueued
+    ) {
       thresholdFlushQueued = true;
       queueMicrotask(() => {
         if (!thresholdFlushQueued) {

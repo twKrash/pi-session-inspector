@@ -9,9 +9,13 @@ export type TrackingStorage = {
 export async function startTracking(
   storage: TrackingStorage,
   sessionId: string,
+  revalidateSession: () => boolean = () => true,
 ): Promise<boolean> {
   try {
     await storage.writePending(sessionId);
+    if (!revalidateSession()) {
+      return false;
+    }
     storage.appendMarker();
     await storage.promote(sessionId);
     return true;
