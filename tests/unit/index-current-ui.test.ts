@@ -45,6 +45,9 @@ test("loads a durable current session report and leaves ephemeral sessions unava
   const model = await loadCurrentSessionReport(file, "active", "entry-1");
   assert.equal(model?.report.sessionId, "fixture-session");
   assert.equal(model?.scope, "active");
+  assert.deepEqual(model?.report.agents, []);
+  assert.equal(model?.report.agentEvidence, "unavailable");
+  assert.deepEqual(model?.report.integrations, []);
 
   await writeFile(file, '{"type":"message"}\n');
   assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
@@ -52,6 +55,29 @@ test("loads a durable current session report and leaves ephemeral sessions unava
   assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
   await writeFile(file, "not JSONL\n");
   assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
+});
+
+test("projects persisted Pi-entry integration evidence in the production loader", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const file = join(directory, "session.jsonl");
+  await writeFile(
+    file,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"custom","id":"context-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"ctx_status","data":{"schemaVersion":1,"active":true}}',
+    ].join("\n"),
+  );
+
+  const model = await loadCurrentSessionReport(file, "tree", null);
+  assert.deepEqual(model?.report.integrations, [
+    {
+      integration: "context",
+      version: 1,
+      state: "supported",
+      counters: { calls: 1 },
+    },
+  ]);
+  assert.equal(model?.report.agentEvidence, "unavailable");
 });
 
 test("uses Pi's active leaf rather than the latest appended branch", async () => {

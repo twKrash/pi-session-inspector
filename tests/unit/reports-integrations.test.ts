@@ -56,3 +56,64 @@ test("defaults to unavailable integration rows when adapter evidence is absent",
   assert.deepEqual(report.agents, []);
   assert.deepEqual(report.integrations, []);
 });
+
+test("drops forged evidence fields and rows without projecting private values", () => {
+  const privateSentinel = "private-evidence-sentinel".repeat(10);
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [
+        {
+          id: "valid-agent",
+          parentId: privateSentinel,
+          status: "succeeded",
+          confidence: "cooperative",
+          usage: { totalTokens: Number.POSITIVE_INFINITY, cost: 1 },
+        },
+        {
+          id: privateSentinel,
+          parentId: "parent-agent",
+          status: "succeeded",
+          confidence: "cooperative",
+          usage: { totalTokens: 1, cost: 1 },
+        },
+      ],
+    },
+    integrations: [
+      {
+        integration: "context",
+        version: 1,
+        state: "supported",
+        counters: {
+          calls: 2,
+          enabled: true,
+          infinite: Number.POSITIVE_INFINITY,
+          negative: -1,
+          [privateSentinel]: 1,
+        },
+      },
+      {
+        integration: privateSentinel as "context",
+        version: 1,
+        state: "supported",
+      },
+    ],
+  });
+
+  assert.deepEqual(report.agents, [
+    {
+      id: "valid-agent",
+      status: "succeeded",
+      confidence: "cooperative",
+    },
+  ]);
+  assert.deepEqual(report.integrations, [
+    {
+      integration: "context",
+      version: 1,
+      state: "supported",
+      counters: { calls: 2, enabled: true },
+    },
+  ]);
+  assert.equal(JSON.stringify(report).includes(privateSentinel), false);
+});

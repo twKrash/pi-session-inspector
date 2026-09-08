@@ -10,6 +10,41 @@ import type {
 
 const MAX_AGENT_ROWS = 256;
 const MAX_INTEGRATION_ROWS = 6;
+const MAX_COUNTERS = 12;
+const MAX_ID_LENGTH = 128;
+const MAX_COUNTER_KEY_LENGTH = 48;
+const MAX_TOTAL_TOKENS = 1_000_000_000;
+const MAX_COST = 1_000_000_000;
+const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const COUNTER_KEY = /^[A-Za-z][A-Za-z0-9_-]*$/;
+const AGENT_STATUSES = new Set<AgentRun["status"]>([
+  "running",
+  "succeeded",
+  "failed",
+  "interrupted",
+  "unknown",
+]);
+const CONFIDENCES = new Set<AgentRun["confidence"]>([
+  "native",
+  "live",
+  "cooperative",
+  "inferred",
+  "unavailable",
+  "unsupported",
+]);
+const EVIDENCE_STATES = new Set<EvidenceState>([
+  "supported",
+  "unavailable",
+  "unsupported",
+]);
+const INTEGRATION_KEYS = new Set<IntegrationObservation["integration"]>([
+  "context",
+  "rtk",
+  "mode",
+  "permission",
+  "subagents",
+  "lens",
+]);
 
 export type ModelSummary = {
   provider: string;
@@ -61,11 +96,12 @@ export function toSessionReport(
     current.cost += generation.usage.cost;
     models.set(key, current);
   }
+  const projectedEvidence = projectEvidence(evidence);
   return {
     ...reduced,
-    agents: projectAgents(evidence.agents?.runs),
-    agentEvidence: evidence.agents?.state ?? "unavailable",
-    integrations: projectIntegrations(evidence.integrations),
+    agents: projectedEvidence.agents,
+    agentEvidence: projectedEvidence.agentEvidence,
+    integrations: projectedEvidence.integrations,
     models: [...models.values()].sort(
       (a, b) =>
         a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
@@ -73,30 +109,226 @@ export function toSessionReport(
   };
 }
 
-function projectAgents(runs: readonly AgentRun[] | undefined): AgentRun[] {
-  return (runs ?? []).slice(0, MAX_AGENT_ROWS).map((run) => ({
-    id: run.id,
-    ...(run.parentId === undefined ? {} : { parentId: run.parentId }),
-    status: run.status,
-    confidence: run.confidence,
-    ...(run.usage === undefined
-      ? {}
-      : {
-          usage: {
-            totalTokens: run.usage.totalTokens,
-            cost: run.usage.cost,
-          },
-        }),
-  }));
+function projectEvidence(evidence: unknown): {
+  agents: AgentRun[];
+  agentEvidence: EvidenceState;
+  integrations: IntegrationObservation[];
+} {
+  try {
+    const input = snapshotRecord(evidence);
+    if (input === undefined) return unavailableEvidence();
+    const agents = projectAgentEvidence(input.agents);
+    return {
+      agents: agents.runs,
+      agentEvidence: agents.state,
+      integrations: projectIntegrations(input.integrations),
+    };
+  } catch {
+    return unavailableEvidence();
+  }
 }
 
-function projectIntegrations(
-  observations: readonly IntegrationObservation[] | undefined,
-): IntegrationObservation[] {
-  return (observations ?? []).slice(0, MAX_INTEGRATION_ROWS).map((row) => ({
+function projectAgentEvidence(value: unknown): {
+  state: EvidenceState;
+  runs: AgentRun[];
+} {
+  const input = snapshotRecord(value);
+  if (input === undefined || !isEvidenceState(input.state)) {
+    return { state: "unavailable", runs: [] };
+  }
+  return {
+    state: input.state,
+    runs: input.state === "supported" ? projectAgents(input.runs) : [],
+  };
+}
+
+function projectAgents(runs: unknown): AgentRun[] {
+  if (!Array.isArray(runs)) return [];
+  const agents: AgentRun[] = [];
+  for (const run of runs.slice(0, MAX_AGENT_ROWS)) {
+    const projected = projectAgent(run);
+    if (projected !== undefined) agents.push(projected);
+  }
+  return agents;
+}
+
+function projectAgent(value: unknown): AgentRun | undefined {
+  const run = snapshotRecord(value);
+  if (
+    run === undefined ||
+    !isId(run.id) ||
+    !isAgentStatus(run.status) ||
+    !isConfidence(run.confidence)
+  ) {
+    return undefined;
+  }
+  const parentId = isId(run.parentId) ? run.parentId : undefined;
+  const usage = projectUsage(run.usage);
+  return {
+    id: run.id,
+    ...(parentId === undefined ? {} : { parentId }),
+    status: run.status,
+    confidence: run.confidence,
+    ...(usage === undefined ? {} : { usage }),
+  };
+}
+
+function projectUsage(value: unknown): Usage | undefined {
+  const usage = snapshotRecord(value);
+  if (
+    usage === undefined ||
+    !isTotalTokens(usage.totalTokens) ||
+    !isCost(usage.cost)
+  ) {
+    return undefined;
+  }
+  return { totalTokens: usage.totalTokens, cost: usage.cost };
+}
+
+function projectIntegrations(value: unknown): IntegrationObservation[] {
+  if (!Array.isArray(value)) return [];
+  const integrations: IntegrationObservation[] = [];
+  for (const row of value.slice(0, MAX_INTEGRATION_ROWS)) {
+    const projected = projectIntegration(row);
+    if (projected !== undefined) integrations.push(projected);
+  }
+  return integrations;
+}
+
+function projectIntegration(
+  value: unknown,
+): IntegrationObservation | undefined {
+  const row = snapshotRecord(value);
+  if (
+    row === undefined ||
+    !isIntegrationKey(row.integration) ||
+    !isVersion(row.version) ||
+    !isEvidenceState(row.state)
+  ) {
+    return undefined;
+  }
+  const counters = projectCounters(row.counters);
+  return {
     integration: row.integration,
     version: row.version,
     state: row.state,
-    ...(row.counters === undefined ? {} : { counters: { ...row.counters } }),
-  }));
+    ...(counters === undefined ? {} : { counters }),
+  };
+}
+
+function projectCounters(
+  value: unknown,
+): Readonly<Record<string, number | boolean>> | undefined {
+  const counters = snapshotRecord(value);
+  if (counters === undefined) return undefined;
+  const entries = Object.entries(counters);
+  if (entries.length > MAX_COUNTERS) return undefined;
+
+  const projected: Record<string, number | boolean> = {};
+  for (const [key, counter] of entries) {
+    if (isCounterKey(key) && isCounterValue(counter)) {
+      projected[key] = counter;
+    }
+  }
+  return Object.keys(projected).length === 0 ? undefined : projected;
+}
+
+function snapshotRecord(
+  value: unknown,
+): Readonly<Record<string, unknown>> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const snapshot: Record<string, unknown> = Object.create(null);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string") return undefined;
+    const descriptor = descriptors[key];
+    if (descriptor?.enumerable !== true || !("value" in descriptor)) {
+      return undefined;
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return Object.freeze(snapshot);
+}
+
+function isId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_ID_LENGTH &&
+    TOKEN.test(value)
+  );
+}
+
+function isCounterKey(value: string): boolean {
+  return value.length <= MAX_COUNTER_KEY_LENGTH && COUNTER_KEY.test(value);
+}
+
+function isCounterValue(value: unknown): value is number | boolean {
+  return (
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+  );
+}
+
+function isTotalTokens(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_TOTAL_TOKENS
+  );
+}
+
+function isCost(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= MAX_COST
+  );
+}
+
+function isVersion(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function isAgentStatus(value: unknown): value is AgentRun["status"] {
+  return (
+    typeof value === "string" && AGENT_STATUSES.has(value as AgentRun["status"])
+  );
+}
+
+function isConfidence(value: unknown): value is AgentRun["confidence"] {
+  return (
+    typeof value === "string" &&
+    CONFIDENCES.has(value as AgentRun["confidence"])
+  );
+}
+
+function isEvidenceState(value: unknown): value is EvidenceState {
+  return (
+    typeof value === "string" && EVIDENCE_STATES.has(value as EvidenceState)
+  );
+}
+
+function isIntegrationKey(
+  value: unknown,
+): value is IntegrationObservation["integration"] {
+  return (
+    typeof value === "string" &&
+    INTEGRATION_KEYS.has(value as IntegrationObservation["integration"])
+  );
+}
+
+function unavailableEvidence(): {
+  agents: AgentRun[];
+  agentEvidence: EvidenceState;
+  integrations: IntegrationObservation[];
+} {
+  return { agents: [], agentEvidence: "unavailable", integrations: [] };
 }

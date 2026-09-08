@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import type { Scope } from "../core/events.ts";
 import { reduceEntries } from "../core/reduce.ts";
 import { toSessionReport } from "../core/reports.ts";
+import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { selectScope } from "../pi/sessions.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
@@ -25,7 +26,10 @@ export async function loadCurrentSessionReport(
     }
     const entries = selectScope(session.entries, leafId, scope);
     return createCurrentTuiModel(
-      toSessionReport(reduceEntries(session.id, entries)),
+      toSessionReport(reduceEntries(session.id, entries), {
+        agents: { state: "unavailable", runs: [] },
+        integrations: readPiEntryEvidence(entries),
+      }),
       scope,
     );
   } catch {
