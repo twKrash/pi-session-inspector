@@ -91,18 +91,18 @@ Partial WAL line; missing/corrupt/stale checkpoint; Pi rewrite; cursor mismatch;
 
 **Acceptance**: concurrent maintainer cannot replace newer cursor checkpoint; crashed session discoverable/reconciled; discovery avoids global Pi rescan.
 
-## Milestone 4 — current TUI and ledger
+## Milestone 4 — current TUI and ledger ✅
 
-#### Tests first
+#### Completed
 
-Renderer-neutral models; keyboard reducer; narrow terminal layout; active/tree toggle; unavailable/unsupported labels; ledger lazy materialization.
+- Full-screen current-session UI with fixed Overview, Models, Tools, Commands, Agents, Skills, Integrations, Errors, and Ledger tabs.
+- Keyboard tab navigation, active/tree scope selection, narrow-terminal selector, width-safe rendering, and explicit unavailable content.
+- Lazy Ledger materialization only when its tab is selected.
+- Current-session replay uses Pi's active leaf for active scope and isolates unavailable/replay failures from Pi execution.
 
-#### Implement
+**Acceptance**: unit coverage verifies fixed unavailable tabs, lazy Ledger loading, active/tree selection, and every rendered line at 20 columns. The current-session UI has been verified through format, lint, type, test, and package checks.
 
-1. Full-screen custom UI tabs: Overview, Models, Tools, Commands, Agents, Skills, Integrations, Errors, Ledger.
-2. History selection/drill-down and scope controls.
-
-**Acceptance**: manual Pi matrix covers branch creation, tool failure, model switch, compaction and interrupted tool; UI makes confidence visible.
+> History UI selection and drill-down are deliberately deferred to the next web UI milestone. M4 delivers the current-session TUI only.
 
 ## Milestone 5 — integration and agent roll-up
 

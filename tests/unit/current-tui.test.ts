@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 import type { SessionReport } from "../../src/core/reports.ts";
 import { createCurrentTuiComponent } from "../../src/ui/current-tui.ts";
-import { createCurrentTuiModel } from "../../src/ui/current.ts";
+import { CURRENT_TABS, createCurrentTuiModel } from "../../src/ui/current.ts";
 
 const report: SessionReport = {
   sessionId: "session-1",
@@ -119,7 +119,60 @@ test("reloads the report when the scope changes", async () => {
   );
 });
 
-test("keeps every rendered line within the terminal width", () => {
+test("keeps fixed tabs visible when their content is unavailable", () => {
+  const component = createCurrentTuiComponent({
+    model: createCurrentTuiModel(report, "active"),
+    load: async (scope) => createCurrentTuiModel(report, scope),
+    theme,
+    requestRender: () => {},
+    done: () => {},
+  });
+  const unavailableTabs = new Set([
+    "commands",
+    "agents",
+    "skills",
+    "integrations",
+    "errors",
+  ]);
+
+  for (const [index, tab] of CURRENT_TABS.entries()) {
+    const lines = component.render(20);
+    assert.ok(
+      lines.some((line) => line.includes(tab[0].toUpperCase() + tab.slice(1))),
+    );
+    if (unavailableTabs.has(tab)) assert.ok(lines.includes("Unavailable"));
+    if (index < CURRENT_TABS.length - 1) component.handleInput("\u001B[C");
+  }
+});
+
+test("defers ledger materialization until the Ledger tab is selected", () => {
+  let generationReads = 0;
+  const lazyReport = {
+    ...report,
+    get generations() {
+      generationReads++;
+      return [];
+    },
+  } as SessionReport;
+  const component = createCurrentTuiComponent({
+    model: createCurrentTuiModel(lazyReport, "active"),
+    load: async (scope) => createCurrentTuiModel(lazyReport, scope),
+    theme,
+    requestRender: () => {},
+    done: () => {},
+  });
+
+  component.render(20);
+  assert.equal(generationReads, 0);
+
+  for (let index = 1; index < CURRENT_TABS.length; index++) {
+    component.handleInput("\u001B[C");
+  }
+  component.render(20);
+  assert.equal(generationReads, 1);
+});
+
+test("keeps every rendered line within 20 columns on every tab", () => {
   const component = createCurrentTuiComponent({
     model: createCurrentTuiModel(report, "active"),
     load: async (scope) => createCurrentTuiModel(report, scope),
@@ -128,5 +181,8 @@ test("keeps every rendered line within the terminal width", () => {
     done: () => {},
   });
 
-  assert.ok(component.render(20).every((line) => visibleWidth(line) <= 20));
+  for (let index = 0; index < CURRENT_TABS.length; index++) {
+    assert.ok(component.render(20).every((line) => visibleWidth(line) <= 20));
+    component.handleInput("\u001B[C");
+  }
 });

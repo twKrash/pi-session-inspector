@@ -4,6 +4,14 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+### Added
+
+- Current-session full-screen TUI with fixed analytics tabs, active/tree scope selection, narrow-terminal layout, and lazy Ledger materialization.
+
+### Changed
+
+- Deferred history UI selection and drill-down to the next web UI milestone; the current TUI intentionally covers only the active session.
+
 ## [0.1.0]
 
 ### Added
