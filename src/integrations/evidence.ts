@@ -77,19 +77,16 @@ export function createEvidenceRegistry(
         }
 
         const output = adapter.read(value);
-        const counters = output?.counters;
-        if (
-          output === undefined ||
-          (counters !== undefined && !isBoundedValue(counters))
-        ) {
-          return { state: "unsupported", diagnostic: "adapter-rejected" };
-        }
+        if (!isAdapterOutput(output)) return adapterRejected();
+
         const observation: IntegrationObservation = {
           integration,
           version: input.version,
           state: "supported",
         };
-        if (counters !== undefined) observation.counters = counters;
+        if (output.counters !== undefined) {
+          observation.counters = snapshotCounters(output.counters);
+        }
         return observation;
       } catch {
         return { state: "unsupported", diagnostic: "adapter-rejected" };
@@ -145,13 +142,31 @@ function isBoundedValue(value: unknown): value is BoundedEvidenceValue {
   );
 }
 
+function isAdapterOutput(
+  value: unknown,
+): value is { counters?: BoundedEvidenceValue } {
+  if (!isPlainRecord(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length <= 1 &&
+    keys.every((key) => key === "counters") &&
+    (value.counters === undefined || isBoundedValue(value.counters))
+  );
+}
+
+function snapshotCounters(value: BoundedEvidenceValue): BoundedEvidenceValue {
+  return Object.freeze({ ...value });
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object") return false;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return false;
-  return Object.values(Object.getOwnPropertyDescriptors(value)).every(
-    (descriptor) => descriptor.enumerable === false || "value" in descriptor,
-  );
+  return Reflect.ownKeys(value).every((key) => {
+    if (typeof key !== "string") return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor?.enumerable === true && "value" in descriptor;
+  });
 }
 
 function isVersion(value: unknown): value is number {
@@ -164,6 +179,10 @@ function adapterKey(integration: IntegrationKey, version: number): string {
 
 function invalidEvidence(): EvidenceResult {
   return { state: "unsupported", diagnostic: "invalid-evidence" };
+}
+
+function adapterRejected(): EvidenceResult {
+  return { state: "unsupported", diagnostic: "adapter-rejected" };
 }
 
 export type { EvidenceState, IntegrationKey, IntegrationObservation };

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createEvidenceRegistry,
+  type EvidenceAdapter,
   type EvidenceRegistry,
 } from "../../src/integrations/evidence.ts";
+import type { AgentRun } from "../../src/core/events.ts";
 
 function registry(): EvidenceRegistry {
   return createEvidenceRegistry([
@@ -37,18 +39,98 @@ test("reads only registered versions and bounded counters", () => {
   );
 });
 
-test("rejects hostile local evidence without reading an accessor", () => {
-  const value = Object.create(null, {
+test("rejects hidden, symbol, and accessor local evidence without reading it", () => {
+  const hidden = Object.create(null, {
+    calls: { enumerable: true, value: 1 },
+    raw: { enumerable: false, value: "secret" },
+  });
+  const symbol = Symbol("secret");
+  const symbolic = { calls: 1, [symbol]: "secret" };
+  const accessor = Object.create(null, {
     raw: { enumerable: true, get: () => "secret" },
   });
 
-  assert.deepEqual(
-    registry().read({ integration: "context", version: 1, value }),
+  for (const value of [hidden, symbolic, accessor]) {
+    assert.deepEqual(
+      registry().read({ integration: "context", version: 1, value }),
+      {
+        state: "unsupported",
+        diagnostic: "invalid-evidence",
+      },
+    );
+  }
+});
+
+test("snapshots validated adapter counters", () => {
+  const counters = { calls: 2 };
+  const evidence = createEvidenceRegistry([
     {
-      state: "unsupported",
-      diagnostic: "invalid-evidence",
+      integration: "context",
+      version: 1,
+      read: () => ({ counters }),
     },
-  );
+  ]);
+
+  const result = evidence.read({
+    integration: "context",
+    version: 1,
+    value: {},
+  });
+  counters.calls = 99;
+
+  assert.deepEqual(result, {
+    integration: "context",
+    version: 1,
+    state: "supported",
+    counters: { calls: 2 },
+  });
+});
+
+test("rejects malformed adapter output with a fixed diagnostic", () => {
+  const hiddenOutput = Object.create(null, {
+    counters: { enumerable: true, value: { calls: 1 } },
+    raw: { enumerable: false, value: "secret" },
+  });
+  const symbolOutput = { [Symbol("secret")]: true };
+  const accessorOutput = Object.create(null, {
+    counters: { enumerable: true, get: () => ({ calls: 1 }) },
+  });
+
+  for (const output of [
+    null,
+    false,
+    0,
+    [],
+    new Date(),
+    hiddenOutput,
+    symbolOutput,
+    accessorOutput,
+  ]) {
+    const adapter: EvidenceAdapter = {
+      integration: "context",
+      version: 1,
+      read: () => output as never,
+    };
+
+    assert.deepEqual(
+      createEvidenceRegistry([adapter]).read({
+        integration: "context",
+        version: 1,
+        value: {},
+      }),
+      { state: "unsupported", diagnostic: "adapter-rejected" },
+    );
+  }
+});
+
+test("uses canonical cooperative confidence for agent runs", () => {
+  const agentRun = {
+    id: "child-1",
+    status: "succeeded",
+    confidence: "cooperative",
+  } satisfies AgentRun;
+
+  assert.equal(agentRun.confidence, "cooperative");
 });
 
 test("keeps only finite numeric counters and fixed diagnostic codes", () => {

@@ -2,6 +2,14 @@ export type Scope = "active" | "tree";
 
 export type EvidenceState = "supported" | "unavailable" | "unsupported";
 
+export type Confidence =
+  | "native"
+  | "live"
+  | "cooperative"
+  | "inferred"
+  | "unavailable"
+  | "unsupported";
+
 export type IntegrationKey =
   | "context"
   | "rtk"
@@ -21,7 +29,7 @@ export type AgentRun = {
   id: string;
   parentId?: string;
   status: "running" | "succeeded" | "failed" | "interrupted" | "unknown";
-  confidence: EvidenceState;
+  confidence: Confidence;
   usage?: Usage;
 };
 
