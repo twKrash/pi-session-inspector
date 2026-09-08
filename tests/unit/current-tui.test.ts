@@ -13,6 +13,9 @@ const report: SessionReport = {
   tools: [],
   compactions: [],
   generations: [],
+  agents: [],
+  agentEvidence: "unavailable",
+  integrations: [],
 };
 
 const theme = { fg: (_color: string, text: string) => text };
@@ -161,6 +164,54 @@ test("applies only the latest scope reload completion", async () => {
   const lines = component.render(120);
   assert.ok(lines.some((line) => line.includes("Scope: Active")));
   assert.ok(lines.some((line) => line.includes("Total tokens: 42")));
+});
+
+test("renders bounded agent and integration evidence", () => {
+  const component = createCurrentTuiComponent({
+    model: createCurrentTuiModel(
+      {
+        ...report,
+        agents: [
+          {
+            id: "child-run",
+            parentId: "parent-run",
+            status: "succeeded",
+            confidence: "cooperative",
+            usage: { totalTokens: 20, cost: 3 },
+          },
+        ],
+        integrations: [
+          {
+            integration: "context",
+            version: 1,
+            state: "supported",
+            counters: { calls: 1 },
+          },
+        ],
+      },
+      "active",
+    ),
+    load: async () => undefined,
+    theme,
+    requestRender: () => {},
+    done: () => {},
+  });
+
+  for (let index = 0; index < 4; index++) component.handleInput("\u001B[C");
+  const renderedAgents = component.render(120).join("\n");
+  assert.ok(renderedAgents.includes("parent-run"));
+  assert.ok(renderedAgents.includes("child-run"));
+  assert.ok(renderedAgents.includes("Cost: 3"));
+
+  component.handleInput("\u001B[C");
+  component.handleInput("\u001B[C");
+  const renderedIntegrations = component.render(120).join("\n");
+  assert.ok(renderedIntegrations.includes("context"));
+  assert.ok(renderedIntegrations.includes("calls: 1"));
+  assert.equal(
+    renderedIntegrations.includes("raw-tool-result-sentinel"),
+    false,
+  );
 });
 
 test("keeps fixed tabs visible when their content is unavailable", () => {

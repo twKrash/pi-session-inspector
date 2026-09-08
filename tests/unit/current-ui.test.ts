@@ -16,6 +16,9 @@ const report: SessionReport = {
   tools: [],
   compactions: [],
   generations: [],
+  agents: [],
+  agentEvidence: "unavailable",
+  integrations: [],
 };
 
 const initial: CurrentTuiState = { tab: "overview", scope: "active" };

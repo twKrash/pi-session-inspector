@@ -111,12 +111,56 @@ export function createCurrentTuiComponent({
         return [`Models: ${currentModel.report.models.length}`];
       case "tools":
         return [`Tools: ${currentModel.report.tools.length}`];
+      case "agents":
+        return renderAgents();
+      case "integrations":
+        return renderIntegrations();
       case "ledger":
         ledger ??= buildLedger(currentModel.report);
         return [`Ledger events: ${ledger.length}`];
       default:
         return ["Unavailable"];
     }
+  }
+
+  function renderAgents(): string[] {
+    if (currentModel.report.agents.length === 0) {
+      return [evidenceLabel(currentModel.report.agentEvidence)];
+    }
+    return currentModel.report.agents.flatMap((agent) => [
+      `Agent: ${agent.id}`,
+      `Parent: ${agent.parentId ?? "Unavailable"}`,
+      `Status: ${agent.status}`,
+      `Evidence: ${agent.confidence}`,
+      ...(agent.usage === undefined
+        ? []
+        : [`Tokens: ${agent.usage.totalTokens}`, `Cost: ${agent.usage.cost}`]),
+    ]);
+  }
+
+  function renderIntegrations(): string[] {
+    if (currentModel.report.integrations.length === 0) return ["Unavailable"];
+    return currentModel.report.integrations.flatMap((integration) => [
+      `Integration: ${integration.integration}`,
+      `Status: ${evidenceLabel(integration.state)}`,
+      `Version: ${integration.version}`,
+      ...Object.entries(integration.counters ?? {}).map(
+        ([name, value]) => `${name}: ${value}`,
+      ),
+    ]);
+  }
+}
+
+function evidenceLabel(
+  state: "supported" | "unavailable" | "unsupported",
+): string {
+  switch (state) {
+    case "supported":
+      return "Supported";
+    case "unsupported":
+      return "Unsupported";
+    case "unavailable":
+      return "Unavailable";
   }
 }
 
