@@ -25,7 +25,7 @@ type SessionWalSetup = (input: {
   api: unknown;
 }) => Promise<void>;
 
-const description = "Open Pi Session Inspector (placeholder)";
+const description = "Open current Pi Session Inspector";
 
 /** Wires Pi session-start observation to the Inspector tracking root. */
 export function registerTracking(
@@ -105,8 +105,21 @@ function setupProductionSessionWal(input: {
 function notifyCurrentUnavailable(ctx: {
   ui: { notify(message: string, level: "info"): void };
 }): void {
+  notifyInfo(ctx, "Current session Inspector data is unavailable.");
+}
+
+function notifyUnsupportedCurrentArgument(ctx: {
+  ui: { notify(message: string, level: "info"): void };
+}): void {
+  notifyInfo(ctx, "Only the current session Inspector view is available.");
+}
+
+function notifyInfo(
+  ctx: { ui: { notify(message: string, level: "info"): void } },
+  message: string,
+): void {
   try {
-    ctx.ui.notify("Current session Inspector data is unavailable.", "info");
+    ctx.ui.notify(message, "info");
   } catch {
     // Command-side UI failures must not affect Pi.
   }
@@ -124,15 +137,22 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
       description,
       handler: async (_args, ctx) => {
         try {
+          const args = _args.trim();
+          if (args !== "" && args !== "current") {
+            notifyUnsupportedCurrentArgument(ctx);
+            return;
+          }
           if (ctx.mode !== "tui") {
             notifyCurrentUnavailable(ctx);
             return;
           }
 
+          const sessionFile = ctx.sessionManager.getSessionFile();
+          const leafId = ctx.sessionManager.getLeafId();
           const model = await loadCurrentSessionReport(
-            ctx.sessionManager.getSessionFile(),
+            sessionFile,
             "active",
-            ctx.sessionManager.getLeafId(),
+            leafId,
           );
           if (!model) {
             notifyCurrentUnavailable(ctx);
@@ -142,6 +162,8 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           await ctx.ui.custom((tui, theme, _keybindings, done) =>
             createCurrentTuiComponent({
               model,
+              load: (scope) =>
+                loadCurrentSessionReport(sessionFile, scope, leafId),
               theme,
               requestRender: () => tui.requestRender(),
               done: () => done(undefined),

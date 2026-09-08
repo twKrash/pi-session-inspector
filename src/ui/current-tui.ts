@@ -34,21 +34,36 @@ const TAB_LABELS: Record<CurrentTab, string> = {
 
 export function createCurrentTuiComponent({
   model,
+  load,
   theme,
   requestRender,
   done,
 }: {
   model: CurrentTuiModel;
+  load(scope: CurrentTuiModel["scope"]): Promise<CurrentTuiModel | undefined>;
   theme: Pick<Theme, "fg">;
   requestRender: () => void;
   done: () => void;
 }): CurrentTuiComponent {
+  let currentModel = model;
   let state: CurrentTuiState = { tab: "overview", scope: model.scope };
   let ledger: ReturnType<typeof buildLedger> | undefined;
 
   function update(action: Parameters<typeof reduceCurrentTui>[1]): void {
     state = reduceCurrentTui(state, action);
     requestRender();
+  }
+
+  async function reloadScope(scope: CurrentTuiModel["scope"]): Promise<void> {
+    try {
+      const nextModel = await load(scope);
+      if (!nextModel) return;
+      currentModel = nextModel;
+      ledger = undefined;
+      update({ type: "set-scope", scope });
+    } catch {
+      // TUI loading failures leave the current report visible.
+    }
   }
 
   return {
@@ -63,9 +78,9 @@ export function createCurrentTuiComponent({
       } else if (matchesKey(data, Key.right)) {
         update({ type: "next-tab" });
       } else if (matchesKey(data, "a")) {
-        update({ type: "set-scope", scope: "active" });
+        void reloadScope("active");
       } else if (matchesKey(data, "t")) {
-        update({ type: "set-scope", scope: "tree" });
+        void reloadScope("tree");
       }
     },
     render(width): string[] {
@@ -87,15 +102,15 @@ export function createCurrentTuiComponent({
     switch (tab) {
       case "overview":
         return [
-          `Total tokens: ${model.report.usage.totalTokens}`,
-          `Cost: ${model.report.usage.cost}`,
+          `Total tokens: ${currentModel.report.usage.totalTokens}`,
+          `Cost: ${currentModel.report.usage.cost}`,
         ];
       case "models":
-        return [`Models: ${model.report.models.length}`];
+        return [`Models: ${currentModel.report.models.length}`];
       case "tools":
-        return [`Tools: ${model.report.tools.length}`];
+        return [`Tools: ${currentModel.report.tools.length}`];
       case "ledger":
-        ledger ??= buildLedger(model.report);
+        ledger ??= buildLedger(currentModel.report);
         return [`Ledger events: ${ledger.length}`];
       default:
         return ["Unavailable"];

@@ -17,11 +17,12 @@ const report: SessionReport = {
 
 const theme = { fg: (_color: string, text: string) => text };
 
-test("renders fixed tabs, changes scope, and closes", () => {
+test("renders fixed tabs, changes scope, and closes", async () => {
   let closed = false;
   let renders = 0;
   const component = createCurrentTuiComponent({
     model: createCurrentTuiModel(report, "active"),
+    load: async (scope) => createCurrentTuiModel(report, scope),
     theme,
     requestRender: () => {
       renders++;
@@ -35,6 +36,7 @@ test("renders fixed tabs, changes scope, and closes", () => {
   assert.ok(component.render(40).some((line) => line.includes("Models")));
 
   component.handleInput?.("t");
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.ok(component.render(120).some((line) => line.includes("Scope: Tree")));
   assert.equal(renders, 1);
 
@@ -46,6 +48,7 @@ test("handles arrow navigation and Escape", () => {
   let closed = false;
   const component = createCurrentTuiComponent({
     model: createCurrentTuiModel(report, "active"),
+    load: async (scope) => createCurrentTuiModel(report, scope),
     theme,
     requestRender: () => {},
     done: () => {
@@ -66,6 +69,7 @@ test("handles arrow navigation and Escape", () => {
 test("uses the vertical selector until the complete horizontal tab row fits", () => {
   const component = createCurrentTuiComponent({
     model: createCurrentTuiModel(report, "active"),
+    load: async (scope) => createCurrentTuiModel(report, scope),
     theme,
     requestRender: () => {},
     done: () => {},
@@ -90,9 +94,35 @@ test("uses the vertical selector until the complete horizontal tab row fits", ()
   assert.equal(visibleWidth(horizontalTabs), 87);
 });
 
+test("reloads the report when the scope changes", async () => {
+  const scopes: string[] = [];
+  const component = createCurrentTuiComponent({
+    model: createCurrentTuiModel(report, "active"),
+    load: async (scope: "active" | "tree") => {
+      scopes.push(scope);
+      return createCurrentTuiModel(
+        { ...report, usage: { totalTokens: 72, cost: 0.086 } },
+        scope,
+      );
+    },
+    theme,
+    requestRender: () => {},
+    done: () => {},
+  });
+
+  component.handleInput("t");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(scopes, ["tree"]);
+  assert.ok(
+    component.render(120).some((line) => line.includes("Total tokens: 72")),
+  );
+});
+
 test("keeps every rendered line within the terminal width", () => {
   const component = createCurrentTuiComponent({
     model: createCurrentTuiModel(report, "active"),
+    load: async (scope) => createCurrentTuiModel(report, scope),
     theme,
     requestRender: () => {},
     done: () => {},

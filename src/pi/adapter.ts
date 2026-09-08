@@ -2,6 +2,7 @@ import type { SessionEntry } from "../core/events.ts";
 
 export type ParsedSession = {
   id: string;
+  hasSessionHeader: boolean;
   entries: SessionEntry[];
   unknownEntryCount: number;
 };
@@ -20,6 +21,7 @@ const knownTypes = new Set([
 
 export function parseSessionJsonl(source: string): ParsedSession {
   let id = "unknown-session";
+  let hasSessionHeader = false;
   let unknownEntryCount = 0;
   const entries: SessionEntry[] = [];
 
@@ -36,8 +38,13 @@ export function parseSessionJsonl(source: string): ParsedSession {
       unknownEntryCount++;
       continue;
     }
-    if (value.type === "session" && typeof value.id === "string") {
+    if (
+      value.type === "session" &&
+      typeof value.id === "string" &&
+      value.id.length > 0
+    ) {
       id = value.id;
+      hasSessionHeader = true;
       continue;
     }
     if (!isEntry(value) || !knownTypes.has(value.type)) {
@@ -47,7 +54,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
     entries.push(value);
   }
 
-  return { id, entries, unknownEntryCount };
+  return { id, hasSessionHeader, entries, unknownEntryCount };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
