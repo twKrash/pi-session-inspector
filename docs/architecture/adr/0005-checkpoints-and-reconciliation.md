@@ -8,7 +8,7 @@ WAL replay must survive crashes, corrupt tails, Pi rewrites, and concurrent Insp
 
 ## Decision
 
-Checkpoint, reconciliation, and retention acquire a short per-session maintenance lease. Holder rereads source/WAL cursors, writes a temp checkpoint in the same directory, validates it, atomically renames it, then releases in `finally`. Invalid checkpoints replay durable input. Unmatched starts remain running while session/writer is active and become interrupted only at terminal reconciliation.
+Checkpoint, reconciliation, and retention acquire a short per-session maintenance lease. Holder rereads source/WAL cursors, writes a temp checkpoint in the same directory, validates it, atomically renames it, then releases in `finally`. The Pi cursor contains its complete-line count plus a lowercase 64-character SHA-256 revision of complete JSONL lines; this bounded fingerprint is the only Pi-content derivative persisted and makes same-count rewrites stale. Checkpoint aggregates are non-negative and bounded by `Number.MAX_SAFE_INTEGER`; token and event totals are safe integers, while cost remains finite. Invalid checkpoints replay durable input. Unmatched starts remain running while session/writer is active and become interrupted only at terminal reconciliation.
 
 ## Alternatives considered
 

@@ -18,6 +18,7 @@ type SessionStartApi = {
 type SessionTracker = (input: {
   root: string;
   sessionId: string;
+  sessionFile: string;
   appendEntry(type: string, data: unknown): void;
   revalidateSession(): boolean;
 }) => Promise<boolean>;
@@ -49,6 +50,7 @@ export function registerSessionStartTracking(
         void track({
           root,
           sessionId,
+          sessionFile,
           appendEntry: api.appendEntry,
           revalidateSession: () => {
             try {

@@ -4,9 +4,16 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.1.0]
+
 ### Added
 
-- Approved v1 product, research, architecture, and implementation baseline.
+- M3 checkpoint, recovery, maintenance lease, and manifest-only history support.
+- Per-writer WAL lifecycle timing with clock-rollback-safe recovery.
+
+### Changed
+
+- Released the approved v1 product, research, architecture, and implementation baseline.
 
 ## Versioning policy
 

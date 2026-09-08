@@ -11,13 +11,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { recoverSession } from "../../src/storage/recovery.ts";
+
 type CreateWriter = (options: {
   root: string;
   writerId?: string;
   now: () => Date;
   write?: (path: string, data: string) => Promise<void>;
 }) => Promise<{
-  append(event: { eventId: string; timestamp: string; kind: string }): void;
+  append(event: {
+    eventId: string;
+    timestamp: string;
+    kind: string;
+    timing?: {
+      category: "agent" | "turn" | "tool" | "provider" | "model";
+      status: "running" | "unknown" | "unsupported";
+      confidence: "live" | "unsupported";
+      startedAt?: string;
+      endedAt?: string;
+      durationMs?: number;
+    };
+  }): void;
   appendTelemetry(envelope: unknown): void;
   flush(): Promise<void>;
 }>;
@@ -46,6 +60,36 @@ test("generates an immutable UUID writer shard when no ID is supplied", async ()
     assert.match(
       (await readdir(join(root, "wal")))[0] ?? "",
       /^[0-9a-f]{8}-[0-9a-f]{4}-[4][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepts __proto__ as a path-safe WAL writer ID", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "__proto__",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+    });
+    writer.append({
+      eventId: "event-1",
+      timestamp: "2026-09-07T12:00:00.000Z",
+      kind: "tool-end",
+    });
+    await writer.flush();
+
+    assert.match(
+      await readFile(
+        join(root, "wal", "__proto__", "2026-09-07.jsonl"),
+        "utf8",
+      ),
+      /"writerId":"__proto__"/,
     );
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -393,6 +437,61 @@ test("disables and sheds pending records after the 1 MiB queue cap", async () =>
     await writer.flush();
 
     await assert.rejects(readFile(segment, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("keeps writer segments monotonic through clock rollback for lexical recovery", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  const directory = root;
+  let current = new Date("2026-09-08T12:00:00.000Z");
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => current,
+    });
+    writer.append({
+      eventId: "event-1",
+      timestamp: "2026-09-08T12:00:00.000Z",
+      kind: "live_timing",
+      timing: {
+        category: "tool",
+        status: "running",
+        confidence: "live",
+        startedAt: "2026-09-08T12:00:00.000Z",
+      },
+    });
+    await writer.flush();
+
+    current = new Date("2026-09-07T12:00:00.000Z");
+    writer.append({
+      eventId: "event-2",
+      timestamp: "2026-09-07T12:00:00.000Z",
+      kind: "live_timing",
+      timing: {
+        category: "tool",
+        status: "running",
+        confidence: "live",
+        startedAt: "2026-09-07T12:00:00.000Z",
+      },
+    });
+    await writer.flush();
+
+    assert.deepEqual(await readdir(join(root, "wal", "writer-1")), [
+      ".owner",
+      "2026-09-08.jsonl",
+    ]);
+    const recovered = await recoverSession({
+      directory,
+      piCursor: { lineCount: 0, revision: "0".repeat(64) },
+    });
+    assert.equal(recovered.availability, "available");
+    assert.deepEqual(recovered.cursors.wal, { "writer-1": 2 });
   } finally {
     await rm(root, { force: true, recursive: true });
   }

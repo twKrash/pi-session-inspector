@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { validateTelemetry } from "../pi/telemetry.js";
 
-const ASCII_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const ASCII_TOKEN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 const MAX_TOKEN_LENGTH = 128;
 const MAX_PENDING_BYTES = 1024 * 1024;
 const MAX_PENDING_EVENTS = 64;
@@ -118,6 +118,7 @@ export async function createWalWriter({
   let flushing: Promise<void> | undefined;
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let thresholdFlushQueued = false;
+  let latestSegment: string | undefined;
 
   const clearScheduledFlushes = (): void => {
     if (flushTimer !== undefined) {
@@ -138,8 +139,15 @@ export async function createWalWriter({
         const batch = pending.splice(0, MAX_PENDING_EVENTS);
         const events = batch.map(({ event }) => event);
         pendingBytes -= batch.reduce((total, { bytes }) => total + bytes, 0);
-        const date = now().toISOString().slice(0, 10);
-        const destination = join(shardDirectory, `${date}.jsonl`);
+        const datedSegment = now().toISOString().slice(0, 10);
+        // Preserve lexical segment order for this writer if its clock moves
+        // backward; recovery validates writer sequences in segment name order.
+        const segment =
+          latestSegment === undefined || datedSegment > latestSegment
+            ? datedSegment
+            : latestSegment;
+        latestSegment = segment;
+        const destination = join(shardDirectory, `${segment}.jsonl`);
 
         try {
           await write(

@@ -10,6 +10,7 @@ import { registerSessionStartTracking } from "./pi/session-start.ts";
 import { setupSessionWal } from "./pi/session-wal.ts";
 import { trackPiSession } from "./pi/tracking-pi.ts";
 import { createWalWriter } from "./storage/wal.ts";
+import { scheduleMaintenance } from "./storage/maintenance.ts";
 
 type SessionStartTrackingApi = Parameters<
   typeof registerSessionStartTracking
@@ -18,6 +19,7 @@ type SessionTracker = Parameters<typeof registerSessionStartTracking>[2];
 type SessionWalSetup = (input: {
   root: string;
   sessionId: string;
+  sessionFile: string;
   api: unknown;
 }) => Promise<void>;
 
@@ -30,10 +32,16 @@ export function registerTracking(
     agentDir,
     track,
     setupSessionWal: setup,
+    schedule = scheduleProductionMaintenance,
   }: {
     agentDir: string;
     track: SessionTracker;
     setupSessionWal: SessionWalSetup;
+    schedule?(input: {
+      root: string;
+      sessionId: string;
+      sessionFile: string;
+    }): void;
   },
 ): void {
   registerSessionStartTracking(
@@ -42,16 +50,43 @@ export function registerTracking(
     async (input) => {
       const tracked = await track(input);
       if (tracked) {
-        await setup({ root: input.root, sessionId: input.sessionId, api });
+        try {
+          schedule({
+            root: input.root,
+            sessionId: input.sessionId,
+            sessionFile: input.sessionFile,
+          });
+        } catch {
+          // Detached maintenance must not affect tracking or Pi.
+        }
+        await setup({
+          root: input.root,
+          sessionId: input.sessionId,
+          sessionFile: input.sessionFile,
+          api,
+        });
       }
       return tracked;
     },
   );
 }
 
+function scheduleProductionMaintenance({
+  root,
+  sessionId,
+  sessionFile,
+}: {
+  root: string;
+  sessionId: string;
+  sessionFile: string;
+}): void {
+  scheduleMaintenance({ root, sessionId, sessionFile, writerId: randomUUID() });
+}
+
 function setupProductionSessionWal(input: {
   root: string;
   sessionId: string;
+  sessionFile: string;
   api: unknown;
 }): Promise<void> {
   return setupSessionWal(input, {

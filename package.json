@@ -1,6 +1,6 @@
 {
   "name": "pi-session-inspector",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Deterministic local-only session analytics for Pi",
   "type": "module",
   "license": "MIT",
@@ -13,10 +13,26 @@
     "url": "https://github.com/twKrash/pi-session-inspector/issues"
   },
   "homepage": "https://github.com/twKrash/pi-session-inspector#readme",
-  "keywords": ["pi-package", "pi", "observability", "session-analytics"],
-  "engines": { "node": ">=22.19.0" },
-  "pi": { "extensions": ["./src/index.ts"] },
-  "files": ["src", "README.md", "LICENSE", "CHANGELOG.md"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "observability",
+    "session-analytics"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "format": "biome format --write .",
     "format:check": "biome format .",
