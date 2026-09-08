@@ -14,7 +14,7 @@ import {
   type CurrentTuiState,
 } from "./current.ts";
 
-const WIDE_TABS_WIDTH = 80;
+const WIDE_TABS_WIDTH = 87;
 
 type CurrentTuiComponent = Component & {
   handleInput(data: string): void;

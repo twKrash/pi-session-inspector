@@ -63,6 +63,33 @@ test("handles arrow navigation and Escape", () => {
   assert.equal(closed, true);
 });
 
+test("uses the vertical selector until the complete horizontal tab row fits", () => {
+  const component = createCurrentTuiComponent({
+    model: createCurrentTuiModel(report, "active"),
+    theme,
+    requestRender: () => {},
+    done: () => {},
+  });
+  const horizontalTabs =
+    "Overview | Models | Tools | Commands | Agents | Skills | Integrations | Errors | Ledger";
+
+  for (let width = 80; width <= 86; width++) {
+    const lines = component.render(width);
+    assert.ok(
+      lines.includes("> Overview"),
+      `expected vertical selector at ${width}`,
+    );
+    assert.ok(
+      !lines.includes(horizontalTabs),
+      `unexpected tab row at ${width}`,
+    );
+  }
+
+  const lines = component.render(87);
+  assert.ok(lines.includes(horizontalTabs));
+  assert.equal(visibleWidth(horizontalTabs), 87);
+});
+
 test("keeps every rendered line within the terminal width", () => {
   const component = createCurrentTuiComponent({
     model: createCurrentTuiModel(report, "active"),
