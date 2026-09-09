@@ -1,3 +1,4 @@
+import { isAllowedIntegrationCounter } from "./integration-counter-allowlists.ts";
 import type {
   AgentRun,
   Compaction,
@@ -12,11 +13,9 @@ const MAX_AGENT_ROWS = 256;
 const MAX_INTEGRATION_ROWS = 6;
 const MAX_COUNTERS = 12;
 const MAX_ID_LENGTH = 128;
-const MAX_COUNTER_KEY_LENGTH = 48;
 const MAX_TOTAL_TOKENS = 1_000_000_000;
 const MAX_COST = 1_000_000_000;
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
-const COUNTER_KEY = /^[A-Za-z][A-Za-z0-9_-]*$/;
 const AGENT_STATUSES = new Set<AgentRun["status"]>([
   "running",
   "succeeded",
@@ -207,7 +206,7 @@ function projectIntegration(
   ) {
     return undefined;
   }
-  const counters = projectCounters(row.counters);
+  const counters = projectCounters(row.counters, row.integration, row.version);
   return {
     integration: row.integration,
     version: row.version,
@@ -218,6 +217,8 @@ function projectIntegration(
 
 function projectCounters(
   value: unknown,
+  integration: IntegrationObservation["integration"],
+  version: number,
 ): Readonly<Record<string, number | boolean>> | undefined {
   const counters = snapshotRecord(value);
   if (counters === undefined) return undefined;
@@ -226,7 +227,10 @@ function projectCounters(
 
   const projected: Record<string, number | boolean> = {};
   for (const [key, counter] of entries) {
-    if (isCounterKey(key) && isCounterValue(counter)) {
+    if (
+      isAllowedIntegrationCounter(integration, version, key) &&
+      isCounterValue(counter)
+    ) {
       projected[key] = counter;
     }
   }
@@ -262,10 +266,6 @@ function isId(value: unknown): value is string {
     value.length <= MAX_ID_LENGTH &&
     TOKEN.test(value)
   );
-}
-
-function isCounterKey(value: string): boolean {
-  return value.length <= MAX_COUNTER_KEY_LENGTH && COUNTER_KEY.test(value);
 }
 
 function isCounterValue(value: unknown): value is number | boolean {

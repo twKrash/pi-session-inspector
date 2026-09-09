@@ -1,3 +1,4 @@
+import { isAllowedIntegrationCounter } from "../core/integration-counter-allowlists.ts";
 import type {
   EvidenceState,
   IntegrationKey,
@@ -81,7 +82,11 @@ export function createEvidenceRegistry(
           return { state: "unsupported", diagnostic: "unsupported-version" };
         }
 
-        const output = toAdapterOutput(adapter.read(value));
+        const output = toAdapterOutput(
+          adapter.read(value),
+          integration,
+          evidenceInput.version,
+        );
         if (output === undefined) return adapterRejected();
 
         const observation: IntegrationObservation = {
@@ -150,6 +155,8 @@ function isBoundedValue(value: Record<string, unknown>): boolean {
 
 function toAdapterOutput(
   value: unknown,
+  integration: IntegrationKey,
+  version: number,
 ): { counters?: BoundedEvidenceValue } | undefined {
   const output = materializeOwnDataProperties(value);
   if (output === undefined) return undefined;
@@ -160,7 +167,15 @@ function toAdapterOutput(
   if (output.counters === undefined) return {};
 
   const counters = toBoundedValue(output.counters);
-  return counters === undefined ? undefined : { counters };
+  if (
+    counters === undefined ||
+    !Object.keys(counters).every((key) =>
+      isAllowedIntegrationCounter(integration, version, key),
+    )
+  ) {
+    return undefined;
+  }
+  return { counters };
 }
 
 function snapshotCounters(value: BoundedEvidenceValue): BoundedEvidenceValue {

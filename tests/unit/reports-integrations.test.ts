@@ -57,6 +57,29 @@ test("defaults to unavailable integration rows when adapter evidence is absent",
   assert.deepEqual(report.integrations, []);
 });
 
+test("does not serialize short secret-looking counter keys", () => {
+  const report = toSessionReport(parent, {
+    integrations: [
+      {
+        integration: "context",
+        version: 1,
+        state: "supported",
+        counters: { calls: 2, token: 1 },
+      },
+    ],
+  });
+
+  assert.deepEqual(report.integrations, [
+    {
+      integration: "context",
+      version: 1,
+      state: "supported",
+      counters: { calls: 2 },
+    },
+  ]);
+  assert.equal(JSON.stringify(report).includes('"token"'), false);
+});
+
 test("drops forged evidence fields and rows without projecting private values", () => {
   const privateSentinel = "private-evidence-sentinel".repeat(10);
   const report = toSessionReport(parent, {
@@ -112,7 +135,7 @@ test("drops forged evidence fields and rows without projecting private values", 
       integration: "context",
       version: 1,
       state: "supported",
-      counters: { calls: 2, enabled: true },
+      counters: { calls: 2 },
     },
   ]);
   assert.equal(JSON.stringify(report).includes(privateSentinel), false);

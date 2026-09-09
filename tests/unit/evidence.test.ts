@@ -164,6 +164,21 @@ test("rejects malformed adapter output with a fixed diagnostic", () => {
   }
 });
 
+test("rejects adapter counters outside its integration version allowlist", () => {
+  const evidence = createEvidenceRegistry([
+    {
+      integration: "context",
+      version: 1,
+      read: () => ({ counters: { token: 1 } }),
+    },
+  ]);
+
+  assert.deepEqual(
+    evidence.read({ integration: "context", version: 1, value: {} }),
+    { state: "unsupported", diagnostic: "adapter-rejected" },
+  );
+});
+
 test("uses canonical cooperative confidence for agent runs", () => {
   const agentRun = {
     id: "child-1",
