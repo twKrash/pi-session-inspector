@@ -43,6 +43,7 @@ test("projects explicit integration evidence without adding child usage", () => 
 
   assert.equal(report.usage.cost, 10);
   assert.equal(report.agents[0]?.usage?.cost, 3);
+  assert.match(report.agents[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(report.integrations[0]?.integration, "context");
   assert.equal(
     JSON.stringify(report).includes("raw-tool-result-sentinel"),
@@ -123,13 +124,7 @@ test("drops forged evidence fields and rows without projecting private values", 
     ],
   });
 
-  assert.deepEqual(report.agents, [
-    {
-      id: "valid-agent",
-      status: "succeeded",
-      confidence: "cooperative",
-    },
-  ]);
+  assert.deepEqual(report.agents, []);
   assert.deepEqual(report.integrations, [
     {
       integration: "context",

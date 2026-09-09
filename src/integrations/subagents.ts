@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentRun, EvidenceState, Usage } from "../core/events.ts";
 
 const SUPPORTED_ARTIFACT_VERSION = 1;
@@ -60,8 +61,8 @@ function readRun(value: unknown): AgentRun | undefined {
   const usage =
     record.usage === undefined ? undefined : readUsage(record.usage);
   return {
-    id: record.id,
-    parentId: record.parentId,
+    id: opaqueSubagentId(record.id),
+    parentId: opaqueSubagentId(record.parentId),
     status: mapStatus(record.status),
     confidence: "cooperative",
     ...(usage === undefined ? {} : { usage }),
@@ -105,6 +106,17 @@ function isId(value: unknown): value is string {
     value.length <= MAX_ID_LENGTH &&
     ID.test(value)
   );
+}
+
+/**
+ * Artifact identifiers are producer-controlled metadata. Hash them before they
+ * leave this adapter so reports retain explicit parentage without copying IDs.
+ */
+function opaqueSubagentId(id: string): string {
+  return `subagent-${createHash("sha256")
+    .update("pi-session-inspector:subagent-artifact-id:v1\0")
+    .update(id)
+    .digest("hex")}`;
 }
 
 function isTotalTokens(value: unknown): value is number {

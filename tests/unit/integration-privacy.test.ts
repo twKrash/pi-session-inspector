@@ -39,14 +39,20 @@ test("privacy corpus excludes seeded secrets from every integration adapter and 
       data: { schemaVersion: 1, active: true, private: secret },
     } satisfies SessionEntry,
   ]);
+  const producerChildId = `child-${secret}`;
+  const producerParentId = `parent-${secret}`;
   const subagentOutput = readSubagentRuns({
     version: 1,
     runs: [
       {
-        id: "child-1",
-        parentId: "parent-1",
+        id: producerChildId,
+        parentId: producerParentId,
         status: "complete",
-        result: secret,
+      },
+      {
+        id: `nested-${secret}`,
+        parentId: producerChildId,
+        status: "complete",
       },
     ],
   });
@@ -55,6 +61,15 @@ test("privacy corpus excludes seeded secrets from every integration adapter and 
     integrations: piEntryOutput,
   });
 
+  assert.equal(subagentOutput.state, "supported");
+  assert.match(subagentOutput.runs[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.match(
+    subagentOutput.runs[0]?.parentId ?? "",
+    /^subagent-[a-f0-9]{64}$/,
+  );
+  assert.equal(subagentOutput.runs[1]?.parentId, subagentOutput.runs[0]?.id);
+  assert.deepEqual(report.agents, subagentOutput.runs);
+
   for (const output of [
     registryOutput,
     piEntryOutput,
@@ -62,7 +77,10 @@ test("privacy corpus excludes seeded secrets from every integration adapter and 
     report,
     renderJson(report),
   ]) {
-    assert.equal(JSON.stringify(output).includes(secret), false);
+    const json = JSON.stringify(output);
+    assert.equal(json.includes(secret), false);
+    assert.equal(json.includes(producerChildId), false);
+    assert.equal(json.includes(producerParentId), false);
   }
 });
 

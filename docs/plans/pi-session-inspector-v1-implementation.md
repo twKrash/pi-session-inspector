@@ -112,7 +112,7 @@ Partial WAL line; missing/corrupt/stale checkpoint; Pi rewrite; cursor mismatch;
 - Context Mode, RTK, mode, Permission System, pi-subagents, and generic Lens evidence adapters that accept only allowlisted local entries or public artifacts.
 - Bounded report and current-TUI agent/integration rows; child agent usage is a non-additive breakdown and Pi-native parent usage remains billing authority.
 - Sanitized fixtures cover `ctx_*`, `rtkCompaction`, mode entries, permission events, and pi-subagents foreground/async/nested/status/tool-result variants.
-- Privacy corpus regression proves seeded secrets are excluded from every integration-adapter and report JSON output; missing public subagent artifacts remain unavailable rather than producing supported empty evidence.
+- Privacy corpus regression proves seeded secrets and producer-supplied subagent IDs are excluded from every integration-adapter and report JSON output; subagent hierarchy uses deterministic opaque IDs, and missing public artifacts remain unavailable rather than producing supported empty evidence.
 - No private/internal integration API or runtime integration import is used.
 
 **Acceptance**: one parent and N child `AgentRun`s; missing artifact becomes unavailable, not guessed; no private/internal API imports.

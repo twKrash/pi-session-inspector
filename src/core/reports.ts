@@ -12,10 +12,9 @@ import type {
 const MAX_AGENT_ROWS = 256;
 const MAX_INTEGRATION_ROWS = 6;
 const MAX_COUNTERS = 12;
-const MAX_ID_LENGTH = 128;
 const MAX_TOTAL_TOKENS = 1_000_000_000;
 const MAX_COST = 1_000_000_000;
-const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const OPAQUE_SUBAGENT_ID = /^subagent-[a-f0-9]{64}$/;
 const AGENT_STATUSES = new Set<AgentRun["status"]>([
   "running",
   "succeeded",
@@ -155,13 +154,13 @@ function projectAgent(value: unknown): AgentRun | undefined {
   const run = snapshotRecord(value);
   if (
     run === undefined ||
-    !isId(run.id) ||
+    !isOpaqueSubagentId(run.id) ||
     !isAgentStatus(run.status) ||
     !isConfidence(run.confidence)
   ) {
     return undefined;
   }
-  const parentId = isId(run.parentId) ? run.parentId : undefined;
+  const parentId = isOpaqueSubagentId(run.parentId) ? run.parentId : undefined;
   const usage = projectUsage(run.usage);
   return {
     id: run.id,
@@ -259,13 +258,8 @@ function snapshotRecord(
   return Object.freeze(snapshot);
 }
 
-function isId(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= MAX_ID_LENGTH &&
-    TOKEN.test(value)
-  );
+function isOpaqueSubagentId(value: unknown): value is string {
+  return typeof value === "string" && OPAQUE_SUBAGENT_ID.test(value);
 }
 
 function isCounterValue(value: unknown): value is number | boolean {

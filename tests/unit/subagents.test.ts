@@ -20,7 +20,8 @@ test("rolls up explicit foreground and nested public artifacts non-additively", 
   const parentUsage = { totalTokens: 100, cost: 10 };
 
   assert.equal(result.state, "supported");
-  assert.equal(result.runs[0]?.parentId, "parent-run");
+  assert.match(result.runs[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.match(result.runs[0]?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(result.runs[1]?.parentId, result.runs[0]?.id);
   assert.equal(
     result.runs.reduce((sum, run) => sum + (run.usage?.cost ?? 0), 0),
@@ -36,14 +37,12 @@ test("rolls up explicit foreground and nested public artifacts non-additively", 
 test("maps public async, status, and tool-result variants", async () => {
   const values = await fixture();
 
-  assert.deepEqual(readSubagentRuns(values.async).runs, [
-    {
-      id: "async-child",
-      parentId: "parent-run",
-      status: "running",
-      confidence: "cooperative",
-    },
-  ]);
+  const asyncRuns = readSubagentRuns(values.async).runs;
+  assert.equal(asyncRuns.length, 1);
+  assert.match(asyncRuns[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.match(asyncRuns[0]?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.equal(asyncRuns[0]?.status, "running");
+  assert.equal(asyncRuns[0]?.confidence, "cooperative");
   assert.deepEqual(
     readSubagentRuns(values.status).runs.map((run) => run.status),
     ["running", "interrupted", "unknown", "unknown"],
