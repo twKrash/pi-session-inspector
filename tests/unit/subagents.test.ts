@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
@@ -14,6 +16,7 @@ const fixturePath = new URL(
   "../fixtures/integrations/subagents.json",
   import.meta.url,
 );
+const execFile = promisify(execFileCallback);
 
 async function fixture(): Promise<Fixture> {
   return JSON.parse(await readFile(fixturePath, "utf8")) as Fixture;
@@ -39,6 +42,30 @@ test("reads only bounded valid local public artifacts", async () => {
     undefined,
   );
 });
+
+test(
+  "returns unavailable promptly for a Linux FIFO artifact path",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+    const fifo = join(directory, "artifact.fifo");
+    await execFile("mkfifo", [fifo]);
+
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        readPublicSubagentArtifact(fifo),
+        new Promise<"timed out">((resolve) => {
+          timer = setTimeout(() => resolve("timed out"), 250);
+        }),
+      ]);
+      if (timer !== undefined) clearTimeout(timer);
+      assert.equal(result, undefined);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
+  },
+);
 
 test("rolls up explicit foreground and nested public artifacts non-additively", async () => {
   const values = await fixture();

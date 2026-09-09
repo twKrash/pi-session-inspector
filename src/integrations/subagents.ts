@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import type { AgentRun, EvidenceState, Usage } from "../core/events.ts";
 
@@ -22,7 +23,7 @@ export async function readPublicSubagentArtifact(
   if (!path) return undefined;
 
   try {
-    const file = await open(path, "r");
+    const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const initial = await file.stat();
       if (!initial.isFile() || initial.size > MAX_ARTIFACT_BYTES) {
