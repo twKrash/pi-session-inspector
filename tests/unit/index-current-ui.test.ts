@@ -80,6 +80,46 @@ test("projects persisted Pi-entry integration evidence in the production loader"
   assert.equal(model?.report.agentEvidence, "unavailable");
 });
 
+test("renders an unknown known-integration version as Unsupported in the production TUI", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const file = join(directory, "session.jsonl");
+  await writeFile(
+    file,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"rtk-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"details":{"rtkCompaction":{"schemaVersion":99,"sourceChars":100,"compactedChars":50,"sourceLines":10,"compactedLines":5,"truncated":false}}}}',
+    ].join("\n"),
+  );
+
+  const handlerRef: { current?: CommandHandler } = {};
+  registerCommand(handlerRef);
+  assert.ok(handlerRef.current);
+  await handlerRef.current("", {
+    mode: "tui",
+    sessionManager: {
+      getLeafId: () => "rtk-1",
+      getSessionFile: () => file,
+    },
+    ui: {
+      notify: () => assert.fail("must load the persisted integration evidence"),
+      custom: async (factory: CustomFactory) => {
+        const component = await factory(
+          { requestRender: () => {} } as never,
+          { fg: (_color: string, text: string) => text } as never,
+          undefined as never,
+          () => {},
+        );
+        for (let index = 0; index < 6; index++)
+          component.handleInput?.("\u001B[C");
+        const rendered = component.render(120);
+        assert.ok(rendered.includes("Integration: rtk"));
+        assert.ok(rendered.includes("Status: Unsupported"));
+        assert.equal(rendered.includes("Unavailable"), false);
+      },
+    },
+  } as unknown as ExtensionCommandContext);
+});
+
 test("projects only an explicitly supplied public subagent artifact in the production loader", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const file = join(directory, "session.jsonl");

@@ -204,8 +204,9 @@ function projectIntegration(
     row === undefined ||
     !isIntegrationKey(row.integration) ||
     !isVersion(row.version) ||
-    !isKnownIntegrationVersion(row.integration, row.version) ||
-    !isEvidenceState(row.state)
+    !isEvidenceState(row.state) ||
+    (row.state !== "unsupported" &&
+      !isKnownIntegrationVersion(row.integration, row.version))
   ) {
     return undefined;
   }

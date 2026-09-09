@@ -81,7 +81,7 @@ test("does not serialize short secret-looking counter keys", () => {
   assert.equal(JSON.stringify(report).includes('"token"'), false);
 });
 
-test("only projects known integration versions and supported counters", () => {
+test("retains known unsupported integrations at unknown versions without counters", () => {
   const report = toSessionReport(parent, {
     integrations: [
       {
@@ -106,6 +106,7 @@ test("only projects known integration versions and supported counters", () => {
 
   assert.deepEqual(report.integrations, [
     { integration: "context", version: 1, state: "unsupported" },
+    { integration: "rtk", version: 99, state: "unsupported" },
     {
       integration: "lens",
       version: 1,
