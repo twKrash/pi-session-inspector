@@ -4,6 +4,8 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Added
 
 - Local, versioned evidence adapters for Context Mode, RTK, mode entries, Permission System, public pi-subagents artifacts, and generic Lens tool use.
@@ -13,6 +15,10 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 ### Security
 
 - Integration evidence uses no private API or runtime integration import and excludes raw producer content from reports.
+
+### Migration
+
+- 0.2.0 rejects malformed RTK v1 compaction metadata as unsupported instead of reporting zero-filled counters.
 
 ### Changed
 

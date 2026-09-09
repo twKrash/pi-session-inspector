@@ -1,4 +1,7 @@
-import { isAllowedIntegrationCounter } from "./integration-counter-allowlists.ts";
+import {
+  isAllowedIntegrationCounter,
+  isKnownIntegrationVersion,
+} from "./integration-counter-allowlists.ts";
 import type {
   AgentRun,
   Compaction,
@@ -201,11 +204,15 @@ function projectIntegration(
     row === undefined ||
     !isIntegrationKey(row.integration) ||
     !isVersion(row.version) ||
+    !isKnownIntegrationVersion(row.integration, row.version) ||
     !isEvidenceState(row.state)
   ) {
     return undefined;
   }
-  const counters = projectCounters(row.counters, row.integration, row.version);
+  const counters =
+    row.state === "supported"
+      ? projectCounters(row.counters, row.integration, row.version)
+      : undefined;
   return {
     integration: row.integration,
     version: row.version,

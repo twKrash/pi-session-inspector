@@ -80,6 +80,32 @@ test("projects persisted Pi-entry integration evidence in the production loader"
   assert.equal(model?.report.agentEvidence, "unavailable");
 });
 
+test("projects only an explicitly supplied public subagent artifact in the production loader", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const file = join(directory, "session.jsonl");
+  await writeFile(
+    file,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
+    ].join("\n"),
+  );
+  const artifacts = JSON.parse(
+    await readFile("tests/fixtures/integrations/subagents.json", "utf8"),
+  ) as { foreground: unknown };
+
+  const model = await loadCurrentSessionReport(
+    file,
+    "tree",
+    null,
+    artifacts.foreground,
+  );
+
+  assert.equal(model?.report.agentEvidence, "supported");
+  assert.equal(model?.report.agents.length, 2);
+  assert.equal(model?.report.usage.totalTokens, 7);
+});
+
 test("uses Pi's active leaf rather than the latest appended branch", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const file = join(directory, "branching.jsonl");

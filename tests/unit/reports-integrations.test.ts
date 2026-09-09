@@ -81,6 +81,40 @@ test("does not serialize short secret-looking counter keys", () => {
   assert.equal(JSON.stringify(report).includes('"token"'), false);
 });
 
+test("only projects known integration versions and supported counters", () => {
+  const report = toSessionReport(parent, {
+    integrations: [
+      {
+        integration: "context",
+        version: 1,
+        state: "unsupported",
+        counters: { calls: 9 },
+      },
+      {
+        integration: "rtk",
+        version: 99,
+        state: "unsupported",
+      },
+      {
+        integration: "lens",
+        version: 1,
+        state: "supported",
+        counters: { calls: 2 },
+      },
+    ],
+  });
+
+  assert.deepEqual(report.integrations, [
+    { integration: "context", version: 1, state: "unsupported" },
+    {
+      integration: "lens",
+      version: 1,
+      state: "supported",
+      counters: { calls: 2 },
+    },
+  ]);
+});
+
 test("drops forged evidence fields and rows without projecting private values", () => {
   const privateSentinel = "private-evidence-sentinel".repeat(10);
   const report = toSessionReport(parent, {

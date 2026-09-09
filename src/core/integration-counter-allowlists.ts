@@ -21,9 +21,16 @@ const COUNTER_KEYS: Readonly<
   },
   mode: { 1: new Set(["changes"]) },
   permission: { 1: new Set(["events", "granted"]) },
-  subagents: {},
+  subagents: { 1: new Set() },
   lens: { 1: new Set(["calls"]) },
 };
+
+export function isKnownIntegrationVersion(
+  integration: IntegrationKey,
+  version: number,
+): boolean {
+  return COUNTER_KEYS[integration][version] !== undefined;
+}
 
 export function isAllowedIntegrationCounter(
   integration: IntegrationKey,

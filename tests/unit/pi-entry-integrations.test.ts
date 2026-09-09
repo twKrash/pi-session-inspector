@@ -65,6 +65,43 @@ test("reads allowlisted, sanitized Pi-entry integration evidence", async () => {
   });
 });
 
+test("marks RTK v1 evidence unsupported when any required field is malformed", () => {
+  const malformed = (id: string, rtkCompaction: Record<string, unknown>) =>
+    ({
+      type: "message",
+      id,
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: { role: "toolResult", details: { rtkCompaction } },
+    }) satisfies SessionEntry;
+
+  assert.deepEqual(
+    readPiEntryEvidence([
+      malformed("rtk-missing", {
+        schemaVersion: 1,
+        sourceChars: 100,
+        compactedChars: 60,
+        sourceLines: 10,
+        truncated: false,
+      }),
+    ]),
+    [{ integration: "rtk", version: 1, state: "unsupported" }],
+  );
+  assert.deepEqual(
+    readPiEntryEvidence([
+      malformed("rtk-invalid", {
+        schemaVersion: 1,
+        sourceChars: 100,
+        compactedChars: -1,
+        sourceLines: 10,
+        compactedLines: 6,
+        truncated: false,
+      }),
+    ]),
+    [{ integration: "rtk", version: 1, state: "unsupported" }],
+  );
+});
+
 test("marks RTK evidence unsupported when aggregated counters overflow", () => {
   const rtk = (id: string, sourceChars: number) =>
     ({

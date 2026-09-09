@@ -53,16 +53,10 @@ function createPiEntryEvidenceRegistry(): EvidenceRegistry {
     {
       integration: "rtk",
       version: SUPPORTED_SCHEMA_VERSION,
-      read: (value) => ({
-        counters: {
-          compactions: number(value.compactions),
-          sourceChars: number(value.sourceChars),
-          compactedChars: number(value.compactedChars),
-          sourceLines: number(value.sourceLines),
-          compactedLines: number(value.compactedLines),
-          truncated: value.truncated === true,
-        },
-      }),
+      read: (value) => {
+        const counters = readRtkCounters(value);
+        return counters === undefined ? undefined : { counters };
+      },
     },
     {
       integration: "mode",
@@ -134,14 +128,12 @@ class PiEntryEvidence {
     const compaction = details.rtkCompaction;
     const version = schemaVersion(compaction);
     if (version === undefined) return;
-    this.add("rtk", version, {
-      compactions: 1,
-      sourceChars: nonNegativeNumber(compaction.sourceChars),
-      compactedChars: nonNegativeNumber(compaction.compactedChars),
-      sourceLines: nonNegativeNumber(compaction.sourceLines),
-      compactedLines: nonNegativeNumber(compaction.compactedLines),
-      truncated: booleanField(compaction, "truncated") === true,
-    });
+    const counters = readPersistedRtkCounters(compaction);
+    if (counters === undefined) {
+      this.#rows.set("rtk", unsupported("rtk", version));
+      return;
+    }
+    this.add("rtk", version, counters);
   }
 
   private readLens(entry: SessionEntry): void {
@@ -235,10 +227,63 @@ function booleanField(value: unknown, key: string): boolean | undefined {
     : undefined;
 }
 
-function nonNegativeNumber(value: unknown): number {
+function readPersistedRtkCounters(
+  value: Record<string, unknown>,
+): BoundedEvidenceValue | undefined {
+  const sourceChars = nonNegativeNumber(value.sourceChars);
+  const compactedChars = nonNegativeNumber(value.compactedChars);
+  const sourceLines = nonNegativeNumber(value.sourceLines);
+  const compactedLines = nonNegativeNumber(value.compactedLines);
+  const truncated = booleanField(value, "truncated");
+  if (
+    sourceChars === undefined ||
+    compactedChars === undefined ||
+    sourceLines === undefined ||
+    compactedLines === undefined ||
+    truncated === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    compactions: 1,
+    sourceChars,
+    compactedChars,
+    sourceLines,
+    compactedLines,
+    truncated,
+  };
+}
+
+function readRtkCounters(
+  value: BoundedEvidenceValue,
+): BoundedEvidenceValue | undefined {
+  const required = [
+    "compactions",
+    "sourceChars",
+    "compactedChars",
+    "sourceLines",
+    "compactedLines",
+  ] as const;
+  if (
+    !required.every((key) => nonNegativeNumber(value[key]) !== undefined) ||
+    typeof value.truncated !== "boolean"
+  ) {
+    return undefined;
+  }
+  return {
+    compactions: value.compactions as number,
+    sourceChars: value.sourceChars as number,
+    compactedChars: value.compactedChars as number,
+    sourceLines: value.sourceLines as number,
+    compactedLines: value.compactedLines as number,
+    truncated: value.truncated,
+  };
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
-    : 0;
+    : undefined;
 }
 
 function number(value: number | boolean | undefined): number {
