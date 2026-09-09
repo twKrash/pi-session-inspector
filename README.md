@@ -2,7 +2,7 @@
 
 Deterministic, local-only session analytics for [Pi](https://github.com/earendil-works/pi). Reconstructs Pi-native session data with confidence-aware live/cooperative metadata. No LLM analytics. No cloud. No daemon.
 
-> **Status: design baseline. Production implementation is intentionally deferred.**
+> **Status: current-session TUI and local integration evidence are available; history, global, and export views remain planned.**
 
 ## Planned install
 
@@ -14,8 +14,10 @@ pi install npm:pi-session-inspector
 Aliases and planned modes:
 
 ```text
-/session-inspector [current|history|global|ledger] [--scope active|tree] [--format tui|html|json]
+/session-inspector [current] [--subagents-artifact PATH]
 /session-ins ...
+
+`--subagents-artifact PATH` reads one bounded, local public pi-subagents JSON artifact for the current view only. The path and raw artifact are never persisted or rendered; missing or unreadable artifacts show unavailable evidence.
 ```
 
 Current defaults to active branch/TUI. History/global resource views default to full tree. JSON, HTML and TUI render same report data.

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { readSubagentRuns } from "../../src/integrations/subagents.ts";
+import {
+  readPublicSubagentArtifact,
+  readSubagentRuns,
+} from "../../src/integrations/subagents.ts";
 
 type Fixture = Record<string, unknown>;
 
@@ -13,6 +18,27 @@ const fixturePath = new URL(
 async function fixture(): Promise<Fixture> {
   return JSON.parse(await readFile(fixturePath, "utf8")) as Fixture;
 }
+
+test("reads only bounded valid local public artifacts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const valid = join(directory, "artifact.json");
+  const invalid = join(directory, "invalid.json");
+  const oversized = join(directory, "oversized.json");
+  await writeFile(valid, '{"version":1,"runs":[]}');
+  await writeFile(invalid, "not JSON");
+  await writeFile(oversized, " ".repeat(128 * 1024 + 1));
+
+  assert.deepEqual(await readPublicSubagentArtifact(valid), {
+    version: 1,
+    runs: [],
+  });
+  assert.equal(await readPublicSubagentArtifact(invalid), undefined);
+  assert.equal(await readPublicSubagentArtifact(oversized), undefined);
+  assert.equal(
+    await readPublicSubagentArtifact(join(directory, "missing")),
+    undefined,
+  );
+});
 
 test("rolls up explicit foreground and nested public artifacts non-additively", async () => {
   const values = await fixture();

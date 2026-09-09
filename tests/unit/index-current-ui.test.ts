@@ -189,6 +189,100 @@ test("opens the current-session TUI through Pi's public session lookup", async (
   assert.ok(rendered?.().some((line) => line.includes("Total tokens: 72")));
 });
 
+test("loads a public subagent artifact supplied to the production command for active and tree scopes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  const artifactFile = join(directory, "public artifact.json");
+  await writeFile(
+    sessionFile,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
+    ].join("\n"),
+  );
+  const artifacts = JSON.parse(
+    await readFile("tests/fixtures/integrations/subagents.json", "utf8"),
+  ) as { foreground: unknown };
+  await writeFile(artifactFile, JSON.stringify(artifacts.foreground));
+
+  const handlerRef: { current?: CommandHandler } = {};
+  registerCommand(handlerRef);
+  let toggleTree: (() => void) | undefined;
+  let rendered: (() => string[]) | undefined;
+  assert.ok(handlerRef.current);
+  await handlerRef.current(`current --subagents-artifact "${artifactFile}"`, {
+    mode: "tui",
+    sessionManager: {
+      getLeafId: () => "entry-1",
+      getSessionFile: () => sessionFile,
+    },
+    ui: {
+      notify: () => assert.fail("must load a valid public artifact"),
+      custom: async (factory: CustomFactory) => {
+        const component = await factory(
+          { requestRender: () => {} } as never,
+          { fg: (_color: string, text: string) => text } as never,
+          undefined as never,
+          () => {},
+        );
+        for (let index = 0; index < 4; index++)
+          component.handleInput?.("\u001B[C");
+        assert.ok(
+          component
+            .render(120)
+            .some((line) => line.includes("Evidence: cooperative")),
+        );
+        toggleTree = () => component.handleInput?.("t");
+        rendered = () => component.render(120);
+      },
+    },
+  } as unknown as ExtensionCommandContext);
+
+  assert.ok(toggleTree);
+  toggleTree();
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  assert.ok(
+    rendered?.().some((line) => line.includes("Evidence: cooperative")),
+  );
+});
+
+test("treats a missing public subagent artifact as unavailable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  await writeFile(
+    sessionFile,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
+    ].join("\n"),
+  );
+
+  const handlerRef: { current?: CommandHandler } = {};
+  registerCommand(handlerRef);
+  assert.ok(handlerRef.current);
+  await handlerRef.current("--subagents-artifact missing.json", {
+    mode: "tui",
+    sessionManager: {
+      getLeafId: () => "entry-1",
+      getSessionFile: () => sessionFile,
+    },
+    ui: {
+      notify: () => assert.fail("must retain the current view"),
+      custom: async (factory: CustomFactory) => {
+        const component = await factory(
+          { requestRender: () => {} } as never,
+          { fg: (_color: string, text: string) => text } as never,
+          undefined as never,
+          () => {},
+        );
+        for (let index = 0; index < 4; index++)
+          component.handleInput?.("\u001B[C");
+        assert.ok(component.render(120).some((line) => line === "Unavailable"));
+      },
+    },
+  } as unknown as ExtensionCommandContext);
+});
+
 test("rejects non-current command arguments without opening the current view", async () => {
   const handlerRef: { current?: CommandHandler } = {};
   registerCommand(handlerRef);

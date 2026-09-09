@@ -11,6 +11,7 @@ import { setupSessionWal } from "./pi/session-wal.ts";
 import { trackPiSession } from "./pi/tracking-pi.ts";
 import { createWalWriter } from "./storage/wal.ts";
 import { scheduleMaintenance } from "./storage/maintenance.ts";
+import { readPublicSubagentArtifact } from "./integrations/subagents.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
 
@@ -26,6 +27,55 @@ type SessionWalSetup = (input: {
 }) => Promise<void>;
 
 const description = "Open current Pi Session Inspector";
+const SUBAGENTS_ARTIFACT_OPTION = "--subagents-artifact";
+
+type CurrentCommandOptions = { subagentArtifactPath?: string };
+
+/** Parses only the current-view command and its one documented local option. */
+function parseCurrentCommand(args: string): CurrentCommandOptions | undefined {
+  const tokens = tokenizeCommand(args);
+  if (tokens === undefined) return undefined;
+  if (tokens.length === 0 || (tokens.length === 1 && tokens[0] === "current")) {
+    return {};
+  }
+
+  const offset = tokens[0] === "current" ? 1 : 0;
+  if (
+    tokens.length === offset + 2 &&
+    tokens[offset] === SUBAGENTS_ARTIFACT_OPTION &&
+    tokens[offset + 1]
+  ) {
+    return { subagentArtifactPath: tokens[offset + 1] };
+  }
+  return undefined;
+}
+
+/** Splits command text while preserving local path characters. */
+function tokenizeCommand(input: string): string[] | undefined {
+  const tokens: string[] = [];
+  let token = "";
+  let quote: '"' | "'" | undefined;
+
+  for (const character of input.trim()) {
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else token += character;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (/\s/.test(character)) {
+      if (token) {
+        tokens.push(token);
+        token = "";
+      }
+    } else {
+      token += character;
+    }
+  }
+
+  if (quote) return undefined;
+  if (token) tokens.push(token);
+  return tokens;
+}
 
 /** Wires Pi session-start observation to the Inspector tracking root. */
 export function registerTracking(
@@ -137,8 +187,8 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
       description,
       handler: async (_args, ctx) => {
         try {
-          const args = _args.trim();
-          if (args !== "" && args !== "current") {
+          const options = parseCurrentCommand(_args);
+          if (!options) {
             notifyUnsupportedCurrentArgument(ctx);
             return;
           }
@@ -149,10 +199,14 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
 
           const sessionFile = ctx.sessionManager.getSessionFile();
           const leafId = ctx.sessionManager.getLeafId();
+          const subagentArtifact = await readPublicSubagentArtifact(
+            options.subagentArtifactPath,
+          );
           const model = await loadCurrentSessionReport(
             sessionFile,
             "active",
             leafId,
+            subagentArtifact,
           );
           if (!model) {
             notifyCurrentUnavailable(ctx);
@@ -163,7 +217,12 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             createCurrentTuiComponent({
               model,
               load: (scope) =>
-                loadCurrentSessionReport(sessionFile, scope, leafId),
+                loadCurrentSessionReport(
+                  sessionFile,
+                  scope,
+                  leafId,
+                  subagentArtifact,
+                ),
               theme,
               requestRender: () => tui.requestRender(),
               done: () => done(undefined),

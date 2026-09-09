@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { open } from "node:fs/promises";
 import type { AgentRun, EvidenceState, Usage } from "../core/events.ts";
 
 const SUPPORTED_ARTIFACT_VERSION = 1;
+const MAX_ARTIFACT_BYTES = 128 * 1024;
 const MAX_RUNS = 256;
 const MAX_ID_LENGTH = 128;
 const MAX_TOTAL_TOKENS = 1_000_000_000;
@@ -12,6 +14,39 @@ export type SubagentRunsResult = {
   state: EvidenceState;
   runs: readonly AgentRun[];
 };
+
+/** Reads one bounded public artifact without retaining its path or raw text. */
+export async function readPublicSubagentArtifact(
+  path: string | undefined,
+): Promise<unknown | undefined> {
+  if (!path) return undefined;
+
+  try {
+    const file = await open(path, "r");
+    try {
+      const initial = await file.stat();
+      if (!initial.isFile() || initial.size > MAX_ARTIFACT_BYTES) {
+        return undefined;
+      }
+
+      const buffer = Buffer.allocUnsafe(MAX_ARTIFACT_BYTES + 1);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      const final = await file.stat();
+      if (
+        bytesRead > MAX_ARTIFACT_BYTES ||
+        final.size !== bytesRead ||
+        final.size > MAX_ARTIFACT_BYTES
+      ) {
+        return undefined;
+      }
+      return JSON.parse(buffer.toString("utf8", 0, bytesRead));
+    } finally {
+      await file.close().catch(() => {});
+    }
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Reads the allowlisted, public pi-subagents artifact projection. Parentage is
