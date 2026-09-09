@@ -6,7 +6,13 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Added
 
+- Local, versioned evidence adapters for Context Mode, RTK, mode entries, Permission System, public pi-subagents artifacts, and generic Lens tool use.
+- Bounded agent and integration report/TUI rows with non-additive child-agent usage breakdown; Pi-native parent usage remains billing authority.
 - Current-session full-screen TUI with fixed analytics tabs, active/tree scope selection, narrow-terminal layout, and lazy Ledger materialization.
+
+### Security
+
+- Integration evidence uses no private API or runtime integration import and excludes raw producer content from reports.
 
 ### Changed
 

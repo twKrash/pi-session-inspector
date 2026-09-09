@@ -104,16 +104,16 @@ Partial WAL line; missing/corrupt/stale checkpoint; Pi rewrite; cursor mismatch;
 
 > History UI selection and drill-down are deliberately deferred to the next web UI milestone. M4 delivers the current-session TUI only.
 
-## Milestone 5 — integration and agent roll-up
+## Milestone 5 — integration and agent roll-up ✅
 
-#### Tests first
+#### Completed
 
-Pin upstream sanitized fixtures for `ctx_*`, `rtkCompaction`, mode entries, permission events, pi-subagents foreground/async/nested/status/tool-result variants. Assert unsupported/missing data is safe, hierarchy correct and child cost not additive.
-
-#### Implement
-
-1. Evidence registry with version support and confidence states.
-2. Context/RTK/mode/permission/subagent adapters; generic Lens tool evidence.
+- Versioned local evidence registry with supported, unavailable, and unsupported states.
+- Context Mode, RTK, mode, Permission System, pi-subagents, and generic Lens evidence adapters that accept only allowlisted local entries or public artifacts.
+- Bounded report and current-TUI agent/integration rows; child agent usage is a non-additive breakdown and Pi-native parent usage remains billing authority.
+- Sanitized fixtures cover `ctx_*`, `rtkCompaction`, mode entries, permission events, and pi-subagents foreground/async/nested/status/tool-result variants.
+- Privacy corpus regression proves seeded secrets are excluded from every integration-adapter and report JSON output; missing public subagent artifacts remain unavailable rather than producing supported empty evidence.
+- No private/internal integration API or runtime integration import is used.
 
 **Acceptance**: one parent and N child `AgentRun`s; missing artifact becomes unavailable, not guessed; no private/internal API imports.
 
