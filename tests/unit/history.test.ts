@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 
-import { discoverHistory } from "../../src/storage/history.ts";
+import {
+  discoverHistory,
+  resolveManifestSourceFile,
+} from "../../src/storage/history.ts";
 
 const maintenance = {
   writerId: "maintainer-1",
@@ -12,16 +23,24 @@ const maintenance = {
   isPidAlive: () => false,
 };
 
+function historyOptions(root: string) {
+  return { root, sessionDirectory: () => join(root, "pi-sessions") };
+}
+
 async function writeManifest(
   root: string,
   sessionId: string,
   fileName: "meta.json" | "meta.json.pending" = "meta.json",
+  sourceFile = `${sessionId}.jsonl`,
 ): Promise<void> {
   const directory = join(root, "sessions", sessionId);
   await mkdir(directory, { recursive: true });
+  const sessionDirectory = join(root, "pi-sessions");
+  await mkdir(sessionDirectory, { recursive: true });
+  await writeFile(join(sessionDirectory, sourceFile), "");
   await writeFile(
     join(directory, fileName),
-    `${JSON.stringify({ schemaVersion: 1, sessionId, state: "tracking" })}\n`,
+    `${JSON.stringify({ schemaVersion: 2, sessionId, sourceFile, state: "tracking" })}\n`,
   );
 }
 
@@ -32,7 +51,7 @@ test("promotes pending tracking metadata only when native marker evidence is ava
 
     let evidenceChecks = 0;
     const result = await discoverHistory({
-      root,
+      ...historyOptions(root),
       markerEvidence: async (sessionId) => {
         evidenceChecks += 1;
         assert.equal(sessionId, "pending-session");
@@ -67,8 +86,40 @@ test("promotes pending tracking metadata only when native marker evidence is ava
         join(root, "sessions", "pending-session", "meta.json"),
         "utf8",
       ),
-      '{"schemaVersion":1,"sessionId":"pending-session","state":"tracking"}\n',
+      '{"schemaVersion":2,"sessionId":"pending-session","sourceFile":"pending-session.jsonl","state":"tracking"}\n',
     );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rechecks marker evidence when another maintainer promotes metadata during lease acquisition", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-"));
+  try {
+    const sessionId = "concurrently-promoted";
+    await writeManifest(root, sessionId, "meta.json.pending");
+    let evidenceChecks = 0;
+
+    const result = await discoverHistory({
+      ...historyOptions(root),
+      markerEvidence: async () => {
+        evidenceChecks += 1;
+        if (evidenceChecks === 1) {
+          await rename(
+            join(root, "sessions", sessionId, "meta.json.pending"),
+            join(root, "sessions", sessionId, "meta.json"),
+          );
+          return true;
+        }
+        return false;
+      },
+      maintenance,
+    });
+
+    assert.equal(evidenceChecks, 2);
+    assert.deepEqual(result.sessions, [
+      { sessionId, availability: "unavailable" },
+    ]);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -81,7 +132,7 @@ test("does not promote pending metadata when marker evidence is removed after le
     let evidenceChecks = 0;
 
     const result = await discoverHistory({
-      root,
+      ...historyOptions(root),
       markerEvidence: async () => {
         evidenceChecks += 1;
         return evidenceChecks === 1;
@@ -105,7 +156,7 @@ test("does not promote pending metadata when marker evidence is removed after le
         join(root, "sessions", "rewritten-session", "meta.json.pending"),
         "utf8",
       ),
-      '{"schemaVersion":1,"sessionId":"rewritten-session","state":"tracking"}\n',
+      '{"schemaVersion":2,"sessionId":"rewritten-session","sourceFile":"rewritten-session.jsonl","state":"tracking"}\n',
     );
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -119,7 +170,7 @@ test("keeps pending metadata unavailable when marker evidence is absent or canno
     await writeManifest(root, "marker-error", "meta.json.pending");
 
     const result = await discoverHistory({
-      root,
+      ...historyOptions(root),
       markerEvidence: async (sessionId) => {
         if (sessionId === "marker-error") throw new Error("Pi unavailable");
         return false;
@@ -154,7 +205,7 @@ test("discovers at most 206 Inspector manifests without scanning Pi sessions", a
 
     const evidenceCalls: string[] = [];
     const result = await discoverHistory({
-      root,
+      ...historyOptions(root),
       markerEvidence: async (sessionId) => {
         evidenceCalls.push(sessionId);
         return true;
@@ -181,7 +232,7 @@ test("rejects oversized manifests before parsing them", async () => {
     await writeFile(join(directory, "meta.json"), "x".repeat(1025));
 
     const result = await discoverHistory({
-      root,
+      ...historyOptions(root),
       markerEvidence: async () => {
         throw new Error(
           "must not read marker evidence for an invalid manifest",
@@ -203,7 +254,7 @@ test("reports missing or unknown Inspector manifests as unavailable without gues
   const root = await mkdtemp(join(tmpdir(), "inspector-history-"));
   try {
     const missing = await discoverHistory({
-      root,
+      ...historyOptions(root),
       markerEvidence: async () => true,
       maintenance,
     });
@@ -219,7 +270,7 @@ test("reports missing or unknown Inspector manifests as unavailable without gues
       "{}\n",
     );
     const unknown = await discoverHistory({
-      root,
+      ...historyOptions(root),
       markerEvidence: async () => true,
       maintenance,
     });
@@ -227,6 +278,88 @@ test("reports missing or unknown Inspector manifests as unavailable without gues
       { sessionId: "unknown-format", availability: "unavailable" },
     ]);
     assert.deepEqual(unknown.diagnostics, ["manifest-unavailable"]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("resolves only a direct regular JSONL source file without exposing its path in discovery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-"));
+  try {
+    const sessionDirectory = join(root, "pi-sessions");
+    await mkdir(sessionDirectory);
+    await writeFile(join(sessionDirectory, "session.jsonl"), "{}\n");
+    await mkdir(join(sessionDirectory, "nested"));
+    await writeFile(join(sessionDirectory, "nested", "inside.jsonl"), "{}\n");
+    await mkdir(join(sessionDirectory, "directory.jsonl"));
+    await writeFile(join(root, "outside.jsonl"), "{}\n");
+    await symlink(
+      join(root, "outside.jsonl"),
+      join(sessionDirectory, "link.jsonl"),
+    );
+
+    const resolved = await resolveManifestSourceFile({
+      sourceFile: "session.jsonl",
+      sessionDirectory,
+    });
+    assert.equal(basename(resolved ?? ""), "session.jsonl");
+    for (const sourceFile of [
+      "../outside.jsonl",
+      "nested/inside.jsonl",
+      "nested\\inside.jsonl",
+      "link.jsonl",
+      "directory.jsonl",
+      "nested",
+      "missing.jsonl",
+      "not-jsonl.txt",
+    ]) {
+      assert.equal(
+        await resolveManifestSourceFile({ sourceFile, sessionDirectory }),
+        undefined,
+      );
+    }
+
+    await writeManifest(root, "private-source", "meta.json", "session.jsonl");
+    const result = await discoverHistory({
+      ...historyOptions(root),
+      markerEvidence: async () => true,
+      maintenance,
+    });
+    assert.deepEqual(result, {
+      availability: "available",
+      sessions: [{ sessionId: "private-source", availability: "available" }],
+      diagnostics: [],
+    });
+    assert.equal(JSON.stringify(result).includes("session.jsonl"), false);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("makes invalid or unavailable manifest sources unavailable without source diagnostics", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-"));
+  try {
+    await writeManifest(root, "missing-source", "meta.json", "not-jsonl.txt");
+    await writeManifest(
+      root,
+      "traversal-source",
+      "meta.json",
+      "../outside.jsonl",
+    );
+
+    const result = await discoverHistory({
+      ...historyOptions(root),
+      markerEvidence: async () => {
+        throw new Error("must not examine invalid source");
+      },
+      maintenance,
+    });
+    assert.deepEqual(result.sessions, [
+      { sessionId: "missing-source", availability: "unavailable" },
+      { sessionId: "traversal-source", availability: "unavailable" },
+    ]);
+    assert.deepEqual(result.diagnostics, ["manifest-unavailable"]);
+    assert.equal(JSON.stringify(result).includes("sourceFile"), false);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

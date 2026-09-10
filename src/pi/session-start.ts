@@ -1,3 +1,7 @@
+import { basename, dirname } from "node:path";
+
+import { isTrackingSourceFile } from "../storage/tracking.ts";
+
 /** Structural subset of the public Pi API used to start Inspector tracking. */
 type SessionStartApi = {
   on(
@@ -8,6 +12,7 @@ type SessionStartApi = {
         sessionManager: {
           getSessionId(): string;
           getSessionFile(): string | undefined;
+          getSessionDir(): string;
         };
       },
     ) => Promise<void>,
@@ -19,6 +24,7 @@ type SessionTracker = (input: {
   root: string;
   sessionId: string;
   sessionFile: string;
+  sourceFile: string;
   appendEntry(type: string, data: unknown): void;
   revalidateSession(): boolean;
 }) => Promise<boolean>;
@@ -33,6 +39,8 @@ export function registerSessionStartTracking(
     api.on("session_start", (_event, context): Promise<void> => {
       let sessionId: string;
       let sessionFile: string;
+      let sourceFile: string;
+      let sessionDirectory: string;
       try {
         const capturedFile = context.sessionManager.getSessionFile();
         if (capturedFile === undefined) {
@@ -40,6 +48,14 @@ export function registerSessionStartTracking(
           return Promise.resolve();
         }
         sessionFile = capturedFile;
+        sessionDirectory = context.sessionManager.getSessionDir();
+        sourceFile = basename(sessionFile);
+        if (
+          dirname(sessionFile) !== sessionDirectory ||
+          !isTrackingSourceFile(sourceFile)
+        ) {
+          return Promise.resolve();
+        }
         sessionId = context.sessionManager.getSessionId();
       } catch {
         // Session lookup must never alter Pi execution.
@@ -51,12 +67,14 @@ export function registerSessionStartTracking(
           root,
           sessionId,
           sessionFile,
+          sourceFile,
           appendEntry: api.appendEntry,
           revalidateSession: () => {
             try {
               return (
                 context.sessionManager.getSessionId() === sessionId &&
-                context.sessionManager.getSessionFile() === sessionFile
+                context.sessionManager.getSessionFile() === sessionFile &&
+                context.sessionManager.getSessionDir() === sessionDirectory
               );
             } catch {
               return false;

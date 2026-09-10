@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -311,7 +312,6 @@ test("recovers an abandoned expired dead stale-takeover claim", async () => {
       expiresAt: start.getTime() + 30_000,
     };
     const ownerText = JSON.stringify(owner);
-    const { createHash } = await import("node:crypto");
     const claimDirectory = join(
       leaseDirectory,
       `.reclaim-${createHash("sha256").update(ownerText).digest("hex")}`,
@@ -334,6 +334,65 @@ test("recovers an abandoned expired dead stale-takeover claim", async () => {
     });
     assert.ok(recovered);
     await recovered.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("reclaims through repeated abandoned claims without growing successor paths", async () => {
+  const acquireMaintenanceLease = await loadLease();
+  assert.ok(acquireMaintenanceLease);
+
+  const directory = await mkdtemp(join(tmpdir(), "inspector-lease-"));
+  try {
+    const leaseDirectory = join(directory, "maintenance.lease");
+    const owner = {
+      schemaVersion: 1,
+      writerId: "writer-1",
+      pid: process.pid,
+      acquiredAt: start.getTime(),
+      expiresAt: start.getTime() + 30_000,
+    };
+    const ownerText = JSON.stringify(owner);
+    const claimRoot = join(
+      leaseDirectory,
+      `.reclaim-${createHash("sha256").update(ownerText).digest("hex")}`,
+    );
+    const firstClaim = { ...owner, writerId: "abandoned-claimer-1" };
+    const firstClaimText = JSON.stringify(firstClaim);
+    const secondClaim = { ...owner, writerId: "abandoned-claimer-2" };
+    const secondClaimText = JSON.stringify(secondClaim);
+    const firstSuccessor = `${claimRoot}.handoff-${createHash("sha256")
+      .update(firstClaimText)
+      .digest("hex")}`;
+    const secondSuccessor = `${claimRoot}.handoff-${createHash("sha256")
+      .update(secondClaimText)
+      .digest("hex")}`;
+
+    await mkdir(leaseDirectory, { recursive: true });
+    await writeFile(join(leaseDirectory, "owner.json"), ownerText);
+    await mkdir(claimRoot);
+    await writeFile(join(claimRoot, "claim.json"), firstClaimText);
+    await mkdir(firstSuccessor);
+    await writeFile(join(firstSuccessor, "claim.json"), secondClaimText);
+    // The pre-fix recursive path is intentionally unavailable. Reclamation
+    // must use the bounded root-anchored successor for the second claim.
+    await writeFile(
+      `${firstSuccessor}.handoff-${createHash("sha256")
+        .update(secondClaimText)
+        .digest("hex")}`,
+      "blocked",
+    );
+
+    const recovered = await acquireMaintenanceLease({
+      directory,
+      writerId: "writer-2",
+      now: at(60_001),
+      isPidAlive: () => false,
+    });
+    assert.ok(recovered);
+    await recovered.release();
+    assert.equal(secondSuccessor.includes(".handoff-.handoff-"), false);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }

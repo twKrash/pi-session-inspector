@@ -6,6 +6,7 @@ import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { selectScope } from "../../src/pi/sessions.ts";
+import { renderHtml } from "../../src/ui/html.ts";
 import { renderJson } from "../../src/ui/json.ts";
 
 const fixture = readFileSync(
@@ -42,6 +43,58 @@ test("uses the earliest valid tracking marker as the active scope boundary", () 
     ["active-parent", "active-leaf"],
   );
   assert.equal(reduceEntries(session.id, entries).usage.totalTokens, 100);
+});
+
+test("counts persisted branch-summary usage exactly once", () => {
+  const report = toSessionReport(
+    reduceEntries("branch-summary", [
+      {
+        type: "branch_summary",
+        id: "summary",
+        parentId: null,
+        timestamp: "2026-09-07T00:00:00.000Z",
+        usage: { totalTokens: 17, cost: { total: 0.17 } },
+      },
+    ]),
+  );
+
+  assert.deepEqual(report.usage, { totalTokens: 17, cost: 0.17 });
+  assert.deepEqual(report.compactions, [
+    {
+      id: "compaction:summary",
+      timestamp: "2026-09-07T00:00:00.000Z",
+      usage: { totalTokens: 17, cost: 0.17 },
+    },
+  ]);
+});
+
+test("redacts and bounds producer provider, model, and tool names in JSON and HTML", () => {
+  const secret = "provider-secret-token-should-not-appear";
+  const unbounded = "x".repeat(1024);
+  const report = toSessionReport(
+    reduceEntries("privacy-session", [
+      {
+        type: "message",
+        id: "assistant",
+        parentId: null,
+        timestamp: "2026-09-07T00:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: secret,
+          model: unbounded,
+          usage: { totalTokens: 1, cost: { total: 0.01 } },
+          content: [{ type: "toolCall", id: "call", name: secret }],
+        },
+      },
+    ]),
+  );
+  const json = renderJson(report);
+  const html = renderHtml({ kind: "current", report, scope: "tree" });
+
+  assert.equal(json.includes(secret), false);
+  assert.equal(json.includes(unbounded), false);
+  assert.equal(html.includes(secret), false);
+  assert.equal(html.includes(unbounded), false);
 });
 
 test("returns no active selection when Pi has no active leaf", () => {

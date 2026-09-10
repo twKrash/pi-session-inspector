@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"history-session","timestamp":"2026-02-01T00:00:00.000Z"}
+{"type":"custom","id":"marker","parentId":null,"timestamp":"2026-02-01T00:00:01.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}
+{"type":"message","id":"main","parentId":"marker","timestamp":"2026-02-01T10:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":10,"cost":{"total":0.1}}}}
+{"type":"message","id":"other","parentId":"marker","timestamp":"2026-02-02T11:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":20,"cost":{"total":0.2}}}}

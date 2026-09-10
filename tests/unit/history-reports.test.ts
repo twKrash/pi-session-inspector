@@ -1,0 +1,299 @@
+import assert from "node:assert/strict";
+import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+
+import {
+  loadGlobalReport,
+  loadHistoryReports,
+} from "../../src/ui/load-history.ts";
+import { renderJson } from "../../src/ui/json.ts";
+
+const maintenance = {
+  writerId: "maintainer-1",
+  now: () => new Date("2026-02-03T12:00:00.000Z"),
+  isPidAlive: () => false,
+};
+
+async function createHistoryRoot(): Promise<{
+  root: string;
+  sessionDirectory: string;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-reports-"));
+  const sessionDirectory = join(root, "public-sessions");
+  await mkdir(sessionDirectory);
+  await cp(
+    "tests/fixtures/reports/history-session.jsonl",
+    join(sessionDirectory, "history-session.jsonl"),
+  );
+  await mkdir(join(root, "sessions", "history-session"), { recursive: true });
+  await writeFile(
+    join(root, "sessions", "history-session", "meta.json"),
+    '{"schemaVersion":2,"sessionId":"history-session","sourceFile":"history-session.jsonl","state":"tracking"}\n',
+  );
+  return { root, sessionDirectory };
+}
+
+test("replays manifest-discovered history through the shared session report pipeline without exposing source locators", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    const history = await loadHistoryReports({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      maintenance,
+    });
+
+    assert.deepEqual(history, {
+      availability: "available",
+      sessions: [
+        {
+          availability: "available",
+          sessionId: "history-session",
+          report: {
+            sessionId: "history-session",
+            usage: { totalTokens: 30, cost: 0.3 },
+            models: [
+              {
+                provider: "acme",
+                model: "alpha",
+                generations: 2,
+                totalTokens: 30,
+                cost: 0.3,
+              },
+            ],
+            tools: [],
+            compactions: [],
+            generations: [
+              {
+                id: "generation:main",
+                timestamp: "2026-02-01T10:00:00.000Z",
+                provider: "acme",
+                model: "alpha",
+                usage: { totalTokens: 10, cost: 0.1 },
+              },
+              {
+                id: "generation:other",
+                timestamp: "2026-02-02T11:00:00.000Z",
+                provider: "acme",
+                model: "alpha",
+                usage: { totalTokens: 20, cost: 0.2 },
+              },
+            ],
+            agents: [],
+            agentEvidence: "unavailable",
+            integrations: [],
+          },
+        },
+      ],
+      diagnostics: [],
+    });
+    assert.equal(renderJson(history).includes("history-session.jsonl"), false);
+    assert.equal(renderJson(history).includes(sessionDirectory), false);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("returns explicit unavailable sessions when a manifest source cannot replay", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    await writeFile(
+      join(root, "sessions", "history-session", "meta.json"),
+      '{"schemaVersion":2,"sessionId":"history-session","sourceFile":"missing.jsonl","state":"tracking"}\n',
+    );
+    const history = await loadHistoryReports({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      maintenance,
+    });
+    assert.deepEqual(history.sessions, [
+      { availability: "unavailable", sessionId: "history-session" },
+    ]);
+    assert.equal(JSON.stringify(history).includes("missing.jsonl"), false);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("makes malformed JSONL after a valid header and marker unavailable rather than undercounting", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    await writeFile(
+      join(sessionDirectory, "history-session.jsonl"),
+      [
+        '{"type":"session","version":3,"id":"history-session"}',
+        '{"type":"custom","id":"marker","parentId":null,"timestamp":"2026-02-01T00:00:01.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
+        '{"type":"message","id":"valid","parentId":"marker","timestamp":"2026-02-01T10:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"totalTokens":10,"cost":{"total":0.1}}}}',
+        "{ malformed JSONL",
+      ].join("\n"),
+    );
+
+    const history = await loadHistoryReports({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      maintenance,
+    });
+    const global = await loadGlobalReport({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      maintenance,
+    });
+
+    assert.deepEqual(history.sessions, [
+      { availability: "unavailable", sessionId: "history-session" },
+    ]);
+    assert.deepEqual(global.sessions, [
+      { availability: "unavailable", sessionId: "history-session" },
+    ]);
+    assert.deepEqual(global.usage, { totalTokens: 0, cost: 0 });
+    assert.deepEqual(global.dates, []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rejects active scope for durable history and global reports rather than inventing historical active leaves", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    const active = await loadHistoryReports({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "active",
+      activeLeafId: () => "main",
+      maintenance,
+    });
+    assert.equal(active.availability, "unavailable");
+    assert.deepEqual(active.sessions, []);
+
+    const global = await loadGlobalReport({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "active",
+      maintenance,
+    });
+    assert.equal(global.availability, "unavailable");
+    assert.deepEqual(global.sessions, []);
+    assert.deepEqual(global.usage, { totalTokens: 0, cost: 0 });
+
+    await writeFile(
+      join(sessionDirectory, "history-session.jsonl"),
+      '{"type":"session","version":3,"id":"history-session"}\n',
+    );
+    const unavailable = await loadHistoryReports({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      maintenance,
+    });
+    assert.deepEqual(unavailable.sessions, [
+      { availability: "unavailable", sessionId: "history-session" },
+    ]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("preserves branch-summary usage once through history and global reports", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    await writeFile(
+      join(sessionDirectory, "history-session.jsonl"),
+      [
+        '{"type":"session","version":3,"id":"history-session"}',
+        '{"type":"custom","id":"marker","parentId":null,"timestamp":"2026-02-01T00:00:01.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
+        '{"type":"branch_summary","id":"summary","parentId":"marker","timestamp":"2026-02-02T11:00:00.000Z","usage":{"totalTokens":17,"cost":{"total":0.17}}}',
+      ].join("\n"),
+    );
+    const options = {
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree" as const,
+      maintenance,
+    };
+    const history = await loadHistoryReports(options);
+    const global = await loadGlobalReport(options);
+
+    assert.deepEqual(history.sessions[0], {
+      availability: "available",
+      sessionId: "history-session",
+      report: {
+        sessionId: "history-session",
+        usage: { totalTokens: 17, cost: 0.17 },
+        models: [],
+        tools: [],
+        compactions: [
+          {
+            id: "compaction:summary",
+            timestamp: "2026-02-02T11:00:00.000Z",
+            usage: { totalTokens: 17, cost: 0.17 },
+          },
+        ],
+        generations: [],
+        agents: [],
+        agentEvidence: "unavailable",
+        integrations: [],
+      },
+    });
+    assert.deepEqual(global.usage, { totalTokens: 17, cost: 0.17 });
+    assert.deepEqual(global.dates, [
+      {
+        date: "2026-02-02",
+        sessions: 1,
+        usage: { totalTokens: 17, cost: 0.17 },
+      },
+    ]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("folds native session usage once into deterministic sorted date rows and inclusive date filters", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    const global = await loadGlobalReport({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      dateRange: { from: "2026-02-02", to: "2026-02-02" },
+      maintenance,
+    });
+    assert.deepEqual(global, {
+      availability: "available",
+      sessions: [{ availability: "available", sessionId: "history-session" }],
+      usage: { totalTokens: 20, cost: 0.2 },
+      dates: [
+        {
+          date: "2026-02-02",
+          sessions: 1,
+          usage: { totalTokens: 20, cost: 0.2 },
+        },
+      ],
+      diagnostics: [],
+    });
+
+    const repeated = await loadGlobalReport({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      maintenance,
+    });
+    const repeatedAgain = await loadGlobalReport({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      maintenance,
+    });
+    assert.equal(renderJson(repeated), renderJson(repeatedAgain));
+    assert.deepEqual(
+      repeated.dates.map((row) => row.date),
+      ["2026-02-01", "2026-02-02"],
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});

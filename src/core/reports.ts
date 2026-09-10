@@ -94,7 +94,7 @@ export function toSessionReport(
     };
     current.generations++;
     current.totalTokens += generation.usage.totalTokens;
-    current.cost += generation.usage.cost;
+    current.cost = roundCost(current.cost + generation.usage.cost);
     models.set(key, current);
   }
   const projectedEvidence = projectEvidence(evidence);
@@ -325,6 +325,10 @@ function isIntegrationKey(
     typeof value === "string" &&
     INTEGRATION_KEYS.has(value as IntegrationObservation["integration"])
   );
+}
+
+function roundCost(value: number): number {
+  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
 function unavailableEvidence(): {

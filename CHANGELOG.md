@@ -4,6 +4,19 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Added
+
+- M6 self-contained offline HTML and deterministic JSON exports for current, history, and global report DTOs, with cache expiry/size maintenance and argv-safe HTML opening.
+- Current command supports HTML/JSON exports with the same bounded public `--subagents-artifact` evidence as TUI; `/ledger` opens directly on the lazy Ledger tab.
+
+### Changed
+
+- History and global reports accept only durable full-tree scope; malformed persisted JSONL is unavailable rather than partially counted.
+- Explicit `--output` files are user-owned and are preserved even when written within the generated-report cache.
+- Global chart controls expose only backed native daily cost and token data.
+
 ## [0.3.0]
 
 ### Added

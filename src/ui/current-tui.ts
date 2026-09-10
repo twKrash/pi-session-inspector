@@ -38,15 +38,17 @@ export function createCurrentTuiComponent({
   theme,
   requestRender,
   done,
+  initialTab = "overview",
 }: {
   model: CurrentTuiModel;
   load(scope: CurrentTuiModel["scope"]): Promise<CurrentTuiModel | undefined>;
   theme: Pick<Theme, "fg">;
+  initialTab?: CurrentTab;
   requestRender: () => void;
   done: () => void;
 }): CurrentTuiComponent {
   let currentModel = model;
-  let state: CurrentTuiState = { tab: "overview", scope: model.scope };
+  let state: CurrentTuiState = { tab: initialTab, scope: model.scope };
   let ledger: ReturnType<typeof buildLedger> | undefined;
   let latestScopeReload = 0;
 

@@ -7,6 +7,7 @@ import { test } from "node:test";
 type TrackPiSession = (options: {
   root: string;
   sessionId: string;
+  sourceFile: string;
   appendEntry(type: string, data: unknown): void;
   revalidateSession(): boolean;
 }) => Promise<boolean>;
@@ -30,6 +31,7 @@ test("returns false rather than throwing for invalid tracking input", async () =
       await trackPiSession({
         root: tmpdir(),
         sessionId: "../outside",
+        sourceFile: "session.jsonl",
         appendEntry: () => undefined,
         revalidateSession: () => true,
       }),
@@ -49,6 +51,7 @@ test("does not mark or promote when session revalidation fails after pending met
       await trackPiSession({
         root,
         sessionId: "session-1",
+        sourceFile: "session-1.jsonl",
         appendEntry: (type) => calls.push(type),
         revalidateSession: () => false,
       }),
@@ -60,7 +63,7 @@ test("does not mark or promote when session revalidation fails after pending met
         join(root, "sessions", "session-1", "meta.json.pending"),
         "utf8",
       ),
-      '{"schemaVersion":1,"sessionId":"session-1","state":"tracking"}\n',
+      '{"schemaVersion":2,"sessionId":"session-1","sourceFile":"session-1.jsonl","state":"tracking"}\n',
     );
     await assert.rejects(
       readFile(join(root, "sessions", "session-1", "meta.json"), "utf8"),
@@ -82,6 +85,7 @@ test("composes Inspector metadata with Pi's sole tracking marker write", async (
       await trackPiSession({
         root,
         sessionId: "session-1",
+        sourceFile: "session-1.jsonl",
         appendEntry: (type, data) =>
           calls.push(`${type}:${JSON.stringify(data)}`),
         revalidateSession: () => true,
@@ -93,7 +97,7 @@ test("composes Inspector metadata with Pi's sole tracking marker write", async (
     ]);
     assert.equal(
       await readFile(join(root, "sessions", "session-1", "meta.json"), "utf8"),
-      '{"schemaVersion":1,"sessionId":"session-1","state":"tracking"}\n',
+      '{"schemaVersion":2,"sessionId":"session-1","sourceFile":"session-1.jsonl","state":"tracking"}\n',
     );
   } finally {
     await rm(root, { force: true, recursive: true });

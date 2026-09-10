@@ -29,6 +29,12 @@ export function selectScope(
   return path.reverse();
 }
 
+export function hasTrackingStartMarker(
+  entries: readonly SessionEntry[],
+): boolean {
+  return entries.some(isTrackingStartMarker);
+}
+
 function isTrackingStartMarker(entry: SessionEntry): boolean {
   return (
     entry.type === "custom" &&

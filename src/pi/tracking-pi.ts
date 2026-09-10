@@ -5,17 +5,19 @@ import { startTracking } from "./tracking.ts";
 export async function trackPiSession({
   root,
   sessionId,
+  sourceFile,
   appendEntry,
   revalidateSession,
 }: {
   root: string;
   sessionId: string;
+  sourceFile: string;
   appendEntry(type: string, data: unknown): void;
   revalidateSession(): boolean;
 }): Promise<boolean> {
   try {
     return await startTracking(
-      createTrackingStorage({ root, sessionId, appendEntry }),
+      createTrackingStorage({ root, sessionId, sourceFile, appendEntry }),
       sessionId,
       revalidateSession,
     );

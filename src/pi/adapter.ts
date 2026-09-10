@@ -5,6 +5,7 @@ export type ParsedSession = {
   hasSessionHeader: boolean;
   entries: SessionEntry[];
   unknownEntryCount: number;
+  hasMalformedJson: boolean;
 };
 
 const knownTypes = new Set([
@@ -23,6 +24,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
   let id = "unknown-session";
   let hasSessionHeader = false;
   let unknownEntryCount = 0;
+  let hasMalformedJson = false;
   const entries: SessionEntry[] = [];
 
   for (const line of source.split("\n")) {
@@ -31,6 +33,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
     try {
       value = JSON.parse(line);
     } catch {
+      hasMalformedJson = true;
       unknownEntryCount++;
       continue;
     }
@@ -54,7 +57,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
     entries.push(value);
   }
 
-  return { id, hasSessionHeader, entries, unknownEntryCount };
+  return { id, hasSessionHeader, entries, unknownEntryCount, hasMalformedJson };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

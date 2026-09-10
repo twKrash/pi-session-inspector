@@ -19,7 +19,7 @@ export async function loadCurrentSessionReport(
 
   try {
     const session = parseSessionJsonl(await readFile(sessionFile, "utf8"));
-    if (!session.hasSessionHeader) return undefined;
+    if (!session.hasSessionHeader || session.hasMalformedJson) return undefined;
     if (
       scope === "active" &&
       (leafId === null || !session.entries.some((entry) => entry.id === leafId))

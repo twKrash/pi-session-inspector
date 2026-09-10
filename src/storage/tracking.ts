@@ -5,10 +5,12 @@ import type { TrackingStorage } from "../pi/tracking.ts";
 
 const ASCII_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MAX_SESSION_ID_LENGTH = 128;
+const MAX_SOURCE_FILE_LENGTH = 255;
 
 export type TrackingMetadata = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   sessionId: string;
+  sourceFile: string;
   state: "tracking";
 };
 
@@ -18,6 +20,18 @@ export function isTrackingSessionId(sessionId: string): boolean {
     sessionId.length > 0 &&
     sessionId.length <= MAX_SESSION_ID_LENGTH &&
     ASCII_TOKEN.test(sessionId)
+  );
+}
+
+/** Returns whether a Pi source filename is a bounded direct JSONL basename. */
+export function isTrackingSourceFile(sourceFile: string): boolean {
+  return (
+    sourceFile.length > ".jsonl".length &&
+    sourceFile.length <= MAX_SOURCE_FILE_LENGTH &&
+    sourceFile.endsWith(".jsonl") &&
+    !sourceFile.includes("/") &&
+    !sourceFile.includes("\\") &&
+    !sourceFile.includes("\0")
   );
 }
 
@@ -36,14 +50,21 @@ export function parseTrackingMetadata(
   }
   const metadata = value as Partial<TrackingMetadata>;
   if (
-    metadata.schemaVersion !== 1 ||
+    metadata.schemaVersion !== 2 ||
     metadata.sessionId !== sessionId ||
+    typeof metadata.sourceFile !== "string" ||
+    !isTrackingSourceFile(metadata.sourceFile) ||
     metadata.state !== "tracking" ||
     !isTrackingSessionId(sessionId)
   ) {
     return undefined;
   }
-  return { schemaVersion: 1, sessionId, state: "tracking" };
+  return {
+    schemaVersion: 2,
+    sessionId,
+    sourceFile: metadata.sourceFile,
+    state: "tracking",
+  };
 }
 
 /** Returns the Inspector-owned manifest paths for a validated session ID. */
@@ -70,23 +91,33 @@ function validateSessionId(sessionId: string): void {
   }
 }
 
+function validateSourceFile(sourceFile: string): void {
+  if (!isTrackingSourceFile(sourceFile)) {
+    throw new TypeError("sourceFile must be a direct .jsonl basename");
+  }
+}
+
 /** Creates Inspector-owned metadata storage for one Pi session. */
 export function createTrackingStorage({
   root,
   sessionId,
+  sourceFile,
   appendEntry,
 }: {
   root: string;
   sessionId: string;
+  sourceFile: string;
   appendEntry(type: string, data: unknown): void;
 }): TrackingStorage {
   const { sessionDirectory, pendingPath, metadataPath } = trackingMetadataPaths(
     root,
     sessionId,
   );
+  validateSourceFile(sourceFile);
   const metadata = `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     sessionId,
+    sourceFile,
     state: "tracking",
   } satisfies TrackingMetadata)}\n`;
 

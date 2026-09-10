@@ -4,6 +4,7 @@ import { test } from "node:test";
 type SessionManager = {
   getSessionId(): string;
   getSessionFile(): string | undefined;
+  getSessionDir(): string;
 };
 
 type Register = (
@@ -21,6 +22,7 @@ type Register = (
   track: (input: {
     root: string;
     sessionId: string;
+    sourceFile: string;
     appendEntry(type: string, data: unknown): void;
     revalidateSession(): boolean;
   }) => Promise<boolean>,
@@ -58,8 +60,8 @@ test("starts tracking from public session context without reading event payload"
         calls.push(`${type}:${JSON.stringify(data)}`),
     },
     "/agent/session-inspector/v1",
-    async ({ root, sessionId, appendEntry }) => {
-      calls.push(`${root}:${sessionId}`);
+    async ({ root, sessionId, sourceFile, appendEntry }) => {
+      calls.push(`${root}:${sessionId}:${sourceFile}`);
       appendEntry("session-inspector:tracking-start", { schemaVersion: 1 });
       return true;
     },
@@ -72,13 +74,14 @@ test("starts tracking from public session context without reading event payload"
       {
         sessionManager: {
           getSessionFile: () => "/sessions/session-1.jsonl",
+          getSessionDir: () => "/sessions",
           getSessionId: () => "session-1",
         },
       },
     ),
   );
   assert.deepEqual(calls, [
-    "/agent/session-inspector/v1:session-1",
+    "/agent/session-inspector/v1:session-1:session-1.jsonl",
     'session-inspector:tracking-start:{"schemaVersion":1}',
   ]);
 });
@@ -115,6 +118,7 @@ test("passes a synchronous captured session ID and file revalidation to tracking
     sessionManager: {
       getSessionId: () => currentSessionId,
       getSessionFile: () => currentSessionFile,
+      getSessionDir: () => "/sessions",
     },
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -124,6 +128,50 @@ test("passes a synchronous captured session ID and file revalidation to tracking
   currentSessionId = "session-2";
   currentSessionFile = "/sessions/session-2.jsonl";
   assert.equal(revalidate(), false);
+});
+
+test("admits only a JSONL file directly inside Pi's public session directory", async () => {
+  const registerSessionStartTracking = await loadRegister();
+  assert.ok(registerSessionStartTracking);
+
+  let handler:
+    | ((
+        event: unknown,
+        context: { sessionManager: SessionManager },
+      ) => Promise<void>)
+    | undefined;
+  let calls = 0;
+  registerSessionStartTracking(
+    {
+      on: (_event, registered) => {
+        handler = registered;
+      },
+      appendEntry: () => undefined,
+    },
+    "/agent/session-inspector/v1",
+    async () => {
+      calls += 1;
+      return true;
+    },
+  );
+
+  assert.ok(handler);
+  await handler(undefined, {
+    sessionManager: {
+      getSessionId: () => "session-1",
+      getSessionFile: () => "/other/session-1.jsonl",
+      getSessionDir: () => "/sessions",
+    },
+  });
+  await handler(undefined, {
+    sessionManager: {
+      getSessionId: () => "session-1",
+      getSessionFile: () => "/sessions/session-1.txt",
+      getSessionDir: () => "/sessions",
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(calls, 0);
 });
 
 test("does nothing for ephemeral sessions without a session file", async () => {
@@ -159,6 +207,7 @@ test("does nothing for ephemeral sessions without a session file", async () => {
     handler(undefined, {
       sessionManager: {
         getSessionFile: () => undefined,
+        getSessionDir: () => "/sessions",
         getSessionId: () => {
           throw new Error("must not read ephemeral session ID");
         },
@@ -196,6 +245,7 @@ test("returns before a tracker promise settles", async () => {
   void handler(undefined, {
     sessionManager: {
       getSessionFile: () => "/sessions/session-1.jsonl",
+      getSessionDir: () => "/sessions",
       getSessionId: () => "session-1",
     },
   }).then(() => {
@@ -233,6 +283,7 @@ test("swallows session lookup and tracking failures", async () => {
     handler(undefined, {
       sessionManager: {
         getSessionFile: () => "/sessions/session-1.jsonl",
+        getSessionDir: () => "/sessions",
         getSessionId: () => {
           throw new Error("unavailable");
         },

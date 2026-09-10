@@ -223,6 +223,7 @@ async function claimAndRemoveLease({
 }): Promise<boolean> {
   const ownedClaimDirectory = await acquireReclaimClaim(
     claimDirectory,
+    claimDirectory,
     claim,
     now,
     isPidAlive,
@@ -255,6 +256,7 @@ async function claimAndRemoveLease({
 /** A complete claim lets a future dead-PID contender recover a crashed reclaimer. */
 async function acquireReclaimClaim(
   claimDirectory: string,
+  claimRootDirectory: string,
   claim: LeaseOwner,
   now: number,
   isPidAlive: (pid: number) => boolean,
@@ -282,7 +284,8 @@ async function acquireReclaimClaim(
   // Never delete an observed claim: its immutable successor is a fresh atomic
   // handoff, so a delayed crashed-claim cleaner cannot erase a new holder.
   return acquireReclaimClaim(
-    handoffClaimDirectory(claimDirectory, previousClaimText),
+    handoffClaimDirectory(claimRootDirectory, previousClaimText),
+    claimRootDirectory,
     claim,
     now,
     isPidAlive,
@@ -338,10 +341,12 @@ function reclaimDirectory(leaseDirectory: string, owner: string): string {
 }
 
 function handoffClaimDirectory(
-  claimDirectory: string,
+  claimRootDirectory: string,
   previousClaim: string,
 ): string {
-  return `${claimDirectory}.handoff-${createHash("sha256")
+  // Every successor is anchored at the original immutable claim path. This
+  // preserves atomic handoff without growing a pathname per abandoned claim.
+  return `${claimRootDirectory}.handoff-${createHash("sha256")
     .update(previousClaim)
     .digest("hex")}`;
 }

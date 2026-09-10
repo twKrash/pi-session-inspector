@@ -4,6 +4,7 @@ import { test } from "node:test";
 type SessionManager = {
   getSessionId(): string;
   getSessionFile(): string | undefined;
+  getSessionDir(): string;
 };
 
 type SessionStartApi = {
@@ -46,6 +47,7 @@ async function loadRegisterTracking(): Promise<RegisterTracking | undefined> {
 const durableManager = (): SessionManager => ({
   getSessionId: () => "session-1",
   getSessionFile: () => "/sessions/session-1.jsonl",
+  getSessionDir: () => "/sessions",
 });
 
 test("wires session-start tracking beneath Pi's public agent directory", async () => {

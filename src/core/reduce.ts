@@ -8,6 +8,9 @@ import type {
 } from "./events.ts";
 
 const zeroUsage: Usage = { totalTokens: 0, cost: 0 };
+const MAX_REPORT_LABEL_BYTES = 128;
+const REDACTED = "[REDACTED]";
+const encoder = new TextEncoder();
 
 export function reduceEntries(
   sessionId: string,
@@ -27,8 +30,8 @@ export function reduceEntries(
         const generation = {
           id: `generation:${entry.id}`,
           timestamp: entry.timestamp,
-          provider: stringOr(message.provider, "unknown"),
-          model: stringOr(message.model, "unknown"),
+          provider: reportLabel(message.provider, "unknown"),
+          model: reportLabel(message.model, "unknown"),
           usage: generationUsage,
         };
         generations.push(generation);
@@ -37,7 +40,7 @@ export function reduceEntries(
           const tool = {
             id: `tool:${call.id}`,
             timestamp: entry.timestamp,
-            name: call.name,
+            name: reportLabel(call.name, "unknown"),
             status: "interrupted" as const,
             usage: { ...zeroUsage },
           };
@@ -45,7 +48,9 @@ export function reduceEntries(
           toolsByCallId.set(call.id, tool);
         }
       } else if (message.role === "toolResult") {
-        const tool = toolsByCallId.get(stringOr(message.toolCallId, ""));
+        const tool = toolsByCallId.get(
+          typeof message.toolCallId === "string" ? message.toolCallId : "",
+        );
         if (tool) {
           tool.status = message.isError === true ? "failed" : "succeeded";
           tool.usage = readUsage(message.usage);
@@ -53,7 +58,7 @@ export function reduceEntries(
         }
       }
     }
-    if (entry.type === "compaction") {
+    if (entry.type === "compaction" || entry.type === "branch_summary") {
       const compactionUsage = readUsage(entry.usage);
       compactions.push({
         id: `compaction:${entry.id}`,
@@ -104,6 +109,30 @@ function finite(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function stringOr(value: unknown, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
+function reportLabel(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  if (
+    encoder.encode(value).byteLength > MAX_REPORT_LABEL_BYTES ||
+    secretLikeValue(value)
+  ) {
+    return REDACTED;
+  }
+  return value;
+}
+
+function secretLikeValue(value: string): boolean {
+  return (
+    /(?:secret|token|password|credential)/i.test(value) ||
+    /(?:^|\s)bearer\s+\S+/i.test(value) ||
+    /-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(value) ||
+    /(?:[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/.test(value) ||
+    /\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/.test(
+      value,
+    ) ||
+    /[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]+@/i.test(value) ||
+    /^[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S+/.test(value) ||
+    /(?:^|[\\/])\.env(?:[.\\/]|$)|(?:^|[\\/])(?:credentials?|secrets?)(?:[.\\/]|$)/i.test(
+      value,
+    )
+  );
 }

@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import registerSessionInspector from "../../src/index.ts";
+import { renderHtml } from "../../src/ui/html.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 
 type CommandHandler = (
@@ -55,6 +56,18 @@ test("loads a durable current session report and leaves ephemeral sessions unava
   assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
   await writeFile(file, "not JSONL\n");
   assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
+  await writeFile(
+    file,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z"}',
+      "{ malformed JSONL",
+    ].join("\n"),
+  );
+  assert.equal(
+    await loadCurrentSessionReport(file, "active", "entry-1"),
+    undefined,
+  );
 });
 
 test("projects persisted Pi-entry integration evidence in the production loader", async () => {
@@ -286,6 +299,58 @@ test("loads a public subagent artifact supplied to the production command for ac
   );
 });
 
+test("preserves supplied public subagent evidence in current JSON export without rendering the artifact path", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  const artifactFile = join(directory, "public artifact.json");
+  const output = join(directory, "report.json");
+  await writeFile(
+    sessionFile,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
+    ].join("\n"),
+  );
+  const artifacts = JSON.parse(
+    await readFile("tests/fixtures/integrations/subagents.json", "utf8"),
+  ) as { foreground: unknown };
+  await writeFile(artifactFile, JSON.stringify(artifacts.foreground));
+
+  const handlerRef: { current?: CommandHandler } = {};
+  registerCommand(handlerRef);
+  assert.ok(handlerRef.current);
+  await handlerRef.current(
+    `current --format json --output "${output}" --subagents-artifact "${artifactFile}"`,
+    {
+      mode: "interactive",
+      sessionManager: {
+        getLeafId: () => "entry-1",
+        getSessionFile: () => sessionFile,
+        getSessionDir: () => directory,
+      },
+      ui: { notify: () => {}, custom: async () => assert.fail("must export") },
+    } as unknown as ExtensionCommandContext,
+  );
+  const rendered = await readFile(output, "utf8");
+  assert.match(rendered, /"agentEvidence":"supported"/);
+  assert.equal(rendered.includes(artifactFile), false);
+  const model = await loadCurrentSessionReport(
+    sessionFile,
+    "active",
+    "entry-1",
+    artifacts.foreground,
+  );
+  assert.ok(model);
+  assert.equal(model.report.agentEvidence, "supported");
+  const html = renderHtml({
+    kind: "current",
+    report: model.report,
+    scope: "active",
+  });
+  assert.match(html, /"agents":\[/);
+  assert.equal(html.includes(artifactFile), false);
+});
+
 test("treats a missing public subagent artifact as unavailable", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const sessionFile = join(directory, "session.jsonl");
@@ -318,6 +383,41 @@ test("treats a missing public subagent artifact as unavailable", async () => {
         for (let index = 0; index < 4; index++)
           component.handleInput?.("\u001B[C");
         assert.ok(component.render(120).some((line) => line === "Unavailable"));
+      },
+    },
+  } as unknown as ExtensionCommandContext);
+});
+
+test("opens /ledger directly on the lazy Ledger tab", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const file = join(directory, "session.jsonl");
+  await writeFile(
+    file,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
+    ].join("\n"),
+  );
+  const handlerRef: { current?: CommandHandler } = {};
+  registerCommand(handlerRef);
+  assert.ok(handlerRef.current);
+  await handlerRef.current("ledger", {
+    mode: "tui",
+    sessionManager: { getLeafId: () => "entry-1", getSessionFile: () => file },
+    ui: {
+      notify: () => assert.fail("must open the ledger"),
+      custom: async (factory: CustomFactory) => {
+        const component = await factory(
+          { requestRender: () => {} } as never,
+          { fg: (_color: string, text: string) => text } as never,
+          undefined as never,
+          () => {},
+        );
+        assert.ok(
+          component
+            .render(120)
+            .some((line) => line.includes("Ledger events: 1")),
+        );
       },
     },
   } as unknown as ExtensionCommandContext);

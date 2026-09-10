@@ -7,6 +7,7 @@ import { test } from "node:test";
 type CreateStorage = (options: {
   root: string;
   sessionId: string;
+  sourceFile: string;
   appendEntry(type: string, data: unknown): void;
 }) => {
   writePending(sessionId: string): Promise<void>;
@@ -36,6 +37,7 @@ test("persists pending metadata, appends one namespaced marker, then atomically 
     const storage = createTrackingStorage({
       root,
       sessionId: "session-1",
+      sourceFile: "session-1.jsonl",
       appendEntry: (type, data) =>
         calls.push(`${type}:${JSON.stringify(data)}`),
     });
@@ -49,7 +51,7 @@ test("persists pending metadata, appends one namespaced marker, then atomically 
     ]);
     assert.equal(
       await readFile(join(root, "sessions", "session-1", "meta.json"), "utf8"),
-      '{"schemaVersion":1,"sessionId":"session-1","state":"tracking"}\n',
+      '{"schemaVersion":2,"sessionId":"session-1","sourceFile":"session-1.jsonl","state":"tracking"}\n',
     );
     await assert.rejects(
       readFile(
@@ -72,6 +74,7 @@ test("rejects path-unsafe or mismatched session IDs before storage access", asyn
       createTrackingStorage({
         root: tmpdir(),
         sessionId: "../outside",
+        sourceFile: "session.jsonl",
         appendEntry: () => undefined,
       }),
     /path-safe ASCII token/,
@@ -82,6 +85,7 @@ test("rejects path-unsafe or mismatched session IDs before storage access", asyn
     const storage = createTrackingStorage({
       root,
       sessionId: "session-1",
+      sourceFile: "session-1.jsonl",
       appendEntry: () => undefined,
     });
 
