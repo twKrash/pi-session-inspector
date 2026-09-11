@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { readCheckpoint } from "../storage/checkpoint.ts";
+import { boundInventorySnapshot } from "../storage/inventory-snapshot.ts";
 import { readFile } from "node:fs/promises";
 import type { Scope } from "../core/events.ts";
 import { reduceEntries } from "../core/reduce.ts";
@@ -54,7 +55,12 @@ export async function loadCurrentSessionReport(
         agents: readSubagentRuns(subagentArtifact),
         presence: observation?.presence,
         counters: observation?.counters,
-        inventory: observation?.inventory,
+        // The in-memory snapshot is the unbounded read; consume the same bounded
+        // form the writer persists so reports never include trimmed descriptions.
+        inventory:
+          observation?.inventory === undefined
+            ? undefined
+            : boundInventorySnapshot(observation.inventory),
         integrations: readPiEntryEvidence(entries),
       }),
       scope,

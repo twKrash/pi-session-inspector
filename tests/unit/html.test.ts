@@ -63,6 +63,15 @@ const report: SessionReport = {
   agentEvidence: "unavailable",
   integrations: [],
   durationEvidence: "unavailable",
+  commands: { state: "unavailable", items: [], count: null },
+  skills: {
+    state: "unavailable",
+    items: [],
+    invocationState: "unavailable",
+    invocationCount: null,
+    otherInvocations: null,
+  },
+  resources: { state: "unavailable", items: [] },
   errors: [],
 };
 
@@ -185,6 +194,15 @@ const richReport: SessionReport = {
     },
   ],
   durationEvidence: "supported",
+  commands: { state: "unavailable", items: [], count: null },
+  skills: {
+    state: "unavailable",
+    items: [],
+    invocationState: "unavailable",
+    invocationCount: null,
+    otherInvocations: null,
+  },
+  resources: { state: "unavailable", items: [] },
   errors: [
     {
       id: "tool:call-b",
@@ -244,6 +262,7 @@ function globalReport(): HtmlReport {
         },
       ],
       diagnostics: [],
+      inventory: { commands: null, skills: null, resources: null },
     },
   };
 }

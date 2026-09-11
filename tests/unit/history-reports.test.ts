@@ -8,12 +8,25 @@ import {
   loadGlobalReport,
   loadHistoryReports,
 } from "../../src/ui/load-history.ts";
+import { readInventory } from "../../src/integrations/inventory.ts";
 import { renderJson } from "../../src/ui/json.ts";
 
 const maintenance = {
   writerId: "maintainer-1",
   now: () => new Date("2026-02-03T12:00:00.000Z"),
   isPidAlive: () => false,
+};
+
+const unavailableInventory = {
+  commands: { state: "unavailable", items: [], count: null },
+  skills: {
+    state: "unavailable",
+    items: [],
+    invocationState: "unavailable",
+    invocationCount: null,
+    otherInvocations: null,
+  },
+  resources: { state: "unavailable", items: [] },
 };
 
 async function createHistoryRoot(): Promise<{
@@ -91,6 +104,7 @@ test("replays manifest-discovered history through the shared session report pipe
             agentEvidence: "unavailable",
             integrations: [],
             durationEvidence: "unavailable",
+            ...unavailableInventory,
             errors: [],
           },
         },
@@ -254,6 +268,7 @@ test("preserves branch-summary usage once through history and global reports", a
         agentEvidence: "unavailable",
         integrations: [],
         durationEvidence: "unavailable",
+        ...unavailableInventory,
       },
     });
     assert.deepEqual(global.usage, { totalTokens: 17, cost: 0.17 });
@@ -326,6 +341,7 @@ test("folds native session usage once into deterministic sorted date rows and in
           usage: { totalTokens: 20, cost: 0.2 },
         },
       ],
+      inventory: { commands: null, skills: null, resources: null },
       diagnostics: [],
     });
 
@@ -346,6 +362,138 @@ test("folds native session usage once into deterministic sorted date rows and in
       repeated.dates.map((row) => row.date),
       ["2026-02-01", "2026-02-02"],
     );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("reads history counters from checkpoint aggregates and counts after the snapshot expires", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    await writeFile(
+      join(root, "sessions", "history-session", "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: {
+          pi: { lineCount: 3, revision: "0".repeat(64) },
+          wal: {},
+        },
+        aggregates: {
+          totalTokens: 30,
+          totalCost: 0.3,
+          generations: 2,
+          tools: 0,
+          compactions: 0,
+          integrationCounters: { permission: { decisions: 2 } },
+          skillInvocations: { "council-mode": 3 },
+          skillOverflowInvocations: 2,
+          presence: { permission: true },
+          resourceCounts: { commands: 9, skills: 4 },
+        },
+      }),
+    );
+    const options = {
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree" as const,
+      maintenance,
+    };
+
+    const history = await loadHistoryReports(options);
+    const session = history.sessions[0];
+    assert.equal(session?.availability, "available");
+    if (session?.availability !== "available") return;
+
+    assert.equal(session.report.commands.state, "unavailable");
+    assert.equal(session.report.commands.count, 9);
+    assert.deepEqual(session.report.commands.items, []);
+    assert.equal(session.report.skills.state, "unavailable");
+    assert.equal(session.report.skills.invocationState, "supported");
+    assert.equal(session.report.skills.invocationCount, 5);
+    assert.equal(session.report.skills.otherInvocations, 2);
+    assert.deepEqual(session.report.skills.items, [
+      { name: "council-mode", explicitInvocations: 3 },
+    ]);
+    assert.equal(
+      session.report.integrations.find(
+        (row) => row.integration === "permission",
+      )?.presence,
+      "present",
+    );
+
+    const global = await loadGlobalReport(options);
+    assert.deepEqual(global.inventory, {
+      commands: 9,
+      skills: 4,
+      resources: null,
+    });
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("projects history inventory rows from the persisted snapshot", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    const snapshot = readInventory(
+      [
+        {
+          name: "ponytail",
+          source: "extension",
+          sourceInfo: {
+            path: "/x",
+            source: "npm:ponytail",
+            scope: "user",
+            origin: "package",
+          },
+        },
+      ],
+      [
+        {
+          name: "subagent",
+          parameters: {},
+          sourceInfo: {
+            path: "/y",
+            source: "npm:pi-subagents",
+            scope: "user",
+            origin: "package",
+          },
+        },
+      ],
+    );
+    await writeFile(
+      join(root, "sessions", "history-session", "inventory.json"),
+      JSON.stringify(snapshot),
+    );
+    const options = {
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree" as const,
+      maintenance,
+    };
+
+    const history = await loadHistoryReports(options);
+    const session = history.sessions[0];
+    assert.equal(session?.availability, "available");
+    if (session?.availability !== "available") return;
+
+    assert.equal(session.report.commands.state, "supported");
+    assert.equal(session.report.commands.count, 1);
+    assert.equal(session.report.commands.items[0]?.name, "ponytail");
+    assert.equal(session.report.resources.state, "supported");
+    assert.equal(session.report.resources.items.length, 2);
+    assert.equal(
+      session.report.integrations.find((row) => row.integration === "ponytail")
+        ?.presence,
+      "present",
+    );
+
+    const global = await loadGlobalReport(options);
+    assert.deepEqual(global.inventory, {
+      commands: null,
+      skills: null,
+      resources: 2,
+    });
   } finally {
     await rm(root, { force: true, recursive: true });
   }

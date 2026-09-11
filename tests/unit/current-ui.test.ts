@@ -26,6 +26,15 @@ const report: SessionReport = {
   agentEvidence: "unavailable",
   integrations: [],
   durationEvidence: "unavailable",
+  commands: { state: "unavailable", items: [], count: null },
+  skills: {
+    state: "unavailable",
+    items: [],
+    invocationState: "unavailable",
+    invocationCount: null,
+    otherInvocations: null,
+  },
+  resources: { state: "unavailable", items: [] },
   errors: [],
 };
 
