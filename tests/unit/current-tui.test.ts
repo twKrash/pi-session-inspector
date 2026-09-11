@@ -73,12 +73,60 @@ function renderTab(
 
 test("renders inventory, presence, agent activity, and bounded error messages", () => {
   const model = modelWith({
-    commands: { state: "supported", count: 1, items: [{ name: "ponytail", source: "extension", sourceLabel: "npm:ponytail", scope: "user", origin: "package" }] },
-    skills: { state: "supported", invocationState: "supported", invocationCount: 2, otherInvocations: 0, items: [{ name: "council-mode", explicitInvocations: 2 }] },
-    resources: { state: "supported", items: [{ sourceLabel: "npm:ponytail", scope: "user", origin: "package", commands: 1, skills: 0, prompts: 0, tools: 0 }] },
-    agentActivity: { state: "supported", calls: 3, succeeded: 1, failed: 1, interrupted: 1, tools: [{ name: "subagent", calls: 2 }] },
-    integrations: [{ integration: "caveman", presence: "absent", state: "unavailable" }],
-    errors: [{ id: "generation:a1", timestamp: "2026-09-11T10:00:00Z", kind: "generation-error", confidence: "native", message: "429 rate limit from [URL]" }],
+    commands: {
+      state: "supported",
+      count: 1,
+      items: [
+        {
+          name: "ponytail",
+          source: "extension",
+          sourceLabel: "npm:ponytail",
+          scope: "user",
+          origin: "package",
+        },
+      ],
+    },
+    skills: {
+      state: "supported",
+      invocationState: "supported",
+      invocationCount: 2,
+      otherInvocations: 0,
+      items: [{ name: "council-mode", explicitInvocations: 2 }],
+    },
+    resources: {
+      state: "supported",
+      items: [
+        {
+          sourceLabel: "npm:ponytail",
+          scope: "user",
+          origin: "package",
+          commands: 1,
+          skills: 0,
+          prompts: 0,
+          tools: 0,
+        },
+      ],
+    },
+    agentActivity: {
+      state: "supported",
+      calls: 3,
+      succeeded: 1,
+      failed: 1,
+      interrupted: 1,
+      tools: [{ name: "subagent", calls: 2 }],
+    },
+    integrations: [
+      { integration: "caveman", presence: "absent", state: "unavailable" },
+    ],
+    errors: [
+      {
+        id: "generation:a1",
+        timestamp: "2026-09-11T10:00:00Z",
+        kind: "generation-error",
+        confidence: "native",
+        message: "429 rate limit from [URL]",
+      },
+    ],
   });
 
   assert.match(renderTab(model, "commands").join("\n"), /ponytail/);
@@ -86,6 +134,28 @@ test("renders inventory, presence, agent activity, and bounded error messages", 
   assert.match(renderTab(model, "agents").join("\n"), /Calls: 3/);
   assert.match(renderTab(model, "integrations").join("\n"), /Not observed/);
   assert.match(renderTab(model, "errors").join("\n"), /429 rate limit/);
+});
+
+test("keeps counted skill names visible after the inventory expires", () => {
+  const expired = modelWith({
+    skills: {
+      state: "unavailable",
+      invocationState: "supported",
+      invocationCount: 2,
+      otherInvocations: 0,
+      items: [{ name: "council-mode", explicitInvocations: 2 }],
+    },
+  });
+
+  const lines = renderTab(expired, "skills");
+  const rendered = lines.join("\n");
+  assert.match(rendered, /council-mode/);
+  assert.match(rendered, /invocations: 2/);
+  assert.match(rendered, /Inventory: Unavailable/);
+  assert.ok(!lines.includes("Unavailable"));
+
+  const empty = renderTab(modelWith({}), "skills");
+  assert.ok(empty.includes("Unavailable"));
 });
 
 test("renders fixed tabs, changes scope, and closes", async () => {

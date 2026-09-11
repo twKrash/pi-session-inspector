@@ -201,32 +201,57 @@ export function createCurrentTuiComponent({
 
   function renderSkills(): string[] {
     const skills = currentModel.report.skills;
-    // The inventory is the tab's spine: without it the tab degrades wholesale
-    // rather than fabricating rows from counted names alone.
-    if (skills.state !== "supported") {
-      return [evidenceLabel(skills.state), INVENTORY_NOT_INVOCATIONS];
-    }
-    if (skills.items.length === 0) {
-      return ["No skills inventory", INVENTORY_NOT_INVOCATIONS];
-    }
     const countsKnown = skills.invocationState === "supported";
-    return [
-      `Skills: ${skills.items.length}`,
-      INVENTORY_NOT_INVOCATIONS,
+    const countsSummary = [
       ...(countsKnown && skills.invocationCount !== null
         ? [`Invocations: ${skills.invocationCount}`]
         : []),
       ...(skills.otherInvocations === null || skills.otherInvocations === 0
         ? []
         : [`+ ${skills.otherInvocations} other invocations`]),
-      ...skills.items.flatMap((skill) => [
-        `Skill: ${skill.name}`,
-        // An absent per-skill count is unknown evidence, never zero.
-        `invocations: ${skill.explicitInvocations ?? "Unavailable"}`,
-        `Source: ${skill.sourceLabel ?? "Unavailable"}`,
-        `Scope: ${skill.scope ?? "Unavailable"}`,
-      ]),
     ];
+
+    if (skills.state !== "supported") {
+      // Durable invocation counts outlive the inventory snapshot. An expired
+      // inventory shows the counted names with `state: "unavailable"`, never a
+      // fabricated list; a wholesale `Unavailable` is only correct when there
+      // is nothing at all to show (no rows and no counts).
+      const hasCounts =
+        countsKnown ||
+        (skills.invocationCount !== null && skills.invocationCount > 0) ||
+        (skills.otherInvocations !== null && skills.otherInvocations > 0);
+      if (skills.items.length === 0 && !hasCounts) {
+        return [evidenceLabel(skills.state), INVENTORY_NOT_INVOCATIONS];
+      }
+      return [
+        `Inventory: ${evidenceLabel(skills.state)}`,
+        INVENTORY_NOT_INVOCATIONS,
+        ...countsSummary,
+        ...renderSkillRows(skills.items),
+      ];
+    }
+
+    if (skills.items.length === 0) {
+      return ["No skills inventory", INVENTORY_NOT_INVOCATIONS];
+    }
+    return [
+      `Skills: ${skills.items.length}`,
+      INVENTORY_NOT_INVOCATIONS,
+      ...countsSummary,
+      ...renderSkillRows(skills.items),
+    ];
+  }
+
+  function renderSkillRows(
+    items: CurrentTuiModel["report"]["skills"]["items"],
+  ): string[] {
+    return items.flatMap((skill) => [
+      `Skill: ${skill.name}`,
+      // An absent per-skill count is unknown evidence, never zero.
+      `invocations: ${skill.explicitInvocations ?? "Unavailable"}`,
+      `Source: ${skill.sourceLabel ?? "Unavailable"}`,
+      `Scope: ${skill.scope ?? "Unavailable"}`,
+    ]);
   }
 
   function renderAgents(): string[] {
@@ -315,9 +340,7 @@ export function createCurrentTuiComponent({
   }
 }
 
-function presenceLabel(
-  presence: "present" | "absent" | "unknown",
-): string {
+function presenceLabel(presence: "present" | "absent" | "unknown"): string {
   switch (presence) {
     case "present":
       return "Present";
