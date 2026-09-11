@@ -42,12 +42,15 @@ export async function maintainSession({
   sessionId,
   sessionFile,
   writerId,
+  inventoryCounts,
   now = () => new Date(),
 }: {
   root: string;
   sessionId: string;
   sessionFile: string;
   writerId: string;
+  /** Current sanitized inventory counts; omitted preserves any stored value. */
+  inventoryCounts?: { commands: number; skills: number };
   now?: () => Date;
 }): Promise<MaintenanceResult> {
   const directory = join(root, "sessions", sessionId);
@@ -75,7 +78,8 @@ export async function maintainSession({
       foldedFromCheckpointAggregates(existing?.aggregates),
       recovered.deltaCounters,
     );
-    const resourceCounts = existing?.aggregates.resourceCounts;
+    const resourceCounts =
+      inventoryCounts ?? existing?.aggregates.resourceCounts;
     const reduced = reduceEntries(
       sessionId,
       selectScope(source.entries, null, "tree"),

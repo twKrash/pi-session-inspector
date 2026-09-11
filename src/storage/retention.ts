@@ -9,6 +9,7 @@ import { isMaintenanceLeaseHeld, type MaintenanceLease } from "./lease.js";
 const DATE_SEGMENT = /^(\d{4}-\d{2}-\d{2})(?:\.\d{4})?\.jsonl$/;
 const MAX_WAL_LINE_BYTES = 64 * 1024;
 const RETENTION_DAYS = 14;
+const INVENTORY_FILE_NAME = "inventory.json";
 
 /**
  * Removes only expired, checkpointed Inspector WAL segments while the
@@ -43,13 +44,18 @@ export async function pruneExpiredWalSegments({
   if (cutoff === undefined) return 0;
 
   let writers: Dir;
+  let deleted = 0;
+  try {
+    deleted += await pruneExpiredInventory({ directory, cutoff, remove });
+  } catch {
+    // Inventory expiry is observer-only and never blocks WAL maintenance.
+  }
   try {
     writers = await opendir(join(directory, "wal"), { encoding: "utf8" });
   } catch {
-    return 0;
+    return deleted;
   }
 
-  let deleted = 0;
   try {
     for await (const writer of writers) {
       if (!writer.isDirectory()) continue;
@@ -72,6 +78,40 @@ export async function pruneExpiredWalSegments({
     // A directory race leaves unvisited segments for the next maintenance pass.
   }
   return deleted;
+}
+
+/**
+ * Deletes `inventory.json` only when it is a regular file whose mtime date is
+ * strictly before the cutoff, re-verifying size/mtime/dev/ino immediately
+ * before unlink so a concurrent refresh aborts the deletion.
+ */
+async function pruneExpiredInventory({
+  directory,
+  cutoff,
+  remove,
+}: {
+  directory: string;
+  cutoff: string;
+  remove: (path: string) => Promise<void>;
+}): Promise<number> {
+  const path = join(directory, INVENTORY_FILE_NAME);
+  try {
+    const before = await stat(path);
+    if (!before.isFile()) return 0;
+    if (before.mtime.toISOString().slice(0, 10) >= cutoff) return 0;
+    const after = await stat(path);
+    if (
+      after.size !== before.size ||
+      after.mtimeMs !== before.mtimeMs ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino
+    )
+      return 0;
+    await remove(path);
+    return 1;
+  } catch {
+    return 0;
+  }
 }
 
 async function pruneWriter({

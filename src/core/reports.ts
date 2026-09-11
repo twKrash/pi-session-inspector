@@ -3,6 +3,7 @@ import {
   isKnownIntegrationVersion,
 } from "./integration-counter-allowlists.ts";
 import { MAX_COUNTER_KEYS, type FoldedCounters } from "./live-counter-fold.ts";
+import type { InventorySnapshot } from "../integrations/inventory.ts";
 import type {
   AgentRun,
   Compaction,
@@ -97,8 +98,8 @@ export type SessionReportEvidence = {
   presence?: Readonly<Record<IntegrationKey, IntegrationPresence>>;
   /** Effective folded counters (`merge(checkpoint, delta)`), never a delta alone. */
   counters?: FoldedCounters;
-  /** Sanitized inventory snapshot (Task 7 narrows this to `InventorySnapshot`). */
-  inventory?: unknown;
+  /** Sanitized inventory snapshot read at session start or on reload. */
+  inventory?: InventorySnapshot;
   duration?: DurationEvidence;
 };
 

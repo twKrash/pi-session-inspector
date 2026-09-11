@@ -15,12 +15,18 @@ import {
   registerLiveCounters as registerLiveCounterProducers,
 } from "./integrations/live-counters.ts";
 import { readIntegrationPresence } from "./integrations/presence.ts";
+import type { InventorySnapshot } from "./integrations/inventory.ts";
 import { registerLiveWal, type LiveWalWriter } from "./pi/live-wal.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
-import { registerSessionStartTracking } from "./pi/session-start.ts";
+import {
+  readSessionInventory,
+  refreshSessionInventory,
+  registerSessionStartTracking,
+} from "./pi/session-start.ts";
 import { setupSessionWal } from "./pi/session-wal.ts";
 import { trackPiSession } from "./pi/tracking-pi.ts";
 import { readCheckpoint } from "./storage/checkpoint.ts";
+import { refreshInventorySnapshot } from "./storage/inventory-snapshot.ts";
 import { recoverSession } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
 import { scheduleMaintenance } from "./storage/maintenance.ts";
@@ -54,6 +60,21 @@ const SUBAGENTS_ARTIFACT_OPTION = "--subagents-artifact";
 let liveWriter: LiveWalWriter | undefined;
 /** Live `permissions:ready` sighting in this process; durable presence is folded. */
 let liveReady = false;
+/** Sanitized inventory of the active tracked session, read after promotion. */
+let liveInventory: InventorySnapshot | undefined;
+/** Bounded skill names the live counter producers may count. */
+let liveInventoryNames: ReadonlySet<string> = new Set<string>();
+/** Active tracked session location, used to refresh the snapshot on reload. */
+let liveInventoryScope: { root: string; sessionId: string } | undefined;
+
+function rememberInventory(
+  inventory: InventorySnapshot,
+  scope: { root: string; sessionId: string },
+): void {
+  liveInventory = inventory;
+  liveInventoryNames = new Set(inventory.skills.map((skill) => skill.name));
+  liveInventoryScope = scope;
+}
 
 /** Flushes live evidence before a report read; failures never affect Pi. */
 export async function flushLiveEvidence(): Promise<void> {
@@ -176,6 +197,17 @@ export function registerTracking(
     async (input) => {
       const tracked = await track(input);
       if (tracked) {
+        // Build synchronously so the counter allowlist is ready before WAL
+        // setup; persistence is detached and observer-only.
+        const snapshot = readSessionInventory(api);
+        rememberInventory(snapshot, {
+          root: input.root,
+          sessionId: input.sessionId,
+        });
+        void refreshInventorySnapshot({
+          directory: join(input.root, "sessions", input.sessionId),
+          snapshot,
+        }).catch(() => undefined);
         try {
           schedule({
             root: input.root,
@@ -206,7 +238,21 @@ function scheduleProductionMaintenance({
   sessionId: string;
   sessionFile: string;
 }): void {
-  scheduleMaintenance({ root, sessionId, sessionFile, writerId: randomUUID() });
+  const inventory = liveInventory;
+  scheduleMaintenance({
+    root,
+    sessionId,
+    sessionFile,
+    writerId: randomUUID(),
+    ...(inventory === undefined
+      ? {}
+      : {
+          inventoryCounts: {
+            commands: inventory.commands.length,
+            skills: inventory.skills.length,
+          },
+        }),
+  });
 }
 
 function setupProductionSessionWal(input: {
@@ -238,6 +284,7 @@ function setupProductionSessionWal(input: {
       );
       observePermissionsReady(api);
     },
+    readInventoryNames: () => liveInventoryNames,
     scheduleMaintenance: scheduleProductionMaintenance,
   });
 }
@@ -303,6 +350,7 @@ async function readSessionObservation(input: {
         inventoryAvailable: false,
       }),
       counters,
+      ...(liveInventory === undefined ? {} : { inventory: liveInventory }),
     };
   } catch {
     return undefined;
@@ -421,6 +469,27 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
     track: trackPiSession,
     setupSessionWal: setupProductionSessionWal,
   });
+
+  try {
+    pi.on("resources_discover", (event) => {
+      try {
+        if (event.reason !== "reload") return;
+        const scope = liveInventoryScope;
+        if (scope === undefined) return;
+        void refreshSessionInventory({
+          api: pi,
+          root: scope.root,
+          sessionId: scope.sessionId,
+        })
+          .then((snapshot) => rememberInventory(snapshot, scope))
+          .catch(() => undefined);
+      } catch {
+        // Inventory refresh is observer-only and must not alter Pi execution.
+      }
+    });
+  } catch {
+    // Resource-discovery registration is best-effort.
+  }
 
   for (const name of ["session-inspector", "session-ins"]) {
     pi.registerCommand(name, {

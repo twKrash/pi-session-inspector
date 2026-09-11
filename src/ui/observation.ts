@@ -1,5 +1,6 @@
 import type { IntegrationKey, IntegrationPresence } from "../core/events.ts";
 import type { FoldedCounters } from "../core/live-counter-fold.ts";
+import type { InventorySnapshot } from "../integrations/inventory.ts";
 
 /**
  * Process-local evidence handed to a report loader. Counters are always the
@@ -7,12 +8,12 @@ import type { FoldedCounters } from "../core/live-counter-fold.ts";
  * `presence` always carries the explicit per-key presence model, so a report
  * read never needs to touch (or write) durable state.
  *
- * `inventory` is deliberately opaque here: Task 7 defines the sanitized
- * `InventorySnapshot` in `src/integrations/inventory.ts` and later tasks narrow
- * this field to it. Task 6 must not depend on a module that does not exist yet.
+ * `inventory` carries the sanitized `InventorySnapshot` read at session start
+ * (or on a reload), so the projection has bounded evidence without touching
+ * durable state again.
  */
 export type SessionObservation = {
-  inventory?: unknown;
+  inventory?: InventorySnapshot;
   presence: Readonly<Record<IntegrationKey, IntegrationPresence>>;
   counters?: FoldedCounters;
 };

@@ -1350,3 +1350,84 @@ test("cold-detail notice reaches JSON and HTML while native data stays available
     await rm(root, { force: true, recursive: true });
   }
 });
+
+test("expires an aged inventory snapshot while keeping a current one and persists its counts", async () => {
+  const { maintainSession } = await import("../../src/storage/maintenance.ts");
+  const root = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  const directory = join(root, "sessions", "session-1");
+  const source = join(root, "pi.jsonl");
+  const snapshot = JSON.stringify({
+    schemaVersion: 1,
+    commands: [],
+    skills: [],
+    resources: [],
+    toolSources: {},
+  });
+  try {
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      source,
+      [
+        '{"type":"session","version":3,"id":"session-1","timestamp":"2026-09-01T00:00:00Z"}',
+        '{"id":"marker","parentId":null,"timestamp":"2026-09-01T00:00:00Z","type":"custom","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
+        "",
+      ].join("\n"),
+    );
+    const inventory = join(directory, "inventory.json");
+    await writeFile(inventory, snapshot);
+    await setModifiedTime(inventory, "2026-09-07T12:00:00.000Z");
+
+    assert.equal(
+      (
+        await maintainSession({
+          root,
+          sessionId: "session-1",
+          sessionFile: source,
+          writerId: "maintenance-inventory",
+          now: () => directoryNow,
+          inventoryCounts: { commands: 3, skills: 1 },
+        })
+      ).status,
+      "available",
+    );
+    assert.equal((await readdir(directory)).includes("inventory.json"), false);
+    assert.deepEqual(
+      (await readCheckpoint({ directory }))?.aggregates.resourceCounts,
+      { commands: 3, skills: 1 },
+    );
+
+    // A snapshot inside the retention window survives the identical pass.
+    await writeFile(inventory, snapshot);
+    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
+    assert.equal(
+      (
+        await maintainSession({
+          root,
+          sessionId: "session-1",
+          sessionFile: source,
+          writerId: "maintenance-inventory-2",
+          now: () => directoryNow,
+          inventoryCounts: { commands: 3, skills: 1 },
+        })
+      ).status,
+      "available",
+    );
+    assert.equal((await readdir(directory)).includes("inventory.json"), true);
+
+    // The deletion is returned in the existing maintenance count.
+    await setModifiedTime(inventory, "2026-09-07T12:00:00.000Z");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      1,
+    );
+    await lease.release();
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
