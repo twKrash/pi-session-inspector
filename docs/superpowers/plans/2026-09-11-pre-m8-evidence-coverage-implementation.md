@@ -38,22 +38,32 @@ type ErrorRecord = { id: string; timestamp: string; kind: ErrorKind; confidence:
 type Tool = { id: string; timestamp: string; name: string; status: "succeeded" | "failed" | "interrupted"; source?: string; usage?: Usage; durationMs?: number };
 
 // Task 3: src/core/live-counter-fold.ts
+// Counters ALWAYS move in two separate buckets: `checkpoint` (already folded into the
+// checkpoint) and `delta` (telemetry strictly after the checkpoint WAL cursors).
+// Reports consume `effective = merge(checkpoint, delta)`; maintenance persists merge(existing, delta).
 type FoldedCounters = {
   counters: Partial<Record<IntegrationKey, Record<string, number>>>;
   skillInvocations: Record<string, number>;
-  skillKeysOmitted: number;
+  otherInvocations: number;                       // exact count of invocations whose key was beyond the 64-key cap
+  presence: { permission: boolean };              // durable presence, never an activity counter
 };
+function emptyFoldedCounters(): FoldedCounters;
+function mergeFoldedCounters(base: FoldedCounters | undefined, delta: FoldedCounters): FoldedCounters;
 function foldTelemetryCounters(envelopes: readonly unknown[], initial?: FoldedCounters): FoldedCounters;
+function counterDeltaAfterCursors(
+  records: readonly { writerId: string; writerSequence: number; telemetry?: Record<string, unknown> }[],
+  cursors: Readonly<Record<string, number>>,
+): FoldedCounters;
+function foldedFromCheckpointAggregates(aggregates: CheckpointAggregates | undefined): FoldedCounters;
 
-// Task 4: src/storage/recovery.ts (RecoveryResult gains)
-type RecoveryResult = { /* existing */ counters: FoldedCounters };
+// Task 4: src/storage/recovery.ts (RecoveryResult gains; delta only, never the whole replay)
+type RecoveryResult = { /* existing */ cursors: Record<string, number>; deltaCounters: FoldedCounters };
 
-// Task 6: src/ui/observation.ts
+// Task 6: src/ui/observation.ts (subagents are derived by the loaders, not injected)
 type SessionObservation = {
   inventory?: InventorySnapshot;                                  // Task 7
-  presence: Readonly<Record<IntegrationKey, IntegrationPresence>>; // Task 2
-  counters?: FoldedCounters;                                       // Task 3
-  subagents?: SubagentEvidence;                                    // Task 10
+  presence: Readonly<Record<IntegrationKey, IntegrationPresence>>; // Task 2 + durable permission presence
+  counters?: FoldedCounters;                                       // Task 3, effective (checkpoint + delta)
 };
 
 // Task 7: src/integrations/inventory.ts
@@ -403,7 +413,8 @@ git commit -m "fix: read permission evidence from its public bus and add presenc
 
 **Interfaces:**
 
-- Produces: `foldTelemetryCounters(envelopes, initial?)`; `registerLiveCounters(api, writer, { inventoryNames, now })`; `readSkillCommandName(text)`.
+- Produces: `foldTelemetryCounters(envelopes, initial?)`; `mergeFoldedCounters(base, delta)`; `counterDeltaAfterCursors(records, cursors)`; `readSkillCommandName(text)`; `registerLiveCounters(api, writer, { inventoryNames, now })`.
+- Semantics fixed here (defect fix): `FoldedCounters` carries `otherInvocations` (exact invocation count for keys beyond the 64-key cap — **not** a key count, and never a per-event increment of an omitted key) and `presence.permission` (durable presence from `permission.ready`, never an activity counter). Both are integer/boolean metadata that survive incremental folds and checkpoints.
 - Consumes: `validateTelemetry` from `src/pi/telemetry.ts`; `IntegrationKey`/`FoldedCounters`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -444,7 +455,7 @@ test("folds allowlisted permission counters and ignores unknown metrics", () => 
   });
 });
 
-test("folds skill invocations by validated name and caps the map", () => {
+test("folds skill invocations by validated name and counts overflow exactly", () => {
   const rows = Array.from({ length: MAX_SKILL_KEYS + 3 }, (_, index) =>
     envelope({
       source: "pi-input",
@@ -455,13 +466,52 @@ test("folds skill invocations by validated name and caps the map", () => {
   const folded = foldTelemetryCounters(rows);
 
   assert.equal(Object.keys(folded.skillInvocations).length, MAX_SKILL_KEYS);
-  assert.equal(folded.skillKeysOmitted, 3);
+  assert.equal(folded.otherInvocations, 3);
+
+  // Incremental fold: an omitted key keeps counting exactly, and repeated folds add once per event.
+  const resumed = foldTelemetryCounters(rows.slice(0, MAX_SKILL_KEYS + 1), folded);
+  assert.equal(resumed.otherInvocations, 4);
+  assert.equal(Object.keys(resumed.skillInvocations).length, MAX_SKILL_KEYS);
 
   const bogus = foldTelemetryCounters([
     envelope({ source: "pi-input", metric: "skill.invocation", dimensions: { skill: "/etc/passwd" } }),
     envelope({ source: "pi-input", metric: "skill.invocation", dimensions: { skill: "" } }),
   ]);
   assert.deepEqual(bogus.skillInvocations, {});
+  assert.equal(bogus.otherInvocations, 0);
+});
+
+test("records durable permission presence without inventing counters", () => {
+  const folded = foldTelemetryCounters([
+    envelope({ metric: "permission.ready", dimensions: undefined }),
+    envelope({ dimensions: { result: "allow", resolution: "policy_allow" } }),
+  ]);
+
+  assert.equal(folded.presence.permission, true);
+  assert.deepEqual(folded.counters.permission, { decisions: 1, allowed: 1 });
+
+  const merged = mergeFoldedCounters(undefined, folded);
+  assert.equal(merged.presence.permission, true);
+  assert.deepEqual(merged.counters.permission, { decisions: 1, allowed: 1 });
+});
+
+test("merges checkpoint and delta buckets by integer addition", () => {
+  const checkpoint = foldTelemetryCounters([
+    envelope({ dimensions: { result: "allow", resolution: "policy_allow" } }),
+    envelope({ source: "pi-input", metric: "skill.invocation", dimensions: { skill: "council-mode" } }),
+  ]);
+  const delta = foldTelemetryCounters([
+    envelope({ dimensions: { result: "deny", resolution: "user_denied" } }),
+    envelope({ source: "pi-input", metric: "skill.invocation", dimensions: { skill: "council-mode" } }),
+  ]);
+
+  const effective = mergeFoldedCounters(checkpoint, delta);
+  assert.deepEqual(effective.counters.permission, { decisions: 2, allowed: 1, denied: 1 });
+  assert.deepEqual(effective.skillInvocations, { "council-mode": 2 });
+
+  // Idempotence guard: merging the same delta twice is a caller error the tests pin by asserting
+  // the caller always merges against the persisted checkpoint exactly once (see Task 5 tests).
+  assert.deepEqual(mergeFoldedCounters(checkpoint, emptyFoldedCounters()), checkpoint);
 });
 ```
 
@@ -549,24 +599,80 @@ const SKILL_SOURCE = "pi-input";
 export type FoldedCounters = {
   counters: Partial<Record<IntegrationKey, Record<string, number>>>;
   skillInvocations: Record<string, number>;
-  skillKeysOmitted: number;
+  otherInvocations: number;
+  presence: { permission: boolean };
 };
 
 export function emptyFoldedCounters(): FoldedCounters {
-  return { counters: {}, skillInvocations: {}, skillKeysOmitted: 0 };
+  return {
+    counters: {},
+    skillInvocations: {},
+    otherInvocations: 0,
+    presence: { permission: false },
+  };
+}
+
+/** Adds two counter buckets; presence is a logical OR, every count is an integer sum. */
+export function mergeFoldedCounters(
+  base: FoldedCounters | undefined,
+  delta: FoldedCounters,
+): FoldedCounters {
+  const merged = base === undefined ? emptyFoldedCounters() : cloneFoldedCounters(base);
+  merged.otherInvocations += delta.otherInvocations;
+  merged.presence = { permission: merged.presence.permission || delta.presence.permission };
+  for (const [name, count] of Object.entries(delta.skillInvocations)) {
+    merged.skillInvocations[name] = (merged.skillInvocations[name] ?? 0) + count;
+  }
+  for (const [integration, counters] of Object.entries(delta.counters) as Array<
+    [IntegrationKey, Record<string, number>]
+  >) {
+    const target = (merged.counters[integration] ??= {});
+    for (const [key, count] of Object.entries(counters)) {
+      target[key] = (target[key] ?? 0) + count;
+    }
+  }
+  return merged;
+}
+
+/**
+ * Folds only telemetry strictly after each writer's checkpoint cursor, so a
+ * caller that replays records from a checkpoint can never re-add folded facts.
+ */
+export function counterDeltaAfterCursors(
+  records: readonly {
+    writerId: string;
+    writerSequence: number;
+    telemetry?: Record<string, unknown>;
+  }[],
+  cursors: Readonly<Record<string, number>>,
+): FoldedCounters {
+  return foldTelemetryCounters(
+    records.flatMap((record) => {
+      const cursor = cursors[record.writerId];
+      const afterCursor = cursor === undefined || record.writerSequence > cursor;
+      return afterCursor && record.telemetry !== undefined ? [record.telemetry] : [];
+    }),
+  );
 }
 
 export function foldTelemetryCounters(
   envelopes: readonly unknown[],
   initial: FoldedCounters = emptyFoldedCounters(),
 ): FoldedCounters {
-  const folded: FoldedCounters = {
-    counters: { ...initial.counters },
-    skillInvocations: { ...initial.skillInvocations },
-    skillKeysOmitted: initial.skillKeysOmitted,
-  };
+  const folded = cloneFoldedCounters(initial);
   for (const envelope of envelopes) addEnvelope(folded, envelope);
   return folded;
+}
+
+function cloneFoldedCounters(source: FoldedCounters): FoldedCounters {
+  return {
+    counters: Object.fromEntries(
+      Object.entries(source.counters).map(([key, value]) => [key, { ...(value ?? {}) }]),
+    ) as FoldedCounters["counters"],
+    skillInvocations: { ...source.skillInvocations },
+    otherInvocations: source.otherInvocations,
+    presence: { permission: source.presence.permission },
+  };
 }
 
 function addEnvelope(folded: FoldedCounters, input: unknown): void {
@@ -590,6 +696,11 @@ function addEnvelope(folded: FoldedCounters, input: unknown): void {
     bump(folded, "permission", `prompt${source === "tool_call" ? "ToolCall" : source === "skill_input" ? "SkillInput" : "SkillRead"}`);
     return;
   }
+  if (metric === "permission.ready") {
+    // Presence only: durable boolean, never an activity counter.
+    folded.presence.permission = true;
+    return;
+  }
   if (input.source === SKILL_SOURCE && metric === "skill.invocation") {
     const skill = dimensions?.skill;
     if (typeof skill !== "string" || !SKILL_NAME.test(skill)) return;
@@ -598,7 +709,8 @@ function addEnvelope(folded: FoldedCounters, input: unknown): void {
       return;
     }
     if (Object.keys(folded.skillInvocations).length >= MAX_SKILL_KEYS) {
-      folded.skillKeysOmitted += 1;
+      // The key is not tracked, but the invocation is still counted exactly.
+      folded.otherInvocations += 1;
       return;
     }
     folded.skillInvocations[skill] = 1;
@@ -726,7 +838,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 ```
 
-Add `permission.ready` to the fold table as a presence-only signal (no counter keys) — it must not create counters; assert this in the fold test by including a `permission.ready` envelope and expecting unchanged `permission` counters.
+Add `permission.ready` to the fold table as a **durable presence** signal: it sets `presence.permission = true` and must never create or bump a counter key. Assert exactly that in the fold test (presence true, counters untouched by the ready event).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -751,8 +863,9 @@ git commit -m "feat: emit bounded live integration counters from public producer
 
 **Interfaces:**
 
-- Produces: `RecoveryResult.counters: FoldedCounters` (Task 3 type), folded from validated telemetry records using existing budgets and cursors.
-- Consumes: `foldTelemetryCounters`, `parseWalRecord`, `validateTelemetry`.
+- Produces: `RecoveryResult.deltaCounters: FoldedCounters` (Task 3 type) — **only the telemetry strictly after each writer's checkpoint WAL cursor**, never the whole replay. `RecoveryResult.cursors` is unchanged and is the cursor the delta is measured against.
+- Consumes: `counterDeltaAfterCursors`, `parseWalRecord`, `validateTelemetry`.
+- Semantics fixed here (defect fix): a checkpoint already folded everything at or below its cursors. `deltaCounters` must therefore be the post-cursor bucket; recovery may physically re-read a segment, but folding is cursor-filtered so re-reading can never re-add a folded fact.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -777,12 +890,35 @@ test("folds validated telemetry counters from every writer shard", async () => {
   });
 
   assert.equal(recovered.availability, "available");
-  assert.deepEqual(recovered.counters.counters.permission, {
+  assert.deepEqual(recovered.deltaCounters.counters.permission, {
     decisions: 2,
     allowed: 1,
     denied: 1,
   });
-  assert.deepEqual(recovered.counters.skillInvocations, { "council-mode": 1 });
+  assert.deepEqual(recovered.deltaCounters.skillInvocations, { "council-mode": 1 });
+});
+
+test("folds only telemetry strictly after the checkpoint cursors", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-delta-"));
+  const wal = join(directory, "wal", "writer-a");
+  await mkdir(wal, { recursive: true });
+  const lines = [
+    { eventId: "e1", timestamp: "2026-09-11T10:00:00Z", writerId: "writer-a", writerSequence: 1, kind: "telemetry", telemetry: permissionEnvelope("policy_allow", "allow") },
+    { eventId: "e2", timestamp: "2026-09-11T10:00:01Z", writerId: "writer-a", writerSequence: 2, kind: "telemetry", telemetry: permissionEnvelope("policy_allow", "allow") },
+    { eventId: "e3", timestamp: "2026-09-11T10:00:02Z", writerId: "writer-a", writerSequence: 3, kind: "telemetry", telemetry: permissionEnvelope("user_denied", "deny") },
+  ];
+  await writeFile(join(wal, "2026-09-11.jsonl"), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+  await writeCheckpointFixture(directory, { "writer-a": 2 });
+
+  const recovered = await recoverSession({
+    directory,
+    piCursor: { lineCount: 1, revision: "a" },
+  });
+
+  // Records 1 and 2 are already folded into the checkpoint; only record 3 is delta.
+  assert.deepEqual(recovered.deltaCounters.counters.permission, { decisions: 1, denied: 1 });
+  assert.equal(recovered.deltaCounters.counters.permission?.allowed, undefined);
+  assert.deepEqual(recovered.cursors, { "writer-a": 3 });
 });
 ```
 
@@ -802,20 +938,27 @@ const permissionEnvelope = (resolution: string, result: "allow" | "deny") => ({
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `node --import tsx --test tests/unit/recovery.test.ts`
-Expected: FAIL — `recovered.counters` is `undefined`.
+Expected: FAIL — `recovered.deltaCounters` is `undefined`.
 
 - [ ] **Step 3: Implement minimal code**
 
 Extend the internal `WalRecord` type with `telemetry?: Record<string, unknown>`, keep `parseWalRecord` populating it (it already validates through `validateTelemetry`), then in `recoverSession`:
 
 ```ts
-const counters = foldTelemetryCounters(
-  records.flatMap((record) => (record.kind === "telemetry" && record.telemetry !== undefined ? [record.telemetry] : [])),
+const deltaCounters = counterDeltaAfterCursors(
+  records.map((record) => ({
+    writerId: record.writerId,
+    writerSequence: record.writerSequence,
+    ...(record.kind === "telemetry" && record.telemetry !== undefined ? { telemetry: record.telemetry } : {}),
+  })),
+  cursors,
 );
-return { availability, aggregates, cursors, running, diagnostics, counters };
+return { availability, aggregates, cursors, running, diagnostics, deltaCounters };
 ```
 
-Return `counters: emptyFoldedCounters()` whenever recovery is unavailable, so callers never see `undefined`.
+`cursors` here means the **pre-delta** cursors seeded from the checkpoint, not the advanced `recovered.cursors`; take the checkpoint cursors from the checkpoint read at the start of recovery (or from the same seeded map the reader used).
+
+Return `deltaCounters: emptyFoldedCounters()` whenever recovery is unavailable, so callers never see `undefined` and a caller can always compute `effective = merge(checkpointAggregates, deltaCounters)`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -842,8 +985,9 @@ git commit -m "feat: fold validated WAL telemetry counters during recovery"
 
 **Interfaces:**
 
-- Produces: `Checkpoint["aggregates"]` gains `integrationCounters?: Record<string, Record<string, number>>`, `skillInvocations?: Record<string, number>`, `resourceCounts?: { commands: number; skills: number }`, all optional and strictly validated; `maintainSession` writes `existing + newly folded`.
-- Consumes: `RecoveryResult.counters` (Task 4).
+- Produces: `Checkpoint["aggregates"]` gains `integrationCounters?: Record<string, Record<string, number>>`, `skillInvocations?: Record<string, number>`, `skillOverflowInvocations?: number`, `presence?: { permission?: boolean }`, `resourceCounts?: { commands: number; skills: number }`, all optional and strictly validated; `maintainSession` persists `mergeFoldedCounters(existingAggregates, recovered.deltaCounters)` exactly once per maintenance pass.
+- Consumes: `RecoveryResult.deltaCounters` (Task 4), `mergeFoldedCounters` (Task 3).
+- Semantics fixed here (defect fix): checkpoint aggregates mean **already folded**. Maintenance adds only the post-cursor delta, so a second pass with no new telemetry writes identical aggregates and reports reading the checkpoint afterwards never double-count.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -864,6 +1008,8 @@ test("accepts validated folded aggregates and rejects unsafe ones", async () => 
         totalTokens: 1, totalCost: 0, generations: 1, tools: 0, compactions: 0,
         integrationCounters: { permission: { decisions: 2, allowed: 1, denied: 1 } },
         skillInvocations: { "council-mode": 3 },
+        skillOverflowInvocations: 4,
+        presence: { permission: true },
         resourceCounts: { commands: 12, skills: 4 },
       },
     },
@@ -872,6 +1018,8 @@ test("accepts validated folded aggregates and rejects unsafe ones", async () => 
 
   const read = await readCheckpoint({ directory });
   assert.deepEqual(read?.aggregates.skillInvocations, { "council-mode": 3 });
+  assert.equal(read?.aggregates.skillOverflowInvocations, 4);
+  assert.equal(read?.aggregates.presence?.permission, true);
   assert.deepEqual(read?.aggregates.resourceCounts, { commands: 12, skills: 4 });
 
   for (const bad of [
@@ -879,6 +1027,10 @@ test("accepts validated folded aggregates and rejects unsafe ones", async () => 
     { skillInvocations: { ok: -1 } },
     { skillInvocations: { ok: 1.5 } },
     { skillInvocations: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`s${i}`, 1])) },
+    { skillOverflowInvocations: -1 },
+    { skillOverflowInvocations: 1.5 },
+    { presence: { permission: "yes" } },
+    { presence: { context: true } },
     { resourceCounts: { commands: 1 } },
     { integrationCounters: { permission: { decisions: "2" } } },
   ]) {
@@ -905,19 +1057,50 @@ test("accepts validated folded aggregates and rejects unsafe ones", async () => 
 Append to `tests/unit/maintenance.test.ts`:
 
 ```ts
-test("folds newly recovered telemetry counters into checkpoint aggregates once", async () => {
+test("folds recovered telemetry into checkpoint aggregates exactly once across repeated passes", async () => {
   const { maintainSession } = await import("../../src/storage/maintenance.ts");
-  // Arrange: session file with tracking marker + one telemetry WAL line in writer-a.
-  // (reuse the existing maintenance fixture helpers in this file)
+  // Arrange: session file with tracking marker + telemetry WAL lines in writer-a
+  // (reuse the existing maintenance fixture helpers in this file):
+  //   sequence 1 = permission allow, sequence 2 = skill invocation "council-mode",
+  //   sequence 3 = permission.ready (presence only).
   const first = await maintainSession({ root, sessionId, sessionFile, writerId: "m1", now: () => new Date() });
   assert.equal(first.status, "available");
   const afterFirst = await readCheckpoint({ directory });
   assert.deepEqual(afterFirst?.aggregates.integrationCounters?.permission, { decisions: 1, allowed: 1 });
+  assert.deepEqual(afterFirst?.aggregates.skillInvocations, { "council-mode": 1 });
+  assert.equal(afterFirst?.aggregates.presence?.permission, true);
 
-  const second = await maintainSession({ root, sessionId, sessionFile, writerId: "m2", now: () => new Date() });
-  assert.equal(second.status, "available");
-  const afterSecond = await readCheckpoint({ directory });
-  assert.deepEqual(afterSecond?.aggregates.integrationCounters?.permission, { decisions: 1, allowed: 1 });
+  // Second and third passes see the same WAL but the cursors already cover it: nothing is re-added.
+  await maintainSession({ root, sessionId, sessionFile, writerId: "m2", now: () => new Date() });
+  await maintainSession({ root, sessionId, sessionFile, writerId: "m3", now: () => new Date() });
+  const afterThird = await readCheckpoint({ directory });
+  assert.deepEqual(afterThird?.aggregates.integrationCounters?.permission, { decisions: 1, allowed: 1 });
+  assert.deepEqual(afterThird?.aggregates.skillInvocations, { "council-mode": 1 });
+  assert.equal(afterThird?.aggregates.skillOverflowInvocations, undefined);
+
+  // A genuinely new post-cursor event is folded exactly once.
+  await appendTelemetry(writerA, permissionEnvelope("user_denied", "deny"));
+  await maintainSession({ root, sessionId, sessionFile, writerId: "m4", now: () => new Date() });
+  const afterNew = await readCheckpoint({ directory });
+  assert.deepEqual(afterNew?.aggregates.integrationCounters?.permission, { decisions: 2, allowed: 1, denied: 1 });
+});
+
+test("reports read effective counters without mutating the checkpoint", async () => {
+  // Arrange the same session, then read the current report twice through the production
+  // loader with the checkpoint present.
+  const before = await readCheckpoint({ directory });
+  const first = await loadCurrentSessionReport(sessionFile, "active", null, observation, root);
+  const second = await loadCurrentSessionReport(sessionFile, "active", null, observation, root);
+
+  assert.deepEqual(first?.report.integrations.find((row) => row.integration === "permission")?.counters, {
+    decisions: 1,
+    allowed: 1,
+  });
+  assert.deepEqual(second?.report.integrations.find((row) => row.integration === "permission")?.counters, {
+    decisions: 1,
+    allowed: 1,
+  });
+  assert.deepEqual(await readCheckpoint({ directory }), before);
 });
 ```
 
@@ -928,7 +1111,7 @@ Expected: FAIL — new aggregate fields are dropped by `parseCheckpoint`.
 
 - [ ] **Step 3: Implement minimal code**
 
-In `src/storage/checkpoint.ts`, extend the `Checkpoint` type and `parseCheckpoint`, and add parsers:
+In `src/storage/checkpoint.ts`, extend the `Checkpoint` type and `parseCheckpoint`, and add parsers (`presence` accepts only the allowlisted boolean key `permission`; `skillOverflowInvocations` is a safe non-negative integer):
 
 ```ts
 const SKILL_NAME = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
@@ -971,13 +1154,19 @@ function parseResourceCounts(value: unknown): { commands: number; skills: number
 
 Wire them into `parseCheckpoint` (each absent → omitted, present-but-invalid → return `undefined` for the whole checkpoint) and into the returned `aggregates` object.
 
-In `src/storage/maintenance.ts`, after `recoverSession`, add folded values only when the checkpoint is new state:
+In `src/storage/maintenance.ts`, after `recoverSession`, persist the post-cursor delta exactly once:
 
 ```ts
-const merged = mergeFoldedAggregates(existing?.aggregates, recovered.counters);
+const merged = mergeFoldedCounters(
+  foldedFromCheckpointAggregates(existing?.aggregates),
+  recovered.deltaCounters,
+);
+if (existing?.aggregates.resourceCounts !== undefined && merged.resourceCounts === undefined) {
+  merged.resourceCounts = { ...existing.aggregates.resourceCounts };
+}
 ```
 
-with a local helper that adds `recovered.counters.counters` and `recovered.counters.skillInvocations` to the existing maps (integer-safe, cap-checked, dropping the whole map on overflow rather than truncating) and preserves `resourceCounts` from inventory maintenance (Task 8). Write the merged fields into the `checkpoint.aggregates` object passed to `writeCheckpoint`.
+`mergeFoldedCounters` is the Task 3 helper (integer sums for `counters`/`skillInvocations`/`otherInvocations`, logical OR for `presence`). `foldedFromCheckpointAggregates` reconstructs the already-folded bucket from the checkpoint, so a second pass with no new telemetry produces byte-identical aggregates. `resourceCounts` is owned by inventory maintenance (Task 8) and is carried over unchanged. Serialize only the non-empty maps/fields into the `checkpoint.aggregates` object passed to `writeCheckpoint` (empty → field omitted, never `{}`/`0` filler).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1001,13 +1190,14 @@ git commit -m "feat: persist folded live counters as validated checkpoint aggreg
 - Modify: `src/pi/session-wal.ts`
 - Modify: `src/index.ts` (writer handle, flush-before-read, observation construction)
 - Modify: `src/ui/load-current.ts`
-- Modify: `src/core/reports.ts` (`SessionReportEvidence` gains presence/counters/inventory/subagents)
-- Modify: `tests/unit/session-wal.test.ts`, `tests/unit/index-current-ui.test.ts`
+- Modify: `src/core/reports.ts` (`SessionReportEvidence` gains presence/counters/inventory; subagent evidence is derived by the loader)
+- Modify: `tests/unit/session-wal.test.ts`, `tests/unit/index-current-ui.test.ts`, `tests/unit/reports-inventory.test.ts`
 
 **Interfaces:**
 
-- Produces: `SessionWalDependencies.registerLiveCounters?: (api, writer, context) => void`; `SessionObservation` type; `loadCurrentSessionReport(sessionFile, scope, leafId, observation: SessionObservation | undefined, inspectorRoot?)`; extension-level `flushLiveEvidence()` used by the command handler.
-- Consumes: `registerLiveCounters` (Task 3), `recoverSession().counters` (Task 4), `readIntegrationPresence` (Task 2).
+- Produces: `SessionWalDependencies.registerLiveCounters?: (api, writer, context) => void`; `SessionObservation` type; `loadCurrentSessionReport(sessionFile, scope, leafId, observation: SessionObservation | undefined, inspectorRoot?)`; extension-level `flushLiveEvidence()` used by the command handler. The current loader now **derives subagent evidence itself** (`readSubagentEvidenceWithArchives(entries)`, Task 11), so the injected observation covers only inventory, presence, and counters.
+- Consumes: `registerLiveCounters` (Task 3), `recoverSession().deltaCounters` + checkpoint aggregates (Tasks 4–5), `readIntegrationPresence` (Task 2), `readSubagentEvidenceWithArchives` (Task 11).
+- Semantics fixed here (defect fix): the observation's counters are the **effective** bucket, `merge(checkpointAggregates, deltaCounters)`. The command path must never add delta to a checkpoint it has already merged and persisted.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1034,12 +1224,17 @@ test("registers live counter producers with the session writer and never throws"
 Append to `tests/unit/index-current-ui.test.ts`:
 
 ```ts
-test("current report shows presence rows and folded counters from the observation", async () => {
-  // Arrange a session file + Inspector root with one telemetry WAL line (reuse helpers in this file).
-  const model = await loadCurrentSessionReport(sessionFile, "active", leafId, {
+test("current report shows presence rows and effective counters from the observation", async () => {
+  // Arrange a session file + Inspector root whose checkpoint already folded one permission
+  // decision, with one more decision still in un-checkpointed WAL (delta). Reuse helpers in this file.
+  const observation = {
     presence: { context: "unknown", rtk: "unknown", ponytail: "present", caveman: "absent", permission: "present", subagents: "present", lens: "unknown" },
-    counters: { counters: { permission: { decisions: 2, allowed: 1, denied: 1 } }, skillInvocations: {}, skillKeysOmitted: 0 },
-  }, root);
+    counters: mergeFoldedCounters(
+      foldedFromCheckpointAggregates({ integrationCounters: { permission: { decisions: 1, allowed: 1 } }, presence: { permission: true } }),
+      foldTelemetryCounters([{ schemaVersion: 1, source: "permission-system", metric: "permission.decision", kind: "counter", value: 1, dimensions: { result: "deny", resolution: "user_denied" } }]),
+    ),
+  } as const;
+  const model = await loadCurrentSessionReport(sessionFile, "active", leafId, observation, root);
 
   const permission = model?.report.integrations.find((row) => row.integration === "permission");
   assert.equal(permission?.state, "supported");
@@ -1047,6 +1242,17 @@ test("current report shows presence rows and folded counters from the observatio
   assert.deepEqual(permission?.counters, { decisions: 2, allowed: 1, denied: 1 });
   assert.equal(model?.report.integrations.find((row) => row.integration === "caveman")?.presence, "absent");
   assert.equal(model?.report.integrations.find((row) => row.integration === "caveman")?.state, "unavailable");
+
+  // Reading again with the same effective observation does not add the delta a second time,
+  // and the checkpoint on disk is untouched by report reads.
+  const before = await readCheckpoint({ directory: join(root, "sessions", "session-a") });
+  const again = await loadCurrentSessionReport(sessionFile, "active", leafId, observation, root);
+  assert.deepEqual(again?.report.integrations.find((row) => row.integration === "permission")?.counters, {
+    decisions: 2,
+    allowed: 1,
+    denied: 1,
+  });
+  assert.deepEqual(await readCheckpoint({ directory: join(root, "sessions", "session-a") }), before);
 });
 ```
 
@@ -1069,7 +1275,6 @@ export type SessionObservation = {
   inventory?: InventorySnapshot;
   presence: Readonly<Record<IntegrationKey, IntegrationPresence>>;
   counters?: FoldedCounters;
-  subagents?: SubagentEvidence;
 };
 
 export function emptyObservation(): SessionObservation {
@@ -1095,26 +1300,29 @@ registerLiveCounters?(api: unknown, writer: unknown, context: { sessionId: strin
 
 call it inside `setupSessionWal` after `registerLive`, wrapped in try/catch, passing `{ sessionId, inventoryNames: () => inventoryNames }` where `inventoryNames` comes from a new optional `readInventoryNames` dependency (Task 8 supplies it; until then default to `() => new Set<string>()`).
 
-`src/core/reports.ts`: extend `SessionReportEvidence` with `presence?`, `counters?`, `inventory?`, `subagents?`; `projectEvidence` composes:
+`src/core/reports.ts`: extend `SessionReportEvidence` with `presence?`, `counters?`, `inventory?` (no `subagents`; the loader derives it and passes it through the same projection path); `projectEvidence` composes:
 
 - one `IntegrationObservation` row per `IntegrationKey` in fixed order, merging adapter rows (Task 1/2) with `presence` and folded `counters`;
 - `presence` defaults to the adapter row's presence, else `"unknown"`;
 - a row is `supported` only when it has counters or a supported adapter state; otherwise `unavailable`.
 
-`src/ui/load-current.ts`: change the last parameter to `observation: SessionObservation | undefined` and build evidence:
+`src/ui/load-current.ts`: change the last parameter to `observation: SessionObservation | undefined`, derive subagent evidence from the entries, and build evidence:
 
 ```ts
+const subagents = await readSubagentEvidenceWithArchives(entries);
 toSessionReport(reduceEntries(session.id, entries), {
   ...(sealed ? { walDetail: "expired" as const } : {}),
   presence: observation?.presence,
   counters: observation?.counters,
   inventory: observation?.inventory,
-  subagents: observation?.subagents,
+  subagents,
   integrations: readPiEntryEvidence(entries),
 });
 ```
 
-`src/index.ts`: keep the live writer in a module-level `liveWriter` reference, expose
+`readSubagentEvidenceWithArchives` is the Task 11 production consumer: archive validation runs on every current-session report, and a missing/expired/unsafe archive yields `artifacts: "missing"` rather than blocking the report.
+
+`src/index.ts`: keep the live writer in a module-level `liveWriter` reference, and expose
 
 ```ts
 export async function flushLiveEvidence(): Promise<void> {
@@ -1127,6 +1335,25 @@ export async function flushLiveEvidence(): Promise<void> {
 ```
 
 and call it at the start of every command handler branch that reads reports.
+
+Observation construction (the only place counters and presence are assembled):
+
+```ts
+await flushLiveEvidence();
+const checkpoint = await readCheckpoint({ directory });
+const folded = foldedFromCheckpointAggregates(checkpoint?.aggregates);
+const recovered = await recoverSession({ directory, piCursor });
+const counters = mergeFoldedCounters(folded, recovered.deltaCounters);
+const presence = readIntegrationPresence({
+  commands: inventory.commands.map((row) => row.name),
+  tools: Object.keys(inventory.toolSources),
+  // Durable presence: the bus may have been observed in a previous process of this session.
+  permissionsReady: liveReady || counters.presence.permission,
+  inventoryAvailable: true,
+});
+```
+
+Rules: report reads never write a checkpoint, and `mergeFoldedCounters(folded, delta)` is the only combination used for rendering — so repeated reads show identical numbers.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1421,14 +1648,15 @@ test("composes inventory, invocation counts, and tool source attribution", () =>
       [{ name: "ponytail", source: "extension", sourceInfo: { path: "/x", source: "npm:ponytail", scope: "user", origin: "package" } }],
       [{ name: "subagent", parameters: {}, sourceInfo: { path: "/y", source: "npm:pi-subagents", scope: "user", origin: "package" } }],
     ),
-    counters: { counters: {}, skillInvocations: { "council-mode": 2 }, skillKeysOmitted: 0 },
+    counters: { counters: {}, skillInvocations: { "council-mode": 2 }, otherInvocations: 1, presence: { permission: false } },
   });
 
   assert.equal(report.tools[0]?.source, "npm:pi-subagents");
   assert.equal(report.commands.count, 1);
   assert.equal(report.commands.state, "supported");
   assert.equal(report.skills.invocationState, "supported");
-  assert.equal(report.skills.invocationCount, 2);
+  assert.equal(report.skills.invocationCount, 3);
+  assert.equal(report.skills.otherInvocations, 1);
   assert.deepEqual(
     report.skills.items.find((row) => row.name === "council-mode")?.explicitInvocations,
     2,
@@ -1442,6 +1670,7 @@ test("reports inventory as unavailable when no observation is supplied", () => {
   assert.equal(report.commands.count, null);
   assert.equal(report.skills.invocationState, "unavailable");
   assert.equal(report.skills.invocationCount, null);
+  assert.equal(report.skills.otherInvocations, null);
   assert.equal(report.resources.state, "unavailable");
   assert.deepEqual(report.resources.items, []);
 });
@@ -1458,19 +1687,19 @@ In `src/core/reports.ts`, add to `SessionReport` and `toSessionReport`:
 
 ```ts
   commands: { state: EvidenceState; items: readonly CommandRow[]; count: number | null };
-  skills: { state: EvidenceState; items: readonly SkillRow[]; invocationState: EvidenceState; invocationCount: number | null };
+  skills: { state: EvidenceState; items: readonly SkillRow[]; invocationState: EvidenceState; invocationCount: number | null; otherInvocations: number | null };
   resources: { state: EvidenceState; items: readonly ResourceSourceRow[] };
 ```
 
-Projection rules: inventory present → `state: "supported"`, items capped, `count = items.length`; absent → `"unavailable"` with `count: null` and empty items. Skills items = union of inventory skills and counted invocation names (invocation-only rows carry `name` + `explicitInvocations`, no sourceLabel); `invocationCount = sum(values)`, `invocationState = "supported"` when any count exists. Tools: attach `source` from `observation.inventory.toolSources[tool.name]` when present.
+Projection rules: inventory present → `state: "supported"`, items capped, `count = items.length`; absent → `"unavailable"` with `count: null` and empty items. Skills items = union of inventory skills and counted invocation names (invocation-only rows carry `name` + `explicitInvocations`, no sourceLabel); `invocationCount = sum(values) + otherInvocations` (exact, including invocations whose key exceeded the 64-key cap), `otherInvocations` is surfaced on its own so the UI can say "+ N other invocations", and `invocationState = "supported"` when any count exists (including a nonzero `otherInvocations`). Tools: attach `source` from `observation.inventory.toolSources[tool.name]` when present. Presence: `permission` is `"present"` when the live signal **or** the persisted `presence.permission` aggregate is set; for history/global the other rows are recomputed from that session's inventory snapshot signals when it exists, else `"unknown"`.
 
 `src/ui/load-history.ts`: build each session's evidence from its checkpoint aggregates:
 
 ```ts
-const counters = checkpoint === undefined ? undefined : foldedFromCheckpoint(checkpoint);
+const counters = checkpoint === undefined ? undefined : foldedFromCheckpointAggregates(checkpoint.aggregates);
 ```
 
-with `foldedFromCheckpoint` in `src/core/live-counter-fold.ts` mapping the persisted aggregate maps back to `FoldedCounters` (validated names only). Also accept an optional `inventory` for global/history totals and set `GlobalReport.inventory` from summed `resourceCounts` (or `null` when absent).
+with `foldedFromCheckpointAggregates` in `src/core/live-counter-fold.ts` mapping the persisted aggregate maps back to `FoldedCounters` (`integrationCounters`, `skillInvocations`, `skillOverflowInvocations` → `otherInvocations`, `presence.permission`; validated names and safe integers only — anything invalid is dropped rather than repaired). History and global reports read **only** the checkpoint aggregates (never WAL) so a history read can never double count and never mutates state. Also accept an optional `inventory` for global/history totals and set `GlobalReport.inventory` from summed `resourceCounts` (or `null` when absent).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1600,25 +1829,26 @@ git commit -m "feat: auto-discover subagent runs from persisted tool results"
 **Files:**
 
 - Create: `src/integrations/subagent-archive.ts`
-- Create: `tests/fixtures/integrations/subagent-archive-v1.json`
-- Create: `tests/unit/subagent-archive.test.ts`
+- Create: `tests/fixtures/integrations/subagent-archive-v1.json`, plus a test-local symlink fixture
+- Modify: `src/ui/load-current.ts`, `src/ui/load-history.ts` (production consumer wiring, Task 6/9)
+- Create: `tests/unit/subagent-archive.test.ts`, `tests/unit/subagent-archive-wiring.test.ts`
 - Modify: `src/integrations/subagents.ts` (attach `artifacts`)
 
 **Interfaces:**
 
 - Produces: `readPublishedArchiveState(path, runId): Promise<"available" | "missing">` and `readSubagentEvidenceWithArchives(entries): Promise<SubagentEvidence>` (which attaches `artifacts` per run and falls back to `readSubagentEvidence` when no run publishes a reference).
 - Consumes: `readSubagentEvidence` (Task 10).
+- **Production consumer:** `loadCurrentSessionReport` (Task 6) and `loadHistoryReports` (Task 9) both call `readSubagentEvidenceWithArchives`, so this is on the real report path — not a tested-only helper. Archive reads never throw, never block a report, and never persist a path.
+- Validation semantics (exact, all rejected with `"missing"`): path must be a non-empty absolute string; the target must not be a symlink (checked with `lstat` and by opening with `O_NOFOLLOW` where the platform provides it) and must be followed no further than one level; the target must be a regular file (no FIFO/socket/device/directory); size must be `<= 128 * 1024` and stable across the read; the JSON must be an object with `version === 1` and `runId` strictly equal to the expected run id. Any read/parse/stat error is `"missing"`.
 
 - [ ] **Step 1: Write the failing test**
 
 `tests/unit/subagent-archive.test.ts`:
 
 ```ts
-test("accepts only versioned, run-matching, bounded regular-file archives", async () => {
+test("accepts only versioned, run-matching, bounded regular-file archives", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "inspector-archive-"));
   const relative = "archive.json";
-  const fifoPath = join(directory, "fifo");
-  execFileSync("mkfifo", [fifoPath]);
   const good = join(directory, "archive.json");
   await writeFile(good, JSON.stringify({ version: 1, runId: "run-a", createdAt: 1, entries: [{ agent: "reviewer", resultIndex: 0, source: "output-artifact", path: "/home/dev/PRIVATE" }] }));
 
@@ -1628,15 +1858,50 @@ test("accepts only versioned, run-matching, bounded regular-file archives", asyn
   assert.equal(await readPublishedArchiveState("/home/dev/PRIVATE", "run-a"), "missing");
   assert.equal(await readPublishedArchiveState(relative, "run-a"), "missing");
 
+  // Symlink to a valid archive is refused; the target itself is fine.
+  const symlinkPath = join(directory, "link.json");
+  await symlink(good, symlinkPath);
+  assert.equal(await readPublishedArchiveState(symlinkPath, "run-a"), "missing");
+
   await writeFile(join(directory, "wrong-version.json"), JSON.stringify({ version: 2, runId: "run-a", entries: [] }));
   assert.equal(await readPublishedArchiveState(join(directory, "wrong-version.json"), "run-a"), "missing");
 
   await writeFile(join(directory, "oversize.json"), JSON.stringify({ version: 1, runId: "run-a", padding: "x".repeat(140 * 1024) }));
   assert.equal(await readPublishedArchiveState(join(directory, "oversize.json"), "run-a"), "missing");
 
-  assert.equal(await readPublishedArchiveState(fifoPath, "run-a"), "missing");
+  // FIFO coverage is platform-conditional: skipped where mkfifo is unavailable (e.g. Windows).
+  let fifoAvailable = true;
+  try {
+    execFileSync("mkfifo", [join(directory, "fifo")]);
+  } catch {
+    fifoAvailable = false;
+  }
+  if (fifoAvailable) {
+    assert.equal(await readPublishedArchiveState(join(directory, "fifo"), "run-a"), "missing");
+  } else {
+    t.diagnostic("mkfifo unavailable: FIFO case skipped");
+  }
 });
 ```
+
+Also add the wiring regression test in the same file (proves the production consumer, Task 11 must not be dead code):
+
+```ts
+test("production report path consumes archive enrichment", async () => {
+  // Arrange a session whose subagent_wait result publishes archivePath, write a matching
+  // version-1 archive, then load through the production loader (Task 6 wiring).
+  const model = await loadCurrentSessionReport(sessionFile, "active", null, emptyObservation(), root);
+  assert.equal(model?.report.agents[0]?.artifacts, "available");
+
+  await rm(archivePath, { force: true });
+  const missing = await loadCurrentSessionReport(sessionFile, "active", null, emptyObservation(), root);
+  assert.equal(missing?.report.agents[0]?.artifacts, "missing");
+  assert.equal(missing?.report.agentEvidence, "supported");
+  assert.equal(missing?.report.agentActivity.calls, 1);
+});
+```
+
+Required imports for this file: `execFileSync` (`node:child_process`), `mkdtemp`/`symlink`/`writeFile`/`rm` (`node:fs/promises`), `tmpdir`, `join`/`isAbsolute` (`node:path`), `test`, and `loadCurrentSessionReport`/`emptyObservation` for the wiring case.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1645,7 +1910,15 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement minimal code**
 
-`src/integrations/subagent-archive.ts` opens the path with `O_RDONLY | O_NONBLOCK`, requires `isFile()`, `size <= 128 * 1024`, a stable size across the read, `JSON.parse` yielding `{ version: 1, runId }` with `runId === expected`, and returns `"available"`/`"missing"` — never retaining the path, the JSON, or any entry field. In `readSubagentEvidenceWithArchives`, set `artifacts: "available" | "missing"` per run from `archivePath` and run at most `MAX_RUNS` validations concurrently with `Promise.all`.
+`src/integrations/subagent-archive.ts` validates in this exact order and returns `"available"`/`"missing"` — never retaining the path, the JSON, or any entry field:
+
+1. `typeof path === "string" && path.length > 0 && isAbsolute(path)`.
+2. `const info = await lstat(path)`; reject when `info.isSymbolicLink()` or `!info.isFile()`; reject `info.size > 128 * 1024`.
+3. `await open(path, O_RDONLY | O_NONBLOCK | (O_NOFOLLOW ?? 0))`; re-`stat` the handle and require `isFile()`, `size <= 128 * 1024`, and a size equal to the `lstat` size.
+4. Read exactly `size` bytes; require `bytesRead === size` and a stable size after the read.
+5. `JSON.parse` must yield a plain object with `version === 1` and `runId === expectedRunId`.
+
+`O_NOFOLLOW` is `0` where the constant does not exist, and the `lstat` check in step 2 remains the portable guard; a symlink is therefore always `"missing"`. In `readSubagentEvidenceWithArchives`, set `artifacts: "available" | "missing"` per run from `archivePath` and run at most `MAX_RUNS` validations concurrently with `Promise.all`; a rejection from any single validation yields `"missing"` for that run only.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1940,13 +2213,15 @@ test("renders inventory, resources, agent activity, integration presence, and er
   const html = renderInspectorBundle(bundleFixture());
   const data = embeddedJson(html);
 
-  assert.equal(data.current.tree.commands.items.length, 1);
-  assert.equal(data.current.tree.resources.items.length, 2);
-  assert.equal(data.current.tree.agentActivity.calls, 3);
-  assert.equal(data.current.tree.integrations.some((row) => row.presence === "absent"), true);
-  assert.equal(data.current.tree.errors[0].message, "429 rate limit from [URL]");
+  assert.equal(data.current.tree.report.commands.items.length, 1);
+  assert.equal(data.current.tree.report.resources.items.length, 2);
+  assert.equal(data.current.tree.report.agentActivity.calls, 3);
+  assert.equal(data.current.tree.report.integrations.some((row) => row.presence === "absent"), true);
+  assert.equal(data.current.tree.report.errors[0].message, "429 rate limit from [URL]");
+  assert.equal(data.current.tree.report.skills.otherInvocations, 1);
   assert.equal(html.includes("inventory ≠ invocations"), true);
 });
+
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1957,6 +2232,22 @@ Expected: FAIL — `renderInspectorBundle` is not exported.
 - [ ] **Step 3: Implement minimal code**
 
 In `src/ui/html.ts`:
+
+**Canonical payload shape (defect fix).** `CurrentView` is the only shape for a current view: `{ availability, diagnostic?, report?, daily?, dailyTruncated? }`. All report-derived tables (`commands`, `skills`, `resources`, `agentActivity`, `agents`, `integrations`, `errors`, `models`, `tools`, `ledger`) live **only** under `view.report.*`; there is no flattened `view.commands`/`view.agentActivity` mirror. `currentViewProjection(view, scope)` therefore returns exactly:
+
+```ts
+{
+  availability: view.availability,
+  ...(view.diagnostic === undefined ? {} : { diagnostic: view.diagnostic }),
+  scope,
+  ...(view.report === undefined ? {} : { report: sessionView(view.report) }),
+  ...(view.daily === undefined ? {} : { daily: view.daily, dailyTruncated: view.dailyTruncated ?? false }),
+}
+```
+
+The browser reads `state.bundle.current[state.scope].report.<field>` for every report table and `state.bundle.current[state.scope].daily` for the chart/range — one lookup path, no fallback aliases.
+
+Then:
 
 - add `renderInspectorBundle(bundle)`, which embeds one escaped payload
 
@@ -2315,7 +2606,7 @@ ADR 0014 records: foreign public bus events + the `input` skill observation beco
 
 - [ ] **Step 2: Update spec, research, and changelog**
 
-Spec: §3 command grammar and target matrix + the `ui` bundle contract, §4 DTO additions (presence, resource inventory, tool source, agent activity, error message), §6 the one bounded `input` observation plus foreign bus subscription, §7 checkpoint fields + inventory artifact + retention/refresh rules, §9 UX/theme/help/completions, §10 integration policy rows (Ponytail/Caveman split, Permission System bus, pi-subagents discovery, generic resources), §11 migration + downgrade-write notes. Research: replace the pi-subagents row with the verified installed `0.59.0` evidence (integrity `sha512-EOzArN0fU3AUQT+bjtq/8DfW8nSySTV43Qw97QFyChYBFX+GfmO3b7CgtelUfBqfg4gYmcq50B4MguAExIYM1g==`, `gitHead 45c0b41`), note `0.67.0` as latest, pin `@gotgenes/pi-permission-system@31.1.3` (`sha512-AoEQ+Q31qAahpF01g7jN8YCCHDhKJApag6Cmcfe5qTxP7DlDbm+1GbHrrPYCQG+0Y1a1/Vc/Qytwam32UDpWVw==`), and record the corrected artifact finding. CHANGELOG `[0.7.0]`: added evidence coverage, resource inventory, offline UI bundle, new command syntax; changed/removed (`--format`, legacy targets, `--subagents-artifact`, `mode`→`ponytail`/`caveman`); note the checkpoint downgrade behavior.
+Spec: §3 command grammar and target matrix + the `ui` bundle contract, §4 DTO additions (presence, resource inventory, tool source, agent activity, error message), §5 checkpoint/delta counter semantics (`delta` vs `effective`, durable `presence.permission`, exact `otherInvocations` overflow), §6 the one bounded `input` observation plus foreign bus subscription, §7 checkpoint fields + inventory artifact + retention/refresh rules, §8.4 canonical `CurrentView` shape, §9 UX/theme/help/completions, §10 integration policy rows (Ponytail/Caveman split, Permission System bus, pi-subagents discovery + validated archive consumer, generic resources), §11 migration + downgrade-write notes. Research: replace the pi-subagents row with the verified installed `0.59.0` evidence (integrity `sha512-EOzArN0fU3AUQT+bjtq/8DfW8nSySTV43Qw97QFyChYBFX+GfmO3b7CgtelUfBqfg4gYmcq50B4MguAExIYM1g==`, `gitHead 45c0b41`), note `0.67.0` as latest, pin `@gotgenes/pi-permission-system@31.1.3` (`sha512-AoEQ+Q31qAahpF01g7jN8YCCHDhKJApag6Cmcfe5qTxP7DlDbm+1GbHrrPYCQG+0Y1a1/Vc/Qytwam32UDpWVw==`), and record the corrected artifact finding. CHANGELOG `[0.7.0]`: added evidence coverage, resource inventory, offline UI bundle, new command syntax; changed/removed (`--format`, legacy targets, `--subagents-artifact`, `mode`→`ponytail`/`caveman`); note the checkpoint downgrade behavior.
 
 - [ ] **Step 3: Bump the version**
 
@@ -2354,6 +2645,8 @@ git commit -m "docs: record ADR 0014/0015, refresh pins, and bump to 0.7.0"
 
 Seed every new fixture with sentinel strings (`PRIVATE_TASK`, `secret`, `/home/dev/private`, `C:\Users\dev\private`, `file:///home/dev/private`, `permissions:decision` `value`/`matchedPattern`, `promptGuidelines`) and assert absence from: every adapter output, `SessionReport`, `renderJson`, `renderInspectorBundle`, and each TUI tab line. Also assert the UAT fixture reports Caveman `supported` with `changes ≥ 1`, Ponytail `absent`, commands/skills/resources `supported`, `agentActivity.calls = 1`, and integrations that distinguish `absent` from `unavailable`.
 
+- **Regression additions:** `tests/unit/uat-evidence.test.ts` also asserts that repeated report reads and a second maintenance pass keep folded counters byte-identical (`integrationCounters`, `skillInvocations`, `skillOverflowInvocations`, `presence`), proving the checkpoint/delta split does not double-count.
+
 - [ ] **Step 2: Run the whole suite and packaging checks**
 
 ```bash
@@ -2368,7 +2661,7 @@ Expected: all checks PASS; the pack manifest still contains only `src`, `README.
 - Current session: `/session-inspector ui --theme dark`, `ui --scope tree`, `tui`, `tui ledger`, `json --scope tree --output /tmp/report.json`, `help`, `/session-inspector` completion popup, and `--format tui` / `--subagents-artifact x` rejection.
 - Offline check: open the generated HTML with the network disabled; switch Active ancestry ↔ Full tree and exercise 7D/14D/30D/Custom ranges — no reload, no fetch, no Pi call.
 - Ponytail-positive session: run `/ponytail lite` (then restore the original mode) and confirm the Ponytail row shows `supported` with `changes ≥ 1`.
-- Resumed session: after a restart, confirm folded permission/skill counts still appear and inventory/counters survive detail expiry as documented.
+- Resumed session: after a restart, confirm folded permission/skill counts still appear (checkpoint aggregates + post-cursor delta), that repeated renders/reads show identical numbers, that the Permission row still reports `present` from durable presence, and that inventory/counters survive detail expiry as documented.
 
 - [ ] **Step 4: Commit the final evidence**
 
@@ -2383,4 +2676,6 @@ git commit -m "test: extend privacy corpus and add pre-M8 UAT evidence"
 
 - **Spec coverage:** §1 audit → Tasks 1, 2, 10; §3 evidence model → Tasks 1, 2, 9; §4 producers → 1 (Ponytail/Caveman), 2 (Permission), 3 (live counters), 7 (commands/skills/resources), 10–11 (pi-subagents); §5 durable pipeline → 3–6; §6 inventory snapshot → 8; §7 errors → 12; §8 command surface → 16–18 (bundle contract 13–14); §9 DTO/renderers → 9, 14, 15; §10 privacy → 20 (+12); §11 storage/versioning → 5, 8, 19; §12 fixtures/tests → every task; §13 docs → 19; §15 acceptance → 20.
 - **Deferred by design (not gaps):** child Pi session replay for subagent usage, `event`/`gauge` telemetry folding, Lens-specific view, M8 hardening/release. Each is recorded in the spec and ADR 0015/0014.
-- **Type consistency:** `FoldedCounters`, `InventorySnapshot`, `SessionObservation`, `SubagentEvidence`, `InspectorBundle`, and the grammar types are defined once (Shared interfaces) and referenced by the same names in every later task.
+- **Type consistency:** `FoldedCounters` (with its `delta`/`checkpoint`/`effective` discipline), `InventorySnapshot`, `SessionObservation`, `SubagentEvidence`, `InspectorBundle` (report fields only under `CurrentView.report`), and the grammar types are defined once (Shared interfaces) and referenced by the same names in every later task.
+- **Double-count guard:** Task 4 folds only post-cursor telemetry, Task 5 persists `merge(checkpoint, delta)` once per maintenance pass, Task 6 hands reports the effective bucket, and Tasks 5/6 carry the regression tests proving repeated maintenance and repeated report reads neither double-count nor mutate the checkpoint.
+- **No dead code:** every adapter/fold helper introduced for archive or counter evidence has a named production consumer (`loadCurrentSessionReport`, `loadHistoryReports`, `maintainSession`, the command handler).
