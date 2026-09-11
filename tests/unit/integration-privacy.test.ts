@@ -11,9 +11,16 @@ const secret = "m5-seeded-secret";
 const parent: ReducedSession = {
   sessionId: "session-1",
   usage: { totalTokens: 100, cost: 10 },
+  usageComposition: {
+    generations: { totalTokens: 0, cost: 0 },
+    toolResults: { totalTokens: 0, cost: 0 },
+    compactions: { totalTokens: 0, cost: 0 },
+    branchSummaries: { totalTokens: 0, cost: 0 },
+  },
   generations: [],
   tools: [],
   compactions: [],
+  errors: [],
 };
 
 test("privacy corpus excludes seeded secrets from every integration adapter and report JSON", () => {

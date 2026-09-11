@@ -4,6 +4,32 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.6.0]
+
+### Added
+
+- Usage composition now reconciles visibly: total usage equals generations + tool results + compactions + branch summaries, each shown as its own component so the gap against the Models summary is explained rather than implied.
+- Per-usage input, output, cache-read and cache-write token fields (absent when Pi did not persist them) and correct labeling instead of presenting the total as "Input".
+- Bounded error evidence (allowlisted kinds only, never raw messages) so the Errors tab reports real rows.
+- Session-span duration from native first/last records plus per-tool duration when the DTO provides it; otherwise explicitly unavailable. Anonymous live WAL timings are never guessed into per-record durations.
+- Context Mode integration evidence from `ctx_*` tool calls, counted once when also observed through custom entries.
+- Daily activity line chart for current, history and global reports, with daily rows computed in TypeScript rather than in browser JavaScript.
+- History drill-down from the session table into the shared detail sections, and a shared `LedgerItem` projection consumed by both TUI and HTML.
+
+### Changed
+
+- HTML ledger renders the shared core ledger projection verbatim instead of re-deriving rows in the browser.
+- "Evidence, not estimates" is driven by real evidence state for every report kind.
+- Tool usage distinguishes observed values, observed zero and missing evidence: missing now renders Unavailable instead of 0.
+- The tools, models, agents, errors, integrations and ledger tabs render real data; commands and skills state explicitly that no Pi-persisted evidence exists.
+- Filters (7D/14D/30D/custom) apply to the chart, totals and history table, and scroll position is preserved across re-renders.
+- Usage arithmetic is bounded: out-of-range or non-finite inputs are treated as invalid rather than propagated, and duplicate tool results accumulate usage at most once.
+
+### Fixed
+
+- `ctx_*` tool calls no longer leave Context Mode integration evidence empty.
+- A tool result without usage no longer fabricates a zero value.
+
 ## [0.5.0]
 
 ### Added

@@ -9,6 +9,12 @@ import { CURRENT_TABS, createCurrentTuiModel } from "../../src/ui/current.ts";
 const report: SessionReport = {
   sessionId: "session-1",
   usage: { totalTokens: 42, cost: 0.01 },
+  usageComposition: {
+    generations: { totalTokens: 0, cost: 0 },
+    toolResults: { totalTokens: 0, cost: 0 },
+    compactions: { totalTokens: 0, cost: 0 },
+    branchSummaries: { totalTokens: 0, cost: 0 },
+  },
   models: [],
   tools: [],
   compactions: [],
@@ -16,6 +22,8 @@ const report: SessionReport = {
   agents: [],
   agentEvidence: "unavailable",
   integrations: [],
+  durationEvidence: "unavailable",
+  errors: [],
 };
 
 const theme = { fg: (_color: string, text: string) => text };
@@ -227,7 +235,6 @@ test("keeps fixed tabs visible when their content is unavailable", () => {
     "agents",
     "skills",
     "integrations",
-    "errors",
   ]);
 
   for (const [index, tab] of CURRENT_TABS.entries()) {

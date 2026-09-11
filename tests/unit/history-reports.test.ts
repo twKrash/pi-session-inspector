@@ -54,6 +54,12 @@ test("replays manifest-discovered history through the shared session report pipe
           report: {
             sessionId: "history-session",
             usage: { totalTokens: 30, cost: 0.3 },
+            usageComposition: {
+              generations: { totalTokens: 30, cost: 0.3 },
+              toolResults: { totalTokens: 0, cost: 0 },
+              compactions: { totalTokens: 0, cost: 0 },
+              branchSummaries: { totalTokens: 0, cost: 0 },
+            },
             models: [
               {
                 provider: "acme",
@@ -84,6 +90,8 @@ test("replays manifest-discovered history through the shared session report pipe
             agents: [],
             agentEvidence: "unavailable",
             integrations: [],
+            durationEvidence: "unavailable",
+            errors: [],
           },
         },
       ],
@@ -224,19 +232,28 @@ test("preserves branch-summary usage once through history and global reports", a
       report: {
         sessionId: "history-session",
         usage: { totalTokens: 17, cost: 0.17 },
+        usageComposition: {
+          generations: { totalTokens: 0, cost: 0 },
+          toolResults: { totalTokens: 0, cost: 0 },
+          compactions: { totalTokens: 0, cost: 0 },
+          branchSummaries: { totalTokens: 17, cost: 0.17 },
+        },
         models: [],
         tools: [],
         compactions: [
           {
             id: "compaction:summary",
             timestamp: "2026-02-02T11:00:00.000Z",
+            kind: "branch_summary",
             usage: { totalTokens: 17, cost: 0.17 },
           },
         ],
         generations: [],
+        errors: [],
         agents: [],
         agentEvidence: "unavailable",
         integrations: [],
+        durationEvidence: "unavailable",
       },
     });
     assert.deepEqual(global.usage, { totalTokens: 17, cost: 0.17 });
@@ -246,6 +263,42 @@ test("preserves branch-summary usage once through history and global reports", a
         sessions: 1,
         usage: { totalTokens: 17, cost: 0.17 },
       },
+    ]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("keeps the optional token breakdown in global and per-date folds", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    await writeFile(
+      join(sessionDirectory, "history-session.jsonl"),
+      [
+        '{"type":"session","version":3,"id":"history-session"}',
+        '{"type":"custom","id":"marker","parentId":null,"timestamp":"2026-02-01T00:00:01.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
+        '{"type":"message","id":"gen","parentId":"marker","timestamp":"2026-02-01T10:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"totalTokens":18,"cost":{"total":0.03}}}}',
+      ].join("\n"),
+    );
+    const expected = {
+      totalTokens: 18,
+      cost: 0.03,
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 2,
+      cacheWriteTokens: 1,
+    };
+
+    const global = await loadGlobalReport({
+      root,
+      sessionDirectory: () => sessionDirectory,
+      scope: "tree",
+      maintenance,
+    });
+
+    assert.deepEqual(global.usage, expected);
+    assert.deepEqual(global.dates, [
+      { date: "2026-02-01", sessions: 1, usage: expected },
     ]);
   } finally {
     await rm(root, { force: true, recursive: true });

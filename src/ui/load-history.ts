@@ -3,7 +3,7 @@ import { readCheckpoint } from "../storage/checkpoint.ts";
 import { readFile } from "node:fs/promises";
 
 import type { Scope, Usage } from "../core/events.ts";
-import { reduceEntries } from "../core/reduce.ts";
+import { addUsage, reduceEntries } from "../core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../core/reports.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
@@ -182,7 +182,15 @@ export async function loadGlobalReport(
 function usageEvents(
   report: SessionReport,
 ): Array<{ timestamp: string; usage: Usage }> {
-  return [...report.generations, ...report.tools, ...report.compactions];
+  return [
+    ...report.generations,
+    ...report.tools.flatMap((tool) =>
+      tool.usage === undefined
+        ? []
+        : [{ timestamp: tool.timestamp, usage: tool.usage }],
+    ),
+    ...report.compactions,
+  ];
 }
 
 function inRange(date: string, range: DateRange | undefined): boolean {
@@ -197,13 +205,4 @@ function isDate(value: string): boolean {
 
 function zeroUsage(): Usage {
   return { totalTokens: 0, cost: 0 };
-}
-
-function addUsage(left: Usage, right: Usage): Usage {
-  return {
-    totalTokens: left.totalTokens + right.totalTokens,
-    cost:
-      Math.round((left.cost + right.cost) * 1_000_000_000_000) /
-      1_000_000_000_000,
-  };
 }

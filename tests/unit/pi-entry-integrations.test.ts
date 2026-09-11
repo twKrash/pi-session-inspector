@@ -161,6 +161,90 @@ test("reports unknown supported-integration versions and omits unrelated entries
   assert.deepEqual(readPiEntryEvidence([unrelatedEntry]), []);
 });
 
+test("detects ctx_* tool calls as context evidence without retaining arguments", () => {
+  const rows = readPiEntryEvidence([
+    {
+      type: "message",
+      id: "ctx-tool-calls",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tool-ctx-execute",
+            name: "ctx_execute",
+            arguments: { command: "raw-tool-arg-sentinel" },
+          },
+          { type: "toolCall", id: "tool-ctx-search", name: "ctx_search" },
+        ],
+      },
+    } satisfies SessionEntry,
+  ]);
+
+  assert.deepEqual(rows, [
+    {
+      integration: "context",
+      version: 1,
+      state: "supported",
+      counters: { calls: 2 },
+    },
+  ]);
+  assert.equal(JSON.stringify(rows).includes("raw-tool-arg-sentinel"), false);
+});
+
+test("counts one Context Mode invocation once when custom and tool evidence both observe it", () => {
+  const rows = readPiEntryEvidence([
+    {
+      type: "custom",
+      id: "context-1",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      customType: "ctx_status",
+      data: { schemaVersion: 1, active: true },
+    } satisfies SessionEntry,
+    {
+      type: "message",
+      id: "ctx-tool-call",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:01.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "tool-ctx-execute", name: "ctx_execute" },
+        ],
+      },
+    } satisfies SessionEntry,
+  ]);
+
+  assert.deepEqual(rows, [
+    {
+      integration: "context",
+      version: 1,
+      state: "supported",
+      counters: { calls: 1 },
+    },
+  ]);
+});
+
+test("does not treat a non-ctx_ tool call as context evidence", () => {
+  const rows = readPiEntryEvidence([
+    {
+      type: "message",
+      id: "read-tool-call",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tool-read", name: "read" }],
+      },
+    } satisfies SessionEntry,
+  ]);
+
+  assert.deepEqual(rows, []);
+});
+
 test("never returns custom data or tool input/output", () => {
   const rows = readPiEntryEvidence([
     {

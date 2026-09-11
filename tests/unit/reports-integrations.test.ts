@@ -8,9 +8,16 @@ import { toSessionReport } from "../../src/core/reports.ts";
 const parent: ReducedSession = {
   sessionId: "session-1",
   usage: { totalTokens: 100, cost: 10 },
+  usageComposition: {
+    generations: { totalTokens: 0, cost: 0 },
+    toolResults: { totalTokens: 0, cost: 0 },
+    compactions: { totalTokens: 0, cost: 0 },
+    branchSummaries: { totalTokens: 0, cost: 0 },
+  },
   generations: [],
   tools: [],
   compactions: [],
+  errors: [],
 };
 
 test("projects explicit integration evidence without adding child usage", () => {

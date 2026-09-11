@@ -36,6 +36,18 @@ export type AgentRun = {
 export type Usage = {
   totalTokens: number;
   cost: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+};
+
+/** Bounded token/cost subtotals whose parts sum to the session total. */
+export type UsageComposition = {
+  generations: Usage;
+  toolResults: Usage;
+  compactions: Usage;
+  branchSummaries: Usage;
 };
 
 export type SessionEntry = {
@@ -63,19 +75,40 @@ export type Tool = {
   timestamp: string;
   name: string;
   status: "succeeded" | "failed" | "interrupted";
-  usage: Usage;
+  /** Absent until a matching tool result supplies usage evidence. */
+  usage?: Usage;
+  /** Present only when live timing correlates to this native tool-call ID. */
+  durationMs?: number;
 };
 
 export type Compaction = {
   id: string;
   timestamp: string;
+  kind: "compaction" | "branch_summary";
   usage: Usage;
+};
+
+/** Bounded error classification; never a raw stop reason, message, or payload. */
+export type ErrorKind =
+  | "generation-error"
+  | "generation-aborted"
+  | "generation-length"
+  | "tool-error"
+  | "unknown";
+
+export type ErrorRecord = {
+  id: string;
+  timestamp: string;
+  kind: ErrorKind;
+  confidence: Confidence;
 };
 
 export type ReducedSession = {
   sessionId: string;
   usage: Usage;
+  usageComposition: UsageComposition;
   generations: Generation[];
   tools: Tool[];
   compactions: Compaction[];
+  errors: ErrorRecord[];
 };

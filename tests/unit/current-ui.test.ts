@@ -12,6 +12,12 @@ import {
 const report: SessionReport = {
   sessionId: "session-1",
   usage: { totalTokens: 42, cost: 0.01 },
+  usageComposition: {
+    generations: { totalTokens: 0, cost: 0 },
+    toolResults: { totalTokens: 0, cost: 0 },
+    compactions: { totalTokens: 0, cost: 0 },
+    branchSummaries: { totalTokens: 0, cost: 0 },
+  },
   models: [],
   tools: [],
   compactions: [],
@@ -19,6 +25,8 @@ const report: SessionReport = {
   agents: [],
   agentEvidence: "unavailable",
   integrations: [],
+  durationEvidence: "unavailable",
+  errors: [],
 };
 
 const initial: CurrentTuiState = { tab: "overview", scope: "active" };

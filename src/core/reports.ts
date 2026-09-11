@@ -60,24 +60,34 @@ export type AdapterAgentEvidence = {
   runs: readonly AgentRun[];
 };
 
+/** Correlated live timing; rows only match existing native tool-call IDs. */
+export type DurationEvidence = {
+  state: EvidenceState;
+  tools?: readonly { id: string; durationMs: number }[];
+};
+
 /** Only bounded, explicit integration-adapter output may enter a report. */
 export type SessionReportEvidence = {
   walDetail?: "expired";
   agents?: AdapterAgentEvidence;
   integrations?: readonly IntegrationObservation[];
+  duration?: DurationEvidence;
 };
 
 export type SessionReport = {
   walDetail?: "expired";
   sessionId: string;
   usage: Usage;
+  usageComposition: ReducedSession["usageComposition"];
   models: ModelSummary[];
   tools: Tool[];
   compactions: Compaction[];
   generations: ReducedSession["generations"];
+  errors: ReducedSession["errors"];
   agents: AgentRun[];
   agentEvidence: EvidenceState;
   integrations: IntegrationObservation[];
+  durationEvidence: EvidenceState;
 };
 
 export function toSessionReport(
@@ -100,14 +110,20 @@ export function toSessionReport(
     models.set(key, current);
   }
   const projectedEvidence = projectEvidence(evidence);
+  const tools = reduced.tools.map((tool) => {
+    const durationMs = projectedEvidence.duration.tools.get(tool.id);
+    return durationMs === undefined ? tool : { ...tool, durationMs };
+  });
   return {
     ...reduced,
+    tools,
     ...(projectedEvidence.walDetail === "expired"
       ? { walDetail: "expired" as const }
       : {}),
     agents: projectedEvidence.agents,
     agentEvidence: projectedEvidence.agentEvidence,
     integrations: projectedEvidence.integrations,
+    durationEvidence: projectedEvidence.duration.state,
     models: [...models.values()].sort(
       (a, b) =>
         a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
@@ -120,6 +136,7 @@ function projectEvidence(evidence: unknown): {
   agents: AgentRun[];
   agentEvidence: EvidenceState;
   integrations: IntegrationObservation[];
+  duration: { state: EvidenceState; tools: Map<string, number> };
 } {
   try {
     const input = snapshotRecord(evidence);
@@ -132,10 +149,40 @@ function projectEvidence(evidence: unknown): {
       agents: agents.runs,
       agentEvidence: agents.state,
       integrations: projectIntegrations(input.integrations),
+      duration: projectDuration(input.duration),
     };
   } catch {
     return unavailableEvidence();
   }
+}
+
+function projectDuration(value: unknown): {
+  state: EvidenceState;
+  tools: Map<string, number>;
+} {
+  const input = snapshotRecord(value);
+  if (input === undefined || !isEvidenceState(input.state)) {
+    return { state: "unavailable", tools: new Map() };
+  }
+  if (input.state !== "supported") {
+    return { state: input.state, tools: new Map() };
+  }
+
+  const tools = new Map<string, number>();
+  if (Array.isArray(input.tools)) {
+    for (const row of input.tools) {
+      const entry = snapshotRecord(row);
+      if (
+        entry !== undefined &&
+        typeof entry.id === "string" &&
+        isDurationMs(entry.durationMs) &&
+        !tools.has(entry.id)
+      ) {
+        tools.set(entry.id, entry.durationMs);
+      }
+    }
+  }
+  return { state: tools.size > 0 ? "supported" : "unavailable", tools };
 }
 
 function projectAgentEvidence(value: unknown): {
@@ -304,6 +351,10 @@ function isCost(value: unknown): value is number {
   );
 }
 
+function isDurationMs(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function isVersion(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
@@ -344,6 +395,12 @@ function unavailableEvidence(): {
   agents: AgentRun[];
   agentEvidence: EvidenceState;
   integrations: IntegrationObservation[];
+  duration: { state: EvidenceState; tools: Map<string, number> };
 } {
-  return { agents: [], agentEvidence: "unavailable", integrations: [] };
+  return {
+    agents: [],
+    agentEvidence: "unavailable",
+    integrations: [],
+    duration: { state: "unavailable", tools: new Map() },
+  };
 }

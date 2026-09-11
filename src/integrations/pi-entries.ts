@@ -25,6 +25,9 @@ const PERMISSION_CUSTOM_TYPES = new Set([
   "permissions:decision",
 ]);
 
+/** The two observation paths that can report one Context Mode invocation. */
+type ContextEvidencePath = "custom" | "tool";
+
 /**
  * Reads only versioned, persisted integration metadata from Pi entries. Source
  * custom data and tool payloads are never included in the resulting counters.
@@ -83,6 +86,9 @@ function createPiEntryEvidenceRegistry(): EvidenceRegistry {
 
 class PiEntryEvidence {
   readonly #rows = new Map<IntegrationKey, IntegrationObservation>();
+  readonly #contextCalls = new Map<ContextEvidencePath, number>();
+  #contextVersion: number | undefined;
+  #contextVersionConflict = false;
 
   constructor(private readonly registry: EvidenceRegistry) {}
 
@@ -90,7 +96,7 @@ class PiEntryEvidence {
     try {
       this.readCustom(entry);
       this.readRtk(entry);
-      this.readLens(entry);
+      this.readToolCallEvidence(entry);
     } catch {
       // Pi input is untrusted; malformed entries provide no integration evidence.
     }
@@ -98,9 +104,54 @@ class PiEntryEvidence {
 
   observations(): readonly IntegrationObservation[] {
     return OBSERVATION_ORDER.flatMap((integration) => {
-      const row = this.#rows.get(integration);
+      const row =
+        integration === "context"
+          ? this.contextObservation()
+          : this.#rows.get(integration);
       return row === undefined ? [] : [row];
     });
+  }
+
+  /**
+   * One Context Mode invocation can be observed through a `ctx_*` custom entry
+   * and its native `ctx_*` tool call. The two paths are folded with a maximum
+   * rather than a sum, so the same invocation is never counted twice while a
+   * single-path observation keeps its exact count.
+   */
+  private contextObservation(): IntegrationObservation | undefined {
+    const version = this.#contextVersion;
+    if (version === undefined) return undefined;
+    const calls = Math.max(...this.#contextCalls.values());
+    const result = this.#contextVersionConflict
+      ? ({ state: "unsupported" } as const)
+      : this.registry.read({
+          integration: "context",
+          version,
+          value: { calls },
+        });
+    if (result.state !== "supported") return unsupported("context", version);
+    return {
+      integration: "context",
+      version,
+      state: "supported",
+      counters: result.counters,
+    };
+  }
+
+  private recordContextCall(
+    path: ContextEvidencePath,
+    version: number,
+    calls: number,
+  ): void {
+    if (this.#contextVersionConflict) return;
+    if (this.#contextVersion === undefined) {
+      this.#contextVersion = version;
+    } else if (this.#contextVersion !== version) {
+      this.#contextVersion = version;
+      this.#contextVersionConflict = true;
+      return;
+    }
+    this.#contextCalls.set(path, (this.#contextCalls.get(path) ?? 0) + calls);
   }
 
   private readCustom(entry: SessionEntry): void {
@@ -111,7 +162,7 @@ class PiEntryEvidence {
     if (version === undefined) return;
 
     if (entry.customType.startsWith("ctx_")) {
-      this.add("context", version, { calls: 1 });
+      this.recordContextCall("custom", version, 1);
     } else if (MODE_CUSTOM_TYPES.has(entry.customType)) {
       this.add("mode", version, { changes: 1 });
     } else if (PERMISSION_CUSTOM_TYPES.has(entry.customType)) {
@@ -136,18 +187,31 @@ class PiEntryEvidence {
     this.add("rtk", version, counters);
   }
 
-  private readLens(entry: SessionEntry): void {
+  private readToolCallEvidence(entry: SessionEntry): void {
     if (entry.type !== "message" || !isRecord(entry.message)) return;
     const content = entry.message.content;
     if (!Array.isArray(content)) return;
 
-    let calls = 0;
+    // Context Mode evidence is native `ctx_*` tool use (never its arguments).
+    let contextCalls = 0;
+    let lensCalls = 0;
     for (const item of content) {
-      if (isRecord(item) && item.type === "toolCall" && item.name === "lens") {
-        calls++;
+      if (
+        !isRecord(item) ||
+        item.type !== "toolCall" ||
+        typeof item.name !== "string"
+      ) {
+        continue;
       }
+      if (item.name === "lens") lensCalls++;
+      else if (item.name.startsWith("ctx_")) contextCalls++;
     }
-    if (calls > 0) this.add("lens", SUPPORTED_SCHEMA_VERSION, { calls });
+    if (contextCalls > 0) {
+      this.recordContextCall("tool", SUPPORTED_SCHEMA_VERSION, contextCalls);
+    }
+    if (lensCalls > 0) {
+      this.add("lens", SUPPORTED_SCHEMA_VERSION, { calls: lensCalls });
+    }
   }
 
   private add(

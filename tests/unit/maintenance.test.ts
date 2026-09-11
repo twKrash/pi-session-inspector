@@ -22,24 +22,28 @@ test("invalidates a same-line-count Pi rewrite with a bounded source revision", 
     await writeFile(source, contents(9));
 
     assert.equal(
-      await maintainSession({
-        root,
-        sessionId,
-        sessionFile: source,
-        writerId: "maintenance-1",
-      }),
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile: source,
+          writerId: "maintenance-1",
+        })
+      ).status,
       "available",
     );
     const first = await readCheckpoint({ directory });
 
     await writeFile(source, contents(8));
     assert.equal(
-      await maintainSession({
-        root,
-        sessionId,
-        sessionFile: source,
-        writerId: "maintenance-2",
-      }),
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile: source,
+          writerId: "maintenance-2",
+        })
+      ).status,
       "available",
     );
     const rewritten = await readCheckpoint({ directory });
@@ -77,12 +81,14 @@ test("requires active tracking marker evidence before sealing or pruning", async
     );
 
     assert.equal(
-      await maintainSession({
-        root,
-        sessionId,
-        sessionFile: source,
-        writerId: "maintenance-1",
-      }),
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile: source,
+          writerId: "maintenance-1",
+        })
+      ).status,
       "unavailable",
     );
     await assert.doesNotReject(readFile(expired));
@@ -112,12 +118,14 @@ test("maintenance rereads Pi source and WAL under its lease before publishing a 
     );
 
     assert.equal(
-      await maintainSession({
-        root,
-        sessionId,
-        sessionFile: source,
-        writerId: "maintenance-1",
-      }),
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile: source,
+          writerId: "maintenance-1",
+        })
+      ).status,
       "available",
     );
     const checkpoint = await readCheckpoint({ directory });
@@ -176,12 +184,14 @@ test("malformed durable WAL is not reported maintained when no validated prefix 
       '{"id":"marker","parentId":null,"timestamp":"2026-01-01T00:00:00Z","type":"custom","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}\n',
     );
     assert.equal(
-      await maintainSession({
-        root,
-        sessionId: "session-1",
-        sessionFile: source,
-        writerId: "maintenance-1",
-      }),
+      (
+        await maintainSession({
+          root,
+          sessionId: "session-1",
+          sessionFile: source,
+          writerId: "maintenance-1",
+        })
+      ).status,
       "unavailable",
     );
   } finally {

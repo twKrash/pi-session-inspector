@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
 
-import type { SessionEntry } from "../core/events.js";
+import type { EvidenceState, SessionEntry } from "../core/events.js";
 import { reduceEntries } from "../core/reduce.js";
 import { hasTrackingStartMarker, selectScope } from "../pi/sessions.js";
 import { acquireMaintenanceLease } from "./lease.js";
-import { recoverSession } from "./recovery.js";
+import { recoverSession, type RecoveredRunningRecord } from "./recovery.js";
 import { readCheckpoint, writeCheckpoint } from "./checkpoint.js";
 import { pruneExpiredWalSegments } from "./retention.js";
 
@@ -14,6 +14,15 @@ const MAX_SOURCE_LINE_BYTES = 1024 * 1024;
 const MAX_SOURCE_RECORDS = 1_000_000;
 
 export type MaintenanceStatus = "available" | "unavailable";
+
+export type MaintenanceResult = {
+  status: MaintenanceStatus;
+  /**
+   * Live WAL timing is anonymous, so correlated duration is unavailable until a
+   * native Pi tool-call ID can join a recovered run to a persisted record.
+   */
+  durationEvidence: EvidenceState;
+};
 
 /**
  * Reconciles derived state from Pi's current JSONL and durable WAL while the
@@ -31,7 +40,7 @@ export async function maintainSession({
   sessionFile: string;
   writerId: string;
   now?: () => Date;
-}): Promise<MaintenanceStatus> {
+}): Promise<MaintenanceResult> {
   const directory = join(root, "sessions", sessionId);
   const lease = await acquireMaintenanceLease({
     directory,
@@ -39,11 +48,11 @@ export async function maintainSession({
     now,
     isPidAlive,
   });
-  if (lease === undefined) return "unavailable";
+  if (lease === undefined) return unavailableMaintenance();
   try {
     const source = await readPiSource(sessionFile);
     if (source === undefined || !hasTrackingStartMarker(source.entries))
-      return "unavailable";
+      return unavailableMaintenance();
     const recovered = await recoverSession({
       directory,
       piCursor: source.cursor,
@@ -63,7 +72,7 @@ export async function maintainSession({
       );
     };
     // A source rewrite cannot be sealed from a stale reduction.
-    if (!(await sourceStillCurrent())) return "unavailable";
+    if (!(await sourceStillCurrent())) return unavailableMaintenance();
     const checkpointWritten = await writeCheckpoint({
       directory,
       lease,
@@ -88,21 +97,41 @@ export async function maintainSession({
         },
       },
     });
-    if (!checkpointWritten) return "unavailable";
+    if (!checkpointWritten) return unavailableMaintenance();
     const deleted = await pruneExpiredWalSegments({
       directory,
       lease,
       now,
       validate: sourceStillCurrent,
     });
-    return recovered.availability === "available" || deleted > 0
-      ? "available"
-      : "unavailable";
+    return {
+      status:
+        recovered.availability === "available" || deleted > 0
+          ? "available"
+          : "unavailable",
+      durationEvidence: durationEvidenceFromRecoveredRuns(recovered.running),
+    };
   } catch {
-    return "unavailable";
+    return unavailableMaintenance();
   } finally {
     await lease.release();
   }
+}
+
+function unavailableMaintenance(): MaintenanceResult {
+  return { status: "unavailable", durationEvidence: "unavailable" };
+}
+
+/**
+ * Live timing records are anonymous WAL event IDs, never Pi-native tool-call
+ * IDs, so no recovered run can be joined to a persisted tool. Duration stays
+ * unavailable rather than guessed or aggregated across unrelated runs.
+ */
+export function durationEvidenceFromRecoveredRuns(
+  running: readonly RecoveredRunningRecord[],
+): EvidenceState {
+  void running;
+  return "unavailable";
 }
 
 /** Schedules maintenance after tracking without delaying or surfacing to Pi. */

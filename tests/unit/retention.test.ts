@@ -439,12 +439,14 @@ test("above replay-record budget maintenance incrementally prunes and carries co
     );
     for (let i = 0; i < 3; i++) {
       assert.equal(
-        await maintainSession({
-          root,
-          sessionId: "session-1",
-          sessionFile: source,
-          writerId: `maintenance-${i}`,
-        }),
+        (
+          await maintainSession({
+            root,
+            sessionId: "session-1",
+            sessionFile: source,
+            writerId: `maintenance-${i}`,
+          })
+        ).status,
         "available",
       );
       if (i === 0)

@@ -117,12 +117,35 @@ export function createCurrentTuiComponent({
         return renderAgents();
       case "integrations":
         return renderIntegrations();
+      case "errors":
+        return renderErrors();
       case "ledger":
         ledger ??= buildLedger(currentModel.report);
-        return [`Ledger events: ${ledger.length}`];
+        return renderLedger(ledger);
       default:
         return ["Unavailable"];
     }
+  }
+
+  function renderErrors(): string[] {
+    const errors = currentModel.report.errors;
+    if (errors.length === 0) return ["No persisted error records"];
+    return errors.flatMap((error) => [
+      `Error: ${error.kind}`,
+      `Record: ${error.id}`,
+      `Timestamp: ${error.timestamp}`,
+      `Confidence: ${error.confidence}`,
+    ]);
+  }
+
+  function renderLedger(items: ReturnType<typeof buildLedger>): string[] {
+    if (items.length === 0) return ["Unavailable"];
+    return [
+      `Ledger events: ${items.length}`,
+      ...items.map(
+        (item) => `${item.timestamp}  ${item.kind}  ${item.id}  ${item.status}`,
+      ),
+    ];
   }
 
   function renderAgents(): string[] {

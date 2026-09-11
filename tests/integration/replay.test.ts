@@ -63,6 +63,7 @@ test("counts persisted branch-summary usage exactly once", () => {
     {
       id: "compaction:summary",
       timestamp: "2026-09-07T00:00:00.000Z",
+      kind: "branch_summary",
       usage: { totalTokens: 17, cost: 0.17 },
     },
   ]);
