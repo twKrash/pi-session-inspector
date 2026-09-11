@@ -18,7 +18,7 @@ const WIDE_TABS_WIDTH = 87;
 
 /** Availability copy shared by the inventory tabs; never an activity claim. */
 const INVENTORY_NOT_INVOCATIONS =
-  "Inventory != invocations; counts are availability, never activity.";
+  "Inventory ≠ invocations. Counts are availability, never activity.";
 
 type CurrentTuiComponent = Component & {
   handleInput(data: string): void;

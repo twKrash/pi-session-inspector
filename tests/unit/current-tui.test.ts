@@ -158,6 +158,122 @@ test("keeps counted skill names visible after the inventory expires", () => {
   assert.ok(empty.includes("Unavailable"));
 });
 
+test("shares the ≠ inventory copy with the HTML renderer", () => {
+  const expected =
+    "Inventory ≠ invocations. Counts are availability, never activity.";
+  assert.equal(visibleWidth("≠"), 1);
+
+  for (const tab of ["commands", "skills"] as const) {
+    assert.ok(
+      renderTab(modelWith({}), tab).includes(expected),
+      `${tab} tab must render the shared inventory copy`,
+    );
+  }
+});
+
+test("guards the integration version fallback", () => {
+  const withoutVersion = renderTab(
+    modelWith({
+      integrations: [
+        { integration: "caveman", presence: "absent", state: "unavailable" },
+      ],
+    }),
+    "integrations",
+  ).join("\n");
+  assert.match(withoutVersion, /Version: Unavailable/);
+  assert.ok(!withoutVersion.includes("Version: undefined"));
+
+  const withVersion = renderTab(
+    modelWith({
+      integrations: [
+        {
+          integration: "context",
+          presence: "present",
+          state: "supported",
+          version: 3,
+        },
+      ],
+    }),
+    "integrations",
+  ).join("\n");
+  assert.match(withVersion, /Version: 3/);
+});
+
+test("renders the + N other invocations footnote only when non-zero", () => {
+  const withOther = modelWith({
+    skills: {
+      state: "supported",
+      invocationState: "supported",
+      invocationCount: 3,
+      otherInvocations: 2,
+      items: [{ name: "alpha", explicitInvocations: 1 }],
+    },
+  });
+  assert.match(
+    renderTab(withOther, "skills").join("\n"),
+    /\+ 2 other invocations/,
+  );
+
+  const withoutOther = modelWith({
+    skills: {
+      state: "supported",
+      invocationState: "supported",
+      invocationCount: 1,
+      otherInvocations: 0,
+      items: [{ name: "alpha", explicitInvocations: 1 }],
+    },
+  });
+  assert.ok(
+    !renderTab(withoutOther, "skills").join("\n").includes("other invocations"),
+  );
+});
+
+test("keeps the agents tab populated by activity alone", () => {
+  const model = modelWith({
+    agentActivity: {
+      state: "supported",
+      calls: 3,
+      succeeded: 1,
+      failed: 1,
+      interrupted: 1,
+      tools: [{ name: "subagent", calls: 2 }],
+    },
+  });
+
+  const lines = renderTab(model, "agents");
+  const rendered = lines.join("\n");
+  assert.ok(lines.length > 0);
+  assert.match(rendered, /Calls: 3/);
+  assert.match(rendered, /Succeeded: 1/);
+  assert.match(rendered, /Failed: 1/);
+  assert.match(rendered, /Interrupted: 1/);
+  assert.match(rendered, /Activity tool: subagent {2}Calls: 2/);
+});
+
+test("renders each tool source label or Unavailable", () => {
+  const model = modelWith({
+    tools: [
+      {
+        id: "tool-1",
+        timestamp: "2026-09-11T10:00:00Z",
+        name: "read",
+        status: "succeeded",
+        source: "npm:pi-tools",
+      },
+      {
+        id: "tool-2",
+        timestamp: "2026-09-11T10:01:00Z",
+        name: "bash",
+        status: "failed",
+      },
+    ],
+  });
+
+  const rendered = renderTab(model, "tools").join("\n");
+  assert.match(rendered, /read {2}Source: npm:pi-tools/);
+  assert.match(rendered, /bash {2}Source: Unavailable/);
+});
+
 test("renders fixed tabs, changes scope, and closes", async () => {
   let closed = false;
   let renders = 0;
