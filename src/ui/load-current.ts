@@ -9,14 +9,16 @@ import { readSubagentRuns } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { selectScope } from "../pi/sessions.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
+import type { SessionObservation } from "./observation.ts";
 
 /** Replays a persisted current session into the renderer-neutral TUI model. */
 export async function loadCurrentSessionReport(
   sessionFile: string | undefined,
   scope: Scope,
   leafId: string | null,
-  subagentArtifact?: unknown,
+  observation?: SessionObservation,
   inspectorRoot?: string,
+  subagentArtifact?: unknown,
 ): Promise<CurrentTuiModel | undefined> {
   if (!sessionFile) return undefined;
 
@@ -44,6 +46,9 @@ export async function loadCurrentSessionReport(
           ? { walDetail: "expired" as const }
           : {}),
         agents: readSubagentRuns(subagentArtifact),
+        presence: observation?.presence,
+        counters: observation?.counters,
+        inventory: observation?.inventory,
         integrations: readPiEntryEvidence(entries),
       }),
       scope,

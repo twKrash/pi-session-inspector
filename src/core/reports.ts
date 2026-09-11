@@ -2,6 +2,7 @@ import {
   isAllowedIntegrationCounter,
   isKnownIntegrationVersion,
 } from "./integration-counter-allowlists.ts";
+import type { FoldedCounters } from "./live-counter-fold.ts";
 import type {
   AgentRun,
   Compaction,
@@ -16,8 +17,11 @@ import type {
 } from "./events.ts";
 
 const MAX_AGENT_ROWS = 256;
-const MAX_INTEGRATION_ROWS = 6;
+/** Seven known keys plus the legacy `mode` compatibility row. */
+const MAX_INTEGRATION_ROWS = 8;
 const MAX_COUNTERS = 12;
+/** Bounded grammar for already-folded counter names (never producer text). */
+const FOLDED_COUNTER_KEY = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
 const MAX_TOTAL_TOKENS = 1_000_000_000;
 const MAX_COST = 1_000_000_000;
 const OPAQUE_SUBAGENT_ID = /^subagent-[a-f0-9]{64}$/;
@@ -56,6 +60,15 @@ const INTEGRATION_PRESENCES = new Set<IntegrationPresence>([
   "absent",
   "unknown",
 ]);
+const INTEGRATION_ORDER: readonly IntegrationKey[] = [
+  "context",
+  "rtk",
+  "ponytail",
+  "caveman",
+  "permission",
+  "subagents",
+  "lens",
+];
 
 export type ModelSummary = {
   provider: string;
@@ -81,6 +94,12 @@ export type SessionReportEvidence = {
   walDetail?: "expired";
   agents?: AdapterAgentEvidence;
   integrations?: readonly IntegrationObservationInput[];
+  /** Explicit per-key presence model from the process-local observation. */
+  presence?: Readonly<Record<IntegrationKey, IntegrationPresence>>;
+  /** Effective folded counters (`merge(checkpoint, delta)`), never a delta alone. */
+  counters?: FoldedCounters;
+  /** Sanitized inventory snapshot (Task 7 narrows this to `InventorySnapshot`). */
+  inventory?: unknown;
   duration?: DurationEvidence;
 };
 
@@ -158,7 +177,11 @@ function projectEvidence(evidence: unknown): {
         : {}),
       agents: agents.runs,
       agentEvidence: agents.state,
-      integrations: projectIntegrations(input.integrations),
+      integrations: projectIntegrations(
+        input.integrations,
+        input.presence,
+        input.counters,
+      ),
       duration: projectDuration(input.duration),
     };
   } catch {
@@ -252,7 +275,122 @@ function projectUsage(value: unknown): Usage | undefined {
   return { totalTokens: usage.totalTokens, cost: usage.cost };
 }
 
-function projectIntegrations(value: unknown): IntegrationObservation[] {
+function projectIntegrations(
+  value: unknown,
+  presenceValue: unknown,
+  countersValue: unknown,
+): IntegrationObservation[] {
+  const adapterRows = projectAdapterRows(value);
+  const presence = projectPresence(presenceValue);
+  const counters = projectFoldedCounters(countersValue);
+  // Without an observation the projection keeps its adapter-only shape; with one
+  // it emits exactly one row per known key so absence is explicit.
+  if (presence === undefined && counters === undefined) return adapterRows;
+
+  const adapterByKey = new Map<IntegrationKey, IntegrationObservation>();
+  let legacyMode: IntegrationObservation | undefined;
+  for (const row of adapterRows) {
+    if (row.integration === "mode") {
+      legacyMode = legacyMode ?? row;
+      continue;
+    }
+    if (!adapterByKey.has(row.integration)) {
+      adapterByKey.set(row.integration, row);
+    }
+  }
+
+  const integrations = INTEGRATION_ORDER.map((integration) =>
+    mergeIntegrationRow(
+      integration,
+      adapterByKey.get(integration),
+      presence?.[integration],
+      counters?.[integration],
+    ),
+  );
+  if (legacyMode !== undefined && integrations.length < MAX_INTEGRATION_ROWS) {
+    integrations.push(legacyMode);
+  }
+  return integrations;
+}
+
+function mergeIntegrationRow(
+  integration: IntegrationKey,
+  adapter: IntegrationObservation | undefined,
+  presenceSignal: IntegrationPresence | undefined,
+  folded: Readonly<Record<string, number>> | undefined,
+): IntegrationObservation {
+  const presence = presenceSignal ?? adapter?.presence ?? "unknown";
+  const counters = projectFoldedCountersForIntegration(folded);
+  if (counters !== undefined) {
+    // Folded counters are the v1 contract; evidence exists, so the row is supported.
+    return { integration, presence, version: 1, state: "supported", counters };
+  }
+  if (adapter === undefined) {
+    return { integration, presence, state: "unavailable" };
+  }
+  return { ...adapter, presence };
+}
+
+function projectFoldedCountersForIntegration(
+  value: Readonly<Record<string, number>> | undefined,
+): Readonly<Record<string, number>> | undefined {
+  if (value === undefined) return undefined;
+  const projected: Record<string, number> = {};
+  for (const key of Object.keys(value).sort().slice(0, MAX_COUNTERS)) {
+    const count = value[key];
+    if (FOLDED_COUNTER_KEY.test(key) && isCounterValue(count)) {
+      projected[key] = count;
+    }
+  }
+  return Object.keys(projected).length === 0 ? undefined : projected;
+}
+
+function projectPresence(
+  value: unknown,
+):
+  | Readonly<Record<IntegrationKey, IntegrationPresence | undefined>>
+  | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined) return undefined;
+  const presence = {} as Record<
+    IntegrationKey,
+    IntegrationPresence | undefined
+  >;
+  for (const integration of INTEGRATION_ORDER) {
+    const signal = input[integration];
+    presence[integration] = isIntegrationPresence(signal) ? signal : undefined;
+  }
+  return presence;
+}
+
+function projectFoldedCounters(
+  value: unknown,
+): Readonly<Record<string, Readonly<Record<string, number>>>> | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined) return undefined;
+  const counters = snapshotRecord(input.counters);
+  if (counters === undefined) return undefined;
+  const folded: Record<string, Readonly<Record<string, number>>> = {};
+  for (const integration of Object.keys(counters).sort()) {
+    const row = snapshotRecord(counters[integration]);
+    if (row === undefined) continue;
+    const projected: Record<string, number> = {};
+    for (const key of Object.keys(row).sort()) {
+      const count = row[key];
+      if (
+        FOLDED_COUNTER_KEY.test(key) &&
+        typeof count === "number" &&
+        isCounterValue(count)
+      ) {
+        projected[key] = count;
+      }
+    }
+    if (Object.keys(projected).length > 0) folded[integration] = projected;
+  }
+  return folded;
+}
+
+function projectAdapterRows(value: unknown): IntegrationObservation[] {
   if (!Array.isArray(value)) return [];
   const integrations: IntegrationObservation[] = [];
   for (const row of value.slice(0, MAX_INTEGRATION_ROWS)) {

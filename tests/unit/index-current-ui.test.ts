@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,6 +9,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import registerSessionInspector from "../../src/index.ts";
+import {
+  foldedFromCheckpointAggregates,
+  foldTelemetryCounters,
+  mergeFoldedCounters,
+} from "../../src/core/live-counter-fold.ts";
+import { readCheckpoint } from "../../src/storage/checkpoint.ts";
 import { renderHtml } from "../../src/ui/html.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 
@@ -152,6 +158,8 @@ test("projects only an explicitly supplied public subagent artifact in the produ
     file,
     "tree",
     null,
+    undefined,
+    undefined,
     artifacts.foreground,
   );
 
@@ -339,6 +347,8 @@ test("preserves supplied public subagent evidence in current JSON export without
     sessionFile,
     "active",
     "entry-1",
+    undefined,
+    undefined,
     artifacts.foreground,
   );
   assert.ok(model);
@@ -516,4 +526,268 @@ test("notifies and does not throw when public session lookup or replay is unavai
     } as unknown as ExtensionCommandContext),
   );
   assert.equal(notifications, 3);
+});
+
+const SESSION_ID = "fixture-session";
+
+const sessionSource = [
+  '{"type":"session","version":3,"id":"fixture-session"}',
+  '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
+].join("\n");
+
+/** Valid derived checkpoint already folding one allowed permission decision. */
+function checkpointFixture() {
+  return {
+    schemaVersion: 1,
+    cursors: {
+      pi: { lineCount: 2, revision: "0".repeat(64) },
+      wal: { "writer-a": 1 },
+    },
+    aggregates: {
+      totalTokens: 0,
+      totalCost: 0,
+      generations: 0,
+      tools: 0,
+      compactions: 0,
+      integrationCounters: { permission: { decisions: 1, allowed: 1 } },
+      presence: { permission: true },
+    },
+  };
+}
+
+const permissionDecision = (result: "allow" | "deny", resolution: string) => ({
+  schemaVersion: 1,
+  source: "permission-system",
+  metric: "permission.decision",
+  kind: "counter",
+  value: 1,
+  dimensions: { result, resolution },
+});
+
+test("current report shows presence rows and effective counters from the observation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  const root = join(directory, "inspector");
+  await writeFile(sessionFile, sessionSource);
+  const sessionDirectory = join(root, "sessions", SESSION_ID);
+  await mkdir(sessionDirectory, { recursive: true });
+  await writeFile(
+    join(sessionDirectory, "checkpoint.json"),
+    `${JSON.stringify(checkpointFixture())}\n`,
+  );
+
+  // Reuse this file's fixture session id so the Inspector directory matches.
+  const observation = {
+    presence: {
+      context: "unknown",
+      rtk: "unknown",
+      ponytail: "present",
+      caveman: "absent",
+      permission: "present",
+      subagents: "present",
+      lens: "unknown",
+    },
+    counters: mergeFoldedCounters(
+      foldedFromCheckpointAggregates({
+        integrationCounters: { permission: { decisions: 1, allowed: 1 } },
+        presence: { permission: true },
+      }),
+      foldTelemetryCounters([permissionDecision("deny", "user_denied")]),
+    ),
+  } as const;
+  const model = await loadCurrentSessionReport(
+    sessionFile,
+    "active",
+    "entry-1",
+    observation,
+    root,
+  );
+
+  assert.equal(model?.report.integrations.length, 7);
+  const permission = model?.report.integrations.find(
+    (row) => row.integration === "permission",
+  );
+  assert.equal(permission?.state, "supported");
+  assert.equal(permission?.presence, "present");
+  assert.deepEqual(permission?.counters, {
+    decisions: 2,
+    allowed: 1,
+    denied: 1,
+  });
+  const caveman = model?.report.integrations.find(
+    (row) => row.integration === "caveman",
+  );
+  assert.equal(caveman?.presence, "absent");
+  assert.equal(caveman?.state, "unavailable");
+
+  // Reading again with the same effective observation does not add the delta a
+  // second time, and the checkpoint on disk is untouched by report reads.
+  const checkpointFile = join(sessionDirectory, "checkpoint.json");
+  const bytesBefore = await readFile(checkpointFile, "utf8");
+  const before = await readCheckpoint({ directory: sessionDirectory });
+  const again = await loadCurrentSessionReport(
+    sessionFile,
+    "active",
+    "entry-1",
+    observation,
+    root,
+  );
+  assert.deepEqual(
+    again?.report.integrations.find((row) => row.integration === "permission")
+      ?.counters,
+    {
+      decisions: 2,
+      allowed: 1,
+      denied: 1,
+    },
+  );
+  assert.deepEqual(
+    await readCheckpoint({ directory: sessionDirectory }),
+    before,
+  );
+  assert.equal(await readFile(checkpointFile, "utf8"), bytesBefore);
+});
+
+test("production command folds checkpoint and WAL counters with durable permission presence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  const root = join(directory, "session-inspector", "v1");
+  const output = join(directory, "report.json");
+  await writeFile(sessionFile, sessionSource);
+
+  const sessionDirectory = join(root, "sessions", SESSION_ID);
+  const walShard = join(sessionDirectory, "wal", "writer-a");
+  await mkdir(walShard, { recursive: true });
+  const checkpointFile = join(sessionDirectory, "checkpoint.json");
+  const checkpoint = checkpointFixture();
+  await writeFile(checkpointFile, `${JSON.stringify(checkpoint)}\n`);
+  await writeFile(
+    join(walShard, "2026-09-11.jsonl"),
+    `${[
+      {
+        eventId: "w1",
+        timestamp: "2026-09-11T10:00:00Z",
+        writerId: "writer-a",
+        writerSequence: 1,
+        kind: "telemetry",
+        telemetry: permissionDecision("allow", "policy_allow"),
+      },
+      {
+        eventId: "w2",
+        timestamp: "2026-09-11T10:00:01Z",
+        writerId: "writer-a",
+        writerSequence: 2,
+        kind: "telemetry",
+        telemetry: permissionDecision("deny", "user_denied"),
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n")}\n`,
+  );
+  const checkpointBytes = await readFile(checkpointFile, "utf8");
+
+  const handlerRef: { current?: CommandHandler } = {};
+  registerCommand(handlerRef);
+  assert.ok(handlerRef.current);
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    await handlerRef.current(`current --format json --output "${output}"`, {
+      mode: "interactive",
+      sessionManager: {
+        getSessionId: () => SESSION_ID,
+        getLeafId: () => "entry-1",
+        getSessionFile: () => sessionFile,
+        getSessionDir: () => directory,
+      },
+      ui: {
+        notify: () => assert.fail("must export the current session report"),
+        custom: async () =>
+          assert.fail("must export the current session report"),
+      },
+    } as unknown as ExtensionCommandContext);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  }
+
+  const exported = JSON.parse(await readFile(output, "utf8")) as {
+    integrations: readonly {
+      integration: string;
+      presence: string;
+      state: string;
+      counters?: Readonly<Record<string, number | boolean>>;
+    }[];
+  };
+  const permission = exported.integrations.find(
+    (row) => row.integration === "permission",
+  );
+  // The bus was observed in a previous process; presence survives the resume.
+  assert.equal(permission?.presence, "present");
+  assert.equal(permission?.state, "supported");
+  assert.deepEqual(permission?.counters, {
+    decisions: 2,
+    allowed: 1,
+    denied: 1,
+  });
+  assert.equal(exported.integrations.length, 7);
+  assert.equal(await readFile(checkpointFile, "utf8"), checkpointBytes);
+});
+
+test("reports read effective counters without mutating the checkpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  const root = join(directory, "inspector");
+  await writeFile(sessionFile, sessionSource);
+  const sessionDirectory = join(root, "sessions", SESSION_ID);
+  await mkdir(sessionDirectory, { recursive: true });
+  const checkpointFile = join(sessionDirectory, "checkpoint.json");
+  await writeFile(checkpointFile, `${JSON.stringify(checkpointFixture())}\n`);
+  const bytesBefore = await readFile(checkpointFile, "utf8");
+
+  const observation = {
+    presence: {
+      context: "unknown",
+      rtk: "unknown",
+      ponytail: "unknown",
+      caveman: "unknown",
+      permission: "present",
+      subagents: "unknown",
+      lens: "unknown",
+    },
+    counters: mergeFoldedCounters(
+      foldedFromCheckpointAggregates({
+        integrationCounters: { permission: { decisions: 1, allowed: 1 } },
+        presence: { permission: true },
+      }),
+      foldTelemetryCounters([permissionDecision("deny", "user_denied")]),
+    ),
+  } as const;
+
+  const first = await loadCurrentSessionReport(
+    sessionFile,
+    "active",
+    "entry-1",
+    observation,
+    root,
+  );
+  const second = await loadCurrentSessionReport(
+    sessionFile,
+    "active",
+    "entry-1",
+    observation,
+    root,
+  );
+
+  assert.deepEqual(
+    first?.report.integrations.find((row) => row.integration === "permission")
+      ?.counters,
+    { decisions: 2, allowed: 1, denied: 1 },
+  );
+  assert.deepEqual(
+    second?.report.integrations.find((row) => row.integration === "permission")
+      ?.counters,
+    { decisions: 2, allowed: 1, denied: 1 },
+  );
+  assert.equal(await readFile(checkpointFile, "utf8"), bytesBefore);
 });

@@ -309,3 +309,99 @@ test("swallows live registration failure", async () => {
     ),
   );
 });
+
+test("registers live counter producers with the session writer and never throws", async () => {
+  const mod = await loadSetupSessionWal();
+  assert.ok(mod.setupSessionWal);
+  const registered: string[] = [];
+  await mod.setupSessionWal(
+    {
+      root: "/root",
+      sessionId: "session-a",
+      sessionFile: "/src.jsonl",
+      api: {},
+    },
+    {
+      createWriter: async () => ({
+        appendTelemetry: () => {},
+        flush: async () => {},
+      }),
+      registerLive: () => registered.push("timing"),
+      registerLiveCounters: (
+        _api: unknown,
+        _writer: unknown,
+        context: { sessionId: string },
+      ) => {
+        registered.push(`counters:${context.sessionId}`);
+      },
+      scheduleMaintenance: () => {},
+    },
+  );
+  assert.deepEqual(registered, ["timing", "counters:session-a"]);
+});
+
+test("swallows live counter registration failure", async () => {
+  const mod = await loadSetupSessionWal();
+  assert.ok(mod.setupSessionWal);
+
+  await assert.doesNotReject(
+    mod.setupSessionWal(
+      { root: "/inspector", sessionId: "session-1", api: {} },
+      {
+        createWriter: async () => ({}),
+        registerLive: () => undefined,
+        registerLiveCounters: () => {
+          throw new Error("counter observer unavailable");
+        },
+      },
+    ),
+  );
+});
+
+test("passes a bounded inventory-name lookup to live counter producers", async () => {
+  const mod = await loadSetupSessionWal();
+  assert.ok(mod.setupSessionWal);
+  let inventoryNames: (() => ReadonlySet<string>) | undefined;
+
+  await mod.setupSessionWal(
+    { root: "/inspector", sessionId: "session-1", api: {} },
+    {
+      createWriter: async () => ({}),
+      registerLive: () => undefined,
+      readInventoryNames: () => new Set(["council-mode"]),
+      registerLiveCounters: (
+        _api: unknown,
+        _writer: unknown,
+        context: { inventoryNames(): ReadonlySet<string> },
+      ) => {
+        inventoryNames = context.inventoryNames;
+      },
+    },
+  );
+
+  assert.ok(inventoryNames);
+  assert.deepEqual([...inventoryNames()], ["council-mode"]);
+});
+
+test("defaults the live counter inventory lookup to an empty set", async () => {
+  const mod = await loadSetupSessionWal();
+  assert.ok(mod.setupSessionWal);
+  let names: ReadonlySet<string> | undefined;
+
+  await mod.setupSessionWal(
+    { root: "/inspector", sessionId: "session-1", api: {} },
+    {
+      createWriter: async () => ({}),
+      registerLive: () => undefined,
+      registerLiveCounters: (
+        _api: unknown,
+        _writer: unknown,
+        context: { inventoryNames(): ReadonlySet<string> },
+      ) => {
+        names = context.inventoryNames();
+      },
+    },
+  );
+
+  assert.deepEqual(names === undefined ? undefined : [...names], []);
+});

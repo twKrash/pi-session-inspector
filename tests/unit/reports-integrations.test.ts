@@ -204,3 +204,124 @@ test("cold WAL notice uses the same defensive evidence projection", () => {
     "expired",
   );
 });
+
+const observedPresence = {
+  context: "unknown",
+  rtk: "unknown",
+  ponytail: "present",
+  caveman: "absent",
+  permission: "present",
+  subagents: "present",
+  lens: "unknown",
+} as const;
+
+const foldedPermissionCounters = {
+  counters: { permission: { decisions: 2, allowed: 1, denied: 1 } },
+  skillInvocations: {},
+  otherInvocations: 0,
+  presence: { permission: true },
+} as const;
+
+test("emits one row per known integration with observation presence and counters", () => {
+  const report = toSessionReport(parent, {
+    presence: observedPresence,
+    counters: foldedPermissionCounters,
+    integrations: [
+      {
+        integration: "context",
+        version: 1,
+        state: "supported",
+        counters: { calls: 2 },
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    report.integrations.map((row) => row.integration),
+    [
+      "context",
+      "rtk",
+      "ponytail",
+      "caveman",
+      "permission",
+      "subagents",
+      "lens",
+    ],
+  );
+  assert.deepEqual(report.integrations[0], {
+    integration: "context",
+    presence: "unknown",
+    version: 1,
+    state: "supported",
+    counters: { calls: 2 },
+  });
+  assert.deepEqual(
+    report.integrations.find((row) => row.integration === "permission"),
+    {
+      integration: "permission",
+      presence: "present",
+      version: 1,
+      state: "supported",
+      counters: { decisions: 2, allowed: 1, denied: 1 },
+    },
+  );
+  // A present producer with no evidence is still `unavailable`, never zero.
+  assert.deepEqual(
+    report.integrations.find((row) => row.integration === "subagents"),
+    { integration: "subagents", presence: "present", state: "unavailable" },
+  );
+  assert.deepEqual(
+    report.integrations.find((row) => row.integration === "caveman"),
+    { integration: "caveman", presence: "absent", state: "unavailable" },
+  );
+});
+
+test("keeps the legacy mode row beside the known keys without dropping it", () => {
+  const report = toSessionReport(parent, {
+    presence: observedPresence,
+    integrations: [
+      {
+        integration: "mode",
+        version: 1,
+        state: "supported",
+        counters: { changes: 1 },
+      },
+    ],
+  });
+
+  assert.equal(report.integrations.length, 8);
+  assert.deepEqual(report.integrations[7], {
+    integration: "mode",
+    presence: "unknown",
+    version: 1,
+    state: "supported",
+    counters: { changes: 1 },
+  });
+});
+
+test("projects only bounded folded counter names and safe counts", () => {
+  const report = toSessionReport(parent, {
+    presence: observedPresence,
+    counters: {
+      counters: {
+        permission: {
+          decisions: 2,
+          "private-evidence-sentinel token": 5,
+          negative: -1,
+        },
+      },
+      skillInvocations: {},
+      otherInvocations: 0,
+      presence: { permission: true },
+    },
+  });
+
+  const permission = report.integrations.find(
+    (row) => row.integration === "permission",
+  );
+  assert.deepEqual(permission?.counters, { decisions: 2 });
+  assert.equal(
+    JSON.stringify(report).includes("private-evidence-sentinel"),
+    false,
+  );
+});
