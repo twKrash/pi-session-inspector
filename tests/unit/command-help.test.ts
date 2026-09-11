@@ -6,6 +6,10 @@ import {
   inspectorHelpLines,
 } from "../../src/commands/help.ts";
 
+test("help copy is frozen shared state", () => {
+  assert.equal(Object.isFrozen(inspectorHelpLines()), true);
+});
+
 test("help lists only valid combinations and every mode", () => {
   const lines = inspectorHelpLines().join("\n");
   assert.match(lines, /session-inspector ui/);

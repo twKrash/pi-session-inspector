@@ -2,6 +2,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
   INSPECTOR_FIRST_TOKENS,
   INSPECTOR_MODES,
+  INSPECTOR_OPTION_ARITY,
   INSPECTOR_OPTIONS,
   INSPECTOR_SCOPE_VALUES,
   INSPECTOR_TARGETS,
@@ -11,7 +12,7 @@ import {
   tokenizeInspectorArgs,
 } from "./grammar.ts";
 
-/** Options that consume the next token as a value, with their fixed choices. */
+/** Fixed value choices for value-consuming options; arity lives in the grammar. */
 const VALUE_CHOICES: Readonly<Record<string, readonly string[]>> = {
   "--scope": INSPECTOR_SCOPE_VALUES,
   "--theme": INSPECTOR_THEME_VALUES,
@@ -58,7 +59,7 @@ export function completeInspectorCommand(
     if (token.startsWith("-")) {
       if (pendingValue) return null;
       if (!INSPECTOR_OPTIONS[typedMode].includes(token)) return null;
-      if (token in VALUE_CHOICES || token === "--output") pendingValue = token;
+      if (INSPECTOR_OPTION_ARITY[token] === "value") pendingValue = token;
       continue;
     }
     if (pendingValue) {

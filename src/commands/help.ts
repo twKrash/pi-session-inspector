@@ -9,7 +9,7 @@ import {
  * Static, width-safe help copy. It advertises only valid combinations, so it can
  * never disagree with the grammar; nothing here derives from session data.
  */
-const HELP_LINES: readonly string[] = [
+const HELP_LINES: readonly string[] = Object.freeze([
   "Pi Session Inspector - command help",
   "",
   "Usage: /session-inspector [ui|tui|json] [target] [options]",
@@ -39,7 +39,7 @@ const HELP_LINES: readonly string[] = [
   "  /session-inspector ui --theme dark",
   "  /session-inspector tui ledger",
   "  /session-inspector json history --output report.json",
-];
+]);
 
 export function inspectorHelpLines(): readonly string[] {
   return HELP_LINES;

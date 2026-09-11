@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  INSPECTOR_OPTION_ARITY,
+  INSPECTOR_OPTIONS,
   type InspectorCommand,
   parseInspectorCommand,
 } from "../../src/commands/grammar.ts";
@@ -101,6 +103,18 @@ test("rejects invalid combinations and removed syntax with a usable message", ()
         input,
       );
     }
+  }
+});
+
+test("every option has exactly one arity entry", () => {
+  const optionNames = new Set(Object.values(INSPECTOR_OPTIONS).flat());
+  const arityNames = Object.keys(INSPECTOR_OPTION_ARITY);
+  assert.equal(arityNames.length, optionNames.size);
+  for (const name of optionNames) {
+    assert.equal(typeof INSPECTOR_OPTION_ARITY[name], "string", name);
+  }
+  for (const name of arityNames) {
+    assert.equal(optionNames.has(name), true, name);
   }
 });
 

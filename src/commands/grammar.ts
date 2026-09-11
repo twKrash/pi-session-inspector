@@ -44,6 +44,19 @@ export const INSPECTOR_OPTIONS: Readonly<
   tui: ["--scope"],
   json: ["--scope", "--output"],
 };
+/**
+ * Whether each option consumes the following token (`value`) or stands alone
+ * (`flag`). The single source of truth for option arity; every name in
+ * `INSPECTOR_OPTIONS` must appear exactly once (guarded by a unit assertion).
+ */
+export const INSPECTOR_OPTION_ARITY: Readonly<
+  Record<string, "value" | "flag">
+> = {
+  "--scope": "value",
+  "--theme": "value",
+  "--output": "value",
+  "--no-open": "flag",
+};
 export const INSPECTOR_SCOPE_VALUES: readonly Scope[] = ["active", "tree"];
 export const INSPECTOR_THEME_VALUES: readonly ("dark" | "light")[] = [
   "dark",
@@ -147,26 +160,26 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
 
   while (tokens.length > 0) {
     const option = tokens.shift() as string;
+    const arity = INSPECTOR_OPTION_ARITY[option];
+    if (arity === undefined) return reject();
+    // Value-consuming options take the next token; flags never do.
+    const value = arity === "value" ? tokens.shift() : undefined;
     if (option === "--scope") {
-      const value = tokens.shift();
       if (!INSPECTOR_SCOPE_VALUES.includes(value as Scope)) return reject();
       scope = value as Scope;
     } else if (option === "--theme") {
       if (mode !== "ui") return reject();
-      const value = tokens.shift();
       if (!INSPECTOR_THEME_VALUES.includes(value as "dark" | "light"))
         return reject();
       theme = value as "dark" | "light";
     } else if (option === "--output") {
       if (mode === "tui") return reject();
-      const value = tokens.shift();
       if (!value || value.startsWith("-")) return reject();
       output = value;
-    } else if (option === "--no-open") {
+    } else {
+      // `--no-open` (the only remaining arity entry) is ui-only.
       if (mode !== "ui") return reject();
       noOpen = true;
-    } else {
-      return reject();
     }
   }
 
