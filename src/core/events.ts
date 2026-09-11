@@ -19,11 +19,23 @@ export type IntegrationKey =
   | "subagents"
   | "lens";
 
-export type IntegrationObservation = {
-  integration: IntegrationKey;
-  version: number;
+export type IntegrationPresence = "present" | "absent" | "unknown";
+
+/** Integration keys accepted by the report projection, including legacy `mode`. */
+export type IntegrationRowKey = IntegrationKey | "mode";
+
+/** Adapter/report-input row; presence is resolved during report projection. */
+export type IntegrationObservationInput = {
+  integration: IntegrationRowKey;
+  presence?: IntegrationPresence;
   state: EvidenceState;
+  version?: number;
   counters?: Readonly<Record<string, number | boolean>>;
+};
+
+/** Emitted report row: presence is always explicit. */
+export type IntegrationObservation = IntegrationObservationInput & {
+  presence: IntegrationPresence;
 };
 
 export type AgentRun = {

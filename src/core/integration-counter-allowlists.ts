@@ -6,10 +6,7 @@ import type { IntegrationKey } from "./events.ts";
  * supplied names that merely resemble safe identifiers.
  */
 const COUNTER_KEYS: Readonly<
-  Record<
-    IntegrationKey | "mode",
-    Readonly<Record<number, ReadonlySet<string>>>
-  >
+  Record<IntegrationKey | "mode", Readonly<Record<number, ReadonlySet<string>>>>
 > = {
   context: { 1: new Set(["calls"]) },
   rtk: {

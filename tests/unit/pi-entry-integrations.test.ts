@@ -22,7 +22,7 @@ test("reads allowlisted, sanitized Pi-entry integration evidence", async () => {
   );
   assert.deepEqual(
     rows.map((row) => row.integration),
-    ["context", "rtk", "permission", "lens"],
+    ["context", "rtk", "lens"],
   );
   assert.deepEqual(
     rows.find((row) => row.integration === "context"),
@@ -52,10 +52,6 @@ test("reads allowlisted, sanitized Pi-entry integration evidence", async () => {
   assert.equal(
     rows.find((row) => row.integration === "rtk")?.state,
     "supported",
-  );
-  assert.deepEqual(
-    rows.find((row) => row.integration === "permission")?.counters,
-    { events: 1, granted: 1 },
   );
   assert.deepEqual(rows.find((row) => row.integration === "lens")?.counters, {
     calls: 1,

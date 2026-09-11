@@ -178,6 +178,7 @@ const richReport: SessionReport = {
   integrations: [
     {
       integration: "context",
+      presence: "unknown",
       version: 1,
       state: "supported",
       counters: { calls: 2 },

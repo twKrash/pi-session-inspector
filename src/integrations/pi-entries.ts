@@ -1,6 +1,6 @@
 import type {
   IntegrationKey,
-  IntegrationObservation,
+  IntegrationObservationInput,
   SessionEntry,
 } from "../core/events.ts";
 import {
@@ -46,14 +46,8 @@ const OBSERVATION_ORDER = [
   "rtk",
   "ponytail",
   "caveman",
-  "permission",
   "lens",
 ] as const;
-const PERMISSION_CUSTOM_TYPES = new Set([
-  "permissions:ready",
-  "permissions:ui_prompt",
-  "permissions:decision",
-]);
 
 /** The two observation paths that can report one Context Mode invocation. */
 type ContextEvidencePath = "custom" | "tool";
@@ -64,7 +58,7 @@ type ContextEvidencePath = "custom" | "tool";
  */
 export function readPiEntryEvidence(
   entries: readonly SessionEntry[],
-): readonly IntegrationObservation[] {
+): readonly IntegrationObservationInput[] {
   const evidence = new PiEntryEvidence(createPiEntryEvidenceRegistry());
   for (const entry of entries) evidence.read(entry);
   return evidence.observations();
@@ -102,16 +96,6 @@ function createPiEntryEvidenceRegistry(): EvidenceRegistry {
       read: count("changes"),
     },
     {
-      integration: "permission",
-      version: SUPPORTED_SCHEMA_VERSION,
-      read: (value) => ({
-        counters: {
-          events: number(value.events),
-          granted: number(value.granted),
-        },
-      }),
-    },
-    {
       integration: "lens",
       version: SUPPORTED_SCHEMA_VERSION,
       read: count("calls"),
@@ -120,7 +104,7 @@ function createPiEntryEvidenceRegistry(): EvidenceRegistry {
 }
 
 class PiEntryEvidence {
-  readonly #rows = new Map<IntegrationKey, IntegrationObservation>();
+  readonly #rows = new Map<IntegrationKey, IntegrationObservationInput>();
   readonly #contextCalls = new Map<ContextEvidencePath, number>();
   #contextVersion: number | undefined;
   #contextVersionConflict = false;
@@ -137,7 +121,7 @@ class PiEntryEvidence {
     }
   }
 
-  observations(): readonly IntegrationObservation[] {
+  observations(): readonly IntegrationObservationInput[] {
     return OBSERVATION_ORDER.flatMap((integration) => {
       const row =
         integration === "context"
@@ -153,7 +137,7 @@ class PiEntryEvidence {
    * rather than a sum, so the same invocation is never counted twice while a
    * single-path observation keeps its exact count.
    */
-  private contextObservation(): IntegrationObservation | undefined {
+  private contextObservation(): IntegrationObservationInput | undefined {
     const version = this.#contextVersion;
     if (version === undefined) return undefined;
     const calls = Math.max(...this.#contextCalls.values());
@@ -193,7 +177,9 @@ class PiEntryEvidence {
     if (entry.type !== "custom" || typeof entry.customType !== "string") {
       return;
     }
-    const modeProducer = MODE_CUSTOM_TYPES[entry.customType];
+    const modeProducer = Object.hasOwn(MODE_CUSTOM_TYPES, entry.customType)
+      ? MODE_CUSTOM_TYPES[entry.customType]
+      : undefined;
     if (modeProducer !== undefined) {
       const value = isRecord(entry.data)
         ? entry.data[modeProducer.field]
@@ -210,9 +196,6 @@ class PiEntryEvidence {
 
     if (entry.customType.startsWith("ctx_")) {
       this.recordContextCall("custom", version, 1);
-    } else if (PERMISSION_CUSTOM_TYPES.has(entry.customType)) {
-      const granted = booleanField(entry.data, "granted") === true ? 1 : 0;
-      this.add("permission", version, { events: 1, granted });
     }
   }
 
@@ -297,8 +280,8 @@ class PiEntryEvidence {
 }
 
 function mergeCounters(
-  previous: IntegrationObservation["counters"],
-  next: IntegrationObservation["counters"],
+  previous: IntegrationObservationInput["counters"],
+  next: IntegrationObservationInput["counters"],
 ): BoundedEvidenceValue | undefined {
   if (previous === undefined) return next;
   if (next === undefined) return previous;
@@ -320,7 +303,7 @@ function mergeCounters(
 function unsupported(
   integration: IntegrationKey,
   version: number,
-): IntegrationObservation {
+): IntegrationObservationInput {
   return { integration, version, state: "unsupported" };
 }
 

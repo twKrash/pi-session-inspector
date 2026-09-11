@@ -191,6 +191,7 @@ test("renders bounded agent and integration evidence", () => {
         integrations: [
           {
             integration: "context",
+            presence: "unknown",
             version: 1,
             state: "supported",
             counters: { calls: 1 },

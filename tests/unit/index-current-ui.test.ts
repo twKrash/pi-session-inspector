@@ -85,6 +85,7 @@ test("projects persisted Pi-entry integration evidence in the production loader"
   assert.deepEqual(model?.report.integrations, [
     {
       integration: "context",
+      presence: "unknown",
       version: 1,
       state: "supported",
       counters: { calls: 1 },

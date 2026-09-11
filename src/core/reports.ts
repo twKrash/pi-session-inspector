@@ -8,6 +8,8 @@ import type {
   EvidenceState,
   IntegrationKey,
   IntegrationObservation,
+  IntegrationObservationInput,
+  IntegrationPresence,
   ReducedSession,
   Tool,
   Usage,
@@ -49,6 +51,11 @@ const INTEGRATION_KEYS = new Set<IntegrationKey | "mode">([
   "subagents",
   "lens",
 ]);
+const INTEGRATION_PRESENCES = new Set<IntegrationPresence>([
+  "present",
+  "absent",
+  "unknown",
+]);
 
 export type ModelSummary = {
   provider: string;
@@ -73,7 +80,7 @@ export type DurationEvidence = {
 export type SessionReportEvidence = {
   walDetail?: "expired";
   agents?: AdapterAgentEvidence;
-  integrations?: readonly IntegrationObservation[];
+  integrations?: readonly IntegrationObservationInput[];
   duration?: DurationEvidence;
 };
 
@@ -262,8 +269,23 @@ function projectIntegration(
   if (
     row === undefined ||
     !isIntegrationKey(row.integration) ||
+    !isEvidenceState(row.state)
+  ) {
+    return undefined;
+  }
+  const presence = isIntegrationPresence(row.presence)
+    ? row.presence
+    : "unknown";
+  if (row.state === "unavailable") {
+    return {
+      integration: row.integration,
+      presence,
+      state: "unavailable",
+      ...(isVersion(row.version) ? { version: row.version } : {}),
+    };
+  }
+  if (
     !isVersion(row.version) ||
-    !isEvidenceState(row.state) ||
     (row.state !== "unsupported" &&
       !isKnownIntegrationVersion(row.integration, row.version))
   ) {
@@ -275,6 +297,7 @@ function projectIntegration(
       : undefined;
   return {
     integration: row.integration,
+    presence,
     version: row.version,
     state: row.state,
     ...(counters === undefined ? {} : { counters }),
@@ -283,7 +306,7 @@ function projectIntegration(
 
 function projectCounters(
   value: unknown,
-  integration: IntegrationObservation["integration"],
+  integration: IntegrationKey | "mode",
   version: number,
 ): Readonly<Record<string, number | boolean>> | undefined {
   const counters = snapshotRecord(value);
@@ -381,12 +404,17 @@ function isEvidenceState(value: unknown): value is EvidenceState {
   );
 }
 
-function isIntegrationKey(
-  value: unknown,
-): value is IntegrationObservation["integration"] {
+function isIntegrationPresence(value: unknown): value is IntegrationPresence {
   return (
     typeof value === "string" &&
-    INTEGRATION_KEYS.has(value as IntegrationObservation["integration"])
+    INTEGRATION_PRESENCES.has(value as IntegrationPresence)
+  );
+}
+
+function isIntegrationKey(value: unknown): value is IntegrationKey | "mode" {
+  return (
+    typeof value === "string" &&
+    INTEGRATION_KEYS.has(value as IntegrationKey | "mode")
   );
 }
 

@@ -3,6 +3,7 @@ import type {
   EvidenceState,
   IntegrationKey,
   IntegrationObservation,
+  IntegrationObservationInput,
 } from "../core/events.ts";
 
 const MAX_COUNTERS = 12;
@@ -32,7 +33,7 @@ export type EvidenceAdapter = {
 };
 
 export type EvidenceResult =
-  | IntegrationObservation
+  | IntegrationObservationInput
   | { state: "unavailable" }
   | {
       state: "unsupported";
@@ -95,7 +96,7 @@ export function createEvidenceRegistry(
         );
         if (output === undefined) return adapterRejected();
 
-        const observation: IntegrationObservation = {
+        const observation: IntegrationObservationInput = {
           integration,
           version: evidenceInput.version,
           state: "supported",
@@ -230,4 +231,9 @@ function adapterRejected(): EvidenceResult {
   return { state: "unsupported", diagnostic: "adapter-rejected" };
 }
 
-export type { EvidenceState, IntegrationKey, IntegrationObservation };
+export type {
+  EvidenceState,
+  IntegrationKey,
+  IntegrationObservation,
+  IntegrationObservationInput,
+};

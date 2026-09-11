@@ -80,6 +80,7 @@ test("does not serialize short secret-looking counter keys", () => {
   assert.deepEqual(report.integrations, [
     {
       integration: "context",
+      presence: "unknown",
       version: 1,
       state: "supported",
       counters: { calls: 2 },
@@ -112,10 +113,21 @@ test("retains known unsupported integrations at unknown versions without counter
   });
 
   assert.deepEqual(report.integrations, [
-    { integration: "context", version: 1, state: "unsupported" },
-    { integration: "rtk", version: 99, state: "unsupported" },
+    {
+      integration: "context",
+      presence: "unknown",
+      version: 1,
+      state: "unsupported",
+    },
+    {
+      integration: "rtk",
+      presence: "unknown",
+      version: 99,
+      state: "unsupported",
+    },
     {
       integration: "lens",
+      presence: "unknown",
       version: 1,
       state: "supported",
       counters: { calls: 2 },
@@ -170,6 +182,7 @@ test("drops forged evidence fields and rows without projecting private values", 
   assert.deepEqual(report.integrations, [
     {
       integration: "context",
+      presence: "unknown",
       version: 1,
       state: "supported",
       counters: { calls: 2 },
