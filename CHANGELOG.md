@@ -4,6 +4,34 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.7.0]
+
+### Added
+
+- Evidence coverage for Ponytail and Caveman (schema-less `ponytail-mode`/`caveman-level` custom entries, split into independent integration rows), the Permission System (public `permissions:ready|ui_prompt|decision` bus counters), and pi-subagents (automatic discovery from persisted tool results).
+- Durable live evidence: permission counters, explicit `/skill:<name>` invocation counts (one bounded `input` observation), and presence fold cursor-based into checkpoint aggregates, so they survive `/resume`, history/global within retention, and WAL detail expiry.
+- Commands, skills, and generic resource-source inventory from `getCommands()` + `getAllTools()`, with a sanitized, hash-refreshed `inventory.json`, per-tool source attribution, and explicit "inventory ≠ invocation" copy.
+- pi-subagents auto-discovery: native tool activity always shown, rich runs from `details.completions[]`/`details.results[]`, and archive references followed only from the completion surface after strict validation.
+- Bounded, redacted `errorMessage` evidence on Errors rows (single line, ≤200 bytes; secret/path/URL redaction).
+- Offline `ui` bundle: one self-contained document containing Current (both precomputed scopes), History, and Global, with offline scope switching and 7D/14D/30D/Custom ranges.
+- Positional command surface (`ui|tui|json`) with targets/options, initial theme (`--theme dark|light`), token-aware completions, and a help panel.
+
+### Changed
+
+- The single `mode` integration key is split into `ponytail` and `caveman` report rows; legacy `mode` v1 evidence is still accepted by the projection.
+- The Agents tab shows native subagent tool activity above the rich runs and is never empty when native activity exists.
+- `ui` now emits one bundle covering Current, History, and Global instead of a per-section export; `--scope` selects only the initially displayed current view.
+- Integration rows distinguish `not observed`, `unavailable`, and `unsupported` with an evidence-based presence model.
+
+### Removed
+
+- `--format tui|html|json` and the `current|history|global|ledger` first-token targets; use positional `ui|tui|json` modes and their targets. Removed syntax now returns usage help instead of the generic failure message.
+- `--subagents-artifact` and its `{version:1, runs:[…]}` reader. No pinned producer wrote that shape; subagent runs are auto-discovered.
+
+### Migration
+
+- A 0.7.0 checkpoint may carry the additive aggregate fields (`integrationCounters`, `skillInvocations`, `skillOverflowInvocations`, `presence`, `resourceCounts`). Downgrading to 0.6.x makes its next maintenance write drop them, so folded counters and skill counts degrade to `unavailable` (never `0`) until WAL detail expires; Pi data is untouched. `schemaVersion` stays `1` because a bump would make 0.6.x discard the whole checkpoint, including sealed-cursor knowledge.
+
 ## [0.6.1]
 
 ### Changed

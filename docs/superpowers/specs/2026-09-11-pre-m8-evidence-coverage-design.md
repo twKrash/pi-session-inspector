@@ -1,6 +1,6 @@
 # Pre-M8 evidence coverage & resource inventory — design
 
-**Status:** design for approval. No production code exists for this milestone yet.
+**Status:** implemented in `0.7.0`. This document is the milestone's design record; where execution corrected a detail, the corrected behaviour is noted below.
 **Scope:** the milestone inserted between M7 and M8. M8 hardening/release is explicitly out of scope.
 **Predecessors:** [v1 spec](../../specs/pi-session-inspector-v1.md), [implementation plan](../../plans/pi-session-inspector-v1-implementation.md), [ecosystem research](../../research/pi-ecosystem.md), ADR 0006–0013.
 
@@ -169,11 +169,16 @@ type AgentToolActivity = {
 
 Unknown `details` fields are ignored. Malformed entries produce no rows (never a fabricated row). Absent `details` degrades to Layer 1 only — the Agents tab is never empty when native subagent activity exists.
 
-**Layer 3 — validated published artifact reference.** When a run publishes `archivePath`:
+**Layer 3 — validated published artifact reference.** Archive references are followed **only** from `details.completions[]`, because that is the only surface the pinned producer publishes `archivePath` on. A `details.results[]` row that happens to publish `archivePath` is deliberately ignored and keeps `artifacts` absent (not `"missing"`): the archive records the aggregate run's own `runId` while a foreground child is identified as `<aggregate>#<index>`, so following a child reference would require weakening the exact-`runId` check. Validation is strictly ordered and every failure is `"missing"`:
 
-- must be an absolute path, existing regular file (no FIFO/symlink traversal), size ≤128 KiB;
-- JSON with `version === 1` and `runId` strictly equal to the referencing tool-result run id;
-- only `entries.length` and per-entry `agent` tokens are read; `entries[].path` and every other field are ignored and never persisted.
+1. non-empty **absolute** path string (≤4096 bytes at the adapter);
+2. `lstat` regular file — symlinks and FIFOs are refused;
+3. size ≤128 KiB;
+4. `O_NOFOLLOW` open with the size bound and exact size re-verified on the handle;
+5. read exactly the validated size and require a stable post-read size;
+6. JSON `version === 1` with `runId` exactly equal to the referencing run id.
+
+Only the bounded `"available" | "missing"` verdict leaves the adapter. The path, the raw run id, and every archive field (including `entries[].path`) are discarded and never persisted; a run with no published reference keeps `artifacts` absent.
 Validation failure → `artifacts: "missing"` for that run; the report never exposes the path.
 
 **Manual artifact flag removed.** `--subagents-artifact` and the `{version:1, runs:[…]}` reader are removed from the command contract and the codebase (`readPublicSubagentArtifact`, `readSubagentRuns`, their fixture and tests). No pinned producer ever wrote that shape, and automatic discovery now covers foreground, async, workflow, and nested runs; keeping an invented input format would preserve a false contract. If a genuine published artifact contract later needs a manual entry point, it re-enters with verified provenance and its own ADR. The flag is rejected as an unknown option with usage help.
@@ -207,7 +212,9 @@ Presence signals (native inventory only; a signal is a bounded name match, never
 | `lens` | any listed tool name starts with `lens_`, `pi_lens_`, `lsp_`, or `ast_grep` | inventory available and none does |
 | `rtk` | evidence observed | never inferred from absence |
 
-Rules that keep this honest: `present` also holds when evidence exists even if the signal table has no entry; `absent` requires both an available inventory and a defined signal; every other combination stays `unknown`. Renamed or unknown producers therefore degrade to `unknown`, never to a false `absent`.
+Rules that keep this honest: `present` also holds when evidence exists even if the signal table has no entry (a row with supported folded counters or adapter evidence is `present`); a definite `present`/`absent` signal (from observation or adapter row) outranks the evidence fallback; `absent` requires both an available inventory and a defined signal; every other combination stays `unknown`. Renamed or unknown producers therefore degrade to `unknown`, never to a false `absent`. The `permission` key additionally has durable presence: the live `permissions:ready` signal OR the folded `counters.presence.permission` aggregate sets `present`, and silence is never `absent`.
+
+The versioned **counter allowlist is the source of truth** for folded counters (`src/core/integration-counter-allowlists.ts`, the same table §4.6 lists above). Report projection accepts a folded counter only when the integration's v1 allowlist names it; an integration bucket holding more than the 16-key cap is rejected rather than truncated, and a producer-supplied key that merely looks like a safe identifier is ignored. Nothing else can introduce a counter name.
 
 ### 4.7 RTK, Context Mode, Lens
 
@@ -268,7 +275,7 @@ Live-only evidence (permission counters, skill invocations) must survive `/resum
 Skills/commands inventory is process-scoped and cannot be reconstructed for a session resumed in another process. To keep the tabs meaningful for history/global:
 
 - At tracking promotion, Inspector writes `sessions/<sessionId>/inventory.json` (analyzer-owned, `schemaVersion: 1`): the sanitized §4.3 rows (`name`, `source`, `sourceLabel`, `scope`, `origin`, optional bounded `description`), capped (≤256 commands, ≤128 skills, ≤64 KiB file). No paths, no bodies, no invocation data.
-- Refresh triggers, all bounded and idempotent: (1) session start after tracking promotion; (2) a `resources_discover` event with `reason === "reload"` (Pi's own resource-reload signal, so newly loaded skills/prompts/extensions are picked up); (3) any report load, where the just-observed sanitized row set is hashed and compared with the persisted snapshot — a changed hash triggers one atomic rewrite, an unchanged hash writes nothing. Dynamic runtime registrations (for example an extension registering agents/commands after start, or an MCP server connecting late) are therefore captured at the next report load at the latest; Inspector never polls and never watches the filesystem.
+- Refresh triggers, all bounded and idempotent: (1) session start after tracking promotion; (2) a `resources_discover` event with `reason === "reload"` (Pi's own resource-reload signal, so newly loaded skills/prompts/extensions are picked up). Every refresh hash-compares the just-observed sanitized row set with the persisted snapshot — a changed hash triggers one atomic rewrite, an unchanged hash writes nothing. Report loads never call the producer (the current report uses the observed snapshot, history/global read the persisted one), so dynamic runtime registrations (for example an extension registering agents/commands after start, or an MCP server connecting late) are captured at the next reload or new session; Inspector never polls and never watches the filesystem.
 - Written once per session and refreshed only when that comparison reports a change (atomic rename, user-only permissions).
 - Retention: `inventory.json` is deleted by the existing maintenance pass once older than the 14-calendar-day cutoff; the inventory **counts** survive in `aggregates.resourceCounts` and the per-skill invocation **counts** survive in `aggregates.skillInvocations` (§5.3), so detailed inventory rows expire while exact totals do not.
 - History/global: inventory rows within retention; counts and per-skill invocations after expiry, with inventory `state: "unavailable"` for names no longer backed by a snapshot. Never a fabricated empty inventory.
@@ -350,7 +357,9 @@ type InspectorBundle = {
 type CurrentView = {
   availability: "available" | "unavailable";
   diagnostic?: string;                       // bounded code, never free text
-  report?: SessionReport;
+  report?: SessionReport;                    // report-derived tables live only here
+  daily?: readonly DailyRow[];               // bounded offline range rows (≤366)
+  dailyTruncated?: boolean;
 };
 
 export function loadInspectorBundle(input: InspectorBundleInput): Promise<InspectorBundle>;
@@ -365,7 +374,7 @@ export function renderInspectorBundle(bundle: InspectorBundle): string;
   - `global`: the existing daily rows (date, sessions, tokens, cost), capped at 366 rows.
   Presets derive their bounds from the embedded `latestDate`; a Custom range is validated and clamped client-side against the embedded dates. No range interaction fetches from Pi, and no raw session record, tool argument, prompt, or per-record array is embedded — only report-level DTOs and these bounded rows.
 - **Degradation.** Any section or view that fails to load becomes `availability: "unavailable"` with a bounded diagnostic while the rest of the document still renders. Rows beyond a cap are marked truncated with a diagnostic rather than silently dropped. Sections and views never show fabricated zeros, and a bundle with one unavailable view is still a valid, complete document.
-- **Internals.** The existing `HtmlReport` union stays as the per-section projection; the bundle composes the current views plus history and global projections into one document with one nav, one theme, and one scope control. **Canonical shape:** a current view is `{ availability, diagnostic?, report?, daily?, dailyTruncated? }` — every report-derived table lives under `view.report.*` with no flattened mirror, and the browser reads exactly one path per table (`current[scope].report.<field>`) plus `current[scope].daily` for charts and ranges.
+- **Internals.** The existing `HtmlReport` union stays as the per-section projection; the bundle composes the current views plus history and global projections into one document with one nav, one theme, and one scope control. **Canonical bundle shape:** a current view is `{ availability, diagnostic?, report?, daily?, dailyTruncated? }`; its browser projection adds the `scope` and the precomputed `evidence?` sibling key, so a rendered view is `{ availability, diagnostic?, scope, report?, evidence?, daily?, dailyTruncated? }`. Every report-derived table lives under `view.report.*` with no flattened mirror, and the browser reads exactly one path per table (`current[scope].report.<field>`, `current[scope].evidence`) plus `current[scope].daily` for charts and ranges.
 - **Determinism and privacy.** Escaped inline JSON payload, no network, no CDN, no server; byte-identical output for identical inputs; theme and initial scope are the only render options.
 - `history`/`global` remain non-targets of `ui`: machine-readable exports stay available as `/session-inspector json history|global`.
 
@@ -385,8 +394,12 @@ type SessionReport = {
   };
   // SkillRow = { name; sourceLabel?; scope?; origin?; description?; explicitInvocations?: number }
   // explicitInvocations is exact while the count survives in WAL/checkpoint; absent means unavailable, never 0
+  // AgentRun = { id; parentId?; agent?: string; status; usage?; artifacts?: "available" | "missing" }
+  // agent is a bounded label (≤64 bytes, safe-token grammar) or absent; artifacts is present only for a
+  // completed completion whose published archive validated, and is absent (never "missing") when no
+  // reference was published for that run.
   resources: ResourceInventory;        // §4.3 generic source inventory
-  agentActivity: AgentToolActivity;
+  agentActivity: AgentToolActivity;    // native subagent activity, always present when calls exist
   agents: AgentRun[];                  // rich layer, unchanged shape + optional agent/artifacts
   agentEvidence: EvidenceState;        // rich layer availability
   integrations: IntegrationObservation[];  // now one row per known integration
@@ -456,6 +469,8 @@ Provenance note per fixture: producer name, version, integrity, symbol/field, an
 11. **Privacy corpus** — extended as §10.
 12. **UAT-shaped replay** — fixtures assembled in the shape of this repository's real sessions assert: a **Ponytail-positive** session (persisted `ponytail-mode` entry) reports Ponytail `supported` with `changes ≥ 1` while Caveman stays independent, and a Caveman-positive/Ponytail-absent session reports Caveman `supported` with Ponytail `not observed` rather than `0`; Commands/Skills/resources inventory populated; Agents non-empty from native activity; Integrations distinguish not-observed from unsupported.
 13. **Determinism** — repeated runs produce byte-identical JSON for all three modes.
+
+Note: `loadCurrentSessionReport` takes named options (`{ leafId, observation, inspectorRoot }`) so callers and tests can inject the process-local observation without positional ambiguity; the bundle loader composes it for both precomputed scopes.
 
 Required checks after implementation: `npm run format:check && npm run lint && npm run typecheck && npm test`, `npm pack --dry-run`, and manual UAT on real sessions: (a) the current session — caveman detected, commands/skills/resources populating, agents without any artifact flag, integrations distinguishing states, `/session-inspector ui --theme dark`, `ui --scope tree`, `tui`, `tui ledger`, `json --scope tree --output /tmp/report.json`, `help`, completion popups, and `--subagents-artifact` rejection; (b) a **Ponytail-positive session**: run `/ponytail <mode>` in a scratch or current session so the producer persists a `ponytail-mode` entry, then assert the Inspector shows Ponytail `supported` with `changes ≥ 1` (and restore the original mode afterwards); (c) a resumed session: counters written before the restart remain visible after `/resume` and in the history/global sections.
 
