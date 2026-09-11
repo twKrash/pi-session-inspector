@@ -17,11 +17,12 @@ const MAX_WAL_BYTES = 64 * 1024 * 1024;
 const MAX_WAL_RECORDS = 100_000;
 const MAX_OPEN_RECORDS = 320;
 const ASCII_TOKEN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
-const DATE_SEGMENT = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
+const DATE_SEGMENT = /^\d{4}-\d{2}-\d{2}(?:\.\d{4})?\.jsonl$/;
 
 export type RecoveryDiagnostic =
   | "checkpoint-unavailable"
   | "wal-partial-line"
+  | "wal-sealed"
   | "wal-unavailable";
 
 export type RecoveredRunningRecord = {
@@ -76,13 +77,32 @@ export async function recoverSession({
   const diagnostics = new Set<RecoveryDiagnostic>();
   if (!isPiSourceCursor(piCursor)) return unavailableResult(diagnostics);
 
-  const replay = await readWal(directory, diagnostics);
   const checkpoint = await readCheckpoint({ directory });
+  const replay = await readWal(
+    directory,
+    diagnostics,
+    checkpoint?.sealingVersion === 1 ? checkpoint.sealedWal : undefined,
+  );
+  if (
+    checkpoint !== undefined &&
+    Object.entries(checkpoint.cursors.wal).some(
+      ([id, cursor]) => (replay.cursors[id] ?? 0) < cursor,
+    )
+  ) {
+    replay.unavailable = true;
+    diagnostics.add("wal-unavailable");
+  }
   const usableCheckpoint =
     !replay.unavailable &&
     checkpoint !== undefined &&
     checkpointMatches(checkpoint, piCursor, replay);
   if (!usableCheckpoint) diagnostics.add("checkpoint-unavailable");
+  if (
+    Object.keys(
+      checkpoint?.sealingVersion === 1 ? (checkpoint.sealedWal ?? {}) : {},
+    ).length > 0
+  )
+    diagnostics.add("wal-sealed");
 
   return {
     availability: replay.unavailable ? "unavailable" : "available",
@@ -101,13 +121,17 @@ export async function recoverSession({
 async function readWal(
   directory: string,
   diagnostics: Set<RecoveryDiagnostic>,
+  checkpointCursors: Record<string, number> | undefined,
 ): Promise<{
   records: WalRecord[];
   cursors: Record<string, number>;
   unavailable: boolean;
 }> {
   const records: WalRecord[] = [];
-  const cursors: Record<string, number> = Object.create(null);
+  const cursors: Record<string, number> = Object.assign(
+    Object.create(null),
+    checkpointCursors,
+  );
   const budget: ReplayBudget = { segments: 0, bytes: 0, records: 0 };
   let writers: string[];
   try {
@@ -125,7 +149,13 @@ async function readWal(
 
   let unavailable = false;
   for (const writerId of writers) {
-    const shard = await readShard(directory, writerId, diagnostics, budget);
+    const shard = await readShard(
+      directory,
+      writerId,
+      diagnostics,
+      budget,
+      checkpointCursors?.[writerId],
+    );
     records.push(...shard.records);
     if (shard.cursor !== undefined) cursors[writerId] = shard.cursor;
     unavailable ||= shard.unavailable;
@@ -154,6 +184,7 @@ async function readShard(
   writerId: string,
   diagnostics: Set<RecoveryDiagnostic>,
   budget: ReplayBudget,
+  checkpointCursor: number | undefined,
 ): Promise<{ records: WalRecord[]; cursor?: number; unavailable: boolean }> {
   const records: WalRecord[] = [];
   try {
@@ -162,8 +193,7 @@ async function readShard(
       shardDirectory,
       (entry) => entry.isFile() && DATE_SEGMENT.test(entry.name),
     );
-    let cursor: number | undefined;
-    let expectedSequence = 1;
+    const parsedSegments: WalRecord[][] = [];
     for (const segment of segments) {
       const parsed = await readSegment(
         join(shardDirectory, segment),
@@ -172,19 +202,49 @@ async function readShard(
       );
       if (parsed.unavailable) {
         records.push(...parsed.records);
-        return { records, cursor, unavailable: true };
+        return { records, cursor: checkpointCursor, unavailable: true };
       }
-      for (const record of parsed.records) {
-        if (
-          record.writerId !== writerId ||
-          record.writerSequence !== expectedSequence
-        ) {
+      parsedSegments.push(parsed.records);
+    }
+
+    // Record-creation dates can move backward before a delayed flush. Segment
+    // names stay date-addressable for retention, while writer sequence remains
+    // the sole authoritative intra-writer replay order.
+    parsedSegments.sort(
+      (left, right) =>
+        (left[0]?.writerSequence ?? Number.MAX_SAFE_INTEGER) -
+        (right[0]?.writerSequence ?? Number.MAX_SAFE_INTEGER),
+    );
+    let cursor = checkpointCursor;
+    let expectedSequence: number | undefined;
+    for (const parsed of parsedSegments) {
+      for (const record of parsed) {
+        if (record.writerId !== writerId) {
+          diagnostics.add("wal-unavailable");
+          return { records, cursor, unavailable: true };
+        }
+        if (record.writerSequence <= (checkpointCursor ?? 0)) {
+          records.push(record);
+          continue;
+        }
+        if (expectedSequence === undefined) {
+          if (
+            record.writerSequence !== 1 &&
+            (checkpointCursor === undefined ||
+              checkpointCursor < record.writerSequence - 1)
+          ) {
+            diagnostics.add("wal-unavailable");
+            return { records, cursor, unavailable: true };
+          }
+          expectedSequence = record.writerSequence;
+        }
+        if (record.writerSequence !== expectedSequence) {
           diagnostics.add("wal-unavailable");
           return { records, cursor, unavailable: true };
         }
         expectedSequence += 1;
         records.push(record);
-        cursor = record.writerSequence;
+        cursor = Math.max(cursor ?? 0, record.writerSequence);
       }
     }
     return { records, cursor, unavailable: false };
@@ -321,7 +381,7 @@ function compareLifecycleRecords(left: WalRecord, right: WalRecord): number {
   );
 }
 
-function parseWalRecord(line: string): WalRecord | undefined {
+export function parseWalRecord(line: string): WalRecord | undefined {
   try {
     const value: unknown = JSON.parse(line);
     if (
@@ -330,6 +390,7 @@ function parseWalRecord(line: string): WalRecord | undefined {
       !isTimestamp(value.timestamp) ||
       !isToken(value.writerId) ||
       !isCursor(value.writerSequence) ||
+      value.writerSequence < 1 ||
       (value.kind !== "live_timing" && value.kind !== "telemetry")
     )
       return undefined;

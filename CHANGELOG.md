@@ -4,6 +4,21 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.5.0]
+
+### Added
+
+- M7 sealed-detail retention: versioned contiguous-prefix seal evidence (`sealingVersion: 1`), closed-segment markers, and a strict 14-calendar-day cutoff for detailed Inspector records.
+- Daily immutable WAL segment rotation, including clock rollback, with bounded intra-day fragments so large days stay replayable, checkpointable, and prunable.
+- Retention runs incrementally under the maintenance lease on rotation and after startup, independently of full replay budgets; unversioned legacy seals degrade to unavailable instead of guessing.
+- Fixed-seed benchmark corpus (10k records, ~100 MiB session, 1,000 checkpoints) with `benchmark:smoke`/`benchmark:release` scripts and published measurements in `docs/benchmarks/m7-baseline.md`.
+
+### Changed
+
+- Missing WAL is authorized only by validated sealed evidence; ordinary checkpoint cursors are no longer deletion authority.
+- Cold-detail expiry is preserved across maintenance passes and surfaces as `walDetail: "expired"` in JSON and HTML reports; the current TUI carries the state in its report DTO without a dedicated visible row.
+- Stale lease and cache-lock reclamation requires a conclusively dead owner (`ESRCH`) plus an age threshold.
+
 ## [0.4.0]
 
 ### Added

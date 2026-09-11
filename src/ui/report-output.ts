@@ -68,12 +68,22 @@ export async function cleanReportCache(
   }
 }
 
-/** Maps report identity to an opaque basename, never a producer-controlled path. */
+/** Uses a bounded portable basename, with an opaque fallback for unsafe identities. */
 export function generatedReportPath(
   cacheDirectory: string,
   reportIdentity: string,
   extension: "html" | "json",
+  kind: "current" | "ledger" | "history" | "global" = "current",
 ): string {
+  if (kind === "history" || kind === "global")
+    return join(cacheDirectory, `${kind}.${extension}`);
+  if (
+    /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(reportIdentity) &&
+    !/^(global|history|session-[a-f0-9]{64})$/i.test(reportIdentity) &&
+    !reportIdentity.endsWith(".") &&
+    !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(reportIdentity)
+  )
+    return join(cacheDirectory, `${reportIdentity}.${extension}`);
   const digest = createHash("sha256").update(reportIdentity).digest("hex");
   return join(cacheDirectory, `session-${digest}.${extension}`);
 }
@@ -116,7 +126,7 @@ export async function writeReportOutput({
         await rememberExplicitOutput(cacheDirectory, path);
       await writeFile(path, content, { encoding: "utf8", mode: 0o600 });
       if (!explicit) await cleanReportCache(cacheDirectory);
-      return path;
+      return resolvedPath;
     };
 
     if (!isCacheFile) return await write();

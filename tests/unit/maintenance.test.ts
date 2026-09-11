@@ -59,6 +59,39 @@ test("invalidates a same-line-count Pi rewrite with a bounded source revision", 
   }
 });
 
+test("requires active tracking marker evidence before sealing or pruning", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  try {
+    const sessionId = "session-1";
+    const source = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    await mkdir(join(directory, "wal", "writer-1"), { recursive: true });
+    const expired = join(directory, "wal", "writer-1", "2026-09-01.jsonl");
+    await writeFile(
+      expired,
+      '{"eventId":"start-1","timestamp":"2026-09-01T12:00:00.000Z","kind":"live_timing","timing":{"category":"tool","status":"running","confidence":"live","startedAt":"2026-09-01T12:00:00.000Z"},"writerId":"writer-1","writerSequence":1}\n',
+    );
+    await writeFile(
+      source,
+      '{"id":"untracked","parentId":null,"timestamp":"2026-09-01T00:00:00.000Z","type":"custom"}\n',
+    );
+
+    assert.equal(
+      await maintainSession({
+        root,
+        sessionId,
+        sessionFile: source,
+        writerId: "maintenance-1",
+      }),
+      "unavailable",
+    );
+    await assert.doesNotReject(readFile(expired));
+    assert.equal(await readCheckpoint({ directory }), undefined);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("maintenance rereads Pi source and WAL under its lease before publishing a checkpoint", async () => {
   const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
   try {
@@ -125,5 +158,33 @@ test("maintenance rereads Pi source and WAL under its lease before publishing a 
     );
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("malformed durable WAL is not reported maintained when no validated prefix can progress", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  try {
+    const directory = join(root, "sessions", "session-1");
+    const source = join(root, "pi.jsonl");
+    await mkdir(join(directory, "wal", "writer-1"), { recursive: true });
+    await writeFile(
+      join(directory, "wal", "writer-1", "2026-01-01.jsonl"),
+      "not-json\n",
+    );
+    await writeFile(
+      source,
+      '{"id":"marker","parentId":null,"timestamp":"2026-01-01T00:00:00Z","type":"custom","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}\n',
+    );
+    assert.equal(
+      await maintainSession({
+        root,
+        sessionId: "session-1",
+        sessionFile: source,
+        writerId: "maintenance-1",
+      }),
+      "unavailable",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

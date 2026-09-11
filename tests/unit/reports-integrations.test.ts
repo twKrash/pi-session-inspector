@@ -170,3 +170,17 @@ test("drops forged evidence fields and rows without projecting private values", 
   ]);
   assert.equal(JSON.stringify(report).includes(privateSentinel), false);
 });
+
+test("cold WAL notice uses the same defensive evidence projection", () => {
+  assert.doesNotThrow(() =>
+    toSessionReport(parent, {
+      get walDetail(): "expired" {
+        throw Error("producer getter");
+      },
+    }),
+  );
+  assert.equal(
+    toSessionReport(parent, { walDetail: "expired" }).walDetail,
+    "expired",
+  );
+});

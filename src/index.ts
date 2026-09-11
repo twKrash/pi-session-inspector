@@ -71,13 +71,13 @@ export function parseReportCommand(args: string): CommandOptions | undefined {
       format = value;
     } else if (option === "--output") {
       const value = tokens.shift();
-      if (!value) return undefined;
+      if (!value || value.startsWith("--")) return undefined;
       output = value;
     } else if (option === "--no-open") {
       noOpen = true;
     } else if (option === SUBAGENTS_ARTIFACT_OPTION) {
       const value = tokens.shift();
-      if (!value) return undefined;
+      if (!value || value.startsWith("--")) return undefined;
       subagentArtifactPath = value;
     } else return undefined;
   }
@@ -98,21 +98,24 @@ export function parseReportCommand(args: string): CommandOptions | undefined {
 function tokenizeCommand(input: string): string[] | undefined {
   const tokens: string[] = [];
   let token = "";
+  let started = false;
   let quote: '"' | "'" | undefined;
   for (const character of input.trim()) {
+    if (!/\s/.test(character) || quote) started = true;
     if (quote) {
       if (character === quote) quote = undefined;
       else token += character;
     } else if (character === '"' || character === "'") quote = character;
     else if (/\s/.test(character)) {
-      if (token) {
+      if (started) {
         tokens.push(token);
         token = "";
+        started = false;
       }
     } else token += character;
   }
   if (quote) return undefined;
-  if (token) tokens.push(token);
+  if (started) tokens.push(token);
   return tokens;
 }
 
@@ -181,13 +184,14 @@ function setupProductionSessionWal(input: {
   api: unknown;
 }): Promise<void> {
   return setupSessionWal(input, {
-    createWriter: ({ root }) =>
-      createWalWriter({ root, now: () => new Date() }),
+    createWriter: ({ root, onSegmentRotation }) =>
+      createWalWriter({ root, now: () => new Date(), onSegmentRotation }),
     registerLive: (api, writer) =>
       registerLiveWal(api as LiveObserverApi, writer as LiveWalWriter, {
         now: () => new Date(),
         randomId: randomUUID,
       }),
+    scheduleMaintenance: scheduleProductionMaintenance,
   });
 }
 
@@ -230,7 +234,18 @@ async function loadCommandReport(
   const maintenance = {
     writerId: randomUUID(),
     now: () => new Date(),
-    isPidAlive: () => false,
+    isPidAlive: (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return !(
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ESRCH"
+        );
+      }
+    },
   };
   if (options.kind === "current" || options.kind === "ledger") {
     const model = await loadCurrentSessionReport(
@@ -238,6 +253,7 @@ async function loadCommandReport(
       options.scope,
       input.leafId,
       input.subagentArtifact,
+      input.root,
     );
     return model
       ? {
@@ -261,18 +277,24 @@ async function loadCommandReport(
   return { dto: report, html: { kind: "global", report }, name: "global" };
 }
 
+/** Opens only via Pi's public argv-based execution API; diagnostics omit process output. */
 export async function openReport(
-  ctx: { exec(command: string, args: string[]): Promise<unknown> },
+  pi: Pick<ExtensionAPI, "exec">,
   output: string,
 ): Promise<void> {
-  if (process.platform === "darwin")
-    return void (await ctx.exec("open", [output]));
-  if (process.platform === "win32")
-    return void (await ctx.exec("rundll32", [
-      "url.dll,FileProtocolHandler",
-      output,
-    ]));
-  await ctx.exec("xdg-open", [output]);
+  const command =
+    process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "rundll32"
+        : "xdg-open";
+  const args =
+    process.platform === "win32"
+      ? ["url.dll,FileProtocolHandler", output]
+      : [output];
+  const result = await pi.exec(command, args);
+  if (result.code !== 0 || result.killed)
+    throw new Error("Report opener unavailable");
 }
 
 export default function registerSessionInspector(pi: ExtensionAPI): void {
@@ -294,7 +316,10 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           const cacheDirectory = join(root, "reports");
           if (options.format === "tui") {
             if (options.kind !== "current" && options.kind !== "ledger") {
-              notifyCurrentUnavailable(ctx);
+              notifyInfo(
+                ctx,
+                "History/global TUI is unavailable; use --format html or --format json.",
+              );
               return;
             }
             if (ctx.mode !== "tui") return notifyCurrentUnavailable(ctx);
@@ -308,6 +333,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
               options.scope,
               leafId,
               subagentArtifact,
+              root,
             );
             if (!model) return notifyCurrentUnavailable(ctx);
             await ctx.ui.custom((tui, theme, _keybindings, done) =>
@@ -319,6 +345,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                     scope,
                     leafId,
                     subagentArtifact,
+                    root,
                   ),
                 theme,
                 requestRender: () => tui.requestRender(),
@@ -348,6 +375,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             cacheDirectory,
             report.name,
             extension,
+            options.kind,
           );
           const output = await writeReportOutput({
             path: options.output ?? generated,
@@ -359,12 +387,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           notifyInfo(ctx, `Inspector report written: ${output}`);
           if (options.format === "html" && !options.noOpen) {
             try {
-              await openReport(
-                ctx as unknown as {
-                  exec(command: string, args: string[]): Promise<unknown>;
-                },
-                output,
-              );
+              await openReport(pi, output);
             } catch {
               notifyInfo(ctx, `Inspector report available at: ${output}`);
             }

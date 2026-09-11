@@ -62,11 +62,13 @@ export type AdapterAgentEvidence = {
 
 /** Only bounded, explicit integration-adapter output may enter a report. */
 export type SessionReportEvidence = {
+  walDetail?: "expired";
   agents?: AdapterAgentEvidence;
   integrations?: readonly IntegrationObservation[];
 };
 
 export type SessionReport = {
+  walDetail?: "expired";
   sessionId: string;
   usage: Usage;
   models: ModelSummary[];
@@ -100,6 +102,9 @@ export function toSessionReport(
   const projectedEvidence = projectEvidence(evidence);
   return {
     ...reduced,
+    ...(projectedEvidence.walDetail === "expired"
+      ? { walDetail: "expired" as const }
+      : {}),
     agents: projectedEvidence.agents,
     agentEvidence: projectedEvidence.agentEvidence,
     integrations: projectedEvidence.integrations,
@@ -111,6 +116,7 @@ export function toSessionReport(
 }
 
 function projectEvidence(evidence: unknown): {
+  walDetail?: "expired";
   agents: AgentRun[];
   agentEvidence: EvidenceState;
   integrations: IntegrationObservation[];
@@ -120,6 +126,9 @@ function projectEvidence(evidence: unknown): {
     if (input === undefined) return unavailableEvidence();
     const agents = projectAgentEvidence(input.agents);
     return {
+      ...(input.walDetail === "expired"
+        ? { walDetail: "expired" as const }
+        : {}),
       agents: agents.runs,
       agentEvidence: agents.state,
       integrations: projectIntegrations(input.integrations),

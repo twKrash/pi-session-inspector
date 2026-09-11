@@ -1,6 +1,7 @@
 node_modules/
 *.tgz
 coverage/
+benchmark/artifacts/
 .env
 .DS_Store
 .codex

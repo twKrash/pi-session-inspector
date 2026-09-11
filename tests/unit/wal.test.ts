@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -10,8 +11,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 
 import { recoverSession } from "../../src/storage/recovery.ts";
+
+const execFile = promisify(execFileCallback);
 
 type CreateWriter = (options: {
   root: string;
@@ -442,7 +446,200 @@ test("disables and sheds pending records after the 1 MiB queue cap", async () =>
   }
 });
 
-test("keeps writer segments monotonic through clock rollback for lexical recovery", async () => {
+test("partitions delayed flush records by their immutable creation UTC date", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  const current = new Date("2026-09-08T00:00:01.000Z");
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => current,
+    });
+    writer.append({
+      eventId: "event-1",
+      timestamp: "2026-09-07T23:59:59.000Z",
+      kind: "tool-end",
+    });
+    await writer.flush();
+
+    assert.match(
+      await readFile(join(root, "wal", "writer-1", "2026-09-07.jsonl"), "utf8"),
+      /"eventId":"event-1"/,
+    );
+    await assert.rejects(
+      readFile(join(root, "wal", "writer-1", "2026-09-08.jsonl"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("splits a day into bounded fragments before a WAL segment exceeds 16 MiB", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+    });
+    const dimensions = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => [
+        `dimension-${String(index).padStart(2, "0")}-${"k".repeat(35)}`,
+        "d".repeat(128),
+      ]),
+    );
+    const attribution = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => [
+        `attribution-${String(index).padStart(2, "0")}-${"k".repeat(33)}`,
+        "a".repeat(128),
+      ]),
+    );
+    for (let batch = 0; batch < 80; batch += 1) {
+      for (let index = 0; index < 64; index += 1) {
+        writer.appendTelemetry({
+          schemaVersion: 1,
+          source: "source",
+          metric: "metric",
+          value: index,
+          kind: "counter",
+          dimensions,
+          attribution,
+        });
+      }
+      await writer.flush();
+    }
+
+    assert.equal(
+      (await readdir(join(root, "wal", "writer-1"))).filter((name) =>
+        name.endsWith(".jsonl"),
+      ).length > 1,
+      true,
+    );
+    const recovered = await recoverSession({
+      directory: root,
+      piCursor: { lineCount: 0, revision: "0".repeat(64) },
+    });
+    assert.equal(recovered.availability, "available");
+    assert.deepEqual(recovered.cursors.wal, { "writer-1": 5_120 });
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rotates an active writer into immutable daily segments", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  let current = new Date("2026-09-07T23:59:59.000Z");
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => current,
+    });
+    writer.append({
+      eventId: "event-1",
+      timestamp: current.toISOString(),
+      kind: "tool-start",
+    });
+    await writer.flush();
+
+    current = new Date("2026-09-08T00:00:00.000Z");
+    writer.append({
+      eventId: "event-2",
+      timestamp: current.toISOString(),
+      kind: "tool-end",
+    });
+    await writer.flush();
+
+    assert.deepEqual(await readdir(join(root, "wal", "writer-1")), [
+      ".owner",
+      "2026-09-07.jsonl",
+      "2026-09-07.jsonl.closed",
+      "2026-09-08.jsonl",
+    ]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test(
+  "closes the active segment when the UTC date advances with no pending events",
+  {
+    timeout: 5000,
+  },
+  async () => {
+    const createWalWriter = await loadWriter();
+    assert.ok(createWalWriter);
+
+    const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+    let current = new Date("2026-09-07T23:59:59.800Z");
+    try {
+      const writer = await createWalWriter({
+        root,
+        writerId: "writer-1",
+        now: () => current,
+      });
+      writer.append({
+        eventId: "event-1",
+        timestamp: current.toISOString(),
+        kind: "tool-start",
+      });
+      await writer.flush();
+
+      current = new Date("2026-09-08T00:00:00.000Z");
+      await new Promise((resolve) => setTimeout(resolve, 350));
+
+      assert.deepEqual(await readdir(join(root, "wal", "writer-1")), [
+        ".owner",
+        "2026-09-07.jsonl",
+        "2026-09-07.jsonl.closed",
+      ]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test("does not keep the process alive while waiting for the next UTC day", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-child-"));
+  const walModule = new URL("../../src/storage/wal.ts", import.meta.url).href;
+  const script = `
+    import { createWalWriter } from ${JSON.stringify(walModule)};
+    const writer = await createWalWriter({
+      root: process.argv[1],
+      writerId: "writer-1",
+      now: () => new Date("2026-09-08T00:00:00.000Z"),
+    });
+    writer.append({
+      eventId: "event-1",
+      timestamp: "2026-09-08T00:00:00.000Z",
+      kind: "tool-start",
+    });
+    await writer.flush();
+    process.stdout.write("ready");
+  `;
+  try {
+    const { stdout } = await execFile(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", script, root],
+      { timeout: 3000 },
+    );
+    assert.equal(stdout, "ready");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("preserves writer recovery through clock rollback with dated segments", async () => {
   const createWalWriter = await loadWriter();
   assert.ok(createWalWriter);
 
@@ -484,7 +681,9 @@ test("keeps writer segments monotonic through clock rollback for lexical recover
 
     assert.deepEqual(await readdir(join(root, "wal", "writer-1")), [
       ".owner",
+      "2026-09-07.jsonl",
       "2026-09-08.jsonl",
+      "2026-09-08.jsonl.closed",
     ]);
     const recovered = await recoverSession({
       directory,

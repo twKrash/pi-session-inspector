@@ -1,6 +1,6 @@
 {
   "name": "pi-session-inspector",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Deterministic local-only session analytics for Pi",
   "type": "module",
   "license": "MIT",
@@ -38,7 +38,9 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/**/*.test.ts"
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "benchmark:smoke": "node --expose-gc --import tsx benchmark/run.ts --mode=smoke",
+    "benchmark:release": "node --expose-gc --import tsx benchmark/run.ts --mode=release --out=benchmark/artifacts/release-latest.json"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",

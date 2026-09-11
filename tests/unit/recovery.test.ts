@@ -71,6 +71,71 @@ test("uses valid checkpoint aggregates while replaying WAL timing state", async 
   }
 });
 
+test("reopens durable WAL rather than trusting a sealed checkpoint after Pi source changes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-"));
+  try {
+    await writeFile(
+      join(directory, "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: { pi: sourceCursor(1), wal: { "writer-1": 1 } },
+        aggregates,
+        sealedWal: { "writer-1": 1 },
+      }),
+    );
+    await writeWal(
+      directory,
+      "writer-1",
+      '{"eventId":"start-1","timestamp":"2026-09-07T12:00:00.000Z","kind":"live_timing","timing":{"category":"tool","status":"running","confidence":"live","startedAt":"2026-09-07T12:00:00.000Z"},"writerId":"writer-1","writerSequence":1}\n',
+    );
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(2),
+    });
+    assert.deepEqual(recovered.aggregates, {
+      totalTokens: 0,
+      totalCost: 0,
+      generations: 0,
+      tools: 0,
+      compactions: 0,
+    });
+    assert.deepEqual(
+      recovered.running.map((record) => record.eventId),
+      ["start-1"],
+    );
+    assert.ok(recovered.diagnostics.includes("checkpoint-unavailable"));
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("replays dated fragments by writer sequence when creation dates move backward", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-"));
+  try {
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    await writeFile(
+      join(shard, "2026-09-08.jsonl"),
+      '{"eventId":"start-1","timestamp":"2026-09-08T00:00:00.000Z","kind":"live_timing","timing":{"category":"tool","status":"running","confidence":"live","startedAt":"2026-09-08T00:00:00.000Z"},"writerId":"writer-1","writerSequence":1}\n',
+    );
+    await writeFile(
+      join(shard, "2026-09-07.0001.jsonl"),
+      '{"eventId":"end-1","timestamp":"2026-09-07T23:59:59.000Z","kind":"live_timing","timing":{"category":"tool","status":"unknown","confidence":"live","startedAt":"2026-09-08T00:00:00.000Z","endedAt":"2026-09-07T23:59:59.000Z","durationMs":0},"writerId":"writer-1","writerSequence":2}\n',
+    );
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(0),
+    });
+    assert.equal(recovered.availability, "available");
+    assert.deepEqual(recovered.cursors.wal, { "writer-1": 2 });
+    assert.deepEqual(recovered.running, []);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("reconstructs checkpointed unmatched starts because checkpoints do not retain open timing state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-"));
   try {

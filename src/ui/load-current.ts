@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { readCheckpoint } from "../storage/checkpoint.ts";
 import { readFile } from "node:fs/promises";
 import type { Scope } from "../core/events.ts";
 import { reduceEntries } from "../core/reduce.ts";
@@ -14,6 +16,7 @@ export async function loadCurrentSessionReport(
   scope: Scope,
   leafId: string | null,
   subagentArtifact?: unknown,
+  inspectorRoot?: string,
 ): Promise<CurrentTuiModel | undefined> {
   if (!sessionFile) return undefined;
 
@@ -26,9 +29,20 @@ export async function loadCurrentSessionReport(
     ) {
       return undefined;
     }
+    const checkpoint =
+      inspectorRoot === undefined
+        ? undefined
+        : await readCheckpoint({
+            directory: join(inspectorRoot, "sessions", session.id),
+          });
     const entries = selectScope(session.entries, leafId, scope);
     return createCurrentTuiModel(
       toSessionReport(reduceEntries(session.id, entries), {
+        ...(Object.values(
+          checkpoint?.sealingVersion === 1 ? (checkpoint.sealedWal ?? {}) : {},
+        ).some((cursor) => cursor > 0)
+          ? { walDetail: "expired" as const }
+          : {}),
         agents: readSubagentRuns(subagentArtifact),
         integrations: readPiEntryEvidence(entries),
       }),

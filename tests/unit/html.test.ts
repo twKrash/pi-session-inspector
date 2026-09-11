@@ -105,6 +105,27 @@ test("projects compaction and lazy ledger evidence without raw extras", () => {
   assert.equal(html.includes("do not render compaction body"), false);
 });
 
+test("surfaces expired WAL detail in the safe projection and visible notice", () => {
+  const expired: HtmlReport = {
+    kind: "current",
+    scope: "tree",
+    report: { ...report, walDetail: "expired" },
+  };
+  const html = renderHtml(expired);
+
+  assert.match(html, /id="wal-detail"/);
+  assert.match(
+    html,
+    /data\.kind==="current"&&data\.report\.walDetail==="expired"/,
+  );
+  assert.match(html, /"walDetail":"expired"/);
+});
+
+test("omits the expired WAL detail field when detail is present", () => {
+  const html = renderHtml(current);
+  assert.equal(html.includes('"walDetail":"expired"'), false);
+});
+
 test("accepts history and global shared DTOs without loading storage", () => {
   const history: HtmlReport = {
     kind: "history",
@@ -310,6 +331,8 @@ test("catalog contains visible report vocabulary", () => {
     "table.source",
     "ledger.materialized",
     "chart.data",
+    "walDetail.expired",
+    "walDetail.copy",
   ]) {
     assert.equal(
       typeof ENGLISH_CATALOG[key as keyof typeof ENGLISH_CATALOG],

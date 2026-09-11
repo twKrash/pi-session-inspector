@@ -142,6 +142,41 @@ test("recovers only an expired lease whose owner PID is dead", async () => {
   }
 });
 
+test("does not reclaim an expired lease when PID liveness is indeterminate", async () => {
+  const acquireMaintenanceLease = await loadLease();
+  assert.ok(acquireMaintenanceLease);
+
+  const directory = await mkdtemp(join(tmpdir(), "inspector-lease-"));
+  try {
+    const first = await acquireMaintenanceLease({
+      directory,
+      writerId: "writer-1",
+      now: at(0),
+      isPidAlive: () => true,
+    });
+    assert.ok(first);
+
+    assert.equal(
+      await acquireMaintenanceLease({
+        directory,
+        writerId: "writer-2",
+        now: at(30_001),
+        isPidAlive: () => {
+          const error = new Error("operation not permitted") as Error & {
+            code: string;
+          };
+          error.code = "EPERM";
+          throw error;
+        },
+      }),
+      undefined,
+    );
+    await first.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("only one concurrent stale reclaimer can replace the observed owner", async () => {
   const acquireMaintenanceLease = await loadLease();
   assert.ok(acquireMaintenanceLease);

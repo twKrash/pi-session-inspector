@@ -434,3 +434,67 @@ test("never deletes explicit output, including output deliberately placed inside
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("uses stable readable safe session and aggregate cache basenames", () => {
+  const cache = "/tmp/reports";
+  assert.equal(
+    generatedReportPath(cache, "abc-123", "html"),
+    join(cache, "abc-123.html"),
+  );
+  assert.equal(
+    generatedReportPath(cache, "global", "html", "global"),
+    join(cache, "global.html"),
+  );
+  assert.equal(
+    generatedReportPath(cache, "history", "json", "history"),
+    join(cache, "history.json"),
+  );
+  for (const id of [
+    "..",
+    "a".repeat(300),
+    "CON",
+    "nul",
+    "COM1",
+    "trailing.",
+    "x/y",
+    "x\\y",
+  ]) {
+    assert.match(
+      generatedReportPath(cache, id, "html"),
+      /session-[a-f0-9]{64}\.html$/,
+    );
+  }
+});
+
+test("returns an absolute output path so Pi exec cannot reinterpret a relative export", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-report-path-"));
+  try {
+    const { relative } = await import("node:path");
+    const absolute = join(root, "-report.html");
+    assert.equal(
+      await writeReportOutput({
+        path: relative(process.cwd(), absolute),
+        content: "report",
+        cacheDirectory: join(root, "cache"),
+        explicit: true,
+      }),
+      absolute,
+    );
+    await assert.rejects(access(join(root, "cache")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps session identities separate from aggregate and hashed fallback namespaces", () => {
+  const cache = "/tmp/reports";
+  for (const kind of ["global", "history"] as const) {
+    assert.notEqual(
+      generatedReportPath(cache, kind, "html"),
+      generatedReportPath(cache, kind, "html", kind),
+    );
+  }
+  const hostile = generatedReportPath(cache, "../outside", "html");
+  const impersonator = hostile.slice(cache.length + 1, -5);
+  assert.notEqual(generatedReportPath(cache, impersonator, "html"), hostile);
+});

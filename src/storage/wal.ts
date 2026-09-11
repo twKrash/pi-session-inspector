@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, open } from "node:fs/promises";
+import { appendFile, mkdir, open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { validateTelemetry } from "../pi/telemetry.js";
@@ -10,7 +10,10 @@ const MAX_PENDING_BYTES = 1024 * 1024;
 const MAX_PENDING_EVENTS = 64;
 const MAX_PENDING_FLUSH_BYTES = 256 * 1024;
 const FLUSH_INTERVAL_MS = 200;
+const DATE_ROTATION_SKEW_MS = 50;
 const MAX_TELEMETRY_MAP_ENTRIES = 12;
+const MAX_WAL_SEGMENT_BYTES = 16 * 1024 * 1024;
+const MAX_SEGMENT_FRAGMENTS_PER_DAY = 1_024;
 
 type LiveTiming = {
   category: "agent" | "turn" | "tool" | "provider" | "model";
@@ -41,6 +44,7 @@ type StoredTelemetryEvent = StoredWalEvent & {
 type PendingEvent = {
   event: StoredWalEvent | StoredTelemetryEvent;
   bytes: number;
+  segmentDate: string;
 };
 
 type WalWriter = {
@@ -90,16 +94,24 @@ function isTimestamp(value: string): boolean {
   return value.length <= 64 && !Number.isNaN(Date.parse(value));
 }
 
+function utcDate(value: Date): string | undefined {
+  const milliseconds = value.getTime();
+  if (!Number.isFinite(milliseconds)) return undefined;
+  return new Date(milliseconds).toISOString().slice(0, 10);
+}
+
 export async function createWalWriter({
   root,
   writerId,
   now,
   write = (path, data) => appendFile(path, data, "utf8"),
+  onSegmentRotation,
 }: {
   root: string;
   writerId?: string;
   now: () => Date;
   write?: (path: string, data: string) => Promise<void>;
+  onSegmentRotation?: () => void;
 }): Promise<WalWriter> {
   const immutableWriterId = writerId ?? randomUUID();
   if (!isAsciiToken(immutableWriterId)) {
@@ -109,6 +121,7 @@ export async function createWalWriter({
   const shardDirectory = join(root, "wal", immutableWriterId);
   await mkdir(shardDirectory, { recursive: true });
   const owner = await open(join(shardDirectory, ".owner"), "wx");
+  await owner.writeFile(`${process.pid}\n`);
   await owner.close();
 
   let disabled = false;
@@ -118,14 +131,76 @@ export async function createWalWriter({
   let flushing: Promise<void> | undefined;
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let thresholdFlushQueued = false;
-  let latestSegment: string | undefined;
+  let activeSegment:
+    | { date: string; fragment: number; bytes: number }
+    | undefined;
+  let dateRotationTimer: ReturnType<typeof setTimeout> | undefined;
+  const fragmentCounts = new Map<string, number>();
 
   const clearScheduledFlushes = (): void => {
     if (flushTimer !== undefined) {
       clearTimeout(flushTimer);
       flushTimer = undefined;
     }
+    if (dateRotationTimer !== undefined) {
+      clearTimeout(dateRotationTimer);
+      dateRotationTimer = undefined;
+    }
     thresholdFlushQueued = false;
+  };
+
+  const scheduleDateRotation = (): void => {
+    if (dateRotationTimer !== undefined) {
+      clearTimeout(dateRotationTimer);
+      dateRotationTimer = undefined;
+    }
+    if (disabled || activeSegment === undefined) return;
+    let milliseconds: number;
+    try {
+      milliseconds = now().getTime();
+    } catch {
+      return;
+    }
+    if (!Number.isFinite(milliseconds)) return;
+    const nextUtcDay = new Date(milliseconds);
+    nextUtcDay.setUTCHours(24, 0, 0, 0);
+    dateRotationTimer = setTimeout(
+      () => {
+        dateRotationTimer = undefined;
+        void flush();
+      },
+      nextUtcDay.getTime() - milliseconds + DATE_ROTATION_SKEW_MS,
+    );
+    dateRotationTimer.unref?.();
+  };
+
+  const closeExpiredActiveSegment = async (): Promise<void> => {
+    if (disabled) return;
+    const active = activeSegment;
+    if (active === undefined) return;
+    let currentDate: string | undefined;
+    try {
+      currentDate = utcDate(now());
+    } catch {
+      return;
+    }
+    if (currentDate === undefined || active.date >= currentDate) return;
+    try {
+      await writeFile(
+        join(
+          shardDirectory,
+          `${segmentName(active.date, active.fragment)}.closed`,
+        ),
+        "1\n",
+        { flag: "wx", mode: 0o600 },
+      );
+    } catch {
+      // Never re-append a fragment whose open state cannot be proven.
+      activeSegment = undefined;
+      return;
+    }
+    activeSegment = undefined;
+    scheduleRotation(onSegmentRotation);
   };
 
   const flush = (): Promise<void> => {
@@ -137,32 +212,58 @@ export async function createWalWriter({
     flushing = (async () => {
       while (!disabled && pending.length > 0) {
         const batch = pending.splice(0, MAX_PENDING_EVENTS);
-        const events = batch.map(({ event }) => event);
         pendingBytes -= batch.reduce((total, { bytes }) => total + bytes, 0);
-        const datedSegment = now().toISOString().slice(0, 10);
-        // Preserve lexical segment order for this writer if its clock moves
-        // backward; recovery validates writer sequences in segment name order.
-        const segment =
-          latestSegment === undefined || datedSegment > latestSegment
-            ? datedSegment
-            : latestSegment;
-        latestSegment = segment;
-        const destination = join(shardDirectory, `${segment}.jsonl`);
+        for (const group of groupByCreationDate(batch)) {
+          if (disabled) break;
+          const data = group.events
+            .map(({ event }) => `${JSON.stringify(event)}\n`)
+            .join("");
+          const dataBytes = Buffer.byteLength(data, "utf8");
+          const next = nextSegment(group.date, dataBytes);
+          if (next === undefined) {
+            disabled = true;
+            pending = [];
+            pendingBytes = 0;
+            clearScheduledFlushes();
+            break;
+          }
+          try {
+            const previous = activeSegment;
+            const rotated =
+              previous !== undefined &&
+              (previous.date !== next.date ||
+                previous.fragment !== next.fragment);
+            // Once published closed, this path is never used for append again.
+            if (rotated) {
+              await writeFile(
+                join(
+                  shardDirectory,
+                  `${segmentName(previous.date, previous.fragment)}.closed`,
+                ),
+                "1\n",
+                { flag: "wx", mode: 0o600 },
+              );
+            }
+            await write(
+              join(shardDirectory, segmentName(next.date, next.fragment)),
+              data,
+            );
 
-        try {
-          await write(
-            destination,
-            events.map((event) => `${JSON.stringify(event)}\n`).join(""),
-          );
-        } catch {
-          disabled = true;
-          pending = [];
-          pendingBytes = 0;
-          clearScheduledFlushes();
+            activeSegment = next;
+            if (rotated) scheduleRotation(onSegmentRotation);
+          } catch {
+            disabled = true;
+            pending = [];
+            pendingBytes = 0;
+            clearScheduledFlushes();
+            break;
+          }
         }
       }
+      await closeExpiredActiveSegment();
     })().finally(() => {
       flushing = undefined;
+      scheduleDateRotation();
       if (!disabled && pending.length > 0) {
         void flush();
       }
@@ -194,16 +295,19 @@ export async function createWalWriter({
         return;
       }
 
-      enqueue({
-        eventId: snapshot.eventId,
-        timestamp: snapshot.timestamp,
-        kind: snapshot.kind,
-        ...(snapshot.timing === undefined
-          ? {}
-          : { timing: { ...snapshot.timing } }),
-        writerId: immutableWriterId,
-        writerSequence: sequence + 1,
-      });
+      enqueue(
+        {
+          eventId: snapshot.eventId,
+          timestamp: snapshot.timestamp,
+          kind: snapshot.kind,
+          ...(snapshot.timing === undefined
+            ? {}
+            : { timing: { ...snapshot.timing } }),
+          writerId: immutableWriterId,
+          writerSequence: sequence + 1,
+        },
+        snapshot.timestamp,
+      );
     },
     appendTelemetry(envelope): void {
       if (disabled) {
@@ -220,14 +324,18 @@ export async function createWalWriter({
           return;
         }
 
-        enqueue({
-          eventId: randomUUID(),
-          timestamp: now().toISOString(),
-          kind: "telemetry",
-          telemetry: result.envelope,
-          writerId: immutableWriterId,
-          writerSequence: sequence + 1,
-        });
+        const timestamp = now().toISOString();
+        enqueue(
+          {
+            eventId: randomUUID(),
+            timestamp,
+            kind: "telemetry",
+            telemetry: result.envelope,
+            writerId: immutableWriterId,
+            writerSequence: sequence + 1,
+          },
+          timestamp,
+        );
       } catch {
         // Telemetry is observer-only; malformed local sink input is discarded.
       }
@@ -235,7 +343,32 @@ export async function createWalWriter({
     flush,
   };
 
-  function enqueue(event: StoredWalEvent | StoredTelemetryEvent): void {
+  function nextSegment(
+    date: string,
+    dataBytes: number,
+  ): { date: string; fragment: number; bytes: number } | undefined {
+    const active = activeSegment;
+    const reuse =
+      active !== undefined &&
+      active.date === date &&
+      active.bytes + dataBytes <= MAX_WAL_SEGMENT_BYTES;
+    if (reuse && active !== undefined) {
+      return {
+        date,
+        fragment: active.fragment,
+        bytes: active.bytes + dataBytes,
+      };
+    }
+    const fragment = (fragmentCounts.get(date) ?? -1) + 1;
+    if (fragment >= MAX_SEGMENT_FRAGMENTS_PER_DAY) return undefined;
+    fragmentCounts.set(date, fragment);
+    return { date, fragment, bytes: dataBytes };
+  }
+
+  function enqueue(
+    event: StoredWalEvent | StoredTelemetryEvent,
+    createdAt: string,
+  ): void {
     if (disabled) {
       return;
     }
@@ -250,7 +383,11 @@ export async function createWalWriter({
     }
 
     sequence += 1;
-    pending.push({ event, bytes: recordBytes });
+    pending.push({
+      event,
+      bytes: recordBytes,
+      segmentDate: new Date(createdAt).toISOString().slice(0, 10),
+    });
     pendingBytes += recordBytes;
     if (
       (pending.length >= MAX_PENDING_EVENTS ||
@@ -276,6 +413,35 @@ export async function createWalWriter({
       flushTimer.unref?.();
     }
   }
+}
+
+function scheduleRotation(callback: (() => void) | undefined): void {
+  if (callback === undefined) return;
+  queueMicrotask(() => {
+    try {
+      callback();
+    } catch {
+      // Maintenance notification must not affect writer flush or Pi.
+    }
+  });
+}
+
+function groupByCreationDate(
+  batch: readonly PendingEvent[],
+): Array<{ date: string; events: PendingEvent[] }> {
+  const groups: Array<{ date: string; events: PendingEvent[] }> = [];
+  for (const pending of batch) {
+    const current = groups.at(-1);
+    if (current?.date === pending.segmentDate) current.events.push(pending);
+    else groups.push({ date: pending.segmentDate, events: [pending] });
+  }
+  return groups;
+}
+
+function segmentName(date: string, fragment: number): string {
+  return fragment === 0
+    ? `${date}.jsonl`
+    : `${date}.${String(fragment).padStart(4, "0")}.jsonl`;
 }
 
 function snapshotTelemetry(

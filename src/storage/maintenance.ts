@@ -4,10 +4,11 @@ import { join } from "node:path";
 
 import type { SessionEntry } from "../core/events.js";
 import { reduceEntries } from "../core/reduce.js";
-import { selectScope } from "../pi/sessions.js";
+import { hasTrackingStartMarker, selectScope } from "../pi/sessions.js";
 import { acquireMaintenanceLease } from "./lease.js";
 import { recoverSession } from "./recovery.js";
-import { writeCheckpoint } from "./checkpoint.js";
+import { readCheckpoint, writeCheckpoint } from "./checkpoint.js";
+import { pruneExpiredWalSegments } from "./retention.js";
 
 const MAX_SOURCE_LINE_BYTES = 1024 * 1024;
 const MAX_SOURCE_RECORDS = 1_000_000;
@@ -23,38 +24,61 @@ export async function maintainSession({
   sessionId,
   sessionFile,
   writerId,
+  now = () => new Date(),
 }: {
   root: string;
   sessionId: string;
   sessionFile: string;
   writerId: string;
+  now?: () => Date;
 }): Promise<MaintenanceStatus> {
   const directory = join(root, "sessions", sessionId);
   const lease = await acquireMaintenanceLease({
     directory,
     writerId,
-    now: () => new Date(),
+    now,
     isPidAlive,
   });
   if (lease === undefined) return "unavailable";
   try {
     const source = await readPiSource(sessionFile);
-    if (source === undefined) return "unavailable";
+    if (source === undefined || !hasTrackingStartMarker(source.entries))
+      return "unavailable";
     const recovered = await recoverSession({
       directory,
       piCursor: source.cursor,
     });
-    if (recovered.availability !== "available") return "unavailable";
+    const existing = await readCheckpoint({ directory });
     const reduced = reduceEntries(
       sessionId,
       selectScope(source.entries, null, "tree"),
     );
-    return (await writeCheckpoint({
+    const sourceStillCurrent = async (): Promise<boolean> => {
+      const current = await readPiSource(sessionFile);
+      return (
+        current !== undefined &&
+        hasTrackingStartMarker(current.entries) &&
+        current.cursor.lineCount === source.cursor.lineCount &&
+        current.cursor.revision === source.cursor.revision
+      );
+    };
+    // A source rewrite cannot be sealed from a stale reduction.
+    if (!(await sourceStillCurrent())) return "unavailable";
+    const checkpointWritten = await writeCheckpoint({
       directory,
       lease,
       checkpoint: {
         schemaVersion: 1,
-        cursors: recovered.cursors,
+        cursors: {
+          pi: source.cursor,
+          wal:
+            recovered.availability === "available"
+              ? recovered.cursors.wal
+              : (existing?.cursors.wal ?? {}),
+        },
+        ...(existing?.sealingVersion !== 1 || existing.sealedWal === undefined
+          ? {}
+          : { sealedWal: existing.sealedWal, sealingVersion: 1 }),
         aggregates: {
           totalTokens: reduced.usage.totalTokens,
           totalCost: reduced.usage.cost,
@@ -63,7 +87,15 @@ export async function maintainSession({
           compactions: reduced.compactions.length,
         },
       },
-    }))
+    });
+    if (!checkpointWritten) return "unavailable";
+    const deleted = await pruneExpiredWalSegments({
+      directory,
+      lease,
+      now,
+      validate: sourceStillCurrent,
+    });
+    return recovered.availability === "available" || deleted > 0
       ? "available"
       : "unavailable";
   } catch {
@@ -158,7 +190,14 @@ function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // EPERM and every other failure are indeterminate, not proof the owner
+    // exited. Only ESRCH permits stale-lease takeover.
+    return !(
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ESRCH"
+    );
   }
 }

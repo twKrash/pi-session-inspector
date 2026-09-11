@@ -34,6 +34,9 @@ export type Checkpoint = {
     tools: number;
     compactions: number;
   };
+  /** Cursors whose analyzer-owned detail was safely expired after sealing. */
+  sealedWal?: Record<string, number>;
+  sealingVersion?: 1;
 };
 
 /**
@@ -158,6 +161,22 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
       return undefined;
     }
 
+    if (value.sealingVersion !== undefined && value.sealingVersion !== 1)
+      return undefined;
+    const sealedWal =
+      value.sealedWal === undefined || !isPlainRecord(value.sealedWal)
+        ? undefined
+        : parseWalCursors(value.sealedWal);
+    if (
+      (value.sealedWal !== undefined && sealedWal === undefined) ||
+      (sealedWal !== undefined &&
+        !Object.entries(sealedWal).every(
+          ([writerId, cursor]) => (wal[writerId] ?? -1) >= cursor,
+        ))
+    ) {
+      return undefined;
+    }
+
     return {
       schemaVersion: 1,
       cursors: {
@@ -171,6 +190,8 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
         tools: aggregates.tools,
         compactions: aggregates.compactions,
       },
+      ...(sealedWal === undefined ? {} : { sealedWal }),
+      ...(value.sealingVersion === 1 ? { sealingVersion: 1 } : {}),
     };
   } catch {
     return undefined;
@@ -215,6 +236,14 @@ function hasNoOlderCursors(
   if (candidate.cursors.pi.lineCount < existing.cursors.pi.lineCount) {
     return false;
   }
+  if (existing.sealingVersion === 1 && candidate.sealingVersion !== 1)
+    return false;
+  if (
+    !Object.entries(
+      existing.sealingVersion === 1 ? (existing.sealedWal ?? {}) : {},
+    ).every(([id, cursor]) => (candidate.sealedWal?.[id] ?? 0) >= cursor)
+  )
+    return false;
   return Object.entries(existing.cursors.wal).every(
     ([writerId, cursor]) => (candidate.cursors.wal[writerId] ?? 0) >= cursor,
   );

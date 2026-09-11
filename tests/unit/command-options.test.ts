@@ -56,3 +56,34 @@ test("rejects malformed, unsupported durable scopes, and unknown report options 
     assert.equal(parseReportCommand(input), undefined, input);
   }
 });
+
+test("rejects missing path values instead of consuming the following option", () => {
+  for (const input of [
+    "current --output --no-open",
+    'current --output "" --no-open',
+    "current --subagents-artifact --output file.json",
+    'current --subagents-artifact "" --no-open',
+    'current ""',
+  ])
+    assert.equal(parseReportCommand(input), undefined, input);
+  assert.equal(
+    parseReportCommand('current --output "C:\\reports\\my report.html"')
+      ?.output,
+    "C:\\reports\\my report.html",
+  );
+});
+
+test("opener treats unsuccessful Pi exec results as failures without exposing stderr", async () => {
+  for (const result of [
+    { code: 1, killed: false },
+    { code: 0, killed: true },
+  ]) {
+    await assert.rejects(
+      openReport(
+        { exec: async () => ({ ...result, stdout: "", stderr: "PRIVATE" }) },
+        "/tmp/report.html",
+      ),
+      (error: Error) => !error.message.includes("PRIVATE"),
+    );
+  }
+});

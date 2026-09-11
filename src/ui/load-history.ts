@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { readCheckpoint } from "../storage/checkpoint.ts";
 import { readFile } from "node:fs/promises";
 
 import type { Scope, Usage } from "../core/events.ts";
@@ -102,6 +104,9 @@ export async function loadHistoryReports(
           ) {
             return { availability: "unavailable", sessionId };
           }
+          const checkpoint = await readCheckpoint({
+            directory: join(options.root, "sessions", sessionId),
+          });
           const entries = selectScope(
             parsed.entries,
             options.scope === "active"
@@ -113,6 +118,13 @@ export async function loadHistoryReports(
             availability: "available",
             sessionId,
             report: toSessionReport(reduceEntries(sessionId, entries), {
+              ...(Object.values(
+                checkpoint?.sealingVersion === 1
+                  ? (checkpoint.sealedWal ?? {})
+                  : {},
+              ).some((cursor) => cursor > 0)
+                ? { walDetail: "expired" as const }
+                : {}),
               integrations: readPiEntryEvidence(entries),
             }),
           };
