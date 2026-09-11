@@ -238,11 +238,15 @@ Live-only evidence (permission counters, skill invocations) must survive `/resum
 - hard-coded fold table (integration → metric → dimension mapping → bounded counter key); unknown metrics/dimensions are ignored, never generic-keyed;
 - counters sum across writers; overlap is impossible because the fold is cursor-based (already-checkpointed records are skipped);
 - caps: reused budgets (`256` writers, `1024` segments, `64 MiB`, `100 000` records, `16 MiB` file, `64 KiB` line), plus a per-session counter cap (`≤64` skill keys, `≤16` counter keys per integration);
-- output: `counters: Record<IntegrationKey, Record<string, number>>` plus the sealed-cursor information already available.
+- output: `counters: Record<IntegrationKey, Record<string, number>>`, `skillInvocations: Record<string, number>` (inventory-validated skill name → count), plus the sealed-cursor information already available. Skill names are **not** `IntegrationKey`s, so they get their own bounded map rather than being forced into the integration counter shape or the inventory-count field.
 
 ### 5.3 Checkpoint aggregates
 
-- Additive optional field `aggregates.integrationCounters` (validated: allowlisted keys, safe non-negative integers, bounded key count). `schemaVersion` stays `1`; absence means "not folded yet".
+- Additive optional fields (all validated, `schemaVersion` stays `1`; absence means "not folded yet"):
+  - `aggregates.integrationCounters` — allowlisted counter keys, safe non-negative integers, bounded key count (`≤16` keys per integration);
+  - `aggregates.skillInvocations` — `Record<sanitizedSkillName, number>`: keys must match the §4.4 skill-name grammar (≤64 bytes), values are safe non-negative integers, capped at `≤64` entries (overflow folded into a single `otherKeys` count rather than truncating silently);
+  - `aggregates.resourceCounts` — `{ commands: number; skills: number }` inventory counts (§6).
+- **`skillInvocations` is aggregate metadata, not detail.** It is a bounded name→count map with no body, path, description, argument, timestamp, or per-invocation record, and it is retained under the same rules as `totalTokens`/`generations`: it survives WAL detail expiry and the deletion of `inventory.json`, so the Skills tab keeps exact per-skill counts after the 14-calendar-day cutoff while only the inventory *state* degrades to `unavailable`. This is the complete retention strategy for skill evidence — there is no second store.
 - Maintenance writes `existing + newly folded` under the lease (never re-adding already-checkpointed records), preserving the existing no-cursor-regression rule.
 - Consequence: after a segment is sealed and pruned at the 14-calendar-day cutoff, its counters survive as aggregates. Sealed cursors continue to mean "detail gone"; counters are not detail.
 
@@ -250,6 +254,7 @@ Live-only evidence (permission counters, skill invocations) must survive `/resum
 
 - Current session: flush → fold WAL from checkpoint cursor → add checkpoint aggregates.
 - History/global: per manifest-discovered session, fold with existing read budgets; a global fold keeps a total byte/record budget and degrades the remainder to `unavailable` with a diagnostic rather than scanning unbounded.
+- Skills: `items` is the union of inventory names and folded/aggregated invocation names; `explicitInvocations` comes from WAL fold + `aggregates.skillInvocations`; `invocationState` is `supported` when any invocation count exists (folded or aggregated), else `unavailable`; `state` reports inventory availability only, so an expired inventory shows counted names with `state: "unavailable"`, never a fabricated list.
 - If a session has sealed detail and no folded counters (older Inspector data), the row reports `unavailable`, never `0`.
 - Determinism (PRD-01): for a fixed WAL set and checkpoint, the fold is order-independent (integer sums) and byte-stable in JSON output.
 
@@ -260,8 +265,8 @@ Skills/commands inventory is process-scoped and cannot be reconstructed for a se
 - At tracking promotion, Inspector writes `sessions/<sessionId>/inventory.json` (analyzer-owned, `schemaVersion: 1`): the sanitized §4.3 rows (`name`, `source`, `sourceLabel`, `scope`, `origin`, optional bounded `description`), capped (≤256 commands, ≤128 skills, ≤64 KiB file). No paths, no bodies, no invocation data.
 - Refresh triggers, all bounded and idempotent: (1) session start after tracking promotion; (2) a `resources_discover` event with `reason === "reload"` (Pi's own resource-reload signal, so newly loaded skills/prompts/extensions are picked up); (3) any report load, where the just-observed sanitized row set is hashed and compared with the persisted snapshot — a changed hash triggers one atomic rewrite, an unchanged hash writes nothing. Dynamic runtime registrations (for example an extension registering agents/commands after start, or an MCP server connecting late) are therefore captured at the next report load at the latest; Inspector never polls and never watches the filesystem.
 - Written once per session and refreshed only when that comparison reports a change (atomic rename, user-only permissions).
-- Retention: deleted by the existing maintenance pass once older than the 14-calendar-day cutoff; totals survive in the additive checkpoint field `aggregates.resourceCounts: { commands: number; skills: number }` (same validation rules as `integrationCounters`).
-- History/global: inventory rows within retention; counts after expiry; `state: "unavailable"` (with the count, when known) beyond that. Never a fabricated empty inventory.
+- Retention: `inventory.json` is deleted by the existing maintenance pass once older than the 14-calendar-day cutoff; the inventory **counts** survive in `aggregates.resourceCounts` and the per-skill invocation **counts** survive in `aggregates.skillInvocations` (§5.3), so detailed inventory rows expire while exact totals do not.
+- History/global: inventory rows within retention; counts and per-skill invocations after expiry, with inventory `state: "unavailable"` for names no longer backed by a snapshot. Never a fabricated empty inventory.
 
 ## 7. Errors
 
@@ -299,6 +304,7 @@ options
 ```
 
 - No arguments behaves as today's common case: `/session-inspector` → `tui current`.
+- `--scope` for `ui` selects the **initial view only** (both views ship in the bundle, §8.4); for `tui`/`json current` it selects the replayed entry set; for `json history|global` it stays fixed at `tree`.
 - `--format` is removed. `current|history|global|ledger` as a first token is no longer a target; both now produce usage help naming the replacement, never the generic failure message.
 - Invalid combinations (unknown mode/target/option, missing or empty value, `--scope active` with `json history|global`, `--theme` with `tui`/`json`, `--output` with `tui`, `--no-open` with `json`) return one-line usage plus `Run /session-inspector help`.
 - Runtime unavailability keeps its own distinct message (current session unavailable / history TUI unavailable) so "bad syntax" and "no data" are never conflated.
@@ -327,21 +333,35 @@ options
 type InspectorBundle = {
   schemaVersion: 1;
   theme: "light" | "dark";
-  scope: Scope;                              // applies to the Current section only
-  current: { availability: "available" | "unavailable"; report?: SessionReport };
+  initialScope: Scope;                       // --scope selects only the initial view
+  current: {
+    active: CurrentView;                     // precomputed at generation time
+    tree: CurrentView;                       // precomputed at generation time
+  };
   history: HistoryReport;                    // existing loader and semantics (tree scope)
   global: GlobalReport;                      // existing loader and semantics (tree scope + range)
+};
+
+type CurrentView = {
+  availability: "available" | "unavailable";
+  diagnostic?: string;                       // bounded code, never free text
+  report?: SessionReport;
 };
 
 export function loadInspectorBundle(input: InspectorBundleInput): Promise<InspectorBundle>;
 export function renderInspectorBundle(bundle: InspectorBundle): string;
 ```
 
-- **Loader.** `loadInspectorBundle` composes the existing loaders in order — current (replay + live evidence, identical to `tui`/`json current`), history (manifest-bounded, existing budgets), global (existing fold). It is the single production loader for `ui`; the renderer never loads data itself and never re-derives scope.
-- **Scope semantics.** `--scope` selects the Current section's entry set (`active` default, `tree` optional). History and Global keep their existing fixed `tree` semantics and are never silently re-scoped; the in-page scope control reloads the current section only.
-- **Degradation.** Any section that fails to load becomes `availability: "unavailable"` with a diagnostic while the rest of the document still renders. Sections never show fabricated zeros, and a bundle with an unavailable current section is still a valid, complete document.
-- **Internals.** The existing `HtmlReport` union stays as the per-section projection; the bundle composes the three projections into one document with one nav, one theme, and one scope control.
-- **Determinism and privacy.** Escaped inline JSON payload, no network, no CDN, no server; byte-identical output for identical inputs; scope and theme are the only render options.
+- **Loader.** `loadInspectorBundle` composes the existing loaders: the current session is replayed **twice** at generation time — once with active-leaf scope and once with tree scope, using the same reducer/live-evidence path as `tui`/`json current` — then history (manifest-bounded, existing budgets) and global (existing fold). The renderer never loads data, never replays, and never re-aggregates raw session entries.
+- **Scope semantics (offline-safe).** `--scope` only chooses the initially displayed view. The in-page Active ancestry / Full tree control switches between the two precomputed `CurrentView` DTOs; it never calls Pi, never triggers a host round-trip, and never filters or folds raw records in the browser. If one view is unavailable (for example active scope without a resolvable leaf), that option renders disabled with its bounded diagnostic while the other view keeps working. History and Global keep their existing fixed tree semantics and are never silently re-scoped.
+- **Date-range semantics (offline-safe).** The document ships the bounded, report-level rows the range controls need, and the 7D / 14D / 30D / Custom presets filter only those rows:
+  - `current.active` / `current.tree`: that view's precomputed daily rows (date, sessions, tokens, cost, generations, tools), capped at 366 rows;
+  - `history`: the existing daily rows plus the bounded per-session summaries (`sessionId`, first/last date, duration, tokens, cost, generations, agents, status, cost) capped at 206 sessions;
+  - `global`: the existing daily rows (date, sessions, tokens, cost), capped at 366 rows.
+  Presets derive their bounds from the embedded `latestDate`; a Custom range is validated and clamped client-side against the embedded dates. No range interaction fetches from Pi, and no raw session record, tool argument, prompt, or per-record array is embedded — only report-level DTOs and these bounded rows.
+- **Degradation.** Any section or view that fails to load becomes `availability: "unavailable"` with a bounded diagnostic while the rest of the document still renders. Rows beyond a cap are marked truncated with a diagnostic rather than silently dropped. Sections and views never show fabricated zeros, and a bundle with one unavailable view is still a valid, complete document.
+- **Internals.** The existing `HtmlReport` union stays as the per-section projection; the bundle composes the current views plus history and global projections into one document with one nav, one theme, and one scope control.
+- **Determinism and privacy.** Escaped inline JSON payload, no network, no CDN, no server; byte-identical output for identical inputs; theme and initial scope are the only render options.
 - `history`/`global` remain non-targets of `ui`: machine-readable exports stay available as `/session-inspector json history|global`.
 
 ## 9. Report DTO and renderer changes
@@ -352,11 +372,13 @@ type SessionReport = {
   tools: Tool[];                       // Tool gains optional `source?: string` (inventory label)
   commands: { state: EvidenceState; items: readonly CommandRow[]; count: number | null };
   skills: {
-    state: EvidenceState;              // inventory availability
-    items: readonly SkillRow[];        // invocations per name when folded
+    state: EvidenceState;              // inventory availability only
+    items: readonly SkillRow[];        // union of inventory names and counted invocation names
     invocationState: EvidenceState;    // explicit-invocation evidence availability
     invocationCount: number | null;
   };
+  // SkillRow = { name; sourceLabel?; scope?; origin?; description?; explicitInvocations?: number }
+  // explicitInvocations is exact while the count survives in WAL/checkpoint; absent means unavailable, never 0
   resources: ResourceInventory;        // §4.3 generic source inventory
   agentActivity: AgentToolActivity;
   agents: AgentRun[];                  // rich layer, unchanged shape + optional agent/artifacts
@@ -366,7 +388,7 @@ type SessionReport = {
 };
 ```
 
-- The `ui` mode consumes `InspectorBundle` (§8.4), whose `current` section is exactly this `SessionReport`; `tui` and `json` consume the report or its history/global siblings.
+- `SessionReport` — the `ui` bundle carries two precomputed instances of it (`current.active`, `current.tree`); `tui` and `json current` carry the one for their selected scope, and `json history|global` carry their existing siblings.
 
 - Global report adds: `inventory: { commands: number | null; skills: number | null; resources: number | null }` and per-integration folded totals with the same `presence`/`state` semantics.
 - TUI/HTML/JSON all consume this same DTO (invariant 7). HTML: Commands/Skills tabs render inventory tables with explicit "inventory ≠ invocations" copy; Agents tab renders `agentActivity` above the rich rows and never shows an empty panel when native activity exists; Integrations tab renders presence + evidence + version + counters with distinct labels for `not observed`, `unavailable`, `unsupported`, plus the generic Resource sources table (loaded/available only); Errors tab gains the bounded message column.
@@ -385,13 +407,15 @@ Never persisted, logged, or rendered, in any path added by this milestone:
 - raw `sourceInfo.source` values that are URLs or paths;
 - raw producer IDs (subagent ids stay hashed).
 
+Explicitly allowed because it is bounded inventory/aggregate metadata, not content: sanitized command, skill, and resource-source **names**, their source labels/scope/origin, and per-skill **counts** (including after inventory expiry via `aggregates.skillInvocations`). Skill bodies, descriptions that fail the §4.3 policy, arguments, and invocation records remain prohibited.
+
 The existing privacy corpus test is extended to seed these fields in every new fixture and assert absence from adapter output, report JSON, HTML, and TUI lines.
 
 ## 11. Storage, schema, and versioning
 
 | Change | Kind | Compatibility |
 | --- | --- | --- |
-| `aggregates.integrationCounters`, `aggregates.resourceCounts` in checkpoint | additive, validated, `schemaVersion` stays 1 | absence = not folded; strict validation retained |
+| `aggregates.integrationCounters`, `aggregates.skillInvocations`, `aggregates.resourceCounts` in checkpoint | additive, validated, `schemaVersion` stays 1 | absence = not folded; skill map capped at 64 validated names; strict validation retained |
 | `sessions/<id>/inventory.json` | new analyzer-owned artifact, `schemaVersion: 1` | missing → inventory `unavailable`, never empty |
 | WAL telemetry counters | existing record kind, allowlisted fold | unknown metrics ignored |
 | `IntegrationKey` + `mode` → `ponytail`/`caveman` | report/evidence key change | legacy `mode` v1 accepted in projection |
@@ -399,7 +423,7 @@ The existing privacy corpus test is extended to seed these fields in every new f
 | `--subagents-artifact` flag + `{version:1, runs:[…]}` reader | removed | breaking CLI/feature removal documented in CHANGELOG; unknown-option usage help replaces it |
 | Package version | `0.6.1 → 0.7.0` | minor: new features; changelog records the command-syntax migration (`--format`/targets → positional modes) and the artifact-flag removal |
 
-**Downgrade-write semantics (`schemaVersion` stays 1).** A 0.7.0 checkpoint may carry `integrationCounters` and `resourceCounts`. A 0.6.x process reading such a checkpoint ignores those unknown aggregate fields (its reader keeps its known keys) and its next maintenance write recomputes aggregates from the Pi source alone, thereby **dropping** the folded live counters and resource counts. Accepted consequences, documented rather than hidden: no corruption, no crash, and Pi data is untouched; on a later 0.7.0 run, counters are refolded for every session whose WAL detail is still present; counters for sessions whose segments were already sealed and pruned become permanently `unavailable` (never `0`), while inventory rows are re-derived from the on-disk snapshot and their counts from WAL when available. Rationale for keeping version `1`: the fields are additive and only carry cooperative live evidence, whereas a version bump would make 0.6.x treat the whole checkpoint as unreadable — losing sealed-cursor knowledge, which is the more dangerous failure mode. 0.7.0 therefore never writes state it cannot itself re-read, and never depends on the new fields to authorize a seal or deletion.
+**Downgrade-write semantics (`schemaVersion` stays 1).** A 0.7.0 checkpoint may carry `integrationCounters`, `skillInvocations`, and `resourceCounts`. A 0.6.x process reading such a checkpoint ignores those unknown aggregate fields (its reader keeps its known keys) and its next maintenance write recomputes aggregates from the Pi source alone, thereby **dropping** the folded live counters, skill invocation counts, and resource counts. Accepted consequences, documented rather than hidden: no corruption, no crash, and Pi data is untouched; on a later 0.7.0 run, counters are refolded for every session whose WAL detail is still present; counters and skill invocation counts for sessions whose segments were already sealed and pruned become permanently `unavailable` (never `0`), while inventory rows are re-derived from the on-disk snapshot and their counts from WAL when available. Rationale for keeping version `1`: the fields are additive and only carry cooperative live evidence, whereas a version bump would make 0.6.x treat the whole checkpoint as unreadable — losing sealed-cursor knowledge, which is the more dangerous failure mode. 0.7.0 therefore never writes state it cannot itself re-read, and never depends on the new fields to authorize a seal or deletion.
 
 ## 12. Fixtures and tests
 
@@ -407,7 +431,8 @@ The existing privacy corpus test is extended to seed these fields in every new f
 
 `tests/fixtures/pi/0.85.1/`: `ponytail-caveman.jsonl`, `error-message.jsonl`, `subagent-tool-results.jsonl` (foreground, async `subagent_wait` with `details.completions`, workflow children with `workflowChildren.version`).
 `tests/fixtures/integrations/`: `commands-inventory.json`, `tools-inventory.json`, `permission-events.json`, `subagent-archive-v1.json`, `inventory-snapshot.json`, plus an invalid-set directory (bad version, wrong run id, oversize, path-like fields, FIFO case).
-`tests/fixtures/bundles/`: `inspector-bundle.json` (three sections, one section unavailable) for loader/renderer determinism.
+`tests/fixtures/bundles/`: `inspector-bundle.json` (both current views, one view unavailable) for loader/renderer determinism.
+`tests/fixtures/checkpoints/`: `legacy-v1.json` (no new aggregate fields) and `folded-v1.json` (`integrationCounters`, `skillInvocations`, `resourceCounts`) for downgrade/read/expiry coverage.
 Provenance note per fixture: producer name, version, integrity, symbol/field, and that content is synthetic.
 
 ### Tests
@@ -416,10 +441,10 @@ Provenance note per fixture: producer name, version, integrity, symbol/field, an
 2. **Inventory** — source label normalization table (`local`, `auto`, `npm:pkg@1.2.3` → `npm:pkg`, URL/path → `other`), description policy, path/body exclusion, dedup, caps; generic resource-source grouping from commands + tools (including `builtin`/`sdk`/MCP-registered groups) with counts that never claim activity; tool `source` attribution present for known tools, absent for unknown ones.
 3. **Skill invocations** — accepted only with inventory match; `/skill:unknown` counts nothing; argument text never stored; handler never throws/returns; model-driven loads stay unavailable.
 4. **Subagents** — Layer 1 activity from real-shaped results (never empty when calls exist); rich rows from completions/results with partial-usage → absent; unknown status → `unknown`; archive validation matrix (missing, oversize, wrong version, wrong run id, symlink/FIFO); `--subagents-artifact` is rejected with usage help and the invented reader is gone.
-5. **Durability** — counter written → folded for current report → survives seal/prune via checkpoint aggregates → history row shows folded counters; two-writer (simulated `/resume` across processes) fold sums without double counting; flush-before-read has no gap.
-6. **Expiry** — sealed + pruned detail with folded counters reports counters, not zero; sealed without fold reports `unavailable`; inventory beyond retention reports counts.
+5. **Durability** — permission counter and skill invocation written → folded for current report → survive seal/prune via checkpoint aggregates (`integrationCounters`, `skillInvocations`) → history row shows folded counters and exact per-skill counts; two-writer (simulated `/resume` across processes) fold sums without double counting; flush-before-read has no gap.
+6. **Expiry and aggregate retention** — sealed + pruned detail with folded counters reports counters, not zero; sealed without fold reports `unavailable`; after `inventory.json` deletion the Skills tab still shows exact per-skill invocation counts (from `aggregates.skillInvocations`) with inventory `state: "unavailable"`; `aggregates.skillInvocations` validation rejects unsafe values, oversize/non-grammar names, and caps at 64 entries with an `otherKeys` overflow count; `resourceCounts` reports inventory totals after expiry.
 7. **Errors** — bounded message shown; over-length truncated with marker; secret-like values redacted; tool errors carry no message; path/URL redaction table covering Linux (`/home/dev/project/.env`, `/tmp/report.json`, `~/x/y`), Windows drive (`C:\\Users\\dev\\secret.txt`, `C:/Users/dev/x`), UNC (`\\\\server\\share\\x`), `file://` URLs, credential URLs and token-query URLs, while ordinary prose (`text/html`, `and/or`, `1.2/3.4`, `3/4`) is preserved.
-8. **UI bundle** — `loadInspectorBundle` composes current + history + global; single scope applies to current only; an unavailable section degrades without breaking the document; `--scope tree` on `ui` changes only the current section; rendered document is byte-identical across runs; history/global non-targets for `ui`.
+8. **UI bundle** — `loadInspectorBundle` precomputes both current views (active + tree) plus history + global; `--scope` sets only the initial view; in-page scope switching swaps precomputed DTOs with zero host calls (asserted by a loader-call counter); an unavailable view/section degrades without breaking the document; 7D/14D/30D/Custom range filtering is fully offline over embedded daily rows and bounded session summaries; rendered document is byte-identical across runs; history/global non-targets for `ui`.
 9. **Command surface** — parser table for every valid/invalid combination; `--help`/`help` content lists only valid combinations; completion table incl. `--theme`/`--scope` values and `null` on no match; legacy `--format`, old targets, and `--subagents-artifact` produce usage (never the generic message).
 10. **Theme** — `ui --theme dark` initial class + working toggle; rejected for `tui`/`json`.
 11. **Privacy corpus** — extended as §10.
@@ -430,8 +455,8 @@ Required checks after implementation: `npm run format:check && npm run lint && n
 
 ## 13. Documentation and ADRs
 
-- **ADR 0014 — durable live integration evidence.** Foreign public bus events and the `input` skill observation become bounded WAL telemetry counters, folded into checkpoints. Records the process-local and 14-day limits, the no-backfill rule, the flush-before-read single-source rule, and why `event`/`gauge` telemetry is not folded.
-- **ADR 0015 — resource inventory, presence model, and UI bundle.** Commands/skills/resource-source inventory from `getCommands()` + `getAllTools()` plus the sanitized snapshot and its refresh triggers; `presence` vs `state`; inventory is not invocation count or activity; the single-document `ui` bundle (loader, scope semantics, degradation); pi-subagents auto-discovery from persisted tool-result metadata with validated artifact references and the child-session-replay deferral; why the manual artifact flag was removed rather than preserved.
+- **ADR 0014 — durable live integration evidence.** Foreign public bus events and the `input` skill observation become bounded WAL telemetry counters, folded into `integrationCounters` and the bounded `skillInvocations` map in the checkpoint. Records the process-local and 14-day limits, the no-backfill rule, the flush-before-read single-source rule, why `event`/`gauge` telemetry is not folded, and why skill counts get a dedicated capped name→count aggregate instead of an integration counter.
+- **ADR 0015 — resource inventory, presence model, and offline UI bundle.** Commands/skills/resource-source inventory from `getCommands()` + `getAllTools()` plus the sanitized snapshot and its refresh triggers; `presence` vs `state`; inventory is not invocation count or activity; the single-document `ui` bundle (dual precomputed current views, offline scope switching, offline date ranges over bounded rows, per-section degradation); pi-subagents auto-discovery from persisted tool-result metadata with validated artifact references and the child-session-replay deferral; why the manual artifact flag was removed rather than preserved.
 - **Spec updates:** §3 command grammar, mode/target matrix and the single-document `ui` bundle contract, §4 canonical model/DTO additions (resource sources, tool attribution, `presence` vs `state`), §6 live observer surface (one bounded `input` observation plus foreign bus subscription), §7 checkpoint fields + inventory artifact + retention and refresh-trigger rules, §9 UX/theme/help/completions, §10 integration policy rows (Ponytail/Caveman split, Permission System bus, pi-subagents discovery, generic resource sources), §11 migration and downgrade-write notes.
 - **Research update:** pinned producer table (§1.2), the corrected pi-subagents artifact finding, and fixture provenance.
 - **CHANGELOG:** `0.7.0` entry with the command-syntax migration (`--format`/targets → positional modes), the removal of `--subagents-artifact`, the `mode`→`ponytail`/`caveman` report key change, the single-document `ui` bundle, and the checkpoint downgrade-write note.
@@ -447,9 +472,9 @@ Required checks after implementation: `npm run format:check && npm run lint && n
 | Producer drift (pi-subagents 0.59 → 0.67) | documented-field-only parsing, unknown fields ignored, unknown vocab → `unknown`/absent, fixtures pinned to verified installed shapes |
 | Over-redaction hides useful info | redaction only for secret-like/path-like/oversize values; `Unavailable` is explicit, never silent |
 | Split `mode` key breaks JSON consumers | additive tolerances in projection + changelog migration note |
-| `ui` bundle triples loader work per invocation | reuse the existing loaders and budgets; bounded by the same limits as `json global`; degradation is per-section, never a failed document |
+| `ui` bundle doubles the current-session replay per invocation | one extra bounded replay of the same session with the other scope; no additional Pi scan, no raw records embedded, and history/global keep their existing budgets |
 | Removing `--subagents-artifact` breaks an existing workflow | auto-discovery covers the real producers; the flag is rejected with explicit usage help and a changelog entry rather than silently ignored |
-| Checkpoint downgrade to 0.6.x drops folded counters | documented downgrade-write semantics (§11); cooperative evidence only, degrades to `unavailable`, never to a wrong number |
+| Checkpoint downgrade to 0.6.x drops folded counters and skill counts | documented downgrade-write semantics (§11); cooperative evidence only, degrades to `unavailable`, never to a wrong number |
 | Error-message redaction is imperfect | bounded, single-line, marker-based, tested against a path/URL/secret corpus; raw text never leaves the reducer; report keeps its local-sensitivity warning |
 
 ## 15. Acceptance criteria
@@ -458,7 +483,7 @@ Required checks after implementation: `npm run format:check && npm run lint && n
 2. Permission evidence: counters from the public bus; no custom-entry path remains; absence is `unavailable`.
 3. Commands/Skills/resources: inventory populated from `getCommands()` + `getAllTools()` with no path/body leakage and no activity claims; tool rows carry a source label when known; explicit skill invocations counted only when inventory-matched; model-driven use explicitly `unavailable`.
 4. Agents: normal pi-subagents runs populate the tab without any artifact flag; native tool activity always shown; archive references followed only after strict validation; `--subagents-artifact` is gone from the contract and rejected with usage help.
-5. Durability: permission/skill counters survive `/resume` (new writer shard) and remain visible in history/global within retention, as aggregates after detail expiry.
+5. Durability: permission counters, skill invocation counts, and resource counts survive `/resume` (new writer shard) and remain visible in history/global within retention, and the counts (including exact per-skill invocations) remain after detail expiry via checkpoint aggregates.
 6. Errors: bounded message shown when safely available; secrets, Linux/Windows/UNC paths and URLs redacted to explicit markers; `Unavailable` when nothing safe remains; no tool-result bodies or prompts.
-7. Command surface: `/session-inspector ui|tui|json` with the documented targets/options; `ui` loads one complete bundle (Current + History + Global) with `--scope` affecting only Current; `--theme` for `ui`; completions, `help`, useful usage on invalid input; no `--format`.
+7. Command surface: `/session-inspector ui|tui|json` with the documented targets/options; `ui` loads one complete bundle with **both** precomputed Current views (active + tree) where `--scope` selects only the initial view, in-page scope switching and 7D/14D/30D/Custom ranges work entirely offline over the embedded bounded rows, and no interaction replays or fetches; `--theme` for `ui`; completions, `help`, useful usage on invalid input; no `--format`.
 8. All privacy invariants hold across adapters, WAL, JSON, HTML, TUI; parser/completion/help/bundle/determinism tests pass; real-session UAT includes a Ponytail-positive session; spec/ADR/research/CHANGELOG updated; version `0.7.0`.
