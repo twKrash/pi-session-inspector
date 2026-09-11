@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { boundedDescription } from "../core/redact.ts";
+
 /**
  * Sanitized inventory of loaded/available commands, skills, tool sources, and
  * resource-source groups. Counts mean "loaded/available", never activity,
@@ -138,7 +140,11 @@ function sanitizeCommands(input: readonly unknown[]): readonly CommandRow[] {
     const sourceInfo = asRecord(record.sourceInfo);
     const scope = readScope(sourceInfo?.scope);
     const origin = readOrigin(sourceInfo?.origin);
-    const description = boundedDescription(record.description);
+    // The shared bounded-description policy rejects secret-like/path-like text.
+    const description = boundedDescription(
+      record.description,
+      MAX_DESCRIPTION_BYTES,
+    );
 
     rows.push({
       name,
@@ -275,34 +281,6 @@ function readScope(value: unknown): Scope {
 
 function readOrigin(value: unknown): Origin {
   return value === "package" || value === "top-level" ? value : "top-level";
-}
-
-// TEMPORARY: a local bounded-text helper. Task 12 replaces this with the shared
-// `src/core/redact.ts` redaction. Kept here so Task 7 stays self-contained.
-const SECRET_LIKE =
-  /(?:secret|password|passwd|api[-_ ]?key|auth(?:orization)?|bearer|token)|\bsk-[A-Za-z0-9_-]{6,}/i;
-const PATH_LIKE =
-  /(?:^|[^A-Za-z0-9])(?:[/\\]|file:\/\/)|[A-Za-z]:[\\/]|(?:^|\s)~\//;
-
-function boundedDescription(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  // Control-character stripping collapses newlines, so the result is single-line.
-  const stripped = stripControlCharacters(value).trim();
-  if (stripped.length === 0) return undefined;
-  if (Buffer.byteLength(stripped, "utf8") > MAX_DESCRIPTION_BYTES)
-    return undefined;
-  if (SECRET_LIKE.test(stripped)) return undefined;
-  if (PATH_LIKE.test(stripped)) return undefined;
-  return stripped;
-}
-
-function stripControlCharacters(value: string): string {
-  let out = "";
-  for (const char of value) {
-    const code = char.codePointAt(0) ?? 0;
-    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : char;
-  }
-  return out;
 }
 
 function asRecord(

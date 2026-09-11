@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import type { SessionEntry } from "../../src/core/events.ts";
 import { buildLedger } from "../../src/core/ledger.ts";
 import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { renderJson } from "../../src/ui/json.ts";
+
+const errorMessageFixture = new URL(
+  "../fixtures/pi/0.85.1/error-message.jsonl",
+  import.meta.url,
+);
 
 function assistant(
   id: string,
@@ -108,6 +115,39 @@ test("records tool-result errors without copying result content", () => {
     },
   ]);
   assert.equal(renderJson(report).includes("raw-error-sentinel"), false);
+});
+
+test("exposes only the bounded redacted persisted error message", async () => {
+  const { entries } = parseSessionJsonl(
+    await readFile(errorMessageFixture, "utf8"),
+  );
+  const reduced = reduceEntries("error-session", entries);
+  const message = reduced.errors.find(
+    (error) => error.kind === "generation-error",
+  )?.message;
+
+  assert.equal(message?.includes("429 rate limit"), true);
+  assert.equal(message?.includes("PRIVATE"), false);
+  assert.equal(message?.includes("http"), false);
+  assert.equal(message?.includes("/home/dev"), false);
+  assert.equal(
+    JSON.stringify(reduced.errors).includes("PRIVATE_TOOL_BODY"),
+    false,
+  );
+});
+
+test("omits the message field when no usable persisted error message exists", () => {
+  const report = toSessionReport(
+    reduceEntries("no-message", [
+      assistant("g-error", "2026-01-01T00:00:01.000Z", "error"),
+      assistant("g-redacted", "2026-01-01T00:00:02.000Z", "error", []),
+    ]),
+  );
+
+  assert.deepEqual(
+    report.errors.map((error) => "message" in error),
+    [false, false],
+  );
 });
 
 test("reports no error records when persisted state is a normal completion", () => {

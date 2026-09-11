@@ -1,3 +1,5 @@
+import { REDACTED, secretLikeValue } from "../core/redact.ts";
+
 const MAX_ENVELOPE_BYTES = 8 * 1024;
 const MAX_SOURCE_BYTES = 64;
 const MAX_METRIC_BYTES = 96;
@@ -9,7 +11,6 @@ const MAX_DIMENSION_STRING_VALUE_BYTES = 128;
 const MAX_ATTRIBUTION_ID_BYTES = 128;
 
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
-const REDACTED = "[REDACTED]";
 const encoder = new TextEncoder();
 
 type TelemetryValue = number | string | boolean;
@@ -197,22 +198,6 @@ function redact(value: string): string {
 function secretLikeKey(key: string): boolean {
   return /(?:authorization|bearer|credential|password|private.?key|secret|token)/i.test(
     key,
-  );
-}
-
-function secretLikeValue(value: string): boolean {
-  return (
-    /(?:^|\s)bearer\s+\S+/i.test(value) ||
-    /-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(value) ||
-    /(?:[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/.test(value) ||
-    /\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/.test(
-      value,
-    ) ||
-    /[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]+@/i.test(value) ||
-    /^[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S+/.test(value) ||
-    /(?:^|[\\/])\.env(?:[.\\/]|$)|(?:^|[\\/])(?:credentials?|secrets?)(?:[.\\/]|$)/i.test(
-      value,
-    )
   );
 }
 

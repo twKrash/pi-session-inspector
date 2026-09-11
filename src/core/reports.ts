@@ -16,6 +16,7 @@ import {
   type ResourceSourceRow,
   type SkillRow,
 } from "../integrations/inventory.ts";
+import { boundedDescription } from "./redact.ts";
 import {
   isAgentLabel,
   type AgentToolActivity,
@@ -45,12 +46,6 @@ const MAX_INVENTORY_COMMANDS = 256;
 const MAX_INVENTORY_SKILLS = 128;
 const MAX_INVENTORY_RESOURCES = 64;
 const INVENTORY_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
-// Mirrors the bounded redaction applied when the snapshot is first read, so
-// forged evidence can never smuggle a path or secret into a report row.
-const EVIDENCE_SECRET_LIKE =
-  /(?:secret|password|passwd|api[-_ ]?key|auth(?:orization)?|bearer|token)|\bsk-[A-Za-z0-9_-]{6,}/i;
-const EVIDENCE_PATH_LIKE =
-  /(?:^|[^A-Za-z0-9])(?:[/\\]|file:\/\/)|[A-Za-z]:[\\/]|(?:^|\s)~\//;
 const INVENTORY_SOURCES = new Set(["extension", "prompt", "skill"]);
 const INVENTORY_SCOPES = new Set(["user", "project", "temporary"]);
 const INVENTORY_ORIGINS = new Set(["package", "top-level"]);
@@ -867,7 +862,10 @@ function projectCommandRows(value: unknown): CommandRow[] | undefined {
     ) {
       return undefined;
     }
-    const description = boundedDescription(record.description);
+    const description = boundedDescription(
+      record.description,
+      MAX_INVENTORY_DESCRIPTION_BYTES,
+    );
     rows.push({
       name: record.name,
       source: record.source as CommandRow["source"],
@@ -894,7 +892,10 @@ function projectSkillRows(value: unknown): SkillRow[] | undefined {
       record.sourceLabel === undefined
         ? undefined
         : sanitizeSourceLabel(record.sourceLabel);
-    const description = boundedDescription(record.description);
+    const description = boundedDescription(
+      record.description,
+      MAX_INVENTORY_DESCRIPTION_BYTES,
+    );
     rows.push({
       name: record.name,
       ...(sourceLabel === undefined ? {} : { sourceLabel }),
@@ -1035,22 +1036,6 @@ function readOptionalMember(
 ): string | undefined | false {
   if (value === undefined) return undefined;
   return isInventoryMember(members, value) ? (value as string) : false;
-}
-
-function boundedDescription(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  let out = "";
-  for (const char of value) {
-    const code = char.codePointAt(0) ?? 0;
-    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : char;
-  }
-  const trimmed = out.trim();
-  if (trimmed.length === 0) return undefined;
-  if (Buffer.byteLength(trimmed, "utf8") > MAX_INVENTORY_DESCRIPTION_BYTES)
-    return undefined;
-  if (EVIDENCE_SECRET_LIKE.test(trimmed) || EVIDENCE_PATH_LIKE.test(trimmed))
-    return undefined;
-  return trimmed;
 }
 
 function isFoldedCount(value: unknown): value is number {

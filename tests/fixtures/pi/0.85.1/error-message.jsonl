@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"error-session","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/fixture"}
+{"type":"message","id":"g1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-a","name":"read"}],"provider":"acme","model":"alpha","stopReason":"toolUse","usage":{"totalTokens":10,"cost":{"total":0.01}}}}
+{"type":"message","id":"r1","parentId":"g1","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"toolResult","toolCallId":"call-a","isError":true,"content":"PRIVATE_TOOL_BODY","usage":{"totalTokens":1,"cost":{"total":0.001}}}}
+{"type":"message","id":"g2","parentId":"r1","timestamp":"2026-01-01T00:00:03.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","stopReason":"error","errorMessage":"429 rate limit from https://api.example.com/v1/chat?key=PRIVATE (see /home/dev/logs/x)","usage":{"totalTokens":5,"cost":{"total":0.005}}}}

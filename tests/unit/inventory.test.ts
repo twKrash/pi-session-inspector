@@ -91,3 +91,42 @@ test("sanitizes command, skill, tool, and resource-source inventory", async () =
 
   assert.deepEqual(readInventory(commands, tools), snapshot);
 });
+
+test("drops secret-like and path-like command descriptions", () => {
+  const snapshot = readInventory(
+    [
+      {
+        name: "safe",
+        source: "extension",
+        description: "lists files",
+        sourceInfo: { source: "builtin" },
+      },
+      {
+        name: "secret",
+        source: "extension",
+        description: "api key sk-abcdef123",
+        sourceInfo: { source: "builtin" },
+      },
+      {
+        name: "path",
+        source: "extension",
+        description: "read /home/dev/notes",
+        sourceInfo: { source: "builtin" },
+      },
+      {
+        name: "long",
+        source: "extension",
+        description: "x".repeat(121),
+        sourceInfo: { source: "builtin" },
+      },
+    ],
+    [],
+  );
+
+  assert.deepEqual(
+    snapshot.commands.map((row) => row.description),
+    ["lists files", undefined, undefined, undefined],
+  );
+  assert.equal(JSON.stringify(snapshot).includes("sk-abcdef123"), false);
+  assert.equal(JSON.stringify(snapshot).includes("/home/dev"), false);
+});

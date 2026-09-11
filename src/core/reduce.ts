@@ -9,10 +9,10 @@ import type {
   Usage,
   UsageComposition,
 } from "./events.ts";
+import { REDACTED, redactBoundedText, secretLikeValue } from "./redact.ts";
 
 const zeroUsage: Usage = { totalTokens: 0, cost: 0 };
 const MAX_REPORT_LABEL_BYTES = 128;
-const REDACTED = "[REDACTED]";
 /** Token and cost fields stay inside the safe, finite aggregate range. */
 const MAX_USAGE_VALUE = Number.MAX_SAFE_INTEGER;
 // Explicit allowlist: only recognisably errored/aborted/truncated stop reasons
@@ -72,8 +72,13 @@ export function reduceEntries(
           errors.push({
             id: generation.id,
             timestamp: entry.timestamp,
-            kind: generationError,
+            kind: generationError.kind,
             confidence: "native",
+            // The bounded redacted message is the only persisted text that may
+            // leave the reducer; an unusable message stays omitted.
+            ...(generationError.message === undefined
+              ? {}
+              : { message: generationError.message }),
           });
         }
         for (const call of toolCalls(message.content)) {
@@ -161,14 +166,23 @@ export function reduceEntries(
 
 function readGenerationError(
   message: Record<string, unknown>,
-): ErrorKind | undefined {
+): { kind: ErrorKind; message?: string } | undefined {
   const stopReason = message.stopReason;
-  // Only a bounded classification leaves this function; the persisted stop
-  // reason is never copied into the report (PRD-08).
-  return typeof stopReason === "string" &&
-    Object.hasOwn(STOP_REASON_ERROR_KINDS, stopReason)
-    ? STOP_REASON_ERROR_KINDS[stopReason]
-    : undefined;
+  // Only a bounded classification leaves this function; the raw persisted stop
+  // reason is never copied into the report (PRD-08). The optional message is
+  // the persisted assistant `errorMessage`, bounded and redacted; tool-result
+  // bodies are never read here.
+  if (
+    typeof stopReason !== "string" ||
+    !Object.hasOwn(STOP_REASON_ERROR_KINDS, stopReason)
+  ) {
+    return undefined;
+  }
+  const text = redactBoundedText(message.errorMessage);
+  return {
+    kind: STOP_REASON_ERROR_KINDS[stopReason],
+    ...(text === undefined ? {} : { message: text }),
+  };
 }
 
 /**
@@ -289,21 +303,4 @@ function reportLabel(value: unknown, fallback: string): string {
     return REDACTED;
   }
   return value;
-}
-
-function secretLikeValue(value: string): boolean {
-  return (
-    /(?:secret|token|password|credential)/i.test(value) ||
-    /(?:^|\s)bearer\s+\S+/i.test(value) ||
-    /-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(value) ||
-    /(?:[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/.test(value) ||
-    /\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/.test(
-      value,
-    ) ||
-    /[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]+@/i.test(value) ||
-    /^[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S+/.test(value) ||
-    /(?:^|[\\/])\.env(?:[.\\/]|$)|(?:^|[\\/])(?:credentials?|secrets?)(?:[.\\/]|$)/i.test(
-      value,
-    )
-  );
 }

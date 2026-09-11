@@ -108,7 +108,7 @@ export type Compaction = {
   usage: Usage;
 };
 
-/** Bounded error classification; never a raw stop reason, message, or payload. */
+/** Bounded error classification; never a raw stop reason or payload. */
 export type ErrorKind =
   | "generation-error"
   | "generation-aborted"
@@ -121,6 +121,11 @@ export type ErrorRecord = {
   timestamp: string;
   kind: ErrorKind;
   confidence: Confidence;
+  /**
+   * Bounded, single-line, path/URL/secret-redacted persisted assistant
+   * `errorMessage`. Absent for tool errors, older data, or nothing safe left.
+   */
+  message?: string;
 };
 
 export type ReducedSession = {

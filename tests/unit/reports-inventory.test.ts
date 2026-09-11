@@ -164,3 +164,48 @@ test("re-sanitizes labels, drops path-like descriptions, and rejects over-cap in
   assert.equal(overCap.commands.state, "unavailable");
   assert.equal(overCap.commands.count, null);
 });
+
+test("drops secret-like and over-long inventory descriptions from report rows", () => {
+  const rows = [
+    {
+      name: "ok",
+      source: "extension" as const,
+      sourceLabel: "builtin",
+      scope: "user" as const,
+      origin: "package" as const,
+      description: "lists files",
+    },
+    {
+      name: "secret",
+      source: "extension" as const,
+      sourceLabel: "builtin",
+      scope: "user" as const,
+      origin: "package" as const,
+      description: "api key sk-abcdef123",
+    },
+    {
+      name: "long",
+      source: "extension" as const,
+      sourceLabel: "builtin",
+      scope: "user" as const,
+      origin: "package" as const,
+      description: "x".repeat(121),
+    },
+  ];
+  const report = toSessionReport(reduceEntries("session-g", []), {
+    inventory: {
+      schemaVersion: 1,
+      commands: rows,
+      skills: [],
+      resources: [],
+      toolSources: {},
+    },
+  });
+
+  assert.equal(report.commands.state, "supported");
+  assert.deepEqual(
+    report.commands.items.map((row) => row.description),
+    ["lists files", undefined, undefined],
+  );
+  assert.equal(JSON.stringify(report).includes("sk-abcdef123"), false);
+});

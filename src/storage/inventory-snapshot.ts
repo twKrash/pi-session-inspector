@@ -10,6 +10,7 @@ import {
   type ResourceSourceRow,
   type SkillRow,
 } from "../integrations/inventory.ts";
+import { boundedDescription } from "../core/redact.ts";
 
 /**
  * Persists the bounded, sanitized inventory snapshot beside a session's
@@ -26,12 +27,6 @@ const MAX_RESOURCES = 64;
 const MAX_NAME_BYTES = 64;
 const MAX_DESCRIPTION_BYTES = 120;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
-// Mirrors the bounded redaction applied when the snapshot is first read, so a
-// tampered or foreign `inventory.json` cannot smuggle a path or secret in.
-const SECRET_LIKE =
-  /(?:secret|password|passwd|api[-_ ]?key|auth(?:orization)?|bearer|token)|\bsk-[A-Za-z0-9_-]{6,}/i;
-const PATH_LIKE =
-  /(?:^|[^A-Za-z0-9])(?:[/\\]|file:\/\/)|[A-Za-z]:[\\/]|(?:^|\s)~\//;
 
 type Scope = "user" | "project" | "temporary";
 type Origin = "package" | "top-level";
@@ -251,7 +246,10 @@ function parseCommands(
     const scope = readScope(record.scope);
     const origin = readOrigin(record.origin);
     if (scope === undefined || origin === undefined) return undefined;
-    const description = boundedDescription(record.description);
+    const description = boundedDescription(
+      record.description,
+      MAX_DESCRIPTION_BYTES,
+    );
     rows.push({
       name,
       source,
@@ -286,7 +284,10 @@ function parseSkills(
       (record.origin !== undefined && origin === undefined)
     )
       return undefined;
-    const description = boundedDescription(record.description);
+    const description = boundedDescription(
+      record.description,
+      MAX_DESCRIPTION_BYTES,
+    );
     rows.push({
       name,
       ...(sourceLabel === undefined ? {} : { sourceLabel }),
@@ -373,26 +374,6 @@ function isBoundedName(value: string): boolean {
     Buffer.byteLength(value, "utf8") <= MAX_NAME_BYTES &&
     NAME.test(value)
   );
-}
-
-/**
- * Re-applies the structural bounds and redaction used when a snapshot is first
- * read. An invalid optional description is dropped rather than invalidating the
- * whole snapshot.
- */
-function boundedDescription(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  let out = "";
-  for (const char of value) {
-    const code = char.codePointAt(0) ?? 0;
-    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : char;
-  }
-  const trimmed = out.trim();
-  if (trimmed.length === 0) return undefined;
-  if (Buffer.byteLength(trimmed, "utf8") > MAX_DESCRIPTION_BYTES)
-    return undefined;
-  if (SECRET_LIKE.test(trimmed) || PATH_LIKE.test(trimmed)) return undefined;
-  return trimmed;
 }
 
 function asRecord(
