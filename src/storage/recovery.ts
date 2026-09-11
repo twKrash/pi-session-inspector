@@ -2,6 +2,11 @@ import { createReadStream } from "node:fs";
 import { opendir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
+import {
+  counterDeltaAfterCursors,
+  emptyFoldedCounters,
+  type FoldedCounters,
+} from "../core/live-counter-fold.js";
 import { validateTelemetry } from "../pi/telemetry.js";
 import {
   readCheckpoint,
@@ -38,6 +43,8 @@ export type RecoveryResult = {
   cursors: Checkpoint["cursors"];
   running: RecoveredRunningRecord[];
   diagnostics: RecoveryDiagnostic[];
+  /** Telemetry folded strictly after each writer's checkpoint WAL cursor. */
+  deltaCounters: FoldedCounters;
 };
 
 type WalRecord = {
@@ -54,6 +61,7 @@ type WalRecord = {
     endedAt?: string;
     durationMs?: number;
   };
+  telemetry?: Record<string, unknown>;
 };
 
 type ReplayBudget = { segments: number; bytes: number; records: number };
@@ -115,6 +123,20 @@ export async function recoverSession({
     },
     running: recoverRunning(replay.records),
     diagnostics: [...diagnostics].sort(),
+    deltaCounters: replay.unavailable
+      ? emptyFoldedCounters()
+      : counterDeltaAfterCursors(
+          replay.records.map((record) => ({
+            writerId: record.writerId,
+            writerSequence: record.writerSequence,
+            ...(record.kind === "telemetry" && record.telemetry !== undefined
+              ? { telemetry: record.telemetry }
+              : {}),
+          })),
+          // Folding is relative to the checkpoint read at the start of recovery,
+          // never the advanced cursors this replay produced.
+          checkpoint?.cursors.wal ?? {},
+        ),
   };
 }
 
@@ -394,10 +416,16 @@ export function parseWalRecord(line: string): WalRecord | undefined {
       (value.kind !== "live_timing" && value.kind !== "telemetry")
     )
       return undefined;
-    if (value.kind === "telemetry")
-      return validateTelemetry(value.telemetry).ok
-        ? { ...baseRecord(value), kind: "telemetry" }
+    if (value.kind === "telemetry") {
+      const telemetry = validateTelemetry(value.telemetry);
+      return telemetry.ok
+        ? {
+            ...baseRecord(value),
+            kind: "telemetry",
+            telemetry: telemetry.envelope,
+          }
         : undefined;
+    }
     const timing = parseTiming(value.timing);
     return timing === undefined
       ? undefined
@@ -479,6 +507,7 @@ function unavailableResult(
     },
     running: [],
     diagnostics: [...diagnostics].sort(),
+    deltaCounters: emptyFoldedCounters(),
   };
 }
 function isRecord(value: unknown): value is Record<string, unknown> {

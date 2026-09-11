@@ -43,6 +43,22 @@ async function writeCheckpoint(
   );
 }
 
+async function writeCheckpointFixture(
+  directory: string,
+  walCursors: Record<string, number>,
+): Promise<void> {
+  await writeCheckpoint(directory, { pi: 1, wal: walCursors });
+}
+
+const permissionEnvelope = (resolution: string, result: "allow" | "deny") => ({
+  schemaVersion: 1,
+  source: "permission-system",
+  metric: "permission.decision",
+  kind: "counter",
+  value: 1,
+  dimensions: { result, resolution },
+});
+
 test("uses valid checkpoint aggregates while replaying WAL timing state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-"));
   try {
@@ -396,6 +412,126 @@ test("declares recovery unavailable when aggregate segment budget is exceeded", 
     });
     assert.equal(recovered.availability, "unavailable");
     assert.ok(recovered.diagnostics.includes("wal-unavailable"));
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("folds validated telemetry counters from every writer shard", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-"));
+  try {
+    const wal = join(directory, "wal", "writer-a");
+    await mkdir(wal, { recursive: true });
+    const lines = [
+      {
+        eventId: "e1",
+        timestamp: "2026-09-11T10:00:00Z",
+        writerId: "writer-a",
+        writerSequence: 1,
+        kind: "telemetry",
+        telemetry: permissionEnvelope("policy_allow", "allow"),
+      },
+      {
+        eventId: "e2",
+        timestamp: "2026-09-11T10:00:01Z",
+        writerId: "writer-a",
+        writerSequence: 2,
+        kind: "telemetry",
+        telemetry: permissionEnvelope("user_denied", "deny"),
+      },
+      {
+        eventId: "e3",
+        timestamp: "2026-09-11T10:00:02Z",
+        writerId: "writer-a",
+        writerSequence: 3,
+        kind: "telemetry",
+        telemetry: {
+          schemaVersion: 1,
+          source: "pi-input",
+          metric: "skill.invocation",
+          kind: "counter",
+          value: 1,
+          dimensions: { skill: "council-mode" },
+        },
+      },
+      {
+        eventId: "e4",
+        timestamp: "2026-09-11T10:00:03Z",
+        writerId: "writer-a",
+        writerSequence: 4,
+        kind: "telemetry",
+        telemetry: {
+          schemaVersion: 1,
+          source: "pi-input",
+          metric: "skill.invocation",
+          kind: "counter",
+          value: 1,
+          dimensions: { skill: "../escape" },
+        },
+      },
+    ];
+    await writeFile(
+      join(wal, "2026-09-11.jsonl"),
+      `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+    );
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+
+    assert.equal(recovered.availability, "available");
+    assert.deepEqual(recovered.deltaCounters.counters.permission, {
+      decisions: 2,
+      allowed: 1,
+      denied: 1,
+    });
+    assert.deepEqual(recovered.deltaCounters.skillInvocations, {
+      "council-mode": 1,
+    });
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("folds only telemetry strictly after the checkpoint cursors", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-delta-"));
+  try {
+    await writeWal(
+      directory,
+      "writer-a",
+      `${[
+        permissionEnvelope("policy_allow", "allow"),
+        permissionEnvelope("policy_allow", "allow"),
+        permissionEnvelope("user_denied", "deny"),
+      ]
+        .map((telemetry, index) =>
+          JSON.stringify({
+            eventId: `e${index + 1}`,
+            timestamp: `2026-09-11T10:00:0${index}Z`,
+            writerId: "writer-a",
+            writerSequence: index + 1,
+            kind: "telemetry",
+            telemetry,
+          }),
+        )
+        .join("\n")}\n`,
+    );
+    await writeCheckpointFixture(directory, { "writer-a": 2 });
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+
+    // Records 1 and 2 are already folded into the checkpoint; only record 3 is delta.
+    const allowed = recovered.deltaCounters.counters.permission?.allowed;
+    assert.equal(allowed, undefined);
+    assert.deepEqual(recovered.deltaCounters.counters.permission, {
+      decisions: 1,
+      denied: 1,
+    });
+    assert.deepEqual(recovered.cursors.wal, { "writer-a": 3 });
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
