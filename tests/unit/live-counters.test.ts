@@ -58,6 +58,32 @@ test("translates public permission bus events into bounded envelopes only", asyn
     ],
   );
 
+  // Missing or unrecognised producer resolutions are bounded to the closed
+  // vocabulary; the raw producer string must never reach the writer.
+  const decisionHandler = handlers.get("permissions:decision");
+  decisionHandler?.({ result: "allow", resolution: "sentinel-unknown-resolution" });
+  decisionHandler?.({ result: "deny" });
+  assert.deepEqual(
+    envelopes
+      .filter(
+        (envelope) =>
+          (envelope as { metric: string }).metric === "permission.decision",
+      )
+      .slice(2)
+      .map(
+        (envelope) =>
+          (envelope as { dimensions: Record<string, string> }).dimensions,
+      ),
+    [
+      { result: "allow", resolution: "other" },
+      { result: "deny", resolution: "other" },
+    ],
+  );
+  assert.equal(
+    JSON.stringify(envelopes).includes("sentinel-unknown-resolution"),
+    false,
+  );
+
   inputHandlers[0]?.({ text: "/skill:council-mode --scope tree" });
   inputHandlers[0]?.({ text: "/skill:unknown-mode secret prompt text" });
   inputHandlers[0]?.({ text: "ordinary prompt text" });

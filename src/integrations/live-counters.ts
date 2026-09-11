@@ -1,5 +1,31 @@
 const SKILL_PREFIX = "/skill:";
 
+/**
+ * Permission resolution classes are a closed vocabulary. Any producer value
+ * outside this set is retained only as the bounded placeholder "other"; raw
+ * producer text never reaches the WAL.
+ */
+const PERMISSION_RESOLUTIONS: ReadonlySet<string> = new Set([
+  "policy_allow",
+  "policy_deny",
+  "session_approved",
+  "infrastructure_auto_allowed",
+  "user_approved",
+  "user_approved_for_session",
+  "user_denied",
+  "auto_approved",
+  "confirmation_unavailable",
+  "authorizer_allowed",
+  "authorizer_denied",
+  "gate_error",
+]);
+
+function readResolution(value: unknown): string {
+  return typeof value === "string" && PERMISSION_RESOLUTIONS.has(value)
+    ? value
+    : "other";
+}
+
 /** Extracts only a bounded skill identity; the remainder is never retained. */
 export function readSkillCommandName(text: string): string | undefined {
   if (!text.startsWith(SKILL_PREFIX)) return undefined;
@@ -45,7 +71,7 @@ export function registerLiveCounters(
         metric: "permission.decision",
         kind: "counter",
         value: 1,
-        dimensions: { result, resolution: String(row?.resolution ?? "") },
+        dimensions: { result, resolution: readResolution(row?.resolution) },
         timestamp: options.now().getTime(),
       });
     } catch {}
