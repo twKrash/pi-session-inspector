@@ -43,6 +43,7 @@ export function secretLikeValue(value: string): boolean {
     /\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/.test(
       value,
     ) ||
+    /\bsk-[A-Za-z0-9_-]{6,}/i.test(value) ||
     /[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]+@/i.test(value) ||
     /^[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S+/.test(value) ||
     /(?:^|[\\/])\.env(?:[.\\/]|$)|(?:^|[\\/])(?:credentials?|secrets?)(?:[.\\/]|$)/i.test(
@@ -70,7 +71,10 @@ export function redactBoundedText(
     .replace(POSIX, (match) => match.replace(POSIX_INNER, PATH_MARKER));
   const sealed = secretLikeValue(redacted) ? REDACTED : redacted;
   if (byteLength(sealed) <= maxBytes) return sealed;
-  const limit = Math.max(1, maxBytes - byteLength(TRUNCATION));
+  // Honor the byte cap at every budget: when the truncation marker cannot fit,
+  // emit a plain code-point-boundary cut instead of overflowing the budget.
+  const limit = maxBytes - byteLength(TRUNCATION);
+  if (limit <= 0) return truncateUtf8(sealed, maxBytes);
   return truncateUtf8(sealed, limit) + TRUNCATION;
 }
 

@@ -66,6 +66,24 @@ test("returns an already-bounded value unchanged", () => {
   assert.equal(redactBoundedText("short message"), "short message");
 });
 
+test("redacts bare provider tokens and honors tiny byte budgets", () => {
+  const redacted = redactBoundedText("auth failed for sk-abcdef123");
+  assert.equal(redacted, REDACTED);
+  assert.equal(redacted?.includes("sk-abcdef123"), false);
+
+  // The truncation marker is 14 bytes; every smaller budget still fits.
+  for (const budget of [1, 5, 13, 14, 15]) {
+    const bounded = redactBoundedText("x".repeat(400), budget);
+    assert.ok(bounded !== undefined);
+    assert.equal(
+      Buffer.byteLength(bounded, "utf8") <= budget,
+      true,
+      `budget ${budget} overflowed`,
+    );
+  }
+  assert.equal(redactBoundedText("x".repeat(400), 14), "x".repeat(14));
+});
+
 test("exposes the marker constants", () => {
   assert.equal(REDACTED, "[REDACTED]");
   assert.equal(PATH_MARKER, "[PATH]");
@@ -74,6 +92,7 @@ test("exposes the marker constants", () => {
 
 test("secretLikeValue recognises secret-shaped values", () => {
   assert.equal(secretLikeValue("Bearer sk-live-abcdef"), true);
+  assert.equal(secretLikeValue("sk-abcdef123"), true);
   assert.equal(secretLikeValue("PASSWORD=hunter2"), true);
   assert.equal(secretLikeValue("lists files"), false);
 });
