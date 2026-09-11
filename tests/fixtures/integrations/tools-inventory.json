@@ -1,0 +1,67 @@
+[
+  {
+    "name": "subagent",
+    "description": "Delegate work to a child agent under /home/dev/agents",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "prompt": { "type": "string" }
+      }
+    },
+    "promptGuidelines": ["PRIVATE GUIDELINE"],
+    "sourceInfo": {
+      "path": "/home/dev/.pi/extensions/pi-subagents/tools.ts",
+      "source": "npm:pi-subagents@0.67.0",
+      "scope": "user",
+      "origin": "package",
+      "baseDir": "/home/dev/.pi"
+    }
+  },
+  {
+    "name": "subagent_wait",
+    "description": "Wait for a child agent to finish",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    },
+    "promptGuidelines": ["PRIVATE GUIDELINE"],
+    "sourceInfo": {
+      "path": "/home/dev/.pi/extensions/pi-subagents/tools.ts",
+      "source": "npm:pi-subagents@0.67.0",
+      "scope": "user",
+      "origin": "package"
+    }
+  },
+  {
+    "name": "subagent_supervisor",
+    "description": "Inspect a running child agent",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    },
+    "promptGuidelines": ["PRIVATE GUIDELINE"],
+    "sourceInfo": {
+      "path": "file:///home/dev/.pi/extensions/pi-subagents/supervisor.ts",
+      "source": "npm:pi-subagents",
+      "scope": "user",
+      "origin": "package"
+    }
+  },
+  {
+    "name": "read",
+    "description": "Read a file from /home/dev or C:\\Users\\dev",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" }
+      }
+    },
+    "promptGuidelines": ["PRIVATE GUIDELINE"],
+    "sourceInfo": {
+      "path": "file:///usr/lib/pi/tools/read.ts",
+      "source": "builtin",
+      "scope": "user",
+      "origin": "top-level"
+    }
+  }
+]

@@ -1,0 +1,59 @@
+[
+  {
+    "name": "session-inspector",
+    "source": "extension",
+    "sourceInfo": {
+      "path": "/home/dev/.pi/extensions/session-inspector.ts",
+      "source": "local",
+      "scope": "user",
+      "origin": "top-level",
+      "baseDir": "/home/dev/.pi"
+    },
+    "description": "Inspect pi session evidence"
+  },
+  {
+    "name": "skill:council-mode",
+    "source": "skill",
+    "sourceInfo": {
+      "path": "C:\\Users\\dev\\.pi\\skills\\council-mode\\SKILL.md",
+      "source": "npm:pi-subagents@0.67.0",
+      "scope": "user",
+      "origin": "package",
+      "baseDir": "C:\\Users\\dev\\.pi"
+    },
+    "description": "Convene a council of agents"
+  },
+  {
+    "name": "skill:hf-cli",
+    "source": "skill",
+    "sourceInfo": {
+      "path": "file:///home/dev/skills/hf-cli/SKILL.md",
+      "source": "npm:pi-subagents",
+      "scope": "user",
+      "origin": "package"
+    },
+    "description": "secret sk-live-abc123 token"
+  },
+  {
+    "name": "council-mode",
+    "source": "extension",
+    "sourceInfo": {
+      "path": "/home/dev/.pi/extensions/council.ts",
+      "source": "npm:pi-subagents@0.67.0",
+      "scope": "user",
+      "origin": "package"
+    },
+    "description": "/home/dev/notes.md"
+  },
+  {
+    "name": "web-search",
+    "source": "prompt",
+    "sourceInfo": {
+      "path": "/home/dev/.pi/prompts/web-search.md",
+      "source": "npm:pi-subagents",
+      "scope": "user",
+      "origin": "package"
+    },
+    "description": "Search the web for the latest information about a topic and return a concise summary with citations and sources for every claim made in the final answer text"
+  }
+]
