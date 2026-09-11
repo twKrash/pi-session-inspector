@@ -41,6 +41,8 @@ export type IntegrationObservation = IntegrationObservationInput & {
 export type AgentRun = {
   id: string;
   parentId?: string;
+  /** Bounded agent label token; absent when the producer value is unusable. */
+  agent?: string;
   status: "running" | "succeeded" | "failed" | "interrupted" | "unknown";
   confidence: Confidence;
   usage?: Usage;

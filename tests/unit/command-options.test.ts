@@ -51,6 +51,8 @@ test("rejects malformed, unsupported durable scopes, and unknown report options 
     "current --scope branch",
     "--format pdf",
     "global --output",
+    // The invented manual artifact flag is now unknown syntax.
+    "current --subagents-artifact file.json",
     "current 'unterminated",
   ]) {
     assert.equal(parseReportCommand(input), undefined, input);

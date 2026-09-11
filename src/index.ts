@@ -30,7 +30,6 @@ import { refreshInventorySnapshot } from "./storage/inventory-snapshot.ts";
 import { recoverSession } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
 import { scheduleMaintenance } from "./storage/maintenance.ts";
-import { readPublicSubagentArtifact } from "./integrations/subagents.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
 import { loadGlobalReport, loadHistoryReports } from "./ui/load-history.ts";
@@ -51,7 +50,6 @@ type SessionWalSetup = (input: {
 }) => Promise<void>;
 
 const description = "Open Pi Session Inspector reports";
-const SUBAGENTS_ARTIFACT_OPTION = "--subagents-artifact";
 
 /**
  * Live observer handle for the active session. Report reads flush it first so
@@ -95,7 +93,6 @@ type CommandOptions = {
   format: ReportFormat;
   output?: string;
   noOpen: boolean;
-  subagentArtifactPath?: string;
 };
 
 /** Parses documented command options without accepting unknown or partial input. */
@@ -110,7 +107,6 @@ export function parseReportCommand(args: string): CommandOptions | undefined {
   let format: ReportFormat = kind === "global" ? "html" : "tui";
   let output: string | undefined;
   let noOpen = false;
-  let subagentArtifactPath: string | undefined;
   while (tokens.length > 0) {
     const option = tokens.shift();
     if (option === "--scope") {
@@ -128,10 +124,6 @@ export function parseReportCommand(args: string): CommandOptions | undefined {
       output = value;
     } else if (option === "--no-open") {
       noOpen = true;
-    } else if (option === SUBAGENTS_ARTIFACT_OPTION) {
-      const value = tokens.shift();
-      if (!value || value.startsWith("--")) return undefined;
-      subagentArtifactPath = value;
     } else return undefined;
   }
   if ((kind === "history" || kind === "global") && scope === "active") {
@@ -143,7 +135,6 @@ export function parseReportCommand(args: string): CommandOptions | undefined {
     format,
     ...(output ? { output } : {}),
     noOpen,
-    ...(subagentArtifactPath ? { subagentArtifactPath } : {}),
   };
 }
 
@@ -393,7 +384,6 @@ async function loadCommandReport(
     leafId: string | null;
     observation?: SessionObservation;
     sessionDirectory: () => string;
-    subagentArtifact?: unknown;
   },
 ): Promise<
   | { dto: unknown; html: Parameters<typeof renderHtml>[0]; name: string }
@@ -423,7 +413,6 @@ async function loadCommandReport(
         leafId: input.leafId,
         observation: input.observation,
         inspectorRoot: input.root,
-        subagentArtifact: input.subagentArtifact,
       },
     );
     return model
@@ -531,13 +520,10 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             if (ctx.mode !== "tui") return notifyCurrentUnavailable(ctx);
             const sessionFile = sessionManager.getSessionFile();
             const leafId = sessionManager.getLeafId();
-            const subagentArtifact = await readPublicSubagentArtifact(
-              options.subagentArtifactPath,
-            );
             const model = await loadCurrentSessionReport(
               sessionFile,
               options.scope,
-              { leafId, observation, inspectorRoot: root, subagentArtifact },
+              { leafId, observation, inspectorRoot: root },
             );
             if (!model) return notifyCurrentUnavailable(ctx);
             await ctx.ui.custom((tui, theme, _keybindings, done) =>
@@ -548,7 +534,6 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                     leafId,
                     observation,
                     inspectorRoot: root,
-                    subagentArtifact,
                   }),
                 theme,
                 requestRender: () => tui.requestRender(),
@@ -558,16 +543,12 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             );
             return;
           }
-          const subagentArtifact = await readPublicSubagentArtifact(
-            options.subagentArtifactPath,
-          );
           const report = await loadCommandReport(options, {
             root,
             sessionFile: sessionManager.getSessionFile(),
             leafId: sessionManager.getLeafId(),
             ...(observation === undefined ? {} : { observation }),
             sessionDirectory: () => sessionManager.getSessionDir(),
-            subagentArtifact,
           });
           if (!report) return notifyCurrentUnavailable(ctx);
           const content =

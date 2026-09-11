@@ -6,7 +6,7 @@ import type { Scope } from "../core/events.ts";
 import { reduceEntries } from "../core/reduce.ts";
 import { toSessionReport } from "../core/reports.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
-import { readSubagentRuns } from "../integrations/subagents.ts";
+import { readSubagentEvidence } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { selectScope } from "../pi/sessions.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
@@ -17,7 +17,6 @@ export type LoadCurrentSessionReportOptions = {
   leafId: string | null;
   observation?: SessionObservation;
   inspectorRoot?: string;
-  subagentArtifact?: unknown;
 };
 
 /** Replays a persisted current session into the renderer-neutral TUI model. */
@@ -27,7 +26,7 @@ export async function loadCurrentSessionReport(
   options: LoadCurrentSessionReportOptions,
 ): Promise<CurrentTuiModel | undefined> {
   if (!sessionFile) return undefined;
-  const { leafId, observation, inspectorRoot, subagentArtifact } = options;
+  const { leafId, observation, inspectorRoot } = options;
 
   try {
     const session = parseSessionJsonl(await readFile(sessionFile, "utf8"));
@@ -45,6 +44,9 @@ export async function loadCurrentSessionReport(
             directory: join(inspectorRoot, "sessions", session.id),
           });
     const entries = selectScope(session.entries, leafId, scope);
+    // Subagent runs are auto-discovered from persisted tool results; the
+    // evidence usage stays a child-agent breakdown, never a session total.
+    const subagentEvidence = readSubagentEvidence(entries);
     return createCurrentTuiModel(
       toSessionReport(reduceEntries(session.id, entries), {
         ...(Object.values(
@@ -52,7 +54,10 @@ export async function loadCurrentSessionReport(
         ).some((cursor) => cursor > 0)
           ? { walDetail: "expired" as const }
           : {}),
-        agents: readSubagentRuns(subagentArtifact),
+        agents: {
+          state: subagentEvidence.state,
+          runs: subagentEvidence.runs,
+        },
         presence: observation?.presence,
         counters: observation?.counters,
         // The in-memory snapshot is the unbounded read; consume the same bounded

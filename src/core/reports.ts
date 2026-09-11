@@ -16,6 +16,7 @@ import {
   type ResourceSourceRow,
   type SkillRow,
 } from "../integrations/inventory.ts";
+import { isAgentLabel } from "../integrations/subagents.ts";
 import type {
   AgentRun,
   Compaction,
@@ -329,10 +330,12 @@ function projectAgent(value: unknown): AgentRun | undefined {
     return undefined;
   }
   const parentId = isOpaqueSubagentId(run.parentId) ? run.parentId : undefined;
+  const agent = isAgentLabel(run.agent) ? run.agent : undefined;
   const usage = projectUsage(run.usage);
   return {
     id: run.id,
     ...(parentId === undefined ? {} : { parentId }),
+    ...(agent === undefined ? {} : { agent }),
     status: run.status,
     confidence: run.confidence,
     ...(usage === undefined ? {} : { usage }),

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
 import { readPiEntryEvidence } from "../../src/integrations/pi-entries.ts";
-import { readSubagentRuns } from "../../src/integrations/subagents.ts";
+import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
 import { MAX_COUNTER_KEYS } from "../../src/core/live-counter-fold.ts";
 import { isAllowedIntegrationCounter } from "../../src/core/integration-counter-allowlists.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
 const parent: ReducedSession = {
   sessionId: "session-1",
@@ -22,18 +24,15 @@ const parent: ReducedSession = {
   errors: [],
 };
 
-test("projects explicit integration evidence without adding child usage", () => {
-  const subagents = readSubagentRuns({
-    version: 1,
-    runs: [
-      {
-        id: "child-run",
-        parentId: "parent-run",
-        status: "complete",
-        usage: { totalTokens: 60, cost: 3 },
-      },
-    ],
-  });
+test("projects explicit integration evidence without adding child usage", async () => {
+  const fixture = await readFile(
+    new URL(
+      "../fixtures/pi/0.85.1/subagent-tool-results.jsonl",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const subagents = readSubagentEvidence(parseSessionJsonl(fixture).entries);
   const integrations = readPiEntryEvidence([
     {
       type: "custom",
@@ -46,18 +45,49 @@ test("projects explicit integration evidence without adding child usage", () => 
   ]);
 
   const report = toSessionReport(parent, {
-    agents: subagents,
+    agents: { state: subagents.state, runs: subagents.runs },
     integrations,
   });
 
+  // Child-agent usage is a breakdown: the parent total is unchanged.
   assert.equal(report.usage.cost, 10);
-  assert.equal(report.agents[0]?.usage?.cost, 3);
+  assert.equal(report.agentEvidence, "supported");
+  const completed = report.agents.find((run) => run.status === "succeeded");
+  assert.equal(completed?.usage?.cost, 0.1);
+  assert.equal(completed?.agent, "reviewer");
   assert.match(report.agents[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(report.integrations[0]?.integration, "context");
+  assert.equal(JSON.stringify(report).includes("PRIVATE_TASK"), false);
   assert.equal(
     JSON.stringify(report).includes("raw-tool-result-sentinel"),
     false,
   );
+});
+
+test("carries only bounded agent labels into agent rows", () => {
+  const label = "a".repeat(64);
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [
+        {
+          id: `subagent-${"0".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          agent: label,
+        },
+        {
+          id: `subagent-${"1".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          agent: "/home/dev/PRIVATE/agent",
+        },
+      ],
+    },
+  });
+
+  assert.equal(report.agents[0]?.agent, label);
+  assert.equal(report.agents[1]?.agent, undefined);
 });
 
 test("defaults to unavailable integration rows when adapter evidence is absent", () => {

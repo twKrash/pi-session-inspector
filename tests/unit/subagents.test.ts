@@ -1,167 +1,381 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { promisify } from "node:util";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import {
-  readPublicSubagentArtifact,
-  readSubagentRuns,
-} from "../../src/integrations/subagents.ts";
+import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
-type Fixture = Record<string, unknown>;
+test("derives native tool activity and cooperative runs from persisted results", async () => {
+  const fixture = await readFile(
+    new URL(
+      "../fixtures/pi/0.85.1/subagent-tool-results.jsonl",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const { entries } = parseSessionJsonl(fixture);
 
-const fixturePath = new URL(
-  "../fixtures/integrations/subagents.json",
-  import.meta.url,
-);
-const execFile = promisify(execFileCallback);
+  const evidence = readSubagentEvidence(entries);
 
-async function fixture(): Promise<Fixture> {
-  return JSON.parse(await readFile(fixturePath, "utf8")) as Fixture;
-}
+  assert.equal(evidence.activity.state, "supported");
+  assert.equal(evidence.activity.calls, 3);
+  assert.equal(evidence.activity.succeeded, 1);
+  assert.equal(evidence.activity.failed, 1);
+  assert.equal(evidence.activity.interrupted, 1);
+  assert.deepEqual(evidence.activity.tools, [
+    { name: "subagent", calls: 2 },
+    { name: "subagent_wait", calls: 1 },
+  ]);
+  assert.deepEqual(evidence.activity.usage, { totalTokens: 1500, cost: 0.25 });
 
-test("reads only bounded valid local public artifacts", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
-  const valid = join(directory, "artifact.json");
-  const invalid = join(directory, "invalid.json");
-  const oversized = join(directory, "oversized.json");
-  await writeFile(valid, '{"version":1,"runs":[]}');
-  await writeFile(invalid, "not JSON");
-  await writeFile(oversized, " ".repeat(128 * 1024 + 1));
-
-  assert.deepEqual(await readPublicSubagentArtifact(valid), {
-    version: 1,
-    runs: [],
-  });
-  assert.equal(await readPublicSubagentArtifact(invalid), undefined);
-  assert.equal(await readPublicSubagentArtifact(oversized), undefined);
+  assert.equal(evidence.state, "supported");
+  assert.equal(evidence.runs.length, 2);
   assert.equal(
-    await readPublicSubagentArtifact(join(directory, "missing")),
-    undefined,
+    evidence.runs.every((run) => /^subagent-[a-f0-9]{64}$/.test(run.id)),
+    true,
   );
+  assert.equal(JSON.stringify(evidence).includes("PRIVATE_TASK"), false);
+  assert.equal(JSON.stringify(evidence).includes("run-raw-id"), false);
+  assert.equal(JSON.stringify(evidence).includes("/home/dev/PRIVATE"), false);
+
+  const completed = evidence.runs.find((run) => run.status === "succeeded");
+  assert.deepEqual(completed?.usage, { totalTokens: 700, cost: 0.1 });
+  assert.equal(completed?.agent, "reviewer");
 });
 
-test(
-  "returns unavailable promptly for a Linux FIFO artifact path",
-  { skip: process.platform !== "linux" },
-  async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
-    const fifo = join(directory, "artifact.fifo");
-    await execFile("mkfifo", [fifo]);
+test("degrades to native activity when details are absent or malformed", () => {
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [{ type: "toolCall", id: "c1", name: "subagent" }],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-11T10:00:01Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "subagent",
+          isError: true,
+          details: { completions: "not-an-array" },
+          content: [],
+        },
+      }),
+    ].join("\n"),
+  ).entries;
 
-    try {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const result = await Promise.race([
-        readPublicSubagentArtifact(fifo),
-        new Promise<"timed out">((resolve) => {
-          timer = setTimeout(() => resolve("timed out"), 250);
-        }),
-      ]);
-      if (timer !== undefined) clearTimeout(timer);
-      assert.equal(result, undefined);
-    } finally {
-      await rm(directory, { force: true, recursive: true });
-    }
-  },
-);
-
-test("rolls up explicit foreground and nested public artifacts non-additively", async () => {
-  const values = await fixture();
-  const result = readSubagentRuns(values.foreground);
-  const parentUsage = { totalTokens: 100, cost: 10 };
-
-  assert.equal(result.state, "supported");
-  assert.match(result.runs[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
-  assert.match(result.runs[0]?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
-  assert.equal(result.runs[1]?.parentId, result.runs[0]?.id);
-  assert.equal(
-    result.runs.reduce((sum, run) => sum + (run.usage?.cost ?? 0), 0),
-    3,
-  );
-  assert.equal(parentUsage.cost, 10);
-  assert.deepEqual(
-    result.runs.map((run) => run.confidence),
-    ["cooperative", "cooperative"],
-  );
+  const evidence = readSubagentEvidence(entries);
+  assert.equal(evidence.activity.calls, 1);
+  assert.equal(evidence.activity.failed, 1);
+  assert.deepEqual(evidence.runs, []);
+  assert.equal(evidence.state, "unavailable");
 });
 
-test("maps public async, status, and tool-result variants", async () => {
-  const values = await fixture();
+test("maps nested completion children with bounded parents and unknown statuses", () => {
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [{ type: "toolCall", id: "c1", name: "subagent_wait" }],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-11T10:00:01Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "subagent_wait",
+          isError: false,
+          content: [],
+          details: {
+            completions: [
+              {
+                runId: "workflow-run",
+                agent: "workflow",
+                success: true,
+                state: "complete",
+                results: [
+                  {
+                    runId: "child-run",
+                    agent: "/home/dev/PRIVATE/agent",
+                    state: "future-state",
+                    usage: {
+                      input: 1,
+                      output: 2,
+                      cacheRead: 3,
+                      cacheWrite: 4,
+                      cost: 0.5,
+                      turns: 1,
+                    },
+                  },
+                  { runId: "workflow-run", agent: "duplicate-run-id" },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    ].join("\n"),
+  ).entries;
 
-  const asyncRuns = readSubagentRuns(values.async).runs;
-  assert.equal(asyncRuns.length, 1);
-  assert.match(asyncRuns[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
-  assert.match(asyncRuns[0]?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
-  assert.equal(asyncRuns[0]?.status, "running");
-  assert.equal(asyncRuns[0]?.confidence, "cooperative");
-  assert.deepEqual(
-    readSubagentRuns(values.status).runs.map((run) => run.status),
-    ["running", "interrupted", "unknown", "unknown"],
-  );
-  assert.deepEqual(readSubagentRuns(values.toolResult).runs[0]?.usage, {
-    totalTokens: 12,
-    cost: 0.5,
-  });
+  const evidence = readSubagentEvidence(entries);
+
+  // The nested entry repeating the completion's own run id is not a second run.
+  assert.equal(evidence.runs.length, 2);
+  const [completion, child] = evidence.runs;
+  assert.match(completion?.id ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.equal(completion?.parentId, undefined);
+  assert.equal(completion?.agent, "workflow");
+  assert.equal(completion?.status, "succeeded");
+  assert.equal(child?.parentId, completion?.id);
+  assert.equal(child?.agent, undefined);
+  assert.equal(child?.status, "unknown");
+  assert.deepEqual(child?.usage, { totalTokens: 10, cost: 0.5 });
+  assert.equal(evidence.state, "supported");
+  assert.equal(JSON.stringify(evidence).includes("future-state"), false);
+  assert.equal(JSON.stringify(evidence).includes("PRIVATE"), false);
 });
 
-test("returns unavailable or unsupported without guessed runs", async () => {
-  const values = await fixture();
+test("counts only subagent tool calls and their joined results", () => {
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [
+            { type: "toolCall", id: "c9", name: "read" },
+            { type: "toolCall", id: "c1", name: "subagent_supervisor" },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-11T10:00:01Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c9",
+          toolName: "read",
+          isError: false,
+          content: [],
+          usage: {
+            input: 5,
+            output: 5,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 10,
+            cost: { total: 9 },
+          },
+          details: { results: [{ runId: "unrelated-run", success: true }] },
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m3",
+        parentId: "m2",
+        timestamp: "2026-09-11T10:00:02Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "subagent_supervisor",
+          isError: false,
+          content: [],
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: { total: 0.02 },
+          },
+        },
+      }),
+    ].join("\n"),
+  ).entries;
 
-  assert.deepEqual(readSubagentRuns(undefined), {
-    state: "unavailable",
-    runs: [],
-  });
-  for (const value of [
-    values.malformed,
-    values.missingLink,
-    values.unknownVersion,
-    {
-      version: 1,
-      runs: Array.from({ length: 257 }, (_, index) => ({
-        id: `child-${index}`,
-        parentId: "parent-run",
-        status: "complete",
-      })),
-    },
-  ]) {
-    assert.deepEqual(readSubagentRuns(value), {
-      state: "unsupported",
-      runs: [],
+  const evidence = readSubagentEvidence(entries);
+
+  assert.equal(evidence.activity.calls, 1);
+  assert.equal(evidence.activity.succeeded, 1);
+  assert.deepEqual(evidence.activity.tools, [
+    { name: "subagent_supervisor", calls: 1 },
+  ]);
+  assert.deepEqual(evidence.activity.usage, { totalTokens: 2, cost: 0.02 });
+  assert.deepEqual(evidence.runs, []);
+});
+
+test("never throws on malformed entries and yields no fabricated rows", () => {
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      "{ malformed JSONL",
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: "not-an-object",
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-11T10:00:01Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: "not-an-array",
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m3",
+        parentId: "m2",
+        timestamp: "2026-09-11T10:00:02Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [{ type: "toolCall", name: "subagent" }],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m4",
+        parentId: "m3",
+        timestamp: "2026-09-11T10:00:03Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "subagent",
+          isError: false,
+          content: [],
+          details: { results: [{ agent: "worker" }] },
+        },
+      }),
+    ].join("\n"),
+  ).entries;
+
+  const evidence = readSubagentEvidence(entries);
+
+  // A call without a joinable id is unresolved, never a fabricated run.
+  assert.equal(evidence.activity.calls, 1);
+  assert.equal(evidence.activity.interrupted, 1);
+  assert.deepEqual(evidence.activity.usage, undefined);
+  assert.deepEqual(evidence.runs, []);
+  assert.equal(evidence.state, "unavailable");
+});
+
+test("counts a joined call id's tool-result usage exactly once", () => {
+  const result = (id: string) =>
+    JSON.stringify({
+      type: "message",
+      id,
+      parentId: "m1",
+      timestamp: "2026-09-11T10:00:01Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "c1",
+        toolName: "subagent",
+        isError: false,
+        content: [],
+        usage: {
+          input: 5,
+          output: 5,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 10,
+          cost: { total: 0.1 },
+        },
+      },
     });
-  }
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [{ type: "toolCall", id: "c1", name: "subagent" }],
+        },
+      }),
+      result("r1"),
+      result("r2"),
+    ].join("\n"),
+  ).entries;
+
+  const evidence = readSubagentEvidence(entries);
+
+  assert.equal(evidence.activity.calls, 1);
+  assert.equal(evidence.activity.succeeded, 1);
+  assert.deepEqual(evidence.activity.usage, { totalTokens: 10, cost: 0.1 });
 });
 
-test("omits invalid usage and never retains producer-only fields", () => {
-  const invalidUsage = readSubagentRuns({
-    version: 1,
-    runs: [
-      {
-        id: "child",
-        parentId: "parent-run",
-        status: "complete",
-        usage: { totalTokens: -1, cost: 1 },
-      },
-    ],
-  });
-  const privateArtifact = readSubagentRuns({
-    version: 1,
-    runs: [
-      {
-        id: "child",
-        parentId: "parent-run",
-        status: "complete",
-        result: "raw-tool-result-sentinel",
-      },
-    ],
-  });
+test("reports unavailable activity for a session without subagent calls", () => {
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [{ type: "toolCall", id: "c9", name: "read" }],
+        },
+      }),
+    ].join("\n"),
+  ).entries;
 
-  assert.equal(invalidUsage.state, "supported");
-  assert.equal(invalidUsage.runs[0]?.usage, undefined);
-  assert.equal(
-    JSON.stringify(privateArtifact).includes("raw-tool-result-sentinel"),
-    false,
-  );
-  assert.deepEqual(privateArtifact, { state: "unsupported", runs: [] });
+  assert.deepEqual(readSubagentEvidence(entries), {
+    activity: {
+      state: "unavailable",
+      calls: 0,
+      succeeded: 0,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    },
+    runs: [],
+    state: "unavailable",
+  });
 });

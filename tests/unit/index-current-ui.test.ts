@@ -151,28 +151,29 @@ test("renders an unknown known-integration version as Unsupported in the product
   } as unknown as ExtensionCommandContext);
 });
 
-test("projects only an explicitly supplied public subagent artifact in the production loader", async () => {
+test("auto-discovers subagent runs from persisted tool results in the production loader", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const file = join(directory, "session.jsonl");
   await writeFile(
     file,
-    [
-      '{"type":"session","version":3,"id":"fixture-session"}',
-      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
-    ].join("\n"),
+    await readFile(
+      "tests/fixtures/pi/0.85.1/subagent-tool-results.jsonl",
+      "utf8",
+    ),
   );
-  const artifacts = JSON.parse(
-    await readFile("tests/fixtures/integrations/subagents.json", "utf8"),
-  ) as { foreground: unknown };
 
-  const model = await loadCurrentSessionReport(file, "tree", {
-    leafId: null,
-    subagentArtifact: artifacts.foreground,
+  const model = await loadCurrentSessionReport(file, "active", {
+    leafId: "g3",
   });
 
   assert.equal(model?.report.agentEvidence, "supported");
   assert.equal(model?.report.agents.length, 2);
-  assert.equal(model?.report.usage.totalTokens, 7);
+  assert.equal(
+    model?.report.agents.some((run) => run.agent === "reviewer"),
+    true,
+  );
+  // Child usage is a breakdown: session totals only count persisted Pi usage.
+  assert.equal(model?.report.usage.totalTokens, 1515);
 });
 
 test("uses Pi's active leaf rather than the latest appended branch", async () => {
@@ -263,35 +264,30 @@ test("opens the current-session TUI through Pi's public session lookup", async (
   assert.ok(rendered?.().some((line) => line.includes("Total tokens: 72")));
 });
 
-test("loads a public subagent artifact supplied to the production command for active and tree scopes", async () => {
+test("loads auto-discovered subagent runs for active and tree scopes through the production command", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const sessionFile = join(directory, "session.jsonl");
-  const artifactFile = join(directory, "public artifact.json");
   await writeFile(
     sessionFile,
-    [
-      '{"type":"session","version":3,"id":"fixture-session"}',
-      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
-    ].join("\n"),
+    await readFile(
+      "tests/fixtures/pi/0.85.1/subagent-tool-results.jsonl",
+      "utf8",
+    ),
   );
-  const artifacts = JSON.parse(
-    await readFile("tests/fixtures/integrations/subagents.json", "utf8"),
-  ) as { foreground: unknown };
-  await writeFile(artifactFile, JSON.stringify(artifacts.foreground));
 
   const handlerRef: { current?: CommandHandler } = {};
   registerCommand(handlerRef);
   let toggleTree: (() => void) | undefined;
   let rendered: (() => string[]) | undefined;
   assert.ok(handlerRef.current);
-  await handlerRef.current(`current --subagents-artifact "${artifactFile}"`, {
+  await handlerRef.current("current", {
     mode: "tui",
     sessionManager: {
-      getLeafId: () => "entry-1",
+      getLeafId: () => "g3",
       getSessionFile: () => sessionFile,
     },
     ui: {
-      notify: () => assert.fail("must load a valid public artifact"),
+      notify: () => assert.fail("must load the persisted subagent evidence"),
       custom: async (factory: CustomFactory) => {
         const component = await factory(
           { requestRender: () => {} } as never,
@@ -320,44 +316,36 @@ test("loads a public subagent artifact supplied to the production command for ac
   );
 });
 
-test("preserves supplied public subagent evidence in current JSON export without rendering the artifact path", async () => {
+test("exports auto-discovered subagent evidence in current JSON without rendering producer paths", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const sessionFile = join(directory, "session.jsonl");
-  const artifactFile = join(directory, "public artifact.json");
   const output = join(directory, "report.json");
   await writeFile(
     sessionFile,
-    [
-      '{"type":"session","version":3,"id":"fixture-session"}',
-      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
-    ].join("\n"),
+    await readFile(
+      "tests/fixtures/pi/0.85.1/subagent-tool-results.jsonl",
+      "utf8",
+    ),
   );
-  const artifacts = JSON.parse(
-    await readFile("tests/fixtures/integrations/subagents.json", "utf8"),
-  ) as { foreground: unknown };
-  await writeFile(artifactFile, JSON.stringify(artifacts.foreground));
 
   const handlerRef: { current?: CommandHandler } = {};
   registerCommand(handlerRef);
   assert.ok(handlerRef.current);
-  await handlerRef.current(
-    `current --format json --output "${output}" --subagents-artifact "${artifactFile}"`,
-    {
-      mode: "interactive",
-      sessionManager: {
-        getLeafId: () => "entry-1",
-        getSessionFile: () => sessionFile,
-        getSessionDir: () => directory,
-      },
-      ui: { notify: () => {}, custom: async () => assert.fail("must export") },
-    } as unknown as ExtensionCommandContext,
-  );
+  await handlerRef.current(`current --format json --output "${output}"`, {
+    mode: "interactive",
+    sessionManager: {
+      getLeafId: () => "g3",
+      getSessionFile: () => sessionFile,
+      getSessionDir: () => directory,
+    },
+    ui: { notify: () => {}, custom: async () => assert.fail("must export") },
+  } as unknown as ExtensionCommandContext);
   const rendered = await readFile(output, "utf8");
   assert.match(rendered, /"agentEvidence":"supported"/);
-  assert.equal(rendered.includes(artifactFile), false);
+  assert.equal(rendered.includes("PRIVATE_TASK"), false);
+  assert.equal(rendered.includes("/home/dev/PRIVATE"), false);
   const model = await loadCurrentSessionReport(sessionFile, "active", {
-    leafId: "entry-1",
-    subagentArtifact: artifacts.foreground,
+    leafId: "g3",
   });
   assert.ok(model);
   assert.equal(model.report.agentEvidence, "supported");
@@ -367,10 +355,10 @@ test("preserves supplied public subagent evidence in current JSON export without
     scope: "active",
   });
   assert.match(html, /"agents":\[/);
-  assert.equal(html.includes(artifactFile), false);
+  assert.equal(html.includes("/home/dev/PRIVATE"), false);
 });
 
-test("treats a missing public subagent artifact as unavailable", async () => {
+test("rejects the removed subagent artifact flag without opening the current view", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const sessionFile = join(directory, "session.jsonl");
   await writeFile(
@@ -383,6 +371,8 @@ test("treats a missing public subagent artifact as unavailable", async () => {
 
   const handlerRef: { current?: CommandHandler } = {};
   registerCommand(handlerRef);
+  let customCalls = 0;
+  let notifications = 0;
   assert.ok(handlerRef.current);
   await handlerRef.current("--subagents-artifact missing.json", {
     mode: "tui",
@@ -391,20 +381,17 @@ test("treats a missing public subagent artifact as unavailable", async () => {
       getSessionFile: () => sessionFile,
     },
     ui: {
-      notify: () => assert.fail("must retain the current view"),
-      custom: async (factory: CustomFactory) => {
-        const component = await factory(
-          { requestRender: () => {} } as never,
-          { fg: (_color: string, text: string) => text } as never,
-          undefined as never,
-          () => {},
-        );
-        for (let index = 0; index < 4; index++)
-          component.handleInput?.("\u001B[C");
-        assert.ok(component.render(120).some((line) => line === "Unavailable"));
+      notify: () => {
+        notifications++;
+      },
+      custom: async () => {
+        customCalls++;
       },
     },
   } as unknown as ExtensionCommandContext);
+
+  assert.equal(customCalls, 0);
+  assert.equal(notifications, 1);
 });
 
 test("opens /ledger directly on the lazy Ledger tab", async () => {
