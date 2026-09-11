@@ -1,0 +1,44 @@
+[
+  {
+    "channel": "permissions:decision",
+    "data": {
+      "result": "allow",
+      "resolution": "policy_allow",
+      "value": "sentinel-permission-value",
+      "matchedPattern": "/etc/passwd",
+      "agentName": "sentinel-agent",
+      "origin": "sentinel-origin",
+      "forwarding": "sentinel-forwarding",
+      "request": { "prompt": "sentinel-request-prompt" }
+    }
+  },
+  {
+    "channel": "permissions:decision",
+    "data": {
+      "result": "deny",
+      "resolution": "user_denied",
+      "value": "sentinel-permission-value",
+      "matchedPattern": "sentinel/matched/pattern",
+      "agentName": "sentinel-agent",
+      "origin": "sentinel-origin",
+      "forwarding": "sentinel-forwarding",
+      "request": { "prompt": "sentinel-request-prompt" }
+    }
+  },
+  {
+    "channel": "permissions:ui_prompt",
+    "data": {
+      "source": "tool_call",
+      "value": "sentinel-permission-value",
+      "matchedPattern": "/etc/passwd",
+      "agentName": "sentinel-agent",
+      "request": { "prompt": "sentinel-request-prompt" }
+    }
+  },
+  {
+    "channel": "permissions:ready",
+    "data": {
+      "agentName": "sentinel-agent"
+    }
+  }
+]
