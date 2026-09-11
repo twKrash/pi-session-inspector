@@ -332,12 +332,14 @@ function projectAgent(value: unknown): AgentRun | undefined {
   const parentId = isOpaqueSubagentId(run.parentId) ? run.parentId : undefined;
   const agent = isAgentLabel(run.agent) ? run.agent : undefined;
   const usage = projectUsage(run.usage);
+  const artifacts = isArchiveState(run.artifacts) ? run.artifacts : undefined;
   return {
     id: run.id,
     ...(parentId === undefined ? {} : { parentId }),
     ...(agent === undefined ? {} : { agent }),
     status: run.status,
     confidence: run.confidence,
+    ...(artifacts === undefined ? {} : { artifacts }),
     ...(usage === undefined ? {} : { usage }),
   };
 }
@@ -643,6 +645,14 @@ function isConfidence(value: unknown): value is AgentRun["confidence"] {
     typeof value === "string" &&
     CONFIDENCES.has(value as AgentRun["confidence"])
   );
+}
+
+/**
+ * Only the closed two-term archive verdict is projected; an unknown producer
+ * value stays absent rather than becoming a guess.
+ */
+function isArchiveState(value: unknown): value is "available" | "missing" {
+  return value === "available" || value === "missing";
 }
 
 function isEvidenceState(value: unknown): value is EvidenceState {

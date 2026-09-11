@@ -6,7 +6,7 @@ import type { Scope } from "../core/events.ts";
 import { reduceEntries } from "../core/reduce.ts";
 import { toSessionReport } from "../core/reports.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
-import { readSubagentEvidence } from "../integrations/subagents.ts";
+import { readSubagentEvidenceWithArchives } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { selectScope } from "../pi/sessions.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
@@ -46,7 +46,8 @@ export async function loadCurrentSessionReport(
     const entries = selectScope(session.entries, leafId, scope);
     // Subagent runs are auto-discovered from persisted tool results; the
     // evidence usage stays a child-agent breakdown, never a session total.
-    const subagentEvidence = readSubagentEvidence(entries);
+    // Only validated published archive references add presence evidence.
+    const subagentEvidence = await readSubagentEvidenceWithArchives(entries);
     return createCurrentTuiModel(
       toSessionReport(reduceEntries(session.id, entries), {
         ...(Object.values(

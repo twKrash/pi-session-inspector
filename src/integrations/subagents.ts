@@ -5,6 +5,7 @@ import type {
   SessionEntry,
   Usage,
 } from "../core/events.ts";
+import { readPublishedArchiveState } from "./subagent-archive.ts";
 
 /** Persisted pi-subagents tool names, in the report's fixed column order. */
 const SUBAGENT_TOOL_NAMES = [
@@ -37,6 +38,53 @@ export type SubagentEvidence = {
   runs: readonly AgentRun[];
   state: EvidenceState;
 };
+
+/**
+ * Archive-aware subagent evidence: {@link readSubagentEvidence} plus the
+ * validated presence of any archive a completion published.
+ *
+ * At most `MAX_RUNS` validations run concurrently and a rejection from one
+ * yields `"missing"` for that run alone. The published path, the raw run id,
+ * and every archive field stay inside this adapter: only the bounded
+ * `"available" | "missing"` verdict reaches a run. Runs without a published
+ * reference keep `artifacts` absent.
+ */
+export async function readSubagentEvidenceWithArchives(
+  entries: readonly SessionEntry[],
+): Promise<SubagentEvidence> {
+  const evidence = readSubagentEvidence(entries);
+  if (evidence.runs.length === 0) return evidence;
+
+  let references: Map<string, { path: string; runId: string }>;
+  try {
+    references = collectArchiveReferences(entries);
+  } catch {
+    return evidence;
+  }
+  if (references.size === 0) return evidence;
+
+  try {
+    const runs = await Promise.all(
+      evidence.runs.slice(0, MAX_RUNS).map(async (run) => {
+        const reference = references.get(run.id);
+        if (reference === undefined) return run;
+        let artifacts: "available" | "missing";
+        try {
+          artifacts = await readPublishedArchiveState(
+            reference.path,
+            reference.runId,
+          );
+        } catch {
+          artifacts = "missing";
+        }
+        return { ...run, artifacts };
+      }),
+    );
+    return { ...evidence, runs };
+  } catch {
+    return evidence;
+  }
+}
 
 /** Bounded label grammar shared with the report projection. */
 export function isAgentLabel(value: unknown): value is string {
@@ -345,6 +393,44 @@ function readCostTotal(value: unknown): number | undefined {
   const cost = snapshotRecord(value);
   if (cost === undefined) return undefined;
   return isBoundedCost(cost.total) ? roundCost(cost.total) : undefined;
+}
+
+/**
+ * Reads documented `details.completions[]` rows keyed by the opaque identity
+ * of the run that published the reference. The raw path and raw run id are
+ * held only long enough to validate them, then discarded.
+ */
+function collectArchiveReferences(
+  entries: readonly SessionEntry[],
+): Map<string, { path: string; runId: string }> {
+  const references = new Map<string, { path: string; runId: string }>();
+  for (const entry of entries) {
+    const message = snapshotRecord(entry.message);
+    if (message === undefined || message.role !== "toolResult") continue;
+    if (
+      typeof message.toolName !== "string" ||
+      !SUBAGENT_TOOLS.has(message.toolName)
+    ) {
+      continue;
+    }
+    const details = snapshotRecord(message.details);
+    if (details === undefined || !Array.isArray(details.completions)) continue;
+    for (const value of details.completions.slice(0, MAX_RUNS)) {
+      const completion = snapshotRecord(value);
+      if (completion === undefined) continue;
+      const runId = readRawRunId(completion.runId);
+      const path = readArchivePath(completion.archivePath);
+      if (runId === undefined || path === undefined) continue;
+      const id = opaqueSubagentId(runId);
+      if (!references.has(id)) references.set(id, { path, runId });
+    }
+  }
+  return references;
+}
+
+/** A published reference must be a non-empty string; `isAbsolute` is checked at read. */
+function readArchivePath(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function readRawRunId(value: unknown): string | undefined {

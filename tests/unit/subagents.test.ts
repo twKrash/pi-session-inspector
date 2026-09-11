@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
+import {
+  readSubagentEvidence,
+  readSubagentEvidenceWithArchives,
+} from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
 test("derives native tool activity and cooperative runs from persisted results", async () => {
@@ -49,6 +52,36 @@ test("derives native tool activity and cooperative runs from persisted results",
   assert.equal(foreground.usage, undefined);
   assert.match(foreground.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.notEqual(foreground.parentId, foreground.id);
+});
+
+test("attaches validated archive presence only to runs that published one", async () => {
+  const fixture = await readFile(
+    new URL(
+      "../fixtures/pi/0.85.1/subagent-tool-results.jsonl",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const entries = parseSessionJsonl(fixture).entries;
+
+  const evidence = await readSubagentEvidenceWithArchives(entries);
+
+  // The completion publishes `/home/dev/PRIVATE/archive.json`, which is absent.
+  const reviewer = evidence.runs.find((run) => run.agent === "reviewer");
+  assert.equal(reviewer?.artifacts, "missing");
+  // A foreground row without a published reference keeps the field absent.
+  const worker = evidence.runs.find((run) => run.agent === "worker");
+  assert.equal(worker?.artifacts, undefined);
+  assert.equal(evidence.activity.calls, 3);
+  assert.equal(evidence.state, "supported");
+
+  const serialized = JSON.stringify(evidence);
+  assert.equal(serialized.includes("/home/dev/PRIVATE"), false);
+  assert.equal(serialized.includes("archive.json"), false);
+  assert.equal(serialized.includes("run-raw-id"), false);
+
+  // Identical entries produce identical ordering and evidence.
+  assert.deepEqual(await readSubagentEvidenceWithArchives(entries), evidence);
 });
 
 test("degrades to native activity when details are absent or malformed", () => {

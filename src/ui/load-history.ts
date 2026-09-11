@@ -7,7 +7,7 @@ import { foldedFromCheckpointAggregates } from "../core/live-counter-fold.ts";
 import { addUsage, reduceEntries } from "../core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../core/reports.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
-import { readSubagentEvidence } from "../integrations/subagents.ts";
+import { readSubagentEvidenceWithArchives } from "../integrations/subagents.ts";
 import { readIntegrationPresence } from "../integrations/presence.ts";
 import type { InventorySnapshot } from "../integrations/inventory.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
@@ -168,7 +168,9 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
           );
           // Subagent runs are auto-discovered from persisted tool results;
           // their usage is a breakdown of this session's toolResult usage.
-          const subagentEvidence = readSubagentEvidence(entries);
+          // Published archive presence is validated, bounded, and never a path.
+          const subagentEvidence =
+            await readSubagentEvidenceWithArchives(entries);
           return {
             availability: "available",
             sessionId,

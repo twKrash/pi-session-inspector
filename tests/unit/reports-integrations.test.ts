@@ -90,6 +90,40 @@ test("carries only bounded agent labels into agent rows", () => {
   assert.equal(report.agents[1]?.agent, undefined);
 });
 
+test("projects only the bounded archive presence verdict on agent rows", () => {
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [
+        {
+          id: `subagent-${"0".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          artifacts: "available",
+        },
+        {
+          id: `subagent-${"1".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          artifacts: "missing",
+        },
+        {
+          id: `subagent-${"2".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          // A forged producer value must never reach the report.
+          artifacts: "/home/dev/PRIVATE/archive.json" as never,
+        },
+      ],
+    },
+  });
+
+  assert.equal(report.agents[0]?.artifacts, "available");
+  assert.equal(report.agents[1]?.artifacts, "missing");
+  assert.equal(report.agents[2]?.artifacts, undefined);
+  assert.equal(JSON.stringify(report).includes("PRIVATE"), false);
+});
+
 test("defaults to unavailable integration rows when adapter evidence is absent", () => {
   const report = toSessionReport(parent);
 

@@ -45,6 +45,11 @@ export type AgentRun = {
   agent?: string;
   status: "running" | "succeeded" | "failed" | "interrupted" | "unknown";
   confidence: Confidence;
+  /**
+   * Presence of the run's published archive, validated against the opaque run
+   * identity. Absent when the run published no reference; never a path.
+   */
+  artifacts?: "available" | "missing";
   usage?: Usage;
 };
 
