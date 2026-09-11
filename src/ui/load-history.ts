@@ -187,6 +187,7 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
                 state: subagentEvidence.state,
                 runs: subagentEvidence.runs,
               },
+              agentActivity: subagentEvidence.activity,
               ...(counters === undefined ? {} : { counters }),
               ...(inventory === undefined ? {} : { inventory }),
               ...(presence === undefined ? {} : { presence }),

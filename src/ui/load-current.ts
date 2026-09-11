@@ -59,6 +59,7 @@ export async function loadCurrentSessionReport(
           state: subagentEvidence.state,
           runs: subagentEvidence.runs,
         },
+        agentActivity: subagentEvidence.activity,
         presence: observation?.presence,
         counters: observation?.counters,
         // The in-memory snapshot is the unbounded read; consume the same bounded

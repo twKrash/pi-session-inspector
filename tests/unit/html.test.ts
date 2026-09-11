@@ -61,6 +61,14 @@ const report: SessionReport = {
   generations: [],
   agents: [],
   agentEvidence: "unavailable",
+  agentActivity: {
+    state: "unavailable",
+    calls: 0,
+    succeeded: 0,
+    failed: 0,
+    interrupted: 0,
+    tools: [],
+  },
   integrations: [],
   durationEvidence: "unavailable",
   commands: { state: "unavailable", items: [], count: null },
@@ -184,6 +192,14 @@ const richReport: SessionReport = {
     },
   ],
   agentEvidence: "supported",
+  agentActivity: {
+    state: "unavailable",
+    calls: 0,
+    succeeded: 0,
+    failed: 0,
+    interrupted: 0,
+    tools: [],
+  },
   integrations: [
     {
       integration: "context",

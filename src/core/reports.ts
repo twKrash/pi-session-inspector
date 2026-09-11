@@ -16,7 +16,14 @@ import {
   type ResourceSourceRow,
   type SkillRow,
 } from "../integrations/inventory.ts";
-import { isAgentLabel } from "../integrations/subagents.ts";
+import {
+  isAgentLabel,
+  type AgentToolActivity,
+} from "../integrations/subagents.ts";
+
+// The report-facing activity projection reuses the reader's shape so the
+// native subagent evidence has exactly one DTO definition (never re-declared).
+export type { AgentToolActivity };
 import type {
   AgentRun,
   Compaction,
@@ -72,6 +79,10 @@ const EVIDENCE_STATES = new Set<EvidenceState>([
   "unavailable",
   "unsupported",
 ]);
+// Tool names are a bounded producer vocabulary; evidence stays untrusted, so
+// the same bounded token grammar (extended to `_`) is re-validated here.
+const ACTIVITY_TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MAX_ACTIVITY_TOOLS = 64;
 const INTEGRATION_KEYS = new Set<IntegrationKey | "mode">([
   "context",
   "rtk",
@@ -120,6 +131,8 @@ export type DurationEvidence = {
 export type SessionReportEvidence = {
   walDetail?: "expired";
   agents?: AdapterAgentEvidence;
+  /** Native subagent tool activity; validated into the report DTO. */
+  agentActivity?: AgentToolActivity;
   integrations?: readonly IntegrationObservationInput[];
   /** Explicit per-key presence model from the process-local observation. */
   presence?: Readonly<Record<IntegrationKey, IntegrationPresence>>;
@@ -171,6 +184,8 @@ export type SessionReport = {
   errors: ReducedSession["errors"];
   agents: AgentRun[];
   agentEvidence: EvidenceState;
+  /** Native subagent tool activity; distinct from rich cooperative runs. */
+  agentActivity: AgentToolActivity;
   integrations: IntegrationObservation[];
   durationEvidence: EvidenceState;
   commands: CommandInventory;
@@ -215,6 +230,7 @@ export function toSessionReport(
       : {}),
     agents: projectedEvidence.agents,
     agentEvidence: projectedEvidence.agentEvidence,
+    agentActivity: projectedEvidence.agentActivity,
     integrations: projectedEvidence.integrations,
     durationEvidence: projectedEvidence.duration.state,
     commands: projectCommands(inventory, projectedEvidence.resourceCounts),
@@ -231,6 +247,7 @@ type ProjectedEvidence = {
   walDetail?: "expired";
   agents: AgentRun[];
   agentEvidence: EvidenceState;
+  agentActivity: AgentToolActivity;
   integrations: IntegrationObservation[];
   duration: { state: EvidenceState; tools: Map<string, number> };
   inventory: InventorySnapshot | undefined;
@@ -250,6 +267,7 @@ function projectEvidence(evidence: unknown): ProjectedEvidence {
         : {}),
       agents: agents.runs,
       agentEvidence: agents.state,
+      agentActivity: projectAgentActivity(input.agentActivity),
       integrations: projectIntegrations(
         input.integrations,
         input.presence,
@@ -293,6 +311,93 @@ function projectDuration(value: unknown): {
     }
   }
   return { state: tools.size > 0 ? "supported" : "unavailable", tools };
+}
+
+/**
+ * Re-validates the native subagent activity so forged evidence can never emit
+ * an unbounded name, a non-integer count, or a fabricated row. Absent or
+ * malformed evidence degrades to `unavailable` with zero counts (never zero
+ * activity disguised as observed). Optional usage is a breakdown only and is
+ * never added to session totals.
+ */
+function projectAgentActivity(value: unknown): AgentToolActivity {
+  const input = snapshotRecord(value);
+  if (input === undefined || !isEvidenceState(input.state)) {
+    return unavailableActivity();
+  }
+  // `unsupported`/`unavailable` carry no trustworthy counts, so they stay zero.
+  if (input.state !== "supported") {
+    return {
+      state: input.state,
+      calls: 0,
+      succeeded: 0,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    };
+  }
+  const calls = readActivityCount(input.calls);
+  const succeeded = readActivityCount(input.succeeded);
+  const failed = readActivityCount(input.failed);
+  const interrupted = readActivityCount(input.interrupted);
+  if (
+    calls === undefined ||
+    succeeded === undefined ||
+    failed === undefined ||
+    interrupted === undefined
+  ) {
+    return unavailableActivity();
+  }
+  const usage = projectUsage(input.usage);
+  const tools = projectActivityTools(input.tools);
+  return {
+    state: "supported",
+    calls,
+    succeeded,
+    failed,
+    interrupted,
+    tools,
+    ...(usage === undefined ? {} : { usage }),
+  };
+}
+
+function projectActivityTools(
+  value: unknown,
+): { name: string; calls: number }[] {
+  if (!Array.isArray(value)) return [];
+  const tools: { name: string; calls: number }[] = [];
+  for (const row of value.slice(0, MAX_ACTIVITY_TOOLS)) {
+    const entry = snapshotRecord(row);
+    if (entry === undefined) continue;
+    if (
+      typeof entry.name !== "string" ||
+      !ACTIVITY_TOOL_NAME.test(entry.name)
+    ) {
+      continue;
+    }
+    const calls = readActivityCount(entry.calls);
+    if (calls === undefined) continue;
+    tools.push({ name: entry.name, calls });
+  }
+  return tools;
+}
+
+/** Only a safe non-negative integer is a valid activity count. */
+function readActivityCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function unavailableActivity(): AgentToolActivity {
+  return {
+    state: "unavailable",
+    calls: 0,
+    succeeded: 0,
+    failed: 0,
+    interrupted: 0,
+    tools: [],
+  };
 }
 
 function projectAgentEvidence(value: unknown): {
@@ -961,6 +1066,7 @@ function unavailableEvidence(): ProjectedEvidence {
   return {
     agents: [],
     agentEvidence: "unavailable",
+    agentActivity: unavailableActivity(),
     integrations: [],
     duration: { state: "unavailable", tools: new Map() },
     inventory: undefined,

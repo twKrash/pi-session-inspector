@@ -528,3 +528,131 @@ test("rejects rather than truncates a folded bucket above the fold key cap", () 
   assert.equal(row?.state, "unavailable");
   assert.equal(row?.counters, undefined);
 });
+
+/** Native subagent tool calls with no rich `details` projection at all. */
+const nativeSubagentEntries: SessionEntry[] = [
+  {
+    id: "assistant-native",
+    parentId: null,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "message",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-native-1",
+          name: "subagent",
+          input: { task: "PRIVATE_TASK" },
+        },
+        { type: "toolCall", id: "call-native-2", name: "subagent_wait" },
+      ],
+    },
+  },
+  {
+    id: "result-native-1",
+    parentId: "assistant-native",
+    timestamp: "2026-01-01T00:00:01.000Z",
+    type: "message",
+    message: {
+      role: "toolResult",
+      toolCallId: "call-native-1",
+      toolName: "subagent",
+      isError: false,
+      content: [{ type: "text", text: "PRIVATE_TASK response" }],
+    },
+  },
+];
+
+test("carries native subagent activity even when rich runs are unavailable", () => {
+  const native = readSubagentEvidence(nativeSubagentEntries);
+  const report = toSessionReport(parent, {
+    agents: { state: native.state, runs: native.runs },
+    agentActivity: native.activity,
+  });
+
+  assert.equal(report.agentActivity.state, "supported");
+  assert.equal(report.agentActivity.calls, 2);
+  assert.equal(report.agentActivity.succeeded, 1);
+  assert.equal(report.agentActivity.interrupted, 1);
+  assert.deepEqual(report.agentActivity.tools, [
+    { name: "subagent", calls: 1 },
+    { name: "subagent_wait", calls: 1 },
+  ]);
+  assert.deepEqual(report.agents, []);
+  assert.equal(report.agentEvidence, "unavailable");
+  assert.equal(JSON.stringify(report).includes("PRIVATE_TASK"), false);
+});
+
+test("reports unavailable zero activity when no subagent evidence is assembled", () => {
+  const report = toSessionReport(parent);
+
+  assert.equal(report.agentActivity.state, "unavailable");
+  assert.equal(report.agentActivity.calls, 0);
+  assert.equal(report.agentActivity.succeeded, 0);
+  assert.equal(report.agentActivity.failed, 0);
+  assert.equal(report.agentActivity.interrupted, 0);
+  assert.deepEqual(report.agentActivity.tools, []);
+  assert.equal(report.agentActivity.usage, undefined);
+});
+
+test("never adds aggregate subagent activity usage to session totals", () => {
+  const entries: SessionEntry[] = [
+    {
+      id: "assistant-usage",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-usage-1", name: "subagent" }],
+      },
+    },
+    {
+      id: "result-usage",
+      parentId: "assistant-usage",
+      timestamp: "2026-01-01T00:00:01.000Z",
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-usage-1",
+        toolName: "subagent",
+        isError: false,
+        usage: { totalTokens: 500, cost: 5 },
+      },
+    },
+  ];
+  const evidence = readSubagentEvidence(entries);
+  const report = toSessionReport(parent, { agentActivity: evidence.activity });
+
+  assert.equal(report.agentActivity.usage?.totalTokens, 500);
+  assert.equal(report.agentActivity.usage?.cost, 5);
+  // Session totals are owned by the Pi reduction, never the child breakdown.
+  assert.equal(report.usage.totalTokens, 100);
+  assert.equal(report.usage.cost, 10);
+});
+
+test("drops invalid activity counts, unbounded names, and usage", () => {
+  const report = toSessionReport(parent, {
+    agentActivity: {
+      state: "supported",
+      calls: 3,
+      succeeded: 1,
+      failed: 1,
+      interrupted: 1,
+      tools: [
+        { name: "subagent", calls: 3 },
+        { name: "/home/dev/PRIVATE", calls: 1 } as never,
+        { name: "subagent_wait", calls: -1 } as never,
+      ],
+      usage: { totalTokens: Number.POSITIVE_INFINITY, cost: 1 } as never,
+    },
+  });
+
+  assert.equal(report.agentActivity.state, "supported");
+  assert.deepEqual(report.agentActivity.tools, [
+    { name: "subagent", calls: 3 },
+  ]);
+  assert.equal(report.agentActivity.usage, undefined);
+  assert.equal(JSON.stringify(report).includes("PRIVATE"), false);
+});
