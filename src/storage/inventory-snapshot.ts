@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -42,12 +42,112 @@ export async function readInventorySnapshot(
   directory: string,
 ): Promise<InventorySnapshot | undefined> {
   try {
-    const text = await readFile(join(directory, FILE_NAME), "utf8");
+    const path = join(directory, FILE_NAME);
+    // Refuse an oversized or non-regular file before loading it into memory.
+    const info = await stat(path);
+    if (!info.isFile() || info.size > MAX_BYTES) return undefined;
+    const text = await readFile(path, "utf8");
     if (Buffer.byteLength(text, "utf8") > MAX_BYTES) return undefined;
     return parseInventorySnapshot(JSON.parse(text));
   } catch {
     return undefined;
   }
+}
+
+const EMPTY_SNAPSHOT: InventorySnapshot = {
+  schemaVersion: 1,
+  commands: [],
+  skills: [],
+  resources: [],
+  toolSources: {},
+};
+
+function serializedBytes(snapshot: InventorySnapshot): number {
+  return Buffer.byteLength(JSON.stringify(snapshot), "utf8");
+}
+
+/**
+ * Deterministically reduces a snapshot until it serializes within
+ * `readInventorySnapshot`'s byte bound, so the write path can never publish a
+ * file the reader would reject. Optional descriptions (the largest per-row
+ * cost) are dropped first; then trailing rows are dropped in a fixed order
+ * (commands, skills, resources, tool-source entries) until it fits. The result
+ * is idempotent: bounding an already-bounded snapshot returns it unchanged.
+ */
+export function boundInventorySnapshot(
+  snapshot: InventorySnapshot,
+): InventorySnapshot {
+  const capped = parseInventorySnapshot({
+    schemaVersion: 1,
+    commands: Array.isArray(snapshot.commands)
+      ? snapshot.commands.slice(0, MAX_COMMANDS)
+      : [],
+    skills: Array.isArray(snapshot.skills)
+      ? snapshot.skills.slice(0, MAX_SKILLS)
+      : [],
+    resources: Array.isArray(snapshot.resources)
+      ? snapshot.resources.slice(0, MAX_RESOURCES)
+      : [],
+    toolSources: snapshot.toolSources,
+  });
+  const normalized = capped ?? EMPTY_SNAPSHOT;
+  if (serializedBytes(normalized) <= MAX_BYTES) return normalized;
+
+  const withoutDescriptions: InventorySnapshot = {
+    schemaVersion: 1,
+    commands: normalized.commands.map((row) => ({
+      name: row.name,
+      source: row.source,
+      sourceLabel: row.sourceLabel,
+      scope: row.scope,
+      origin: row.origin,
+    })),
+    skills: normalized.skills.map((row) => ({
+      name: row.name,
+      ...(row.sourceLabel === undefined
+        ? {}
+        : { sourceLabel: row.sourceLabel }),
+      ...(row.scope === undefined ? {} : { scope: row.scope }),
+      ...(row.origin === undefined ? {} : { origin: row.origin }),
+    })),
+    resources: normalized.resources,
+    toolSources: normalized.toolSources,
+  };
+  if (serializedBytes(withoutDescriptions) <= MAX_BYTES)
+    return withoutDescriptions;
+
+  const commands = [...withoutDescriptions.commands];
+  const skills = [...withoutDescriptions.skills];
+  const resources = [...withoutDescriptions.resources];
+  const toolSources: Record<string, string> = {
+    ...withoutDescriptions.toolSources,
+  };
+  let candidate: InventorySnapshot = {
+    schemaVersion: 1,
+    commands,
+    skills,
+    resources,
+    toolSources,
+  };
+  while (serializedBytes(candidate) > MAX_BYTES) {
+    if (commands.length > 0) commands.pop();
+    else if (skills.length > 0) skills.pop();
+    else if (resources.length > 0) resources.pop();
+    else {
+      const keys = Object.keys(toolSources);
+      const last = keys[keys.length - 1];
+      if (last === undefined) break;
+      delete toolSources[last];
+    }
+    candidate = {
+      schemaVersion: 1,
+      commands,
+      skills,
+      resources,
+      toolSources,
+    };
+  }
+  return candidate;
 }
 
 /**
@@ -58,9 +158,10 @@ export async function writeInventorySnapshot(
   directory: string,
   snapshot: InventorySnapshot,
 ): Promise<boolean> {
+  const bounded = boundInventorySnapshot(snapshot);
   const temporaryPath = join(directory, `.${FILE_NAME}.${randomUUID()}.tmp`);
   try {
-    await writeFile(temporaryPath, JSON.stringify(snapshot), {
+    await writeFile(temporaryPath, JSON.stringify(bounded), {
       encoding: "utf8",
       mode: 0o600,
     });
@@ -85,13 +186,15 @@ export async function refreshInventorySnapshot({
   snapshot: InventorySnapshot;
 }): Promise<void> {
   try {
+    // Compare the bounded form so a trimmed candidate still short-circuits.
+    const candidate = boundInventorySnapshot(snapshot);
     const existing = await readInventorySnapshot(directory);
     if (
       existing !== undefined &&
-      inventoryHash(existing) === inventoryHash(snapshot)
+      inventoryHash(existing) === inventoryHash(candidate)
     )
       return;
-    await writeInventorySnapshot(directory, snapshot);
+    await writeInventorySnapshot(directory, candidate);
   } catch {
     // Snapshot maintenance is observer-only and must never alter Pi.
   }
@@ -134,7 +237,9 @@ export function parseInventorySnapshot(
   }
 }
 
-function parseCommands(value: readonly unknown[]): readonly CommandRow[] | undefined {
+function parseCommands(
+  value: readonly unknown[],
+): readonly CommandRow[] | undefined {
   const rows: CommandRow[] = [];
   for (const item of value) {
     const record = asRecord(item);
@@ -159,7 +264,9 @@ function parseCommands(value: readonly unknown[]): readonly CommandRow[] | undef
   return rows;
 }
 
-function parseSkills(value: readonly unknown[]): readonly SkillRow[] | undefined {
+function parseSkills(
+  value: readonly unknown[],
+): readonly SkillRow[] | undefined {
   const rows: SkillRow[] = [];
   for (const item of value) {
     const record = asRecord(item);

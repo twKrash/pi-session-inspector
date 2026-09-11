@@ -198,16 +198,21 @@ export function registerTracking(
       const tracked = await track(input);
       if (tracked) {
         // Build synchronously so the counter allowlist is ready before WAL
-        // setup; persistence is detached and observer-only.
+        // setup; persistence is detached and observer-only. An unreadable
+        // inventory stays absent so no fabricated zero counts are reported.
+        const scope = { root: input.root, sessionId: input.sessionId };
+        liveInventoryScope = scope;
         const snapshot = readSessionInventory(api);
-        rememberInventory(snapshot, {
-          root: input.root,
-          sessionId: input.sessionId,
-        });
-        void refreshInventorySnapshot({
-          directory: join(input.root, "sessions", input.sessionId),
-          snapshot,
-        }).catch(() => undefined);
+        if (snapshot === undefined) {
+          liveInventory = undefined;
+          liveInventoryNames = new Set<string>();
+        } else {
+          rememberInventory(snapshot, scope);
+          void refreshInventorySnapshot({
+            directory: join(input.root, "sessions", input.sessionId),
+            snapshot,
+          }).catch(() => undefined);
+        }
         try {
           schedule({
             root: input.root,
@@ -481,7 +486,11 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           root: scope.root,
           sessionId: scope.sessionId,
         })
-          .then((snapshot) => rememberInventory(snapshot, scope))
+          .then((snapshot) => {
+            // A failed refresh keeps the last readable snapshot rather than
+            // substituting an empty one.
+            if (snapshot !== undefined) rememberInventory(snapshot, scope);
+          })
           .catch(() => undefined);
       } catch {
         // Inventory refresh is observer-only and must not alter Pi execution.

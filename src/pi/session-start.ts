@@ -42,19 +42,31 @@ type SessionTracker = (input: {
 
 /**
  * Reads the current sanitized inventory. Observer-only: a producer API that is
- * missing or throws yields an empty snapshot, never a thrown error or a guess.
+ * missing, throws, or returns non-array input yields `undefined` (unreadable),
+ * never an empty fallback that could be mistaken for a genuine count of zero.
  */
-export function readSessionInventory(api: InventoryApi): InventorySnapshot {
+export function readSessionInventory(
+  api: InventoryApi,
+): InventorySnapshot | undefined {
   try {
-    return readInventory(api.getCommands?.() ?? [], api.getAllTools?.() ?? []);
+    if (
+      typeof api.getCommands !== "function" ||
+      typeof api.getAllTools !== "function"
+    )
+      return undefined;
+    const commands = api.getCommands();
+    const tools = api.getAllTools();
+    if (!Array.isArray(commands) || !Array.isArray(tools)) return undefined;
+    return readInventory(commands, tools);
   } catch {
-    return { schemaVersion: 1, commands: [], skills: [], resources: [], toolSources: {} };
+    return undefined;
   }
 }
 
 /**
  * Builds and persists the active session's inventory snapshot. Failures are
- * swallowed so snapshot maintenance can never alter Pi execution.
+ * swallowed and yield `undefined` so callers never substitute fabricated zero
+ * counts. Snapshot maintenance can never alter Pi execution.
  */
 export async function refreshSessionInventory({
   api,
@@ -64,8 +76,9 @@ export async function refreshSessionInventory({
   api: InventoryApi;
   root: string;
   sessionId: string;
-}): Promise<InventorySnapshot> {
+}): Promise<InventorySnapshot | undefined> {
   const snapshot = readSessionInventory(api);
+  if (snapshot === undefined) return undefined;
   try {
     await refreshInventorySnapshot({
       directory: join(root, "sessions", sessionId),
