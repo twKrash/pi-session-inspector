@@ -7,13 +7,12 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-
-import registerSessionInspector from "../../src/index.ts";
 import {
   foldedFromCheckpointAggregates,
   foldTelemetryCounters,
   mergeFoldedCounters,
 } from "../../src/core/live-counter-fold.ts";
+import registerSessionInspector from "../../src/index.ts";
 import { readCheckpoint } from "../../src/storage/checkpoint.ts";
 import { renderHtml } from "../../src/ui/html.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
@@ -280,7 +279,7 @@ test("loads auto-discovered subagent runs for active and tree scopes through the
   let toggleTree: (() => void) | undefined;
   let rendered: (() => string[]) | undefined;
   assert.ok(handlerRef.current);
-  await handlerRef.current("current", {
+  await handlerRef.current("tui", {
     mode: "tui",
     sessionManager: {
       getLeafId: () => "g3",
@@ -331,7 +330,7 @@ test("exports auto-discovered subagent evidence in current JSON without renderin
   const handlerRef: { current?: CommandHandler } = {};
   registerCommand(handlerRef);
   assert.ok(handlerRef.current);
-  await handlerRef.current(`current --format json --output "${output}"`, {
+  await handlerRef.current(`json --output "${output}"`, {
     mode: "interactive",
     sessionManager: {
       getLeafId: () => "g3",
@@ -407,7 +406,7 @@ test("opens /ledger directly on the lazy Ledger tab", async () => {
   const handlerRef: { current?: CommandHandler } = {};
   registerCommand(handlerRef);
   assert.ok(handlerRef.current);
-  await handlerRef.current("ledger", {
+  await handlerRef.current("tui ledger", {
     mode: "tui",
     sessionManager: { getLeafId: () => "entry-1", getSessionFile: () => file },
     ui: {
@@ -683,7 +682,7 @@ test("production command folds checkpoint and WAL counters with durable permissi
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
   try {
-    await handlerRef.current(`current --format json --output "${output}"`, {
+    await handlerRef.current(`json --output "${output}"`, {
       mode: "interactive",
       sessionManager: {
         getSessionId: () => SESSION_ID,

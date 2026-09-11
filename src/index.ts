@@ -1,23 +1,25 @@
-import {
-  getAgentDir,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { Scope } from "./core/events.ts";
+import {
+  type ExtensionAPI,
+  getAgentDir,
+} from "@earendil-works/pi-coding-agent";
+import { completeInspectorCommand } from "./commands/completions.ts";
+import { parseInspectorCommand } from "./commands/grammar.ts";
+import { createInspectorHelpComponent } from "./commands/help.ts";
 import {
   foldedFromCheckpointAggregates,
   mergeFoldedCounters,
 } from "./core/live-counter-fold.ts";
+import type { InventorySnapshot } from "./integrations/inventory.ts";
 import {
   type LiveCounterApi,
   type LiveCounterWriter,
   registerLiveCounters as registerLiveCounterProducers,
 } from "./integrations/live-counters.ts";
 import { readIntegrationPresence } from "./integrations/presence.ts";
-import type { InventorySnapshot } from "./integrations/inventory.ts";
-import { registerLiveWal, type LiveWalWriter } from "./pi/live-wal.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
+import { type LiveWalWriter, registerLiveWal } from "./pi/live-wal.ts";
 import {
   readSessionInventory,
   refreshSessionInventory,
@@ -27,15 +29,16 @@ import { setupSessionWal } from "./pi/session-wal.ts";
 import { trackPiSession } from "./pi/tracking-pi.ts";
 import { readCheckpoint } from "./storage/checkpoint.ts";
 import { refreshInventorySnapshot } from "./storage/inventory-snapshot.ts";
+import { scheduleMaintenance } from "./storage/maintenance.ts";
 import { recoverSession } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
-import { scheduleMaintenance } from "./storage/maintenance.ts";
+import { loadInspectorBundle } from "./ui/bundle.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
+import { renderInspectorBundle } from "./ui/html.ts";
+import { renderJson } from "./ui/json.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
 import { loadGlobalReport, loadHistoryReports } from "./ui/load-history.ts";
 import type { SessionObservation } from "./ui/observation.ts";
-import { renderHtml } from "./ui/html.ts";
-import { renderJson } from "./ui/json.ts";
 import { generatedReportPath, writeReportOutput } from "./ui/report-output.ts";
 
 type SessionStartTrackingApi = Parameters<
@@ -84,84 +87,6 @@ export async function flushLiveEvidence(): Promise<void> {
 }
 
 const NO_PI_SOURCE_CURSOR = { lineCount: 0, revision: "0".repeat(64) };
-
-type ReportKind = "current" | "history" | "global" | "ledger";
-type ReportFormat = "tui" | "html" | "json";
-type CommandOptions = {
-  kind: ReportKind;
-  scope: Scope;
-  format: ReportFormat;
-  output?: string;
-  noOpen: boolean;
-};
-
-/** Parses documented command options without accepting unknown or partial input. */
-export function parseReportCommand(args: string): CommandOptions | undefined {
-  const tokens = tokenizeCommand(args);
-  if (tokens === undefined) return undefined;
-  let kind: ReportKind = "current";
-  if (["current", "history", "global", "ledger"].includes(tokens[0] ?? ""))
-    kind = tokens.shift() as ReportKind;
-  let scope: Scope =
-    kind === "current" || kind === "ledger" ? "active" : "tree";
-  let format: ReportFormat = kind === "global" ? "html" : "tui";
-  let output: string | undefined;
-  let noOpen = false;
-  while (tokens.length > 0) {
-    const option = tokens.shift();
-    if (option === "--scope") {
-      const value = tokens.shift();
-      if (value !== "active" && value !== "tree") return undefined;
-      scope = value;
-    } else if (option === "--format") {
-      const value = tokens.shift();
-      if (value !== "tui" && value !== "html" && value !== "json")
-        return undefined;
-      format = value;
-    } else if (option === "--output") {
-      const value = tokens.shift();
-      if (!value || value.startsWith("--")) return undefined;
-      output = value;
-    } else if (option === "--no-open") {
-      noOpen = true;
-    } else return undefined;
-  }
-  if ((kind === "history" || kind === "global") && scope === "active") {
-    return undefined;
-  }
-  return {
-    kind,
-    scope,
-    format,
-    ...(output ? { output } : {}),
-    noOpen,
-  };
-}
-
-/** Splits command text while preserving quoted local path characters. */
-function tokenizeCommand(input: string): string[] | undefined {
-  const tokens: string[] = [];
-  let token = "";
-  let started = false;
-  let quote: '"' | "'" | undefined;
-  for (const character of input.trim()) {
-    if (!/\s/.test(character) || quote) started = true;
-    if (quote) {
-      if (character === quote) quote = undefined;
-      else token += character;
-    } else if (character === '"' || character === "'") quote = character;
-    else if (/\s/.test(character)) {
-      if (started) {
-        tokens.push(token);
-        token = "";
-        started = false;
-      }
-    } else token += character;
-  }
-  if (quote) return undefined;
-  if (started) tokens.push(token);
-  return tokens;
-}
 
 /** Wires Pi session-start observation to the Inspector tracking root. */
 export function registerTracking(
@@ -359,10 +284,15 @@ function notifyCurrentUnavailable(ctx: {
   notifyInfo(ctx, "Current session Inspector data is unavailable.");
 }
 
-function notifyUnsupportedCommand(ctx: {
-  ui: { notify(message: string, level: "info"): void };
-}): void {
-  notifyInfo(ctx, "Inspector command options are unavailable.");
+function notifyWarning(
+  ctx: { ui: { notify(message: string, level: "warning"): void } },
+  message: string,
+): void {
+  try {
+    ctx.ui.notify(message, "warning");
+  } catch {
+    // Command-side UI failures must not affect Pi.
+  }
 }
 
 function notifyInfo(
@@ -376,20 +306,13 @@ function notifyInfo(
   }
 }
 
-async function loadCommandReport(
-  options: CommandOptions,
-  input: {
-    root: string;
-    sessionFile: string | undefined;
-    leafId: string | null;
-    observation?: SessionObservation;
-    sessionDirectory: () => string;
-  },
-): Promise<
-  | { dto: unknown; html: Parameters<typeof renderHtml>[0]; name: string }
-  | undefined
-> {
-  const maintenance = {
+/** Maintenance options every report loader shares; the pid check never throws. */
+function productionMaintenance(): {
+  writerId: string;
+  now: () => Date;
+  isPidAlive: (pid: number) => boolean;
+} {
+  return {
     writerId: randomUUID(),
     now: () => new Date(),
     isPidAlive: (pid: number) => {
@@ -405,36 +328,6 @@ async function loadCommandReport(
       }
     },
   };
-  if (options.kind === "current" || options.kind === "ledger") {
-    const model = await loadCurrentSessionReport(
-      input.sessionFile,
-      options.scope,
-      {
-        leafId: input.leafId,
-        observation: input.observation,
-        inspectorRoot: input.root,
-      },
-    );
-    return model
-      ? {
-          dto: model.report,
-          html: { kind: "current", report: model.report, scope: options.scope },
-          name: model.report.sessionId,
-        }
-      : undefined;
-  }
-  const common = {
-    root: input.root,
-    sessionDirectory: input.sessionDirectory,
-    scope: options.scope,
-    maintenance,
-  };
-  if (options.kind === "history") {
-    const report = await loadHistoryReports(common);
-    return { dto: report, html: { kind: "history", report }, name: "history" };
-  }
-  const report = await loadGlobalReport(common);
-  return { dto: report, html: { kind: "global", report }, name: "global" };
 }
 
 /** Opens only via Pi's public argv-based execution API; diagnostics omit process output. */
@@ -492,37 +385,61 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
   for (const name of ["session-inspector", "session-ins"]) {
     pi.registerCommand(name, {
       description,
+      getArgumentCompletions: (prefix: string) =>
+        completeInspectorCommand(prefix),
       handler: async (args, ctx) => {
         try {
-          const options = parseReportCommand(args);
-          if (!options) return notifyUnsupportedCommand(ctx);
+          const parsed = parseInspectorCommand(args);
+          if (!parsed.ok) {
+            // Invalid syntax never guesses: surface the grammar's usage text.
+            notifyWarning(ctx, parsed.message);
+            return;
+          }
+          const command = parsed.command;
+          if (command.kind === "help") {
+            if (ctx.mode !== "tui") {
+              notifyInfo(
+                ctx,
+                "Session Inspector help is available in the Pi TUI.",
+              );
+              return;
+            }
+            await ctx.ui.custom((_tui, theme, _keybindings, done) =>
+              createInspectorHelpComponent({
+                theme,
+                done: () => done(undefined),
+              }),
+            );
+            return;
+          }
           const sessionManager = ctx.sessionManager;
           const root = join(getAgentDir(), "session-inspector", "v1");
           const cacheDirectory = join(root, "reports");
           // Flush live evidence before any report read so no observed event is
           // missing from the counters this command renders.
           await flushLiveEvidence();
+          const sessionFile = sessionManager.getSessionFile();
+          const leafId = sessionManager.getLeafId();
+          const target = command.mode === "ui" ? "current" : command.target;
           const observation =
-            options.kind === "current" || options.kind === "ledger"
+            command.mode === "ui" || target === "current" || target === "ledger"
               ? await readSessionObservation({
                   root,
                   sessionId: readSessionId(sessionManager),
                 })
               : undefined;
-          if (options.format === "tui") {
-            if (options.kind !== "current" && options.kind !== "ledger") {
+          if (command.mode === "tui") {
+            if (target !== "current" && target !== "ledger") {
               notifyInfo(
                 ctx,
-                "History/global TUI is unavailable; use --format html or --format json.",
+                "History/global TUI is unavailable; use `session-inspector ui` or `session-inspector json`.",
               );
               return;
             }
             if (ctx.mode !== "tui") return notifyCurrentUnavailable(ctx);
-            const sessionFile = sessionManager.getSessionFile();
-            const leafId = sessionManager.getLeafId();
             const model = await loadCurrentSessionReport(
               sessionFile,
-              options.scope,
+              command.scope,
               { leafId, observation, inspectorRoot: root },
             );
             if (!model) return notifyCurrentUnavailable(ctx);
@@ -538,45 +455,84 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                 theme,
                 requestRender: () => tui.requestRender(),
                 done: () => done(undefined),
-                initialTab: options.kind === "ledger" ? "ledger" : "overview",
+                initialTab: target === "ledger" ? "ledger" : "overview",
               }),
             );
             return;
           }
-          const report = await loadCommandReport(options, {
+          const maintenance = productionMaintenance();
+          if (command.mode === "ui") {
+            const bundle = await loadInspectorBundle({
+              theme: command.theme ?? "light",
+              initialScope: command.scope,
+              root,
+              sessionDirectory: () => sessionManager.getSessionDir(),
+              current: { sessionFile, leafId },
+              ...(observation === undefined ? {} : { observation }),
+              maintenance,
+            });
+            const generated = generatedReportPath(
+              cacheDirectory,
+              "inspector",
+              "html",
+              "global",
+            );
+            const output = await writeReportOutput({
+              path: command.output ?? generated,
+              content: renderInspectorBundle(bundle),
+              cacheDirectory,
+              explicit: command.output !== undefined,
+            });
+            if (!output) return notifyCurrentUnavailable(ctx);
+            notifyInfo(ctx, `Inspector report written: ${output}`);
+            if (!command.noOpen) {
+              try {
+                await openReport(pi, output);
+              } catch {
+                notifyInfo(ctx, `Inspector report available at: ${output}`);
+              }
+            }
+            return;
+          }
+          // json: deterministic export, never opens a browser.
+          const common = {
             root,
-            sessionFile: sessionManager.getSessionFile(),
-            leafId: sessionManager.getLeafId(),
-            ...(observation === undefined ? {} : { observation }),
             sessionDirectory: () => sessionManager.getSessionDir(),
-          });
-          if (!report) return notifyCurrentUnavailable(ctx);
-          const content =
-            options.format === "json"
-              ? renderJson(report.dto)
-              : renderHtml(report.html);
-          const extension = options.format === "json" ? "json" : "html";
+            scope: "tree" as const,
+            maintenance,
+          };
+          let dto: unknown;
+          let reportName: string;
+          if (target === "history") {
+            dto = await loadHistoryReports(common);
+            reportName = "history";
+          } else if (target === "global") {
+            dto = await loadGlobalReport(common);
+            reportName = "global";
+          } else {
+            const model = await loadCurrentSessionReport(
+              sessionFile,
+              command.scope,
+              { leafId, observation, inspectorRoot: root },
+            );
+            if (!model) return notifyCurrentUnavailable(ctx);
+            dto = model.report;
+            reportName = model.report.sessionId;
+          }
           const generated = generatedReportPath(
             cacheDirectory,
-            report.name,
-            extension,
-            options.kind,
+            reportName,
+            "json",
+            target,
           );
           const output = await writeReportOutput({
-            path: options.output ?? generated,
-            content,
+            path: command.output ?? generated,
+            content: renderJson(dto),
             cacheDirectory,
-            explicit: options.output !== undefined,
+            explicit: command.output !== undefined,
           });
           if (!output) return notifyCurrentUnavailable(ctx);
           notifyInfo(ctx, `Inspector report written: ${output}`);
-          if (options.format === "html" && !options.noOpen) {
-            try {
-              await openReport(pi, output);
-            } catch {
-              notifyInfo(ctx, `Inspector report available at: ${output}`);
-            }
-          }
         } catch {
           notifyCurrentUnavailable(ctx);
         }

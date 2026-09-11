@@ -443,11 +443,108 @@ function escapeInlineJson(value: unknown): string {
   );
 }
 
+/**
+ * Renders a self-contained document from one escaped bundle-shaped payload.
+ * Both public entry points share this tail and therefore the SAME client
+ * script, so there is exactly one browser runtime to keep in sync.
+ */
+function renderDocument(input: {
+  payload: unknown;
+  theme: "light" | "dark";
+  rangeTruncated: boolean;
+}): string {
+  const data = escapeInlineJson(input.payload);
+  const t = ENGLISH_CATALOG;
+  const dark = input.theme === "dark";
+  return `${renderHead(t)}${STYLES}${renderBody(
+    data,
+    dark ? "theme-dark" : "",
+    dark,
+    input.rangeTruncated,
+  )}${BUNDLE_SCRIPT}\n</script></body></html>`;
+}
+
+/** Empty sections stand in for the two report kinds a single-section report does not carry. */
+const UNAVAILABLE_HISTORY: HistoryReport = {
+  availability: "unavailable",
+  sessions: [],
+  diagnostics: [],
+};
+const UNAVAILABLE_GLOBAL: GlobalReport = {
+  availability: "unavailable",
+  sessions: [],
+  usage: { totalTokens: 0, cost: 0 },
+  dates: [],
+  diagnostics: [],
+  inventory: { commands: null, skills: null, resources: null },
+};
+const CURRENT_UNAVAILABLE_VIEW: CurrentView = {
+  availability: "unavailable",
+  diagnostic: "current-unavailable",
+};
+
+/**
+ * Adapts the legacy per-section `HtmlReport` to the one bundle payload shape the
+ * shared client script consumes: the requested section is populated and the
+ * other two are explicit unavailable sections. `renderHtml` therefore stays a
+ * thin projection adapter with no second rendering runtime.
+ */
+function bundlePayloadFromReport(input: HtmlReport): Record<string, unknown> {
+  const currentReport = input.kind === "current" ? input.report : undefined;
+  const currentView = (report: SessionReport): CurrentView => ({
+    availability: "available",
+    report,
+    daily: buildDailyActivityRows([report]).map((row) => ({
+      date: row.date,
+      sessions: row.sessions,
+      totalTokens: row.totalTokens,
+      cost: row.cost,
+      generations: row.generations ?? 0,
+      tools: row.tools ?? 0,
+    })),
+    dailyTruncated: false,
+  });
+  const current: InspectorBundle["current"] =
+    currentReport === undefined
+      ? { active: CURRENT_UNAVAILABLE_VIEW, tree: CURRENT_UNAVAILABLE_VIEW }
+      : input.kind === "current" && input.scope === "tree"
+        ? { active: CURRENT_UNAVAILABLE_VIEW, tree: currentView(currentReport) }
+        : {
+            active: currentView(currentReport),
+            tree: CURRENT_UNAVAILABLE_VIEW,
+          };
+  const payload: Record<string, unknown> = {
+    kind: "bundle",
+    theme: "light",
+    initialScope: input.kind === "current" ? input.scope : "tree",
+    current: {
+      active: currentViewProjection(current.active, "active"),
+      tree: currentViewProjection(current.tree, "tree"),
+    },
+    history: sectionProjection({
+      kind: "history",
+      report: input.kind === "history" ? input.report : UNAVAILABLE_HISTORY,
+    }),
+    global: sectionProjection({
+      kind: "global",
+      report: input.kind === "global" ? input.report : UNAVAILABLE_GLOBAL,
+    }),
+  };
+  // The cold-detail notice is a rendering concern; carry it explicitly so the
+  // single-section adapter keeps surfacing the same warning as the old script.
+  if (currentReport?.walDetail === "expired") {
+    payload.walDetail = "expired";
+  }
+  return payload;
+}
+
 /** Renders a self-contained report from shared DTOs only; no source locator or content fields are projected. */
 export function renderHtml(input: HtmlReport): string {
-  const data = escapeInlineJson(projectReport(input));
-  const t = ENGLISH_CATALOG;
-  return `${renderHead(t)}${STYLES}${renderBody(data)}${SCRIPT}\n</script></body></html>`;
+  return renderDocument({
+    payload: bundlePayloadFromReport(input),
+    theme: "light",
+    rangeTruncated: false,
+  });
 }
 
 /**
@@ -493,7 +590,7 @@ function sectionProjection(input: HtmlReport): Record<string, unknown> {
  * identical bundles.
  */
 export function renderInspectorBundle(bundle: InspectorBundle): string {
-  const payload = {
+  const payload: Record<string, unknown> = {
     kind: "bundle",
     theme: bundle.theme,
     initialScope: bundle.initialScope,
@@ -504,19 +601,17 @@ export function renderInspectorBundle(bundle: InspectorBundle): string {
     history: sectionProjection({ kind: "history", report: bundle.history }),
     global: sectionProjection({ kind: "global", report: bundle.global }),
   };
-  const data = escapeInlineJson(payload);
-  const t = ENGLISH_CATALOG;
-  const dark = bundle.theme === "dark";
+  const initialView = bundle.current[bundle.initialScope];
+  if (initialView.report?.walDetail === "expired") {
+    payload.walDetail = "expired";
+  }
   // The notice is the only change for a capped view; daily rows are never
   // fabricated or padded to fill the window.
-  const rangeTruncated =
-    bundle.current[bundle.initialScope].dailyTruncated === true;
-  return `${renderHead(t)}${STYLES}${renderBody(
-    data,
-    dark ? "theme-dark" : "",
-    dark,
-    rangeTruncated,
-  )}${BUNDLE_SCRIPT}\n</script></body></html>`;
+  return renderDocument({
+    payload,
+    theme: bundle.theme,
+    rangeTruncated: initialView.dailyTruncated === true,
+  });
 }
 
 /** Optional token fields stay absent unless an input observed them. */
@@ -1185,67 +1280,6 @@ function roundCost(value: number): number {
   return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
-const SCRIPT = String.raw`
-"use strict";
-const data=JSON.parse(document.getElementById("report-data").textContent), t=JSON.parse(document.getElementById("catalog-data").textContent);
-// SVG namespace identifier only; it is never fetched, so the report stays network-free.
-const SVG_NS="http:"+"//www.w3.org/2000/svg";
-const tabs=["overview","models","tools","commands","agents","skills","integrations","errors","ledger"];
-const CHART_LABELS={sessions:"chart.sessions",cost:"chart.cost",tokens:"chart.tokens",generations:"chart.generations",tools:"chart.tools"};
-const state={kind:data.kind,tab:"overview",session:null,scope:data.scope||"tree",period:{preset:data.period.preset,from:data.period.from,to:data.period.to},query:"",sort:"default",metric:data.chartMetrics[0],resetScroll:false};
-const q=id=>document.getElementById(id);
-const text=value=>String(value===null||value===undefined?"":value);
-const number=value=>new Intl.NumberFormat("en").format(Number(value||0));
-const money=value=>"$"+Number(value||0).toFixed(2);
-const tr=(key,values={})=>text(t[key]).replace(/\{(\w+)\}/g,(match,key)=>text((values||{})[key]));
-const el=(name,cls,value)=>{const node=document.createElement(name);if(cls)node.className=cls;if(value!==undefined)node.textContent=value;return node;};
-const badge=(value,tone)=>el("span","badge "+(tone||"neutral"),value);
-const confidenceTone=value=>value==="native"||value==="live"||value==="cooperative"||value==="supported"?"":(value==="inferred"?"warn":"neutral");
-const orUnavailable=value=>(value===null||value===undefined)?tr("evidence.unavailable"):text(value);
-const numberOrUnavailable=value=>(value===null||value===undefined)?tr("evidence.unavailable"):number(value);
-function tokenCell(usage,key){return orUnavailable(usage[key]);}
-const cellText=cell=>cell instanceof Node?text(cell.textContent):text(cell);
-function card(title,subtitle,right){const node=el("section","card"),head=el("div","panel-head"),copy=document.createElement("div");copy.append(el("h2","",title),el("p","",subtitle));head.append(copy);if(right)head.append(right);node.append(head);return node;}
-function simpleTable(section,headers,rows){const wrap=el("div","table-wrap"),node=document.createElement("table"),head=document.createElement("thead"),headRow=document.createElement("tr"),body=document.createElement("tbody");headers.forEach(value=>headRow.append(el("th","",value)));head.append(headRow);rows.forEach(row=>{const rowNode=document.createElement("tr");row.forEach(value=>{const cell=document.createElement("td");if(value instanceof Node)cell.append(value);else cell.textContent=text(value);rowNode.append(cell);});body.append(rowNode);});node.append(head,body);wrap.append(node);section.append(wrap);return section;}
-function table(title,subtitle,headers,rows){const section=card(title,subtitle),toolbar=el("div","toolbar"),searchLabel=el("label","",tr("search")),search=document.createElement("input"),sortLabel=el("label","",tr("sort")),sort=document.createElement("select");search.id="search";search.type="search";search.value=state.query;search.placeholder=tr("search.placeholder");sort.id="sort";[["default","sort.default"],["name","sort.name"],["reverse","sort.reverse"]].forEach(item=>{const option=el("option","",tr(item[1]));option.value=item[0];option.selected=state.sort===item[0];sort.append(option);});searchLabel.append(search);sortLabel.append(sort);toolbar.append(searchLabel,sortLabel);section.append(toolbar);let shown=rows.filter(row=>row.map(cellText).join(" ").toLowerCase().includes(state.query.toLowerCase()));if(state.sort==="name")shown=shown.slice().sort((left,right)=>cellText(left[0]).localeCompare(cellText(right[0]),"en"));if(state.sort==="reverse")shown=shown.slice().reverse();return simpleTable(section,headers,shown);}
-function metric(title,value,note,details){const node=el("section","card metric");node.append(el("div","muted",title),el("div","value mono",value),el("small","",note));const block=el("div","breakdown");details.forEach(item=>{const row=el("div","breakdown-row");row.append(el("span","",item[0]),el("span","mono",text(item[1])));block.append(row);});node.append(block);return node;}
-function bars(title,subtitle,rows){const section=card(title,subtitle,badge(tr("evidence.native"),"")),body=el("div","bars");if(rows.length===0)body.append(el("p","muted",tr("bars.empty")));rows.forEach(item=>{const row=el("div","bar"),label=el("div","bar-label");label.append(el("span","mono",item.label),el("span","mono",item.value));const track=el("div","track"),fill=el("div","fill");fill.style.width=item.percent+"%";track.append(fill);row.append(label,track);body.append(row);});section.append(body);return section;}
-function emptyCard(title,note,eyebrowKey){const section=el("section","card empty");section.append(el("p","eyebrow",tr(eyebrowKey)),el("h2","",title),el("p","",note));return section;}
-function unavailableSection(title,reason){return emptyCard(title,reason,"evidence.unavailable");}
-function compositionCard(composition){if(!composition.available)return unavailableSection(tr("usage.title"),tr("unavailable.composition"));const section=card(tr("usage.title"),tr("usage.note"),badge(composition.reconciles?tr("usage.reconciled"):tr("usage.unreconciled"),composition.reconciles?"":"warn")),rows=composition.parts.map(part=>[tr("metric.usage."+part.key),number(part.totalTokens),money(part.cost),badge(tr("evidence."+part.confidence),confidenceTone(part.confidence))]);rows.push([tr("usage.total"),number(composition.total.totalTokens),money(composition.total.cost),badge(tr("evidence.native"),"")]);return simpleTable(section,[tr("table.source"),tr("table.tokens"),tr("table.cost"),tr("table.confidence")],rows);}
-function evidencePanel(evidence){const section=card(tr("panel.evidence"),tr("evidence.note"),badge(tr("evidence.source"),"neutral"));return simpleTable(section,[tr("table.source"),tr("table.observation"),tr("table.confidence")],evidence.map(row=>[row.source,row.observation,badge(row.confidence,confidenceTone(row.confidence))]));}
-function selectedDays(){return data.daily.filter(row=>row.date>=state.period.from&&row.date<=state.period.to)}
-function chartValue(row,metric){if(metric==="cost")return row.cost;if(metric==="tokens")return row.totalTokens;if(metric==="generations")return row.generations||0;if(metric==="tools")return row.tools||0;return row.sessions;}
-function chartText(metric,value){return metric==="cost"?money(value):number(value);}
-function chartLabel(metric){return tr(CHART_LABELS[metric]);}
-function chart(){const rows=selectedDays(),label=chartLabel(state.metric),section=card(tr("panel.daily"),state.period.from+" → "+state.period.to),select=document.createElement("select");select.id="chart-metric";select.setAttribute("aria-label",tr("chart.metric"));data.chartMetrics.forEach(value=>{const option=el("option","",chartLabel(value));option.value=value;option.selected=state.metric===value;select.append(option);});section.querySelector(".panel-head").append(select);if(rows.length===0){section.append(el("div","chart-note",tr("chart.empty")));return section;}const values=rows.map(row=>chartValue(row,state.metric)),maximum=Math.max.apply(null,values.concat([1])),firstDate=Date.parse(rows[0].date+"T00:00:00Z"),lastDate=Date.parse(rows[rows.length-1].date+"T00:00:00Z"),span=lastDate-firstDate,points=rows.map((row,index)=>{const x=span<=0?400:8+((Date.parse(row.date+"T00:00:00Z")-firstDate)/span)*784;return {x:x,y:172-(values[index]/maximum)*164,row:row,value:values[index]};}),chartNode=el("div","chart"),axis=el("div","chart-axis");axis.setAttribute("aria-hidden","true");[maximum,maximum/2,0].forEach(value=>axis.append(el("span","",chartText(state.metric,value))));const svg=document.createElementNS(SVG_NS,"svg");svg.setAttribute("class","line-chart");svg.setAttribute("viewBox","0 0 800 180");svg.setAttribute("preserveAspectRatio","none");svg.setAttribute("role","img");svg.setAttribute("aria-label",tr("chart.aria",{metric:label,days:rows.length}));[8,90,172].forEach(y=>{const line=document.createElementNS(SVG_NS,"line");line.setAttribute("class","chart-grid");line.setAttribute("x1","8");line.setAttribute("x2","792");line.setAttribute("y1",String(y));line.setAttribute("y2",String(y));svg.append(line);});const polyline=document.createElementNS(SVG_NS,"polyline");polyline.setAttribute("class","activity-line");polyline.setAttribute("points",points.map(point=>point.x.toFixed(2)+","+point.y.toFixed(2)).join(" "));svg.append(polyline);points.forEach(point=>{const circle=document.createElementNS(SVG_NS,"circle");circle.setAttribute("class","line-point");circle.setAttribute("cx",point.x.toFixed(2));circle.setAttribute("cy",point.y.toFixed(2));circle.setAttribute("r","3");const title=document.createElementNS(SVG_NS,"title");title.textContent=point.row.date+" · "+chartText(state.metric,point.value);circle.append(title);svg.append(circle);});chartNode.append(axis,svg,el("div","chart-dates",rows[0].date+" → "+rows[rows.length-1].date));section.append(chartNode,el("div","chart-note",tr("chart.note",{metric:label})));const details=document.createElement("details"),summary=el("summary","",tr("chart.data")),headers=[tr("table.date"),tr("table.sessions"),tr("table.tokens"),tr("table.cost")],withGenerations=data.chartMetrics.indexOf("generations")>=0,withTools=data.chartMetrics.indexOf("tools")>=0;if(withGenerations)headers.push(tr("table.generations"));if(withTools)headers.push(tr("table.tools"));const tableRows=rows.map(row=>{const cells=[row.date,number(row.sessions),number(row.totalTokens),money(row.cost)];if(withGenerations)cells.push(number(row.generations));if(withTools)cells.push(number(row.tools));return cells;});details.append(summary);simpleTable(details,headers,tableRows);section.append(details);return section;}
-function overview(view){const metrics=el("div","metrics");metrics.append(metric(tr("metric.cost"),money(view.usage.cost),tr("metric.native"),[[tr("evidence.native"),money(view.usage.cost)],[tr("metric.child"),view.agentCount===null?tr("evidence.unavailable"):number(view.agentCount)+" · "+tr("metric.child.note")]]),metric(tr("metric.tokens"),number(view.usage.totalTokens),tr("metric.tokens.note"),[[tr("metric.input"),tokenCell(view.usage,"inputTokens")],[tr("metric.output"),tokenCell(view.usage,"outputTokens")],[tr("metric.cacheRead"),tokenCell(view.usage,"cacheReadTokens")],[tr("metric.cacheWrite"),tokenCell(view.usage,"cacheWriteTokens")],[tr("usage.total"),number(view.usage.totalTokens)]]),metric(tr("metric.generations"),number(view.generationCount),tr("metric.generations.note"),[[tr("evidence.native"),number(view.generationCount)]]),metric(tr("metric.tools"),number(view.toolCount),tr("metric.tools.note"),[[tr("evidence.native"),number(view.toolCount)]]),metric(tr("metric.duration"),orUnavailable(view.durationLabel),tr("metric.duration.note"),[[tr("evidence.native"),view.span?view.span.from+" → "+view.span.to:tr("evidence.unavailable")]]));const grid=el("div","grid");grid.append(bars(tr("panel.models"),tr("models.note"),view.modelBars),bars(tr("panel.tools"),tr("tools.bars.note"),view.toolBars));const all=el("div","");all.append(metrics,grid,compositionCard(view.composition),evidencePanel(data.evidence));return all;}
-function inPeriod(entry){if(entry.firstDate===null||entry.lastDate===null)return true;return entry.firstDate<=state.period.to&&entry.lastDate>=state.period.from;}
-function sessionCell(entry){const cell=document.createElement("div");cell.append(el("span","mono",entry.sessionId));cell.append(el("small","",entry.firstDate?(entry.firstDate+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")):tr("evidence.unavailable")));return cell;}
-function openButton(index){const button=el("button","",tr("table.open"));button.dataset.session=String(index);button.setAttribute("aria-label",tr("table.open")+" "+data.sessions[index].sessionId);return button;}
-function historyTable(visible){const section=card(tr("panel.history"),tr("history.note")),headers=[tr("table.session"),tr("table.duration"),tr("table.tokens"),tr("table.generations"),tr("table.agents"),tr("table.status"),tr("table.cost")];headers.push(tr("table.inspect"));const rows=visible.map(item=>{const entry=item.entry;return [sessionCell(entry),orUnavailable(entry.durationLabel),entry.totalTokens===null?tr("evidence.unavailable"):number(entry.totalTokens),entry.generationCount===null?tr("evidence.unavailable"):number(entry.generationCount),entry.agentCount===null?tr("evidence.unavailable"):number(entry.agentCount),entry.status?badge(tr(entry.status.key),entry.status.tone):tr("evidence.unavailable"),entry.cost===null?tr("evidence.unavailable"):money(entry.cost),openButton(item.index)];});simpleTable(section,headers,rows);const wrap=section.querySelector(".table-wrap"),node=section.querySelector("table");if(wrap)wrap.className="table-wrap history-table-wrap";if(node)node.className="history-table";return section;}
-function historyOverview(){const days=selectedDays(),tokens=days.reduce((sum,row)=>sum+row.totalTokens,0),cost=days.reduce((sum,row)=>sum+row.cost,0),generations=days.reduce((sum,row)=>sum+(row.generations||0),0),visible=data.sessions.map((entry,index)=>({entry:entry,index:index})).filter(item=>inPeriod(item.entry)),metrics=el("div","metrics");metrics.append(metric(tr("metric.cost"),money(cost),tr("metric.native"),[[tr("table.date"),state.period.from+" → "+state.period.to]]),metric(tr("metric.tokens"),number(tokens),tr("metric.tokens.note"),[[tr("table.date"),state.period.from+" → "+state.period.to]]),metric(tr("metric.generations"),number(generations),tr("metric.generations.note"),[[tr("table.date"),state.period.from+" → "+state.period.to]]),metric(tr("metric.sessions"),number(visible.length),tr("history.sessions.note"),[[tr("evidence.native"),number(data.sessions.length)+" tracked"]]));const all=el("div","");all.append(metrics,historyTable(visible),evidencePanel(data.evidence));return all;}
-function backBar(){const bar=el("div","toolbar"),button=el("button","",tr("nav.back"));button.dataset.back="true";bar.append(button);return bar;}
-function detail(view,title){if(state.tab==="models")return view.models.length===0?emptyCard(title,tr("models.none"),"evidence.native"):table(title,tr("models.note"),[tr("table.provider"),tr("table.model"),tr("table.generations"),tr("table.input"),tr("table.output"),tr("table.cacheRead"),tr("table.cacheWrite"),tr("table.tokens"),tr("table.cost")],view.models.map(row=>[row.provider,row.model,number(row.generations),numberOrUnavailable(row.inputTokens),numberOrUnavailable(row.outputTokens),numberOrUnavailable(row.cacheReadTokens),numberOrUnavailable(row.cacheWriteTokens),number(row.totalTokens),money(row.cost)]));if(state.tab==="tools")return view.tools.length===0?emptyCard(title,tr("tools.none"),"evidence.native"):table(title,tr("tools.note"),[tr("table.tool"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.duration")],view.tools.map(row=>[row.name,row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),row.durationLabel===null?tr("evidence.unavailable"):row.durationLabel+" · "+tr("evidence.live")]));if(state.tab==="agents"){if(view.agentEvidence!=="supported")return unavailableSection(title,tr("unavailable.agents"));return table(title,tr("agents.note"),[tr("table.run"),tr("table.parent"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.evidence")],view.agents.map(row=>[row.id,row.parentId===null?tr("evidence.unavailable"):row.parentId,row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}if(state.tab==="integrations"){if(view.integrations.length===0)return unavailableSection(title,tr("unavailable.integrations"));return table(title,tr("integrations.note"),[tr("table.integration"),tr("table.evidence"),tr("table.version"),tr("table.counters")],view.integrations.map(row=>[row.integration,badge(tr("evidence."+row.state),confidenceTone(row.state)),row.version===null?tr("evidence.unavailable"):String(row.version),row.counters.join(" · ")]));}if(state.tab==="errors"){if(view.errors.length===0)return emptyCard(title,tr("errors.none"),"evidence.native");return table(title,tr("errors.note"),[tr("table.id"),tr("table.kind"),tr("table.timestamp"),tr("table.confidence")],view.errors.map(row=>[row.id,row.kind,row.timestamp,badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}if(state.tab==="commands")return unavailableSection(title,tr("unavailable.commands"));if(state.tab==="skills")return unavailableSection(title,tr("unavailable.skills"));return unavailableSection(title,tr("unavailable.copy"));}
-function globalOverview(){const days=selectedDays(),tokens=days.reduce((sum,row)=>sum+row.totalTokens,0),cost=days.reduce((sum,row)=>sum+row.cost,0),metrics=el("div","metrics");metrics.append(metric(tr("metric.cost"),money(cost),tr("metric.native"),[[tr("table.date"),state.period.from+" → "+state.period.to]]),metric(tr("metric.tokens"),number(tokens),tr("metric.tokens.note"),[[tr("table.date"),state.period.from+" → "+state.period.to]]),metric(tr("metric.days"),number(days.length),tr("metric.days.note"),[[tr("range.label"),state.period.from+" → "+state.period.to]]),metric(tr("metric.sessions"),number(data.trackedSessions),tr("metric.sessions.global.note"),[[tr("evidence.native"),number(data.trackedSessions-data.unavailableSessions)+" replayed"],[tr("evidence.unavailable"),number(data.unavailableSessions)+" unavailable"]]));const all=el("div","");all.append(metrics,compositionCard(data.composition),evidencePanel(data.evidence));return all;}
-function sessionPanel(entry){if(!entry.view)return unavailableSection(tr("tab."+state.tab),tr("unavailable.session"));return state.tab==="overview"?overview(entry.view):detail(entry.view,tr("tab."+state.tab));}
-function renderView(){const nodes=[];if(state.kind==="global"){if(state.tab==="overview"){nodes.push(globalOverview());nodes.push(chart());}else nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.global")));return nodes;}if(state.kind==="history"){if(state.session===null){nodes.push(historyOverview());if(state.tab==="overview")nodes.push(chart());else nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.session")));return nodes;}nodes.push(sessionPanel(data.sessions[state.session]));if(state.tab==="overview")nodes.push(chart());nodes.push(backBar());return nodes;}if(state.tab==="overview"){nodes.push(overview(data.report));nodes.push(chart());}else nodes.push(detail(data.report,tr("tab."+state.tab)));return nodes;}
-function sessionScopeNote(){const entry=data.sessions[state.session];return (entry.firstDate||tr("evidence.unavailable"))+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")+" · "+tr("scope.tree")+" after tracking marker";}
-function render(){const scrollY=window.scrollY||0,active=document.activeElement,caret=active&&active.id==="search"&&typeof active.selectionStart==="number"?active.selectionStart:null;q("wal-detail").hidden=!(data.kind==="current"&&data.walDetail==="expired");q("time-range").hidden=state.kind==="current";q("scope-fixed").hidden=state.kind==="current";q("range-name").textContent=state.period.preset?tr("range.last",{days:state.period.preset}):tr("range.custom");q("range-dates").textContent=state.period.from+" → "+state.period.to;[].slice.call(document.querySelectorAll("[data-days]")).forEach(node=>node.setAttribute("aria-pressed",String(Number(node.dataset.days)===state.period.preset)));q("custom-range").setAttribute("aria-pressed",String(state.period.preset===null));const titles={current:["kicker.current","heading.current","subtitle.current"],history:["kicker.history","heading.history","subtitle.history"],global:["kicker.global","heading.global","subtitle.global"]}[state.kind];q("kicker").textContent=tr(titles[0]);q("title").textContent=tr(titles[1]);q("subtitle").textContent=tr(titles[2]);q("breadcrumb").textContent=state.kind==="history"&&state.session!==null?data.sessions[state.session].sessionId:tr("nav."+state.kind);q("session-label").textContent=state.kind==="current"?data.report.sessionId:state.kind==="history"&&state.session!==null?data.sessions[state.session].sessionId:number(state.kind==="history"?data.sessions.length:data.trackedSessions)+" tracked sessions";q("scope-note").textContent=state.kind==="current"?(state.scope==="active"?tr("scope.active"):tr("scope.tree"))+" after tracking marker":state.kind==="history"&&state.session!==null?sessionScopeNote():tr("scope.fixed")+" · "+state.period.from+" → "+state.period.to;const view=q("view");view.replaceChildren.apply(view,renderView());if(state.resetScroll){state.resetScroll=false;window.scrollTo(0,0);}else{window.scrollTo(0,scrollY);}if(caret!==null){const search=q("search");if(search){search.focus();try{search.setSelectionRange(caret,caret);}catch(error){}}}q("announcement").textContent=tr("nav."+state.kind)+", "+tr("tab."+state.tab)+", "+state.period.from+" → "+state.period.to;}
-const nav=q("navigation");["current","history","global"].forEach(kind=>{const button=el("button","",tr("nav."+kind));button.dataset.range=kind;button.disabled=kind!==data.kind;nav.append(button);});
-const tabsNode=q("tabs");tabs.forEach(tab=>{const button=el("button","",tr("tab."+tab));button.dataset.tab=tab;button.setAttribute("aria-pressed",String(tab===state.tab));button.addEventListener("click",()=>{state.tab=tab;[].slice.call(tabsNode.children).forEach(item=>item.setAttribute("aria-pressed",String(item===button)));render();});tabsNode.append(button);});
-[].slice.call(q("scope").querySelectorAll("button")).forEach(button=>{button.disabled=true;button.setAttribute("aria-pressed",String(button.dataset.scope===state.scope));});
-document.addEventListener("input",event=>{if(event.target.id!=="search")return;state.query=event.target.value;render();});
-document.addEventListener("change",event=>{if(event.target.id==="sort"){state.sort=event.target.value;render();}else if(event.target.id==="chart-metric"){state.metric=event.target.value;render();const select=q("chart-metric");if(select)select.focus();}});
-document.addEventListener("click",event=>{const button=event.target&&event.target.closest?event.target.closest("button"):null;if(!button)return;if(button.dataset.back!==undefined){state.session=null;state.tab="overview";state.resetScroll=true;render();}else if(button.dataset.session!==undefined){state.session=Number(button.dataset.session);state.tab="overview";state.resetScroll=true;render();}});
-[].slice.call(document.querySelectorAll("[data-days]")).forEach(button=>button.addEventListener("click",()=>{const days=Number(button.dataset.days),end=data.latestDate||"1970-01-01",start=new Date(end+"T00:00:00Z");start.setUTCDate(start.getUTCDate()-days+1);state.period={preset:days,from:start.toISOString().slice(0,10),to:end};render();}));
-q("custom-range").addEventListener("click",()=>{q("date-from").value=state.period.from;q("date-to").value=state.period.to;q("date-error").textContent="";q("date-dialog").showModal();});
-q("date-cancel").addEventListener("click",()=>q("date-dialog").close());
-q("date-form").addEventListener("submit",event=>{event.preventDefault();const from=q("date-from").value,to=q("date-to").value;if(!from||!to||from>to){q("date-error").textContent=tr("range.error");return;}state.period={preset:null,from:from,to:to};q("date-dialog").close();render();});
-q("theme").addEventListener("click",event=>{const dark=document.body.classList.toggle("theme-dark");event.currentTarget.textContent=tr(dark?"theme.light":"theme.dark");});
-render();
-`;
-
 const BUNDLE_SCRIPT = String.raw`
 "use strict";
 const data=JSON.parse(document.getElementById("report-data").textContent), t=JSON.parse(document.getElementById("catalog-data").textContent);
@@ -1315,7 +1349,7 @@ function renderView(){const nodes=[];if(state.section==="global"){if(state.tab==
 function sessionScopeNote(){const entry=historySessions()[state.session];return (entry.firstDate||tr("evidence.unavailable"))+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")+" · "+tr("scope.tree")+" after tracking marker";}
 const scopeButtons=[].slice.call(q("scope").querySelectorAll("button"));
 function syncScope(){scopeButtons.forEach(button=>{const scope=button.dataset.scope,view=data.current[scope],unavailable=state.section!=="current"||view.availability!=="available";button.disabled=unavailable;button.setAttribute("aria-pressed",String(state.section==="current"&&scope===state.scope));if(view.diagnostic)button.title=view.diagnostic;else button.removeAttribute("title");});q("scope-fixed").hidden=state.section==="current";}
-function render(){const scrollY=window.scrollY||0,active=document.activeElement,caret=active&&active.id==="search"&&typeof active.selectionStart==="number"?active.selectionStart:null;q("wal-detail").hidden=true;q("time-range").hidden=false;syncScope();syncRangeNotice();q("range-name").textContent=period().preset?tr("range.last",{days:period().preset}):tr("range.custom");q("range-dates").textContent=period().from+" → "+period().to;[].slice.call(document.querySelectorAll("[data-days]")).forEach(node=>node.setAttribute("aria-pressed",String(Number(node.dataset.days)===period().preset)));q("custom-range").setAttribute("aria-pressed",String(period().preset===null));const titles={current:["kicker.current","heading.current","subtitle.current"],history:["kicker.history","heading.history","subtitle.history"],global:["kicker.global","heading.global","subtitle.global"]}[state.section];q("kicker").textContent=tr(titles[0]);q("title").textContent=tr(titles[1]);q("subtitle").textContent=tr(titles[2]);q("breadcrumb").textContent=state.section==="history"&&state.session!==null?historySessions()[state.session].sessionId:tr("nav."+state.section);q("session-label").textContent=state.section==="current"?(currentReport()?currentReport().sessionId:tr("evidence.unavailable")):state.section==="history"&&state.session!==null?historySessions()[state.session].sessionId:number(state.section==="history"?historySessions().length:data.global.trackedSessions)+" tracked sessions";q("scope-note").textContent=state.section==="current"?(state.scope==="active"?tr("scope.active"):tr("scope.tree"))+" after tracking marker":state.section==="history"&&state.session!==null?sessionScopeNote():tr("scope.fixed")+" · "+period().from+" → "+period().to;const view=q("view");view.replaceChildren.apply(view,renderView());if(state.resetScroll){state.resetScroll=false;window.scrollTo(0,0);}else{window.scrollTo(0,scrollY);}if(caret!==null){const search=q("search");if(search){search.focus();try{search.setSelectionRange(caret,caret);}catch(error){}}}q("announcement").textContent=tr("nav."+state.section)+", "+tr("tab."+state.tab)+", "+period().from+" → "+period().to;}
+function render(){const scrollY=window.scrollY||0,active=document.activeElement,caret=active&&active.id==="search"&&typeof active.selectionStart==="number"?active.selectionStart:null;q("wal-detail").hidden=!(state.section==="current"&&data.walDetail==="expired");q("time-range").hidden=false;syncScope();syncRangeNotice();q("range-name").textContent=period().preset?tr("range.last",{days:period().preset}):tr("range.custom");q("range-dates").textContent=period().from+" → "+period().to;[].slice.call(document.querySelectorAll("[data-days]")).forEach(node=>node.setAttribute("aria-pressed",String(Number(node.dataset.days)===period().preset)));q("custom-range").setAttribute("aria-pressed",String(period().preset===null));const titles={current:["kicker.current","heading.current","subtitle.current"],history:["kicker.history","heading.history","subtitle.history"],global:["kicker.global","heading.global","subtitle.global"]}[state.section];q("kicker").textContent=tr(titles[0]);q("title").textContent=tr(titles[1]);q("subtitle").textContent=tr(titles[2]);q("breadcrumb").textContent=state.section==="history"&&state.session!==null?historySessions()[state.session].sessionId:tr("nav."+state.section);q("session-label").textContent=state.section==="current"?(currentReport()?currentReport().sessionId:tr("evidence.unavailable")):state.section==="history"&&state.session!==null?historySessions()[state.session].sessionId:number(state.section==="history"?historySessions().length:data.global.trackedSessions)+" tracked sessions";q("scope-note").textContent=state.section==="current"?(state.scope==="active"?tr("scope.active"):tr("scope.tree"))+" after tracking marker":state.section==="history"&&state.session!==null?sessionScopeNote():tr("scope.fixed")+" · "+period().from+" → "+period().to;const view=q("view");view.replaceChildren.apply(view,renderView());if(state.resetScroll){state.resetScroll=false;window.scrollTo(0,0);}else{window.scrollTo(0,scrollY);}if(caret!==null){const search=q("search");if(search){search.focus();try{search.setSelectionRange(caret,caret);}catch(error){}}}q("announcement").textContent=tr("nav."+state.section)+", "+tr("tab."+state.tab)+", "+period().from+" → "+period().to;}
 const nav=q("navigation");["current","history","global"].forEach(kind=>{const button=el("button","",tr("nav."+kind));button.dataset.range=kind;button.setAttribute("aria-pressed",String(kind===state.section));button.disabled=false;button.addEventListener("click",()=>{state.section=kind;state.tab="overview";state.session=null;state.metric=activeMetrics()[0]||"sessions";state.resetScroll=true;render();});nav.append(button);});
 const tabsNode=q("tabs");TABS.forEach(tab=>{const button=el("button","",tr("tab."+tab));button.dataset.tab=tab;button.setAttribute("aria-pressed",String(tab===state.tab));button.addEventListener("click",()=>{state.tab=tab;[].slice.call(tabsNode.children).forEach(item=>item.setAttribute("aria-pressed",String(item===button)));render();});tabsNode.append(button);});
 scopeButtons.forEach(button=>button.addEventListener("click",()=>{if(button.disabled)return;state.scope=button.dataset.scope;periods.current=defaultPeriod(data.current[state.scope].daily,null);state.resetScroll=true;render();}));

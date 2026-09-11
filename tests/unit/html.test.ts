@@ -6,13 +6,13 @@ import { reduceEntries } from "../../src/core/reduce.ts";
 import { type SessionReport, toSessionReport } from "../../src/core/reports.ts";
 import {
   buildDailyActivityRows,
+  type DailyActivityRow,
   defaultReportPeriod,
   ENGLISH_CATALOG,
   formatDuration,
+  type HtmlReport,
   renderHtml,
   sessionSpanMs,
-  type DailyActivityRow,
-  type HtmlReport,
 } from "../../src/ui/html.ts";
 
 const zeroUsage = { totalTokens: 0, cost: 0 };
@@ -371,7 +371,10 @@ test("projects compaction and shared ledger evidence without raw extras", () => 
   });
   const data = embedded(html);
   assert.match(html, /compaction-safe/);
-  assert.deepEqual(data.report.ledger, buildLedger(withCompaction));
+  assert.deepEqual(
+    data.current.active.report.ledger,
+    buildLedger(withCompaction),
+  );
   assert.equal(html.includes("do not render compaction body"), false);
 });
 
@@ -426,8 +429,11 @@ test("embeds deterministic current, history, and global view contracts", () => {
   const history = renderHtml(historyReport());
   const global = renderHtml(globalReport());
 
-  assert.match(history, /"kind":"history"/);
-  assert.match(global, /"kind":"global"/);
+  // One shared bundle payload now backs every kind; the requested section is
+  // populated and the others are explicit unavailable sections.
+  assert.match(renderHtml(current), /"kind":"bundle"/);
+  assert.match(history, /"history":\{/);
+  assert.match(global, /"global":\{/);
   for (const html of [renderHtml(current), history, global]) {
     const script = scriptOf(html);
     assert.match(script, /selectedDays\(\)/);
@@ -465,12 +471,12 @@ test("defaults report ranges to inclusive UTC dates without a machine clock", ()
   });
 
   const data = embedded(renderHtml(globalReport()));
-  assert.deepEqual(data.period, {
+  assert.deepEqual(data.global.period, {
     preset: 14,
     from: "2026-08-25",
     to: "2026-09-07",
   });
-  assert.equal(data.latestDate, "2026-09-07");
+  assert.equal(data.global.latestDate, "2026-09-07");
 
   const script = scriptOf(renderHtml(globalReport()));
   assert.equal(/Date\.now|Math\.random|new Date\(\)/.test(script), false);
@@ -497,13 +503,19 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
   ]);
 
   const currentData = embedded(renderHtml(richCurrent));
-  assert.deepEqual(currentData.daily, buildDailyActivityRows([richReport]));
+  assert.deepEqual(
+    currentData.current.tree.daily,
+    buildDailyActivityRows([richReport]),
+  );
 
   const historyData = embedded(renderHtml(historyReport()));
-  assert.deepEqual(historyData.daily, buildDailyActivityRows([richReport]));
+  assert.deepEqual(
+    historyData.history.daily,
+    buildDailyActivityRows([richReport]),
+  );
 
   const globalData = embedded(renderHtml(globalReport()));
-  assert.deepEqual(globalData.daily, [
+  assert.deepEqual(globalData.global.daily, [
     { date: "2026-09-06", sessions: 1, totalTokens: 42, cost: 0.01 },
     { date: "2026-09-07", sessions: 1, totalTokens: 42, cost: 0.01 },
   ]);
@@ -512,7 +524,7 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
   const script = scriptOf(renderHtml(richCurrent));
   assert.match(
     script,
-    /function selectedDays\(\)\{return data\.daily\.filter\(row=>row\.date>=state\.period\.from&&row\.date<=state\.period\.to\)\}/,
+    /function selectedDays\(\)\{return activeDaily\(\)\.filter\(row=>row\.date>=period\(\)\.from&&row\.date<=period\(\)\.to\);\}/,
   );
   assert.equal(
     /data\.(report\.)?(generations|tools|compactions)\b/.test(script),
@@ -531,31 +543,33 @@ test("renders the daily activity line chart for every report kind", () => {
     assert.equal(script.includes("nodes.push(chart())"), true);
     // One call site per report path: global, history list, history detail, current.
     assert.equal((script.match(/nodes\.push\(chart\(\)\)/g) ?? []).length, 4);
-    assert.match(script, /data\.chartMetrics/);
+    assert.match(script, /chartMetrics/);
     assert.match(script, /id="chart-metric"/);
     assert.match(script, /tr\("chart\.data"\)/);
   }
 
   const data = embedded(renderHtml(richCurrent));
-  assert.deepEqual(data.chartMetrics, [
+  assert.equal(data.current.tree.daily.length, 2);
+  const script = scriptOf(renderHtml(richCurrent));
+  assert.match(
+    script,
+    /const CURRENT_METRICS=\["sessions","cost","tokens","generations","tools"\]/,
+  );
+  assert.deepEqual(embedded(renderHtml(globalReport())).global.chartMetrics, [
     "sessions",
     "cost",
     "tokens",
-    "generations",
-    "tools",
   ]);
-  assert.deepEqual(embedded(renderHtml(globalReport())).chartMetrics, [
-    "sessions",
-    "cost",
-    "tokens",
-  ]);
-  const script = scriptOf(renderHtml(globalReport()));
-  assert.equal(script.includes('["generations","metric.generations"]'), false);
+  const globalScript = scriptOf(renderHtml(globalReport()));
+  assert.equal(
+    globalScript.includes('["generations","metric.generations"]'),
+    false,
+  );
 });
 
 test("precomputes per-tab rows instead of re-deriving them in the browser", () => {
   const data = embedded(renderHtml(richCurrent));
-  const view = data.report;
+  const view = data.current.tree.report;
 
   assert.deepEqual(view.models, [
     {
@@ -670,7 +684,7 @@ test("renders a tool result without usage as Unavailable instead of zero", () =>
   );
   const data = embedded(renderHtml({ kind: "current", report, scope: "tree" }));
 
-  assert.deepEqual(data.report.tools, [
+  assert.deepEqual(data.current.tree.report.tools, [
     {
       id: "tool:call-a",
       name: "read",
@@ -684,7 +698,7 @@ test("renders a tool result without usage as Unavailable instead of zero", () =>
 
 test("shows every token field with an independent Unavailable state", () => {
   const data = embedded(renderHtml(richCurrent));
-  assert.deepEqual(data.report.usage, {
+  assert.deepEqual(data.current.tree.report.usage, {
     totalTokens: 42,
     cost: 0.01,
     inputTokens: 30,
@@ -700,7 +714,10 @@ test("shows every token field with an independent Unavailable state", () => {
   const partial = embedded(
     renderHtml({ kind: "current", report: withoutSplit, scope: "active" }),
   );
-  assert.deepEqual(partial.report.usage, { totalTokens: 42, cost: 0.01 });
+  assert.deepEqual(partial.current.active.report.usage, {
+    totalTokens: 42,
+    cost: 0.01,
+  });
 
   const script = scriptOf(renderHtml(richCurrent));
   for (const key of [
@@ -717,7 +734,7 @@ test("shows every token field with an independent Unavailable state", () => {
 
 test("presents usage composition that reconciles to the session total", () => {
   const data = embedded(renderHtml(richCurrent));
-  assert.deepEqual(data.report.composition, {
+  assert.deepEqual(data.current.tree.report.composition, {
     available: true,
     parts: [
       { key: "generations", totalTokens: 30, cost: 0.01, confidence: "native" },
@@ -744,7 +761,7 @@ test("presents usage composition that reconciles to the session total", () => {
       },
     }),
   );
-  assert.equal(mismatched.report.composition.reconciles, false);
+  assert.equal(mismatched.current.active.report.composition.reconciles, false);
 
   const script = scriptOf(renderHtml(richCurrent));
   assert.equal(script.includes('tr("usage.reconciled")'), true);
@@ -753,23 +770,40 @@ test("presents usage composition that reconciles to the session total", () => {
 });
 
 test("drives the evidence panel from real evidence state for every report kind", () => {
-  const data = embedded(renderHtml(richCurrent));
-  const confidences = data.evidence.map(
-    (row: { confidence: string }) => row.confidence,
-  );
-  assert.equal(confidences.includes("native"), true);
-  assert.equal(confidences.includes("live"), true);
-  assert.equal(confidences.includes("cooperative"), true);
-  assert.equal(confidences.includes("unavailable"), true);
-  for (const row of data.evidence) {
-    assert.equal(typeof row.source, "string");
-    assert.equal(typeof row.observation, "string");
+  const historyData = embedded(renderHtml(historyReport()));
+  const globalData = embedded(renderHtml(globalReport()));
+  for (const rows of [
+    historyData.history.evidence,
+    globalData.global.evidence,
+  ]) {
+    assert.equal(rows.length > 0, true);
+    for (const row of rows) {
+      assert.equal(typeof row.source, "string");
+      assert.equal(typeof row.observation, "string");
+      assert.equal(typeof row.confidence, "string");
+    }
   }
+  assert.equal(
+    historyData.history.evidence.some(
+      (row: { confidence: string }) => row.confidence === "native",
+    ),
+    true,
+  );
+  assert.equal(
+    historyData.history.evidence.some(
+      (row: { confidence: string }) => row.confidence === "unavailable",
+    ),
+    true,
+  );
 
-  assert.equal(embedded(renderHtml(historyReport())).evidence.length > 0, true);
-  assert.equal(embedded(renderHtml(globalReport())).evidence.length > 0, true);
+  // The current view's evidence is derived in the browser from the same
+  // session projection; the shared script owns that path now.
   const script = scriptOf(renderHtml(richCurrent));
+  assert.match(script, /function currentEvidence\(\)\{/);
   assert.match(script, /evidence\.map\(row=>\[row\.source,row\.observation/);
+  for (const confidence of ["native", "live", "cooperative", "unavailable"]) {
+    assert.equal(script.includes(`"${confidence}"`), true, confidence);
+  }
 });
 
 test("computes durations from evidence and never guesses", () => {
@@ -781,21 +815,21 @@ test("computes durations from evidence and never guesses", () => {
   assert.equal(formatDuration(3_723_000), "1h 02m");
 
   const data = embedded(renderHtml(richCurrent));
-  assert.equal(data.report.durationMs, 9_000);
-  assert.equal(data.report.durationLabel, "9.0 s");
-  assert.equal(data.report.span.from, "2026-09-06");
-  assert.equal(data.report.span.to, "2026-09-07");
+  assert.equal(data.current.tree.report.durationMs, 9_000);
+  assert.equal(data.current.tree.report.durationLabel, "9.0 s");
+  assert.equal(data.current.tree.report.span.from, "2026-09-06");
+  assert.equal(data.current.tree.report.span.to, "2026-09-07");
 
   const bare = embedded(renderHtml(current));
-  assert.equal(bare.report.durationMs, null);
-  assert.equal(bare.report.durationLabel, null);
-  assert.equal(bare.report.span, null);
+  assert.equal(bare.current.active.report.durationMs, null);
+  assert.equal(bare.current.active.report.durationLabel, null);
+  assert.equal(bare.current.active.report.span, null);
 });
 
 test("renders a history session table with the approved columns and drill-down", () => {
   const data = embedded(renderHtml(historyReport()));
-  assert.equal(data.sessions.length, 2);
-  const [rich, missing] = data.sessions;
+  assert.equal(data.history.sessions.length, 2);
+  const [rich, missing] = data.history.sessions;
   assert.equal(rich.availability, "available");
   assert.equal(rich.sessionId, "session-rich");
   assert.equal(rich.firstDate, "2026-09-06");
@@ -819,7 +853,7 @@ test("renders a history session table with the approved columns and drill-down",
     script,
     /\[tr\("table\.session"\),tr\("table\.duration"\),tr\("table\.tokens"\),tr\("table\.generations"\),tr\("table\.agents"\),tr\("table\.status"\),tr\("table\.cost"\)\]/,
   );
-  assert.match(script, /data\.sessions\[state\.session\]/);
+  assert.match(script, /historySessions\(\)\[state\.session\]/);
   assert.match(script, /dataset\.session/);
   assert.match(script, /state\.session=null/);
   // History keeps the shared tab renderer instead of hiding it.
@@ -828,7 +862,7 @@ test("renders a history session table with the approved columns and drill-down",
     false,
   );
   assert.equal(script.includes("tabsNode.hidden"), false);
-  assert.match(script, /q\("time-range"\)\.hidden=state\.kind==="current"/);
+  assert.match(script, /q\("time-range"\)\.hidden=false/);
   assert.match(script, /detail\(/);
 });
 
@@ -842,7 +876,7 @@ test("preserves scroll position and search focus across re-renders", () => {
 
 test("filters presets and custom ranges with inclusive UTC validation", () => {
   const script = scriptOf(renderHtml(historyReport()));
-  assert.match(script, /data\.latestDate/);
+  assert.match(script, /latestDate\(\)/);
   assert.match(script, /from>to/);
   assert.match(script, /tr\("range\.error"\)/);
   assert.match(script, /data-days/);
