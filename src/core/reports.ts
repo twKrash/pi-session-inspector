@@ -2,7 +2,7 @@ import {
   isAllowedIntegrationCounter,
   isKnownIntegrationVersion,
 } from "./integration-counter-allowlists.ts";
-import type { FoldedCounters } from "./live-counter-fold.ts";
+import { MAX_COUNTER_KEYS, type FoldedCounters } from "./live-counter-fold.ts";
 import type {
   AgentRun,
   Compaction,
@@ -19,9 +19,8 @@ import type {
 const MAX_AGENT_ROWS = 256;
 /** Seven known keys plus the legacy `mode` compatibility row. */
 const MAX_INTEGRATION_ROWS = 8;
+/** Adapter schema counters are capped separately from the fold's hard cap. */
 const MAX_COUNTERS = 12;
-/** Bounded grammar for already-folded counter names (never producer text). */
-const FOLDED_COUNTER_KEY = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
 const MAX_TOTAL_TOKENS = 1_000_000_000;
 const MAX_COST = 1_000_000_000;
 const OPAQUE_SUBAGENT_ID = /^subagent-[a-f0-9]{64}$/;
@@ -317,28 +316,56 @@ function mergeIntegrationRow(
   integration: IntegrationKey,
   adapter: IntegrationObservation | undefined,
   presenceSignal: IntegrationPresence | undefined,
-  folded: Readonly<Record<string, number>> | undefined,
+  folded: unknown,
 ): IntegrationObservation {
-  const presence = presenceSignal ?? adapter?.presence ?? "unknown";
-  const counters = projectFoldedCountersForIntegration(folded);
+  const counters = projectFoldedCountersForIntegration(integration, folded);
+  const state: EvidenceState =
+    counters !== undefined ? "supported" : (adapter?.state ?? "unavailable");
+  // `unknown` is the absence of a signal, so evidence still promotes the row to
+  // `present`; only a definite presence/absence signal outranks evidence.
+  const presence: IntegrationPresence = isDefinitePresence(presenceSignal)
+    ? presenceSignal
+    : isDefinitePresence(adapter?.presence)
+      ? adapter.presence
+      : state === "supported"
+        ? "present"
+        : "unknown";
   if (counters !== undefined) {
     // Folded counters are the v1 contract; evidence exists, so the row is supported.
-    return { integration, presence, version: 1, state: "supported", counters };
+    return { integration, presence, version: 1, state, counters };
   }
   if (adapter === undefined) {
-    return { integration, presence, state: "unavailable" };
+    return { integration, presence, state };
   }
   return { ...adapter, presence };
 }
 
+function isDefinitePresence(
+  value: IntegrationPresence | undefined,
+): value is "present" | "absent" {
+  return value === "present" || value === "absent";
+}
+
+/**
+ * Folded counters are accepted only when the per-integration v1 allowlist names
+ * them; a bucket over the fold's key cap is rejected rather than truncated.
+ */
 function projectFoldedCountersForIntegration(
-  value: Readonly<Record<string, number>> | undefined,
+  integration: IntegrationKey,
+  value: unknown,
 ): Readonly<Record<string, number>> | undefined {
-  if (value === undefined) return undefined;
+  const row = snapshotRecord(value);
+  if (row === undefined) return undefined;
+  const keys = Object.keys(row);
+  if (keys.length > MAX_COUNTER_KEYS) return undefined;
   const projected: Record<string, number> = {};
-  for (const key of Object.keys(value).sort().slice(0, MAX_COUNTERS)) {
-    const count = value[key];
-    if (FOLDED_COUNTER_KEY.test(key) && isCounterValue(count)) {
+  for (const key of keys.sort()) {
+    const count = row[key];
+    if (
+      isAllowedIntegrationCounter(integration, 1, key) &&
+      typeof count === "number" &&
+      isCounterValue(count)
+    ) {
       projected[key] = count;
     }
   }
@@ -365,29 +392,25 @@ function projectPresence(
 
 function projectFoldedCounters(
   value: unknown,
-): Readonly<Record<string, Readonly<Record<string, number>>>> | undefined {
+):
+  | Readonly<Partial<Record<IntegrationKey, Readonly<Record<string, number>>>>>
+  | undefined {
   const input = snapshotRecord(value);
   if (input === undefined) return undefined;
   const counters = snapshotRecord(input.counters);
   if (counters === undefined) return undefined;
-  const folded: Record<string, Readonly<Record<string, number>>> = {};
-  for (const integration of Object.keys(counters).sort()) {
-    const row = snapshotRecord(counters[integration]);
-    if (row === undefined) continue;
-    const projected: Record<string, number> = {};
-    for (const key of Object.keys(row).sort()) {
-      const count = row[key];
-      if (
-        FOLDED_COUNTER_KEY.test(key) &&
-        typeof count === "number" &&
-        isCounterValue(count)
-      ) {
-        projected[key] = count;
-      }
-    }
-    if (Object.keys(projected).length > 0) folded[integration] = projected;
+  const folded: Partial<
+    Record<IntegrationKey, Readonly<Record<string, number>>>
+  > = {};
+  // Only the seven known keys can carry folded counters; `mode` is legacy-only.
+  for (const integration of INTEGRATION_ORDER) {
+    const projected = projectFoldedCountersForIntegration(
+      integration,
+      counters[integration],
+    );
+    if (projected !== undefined) folded[integration] = projected;
   }
-  return folded;
+  return Object.keys(folded).length === 0 ? undefined : folded;
 }
 
 function projectAdapterRows(value: unknown): IntegrationObservation[] {

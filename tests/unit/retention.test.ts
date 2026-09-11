@@ -484,13 +484,10 @@ test("above replay-record budget maintenance incrementally prunes and carries co
       (await readCheckpoint({ directory }))?.sealedWal?.["writer-1"],
       306000,
     );
-    const model = await loadCurrentSessionReport(
-      source,
-      "tree",
-      null,
-      undefined,
-      root,
-    );
+    const model = await loadCurrentSessionReport(source, "tree", {
+      leafId: null,
+      inspectorRoot: root,
+    });
     assert.equal(model?.report.walDetail, "expired");
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -1309,13 +1306,10 @@ test("cold-detail notice reaches JSON and HTML while native data stays available
       false,
     );
 
-    const model = await loadCurrentSessionReport(
-      source,
-      "tree",
-      null,
-      undefined,
-      root,
-    );
+    const model = await loadCurrentSessionReport(source, "tree", {
+      leafId: null,
+      inspectorRoot: root,
+    });
     assert.ok(model);
     const report = model.report;
     assert.equal(report.walDetail, "expired");

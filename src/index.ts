@@ -366,10 +366,12 @@ async function loadCommandReport(
     const model = await loadCurrentSessionReport(
       input.sessionFile,
       options.scope,
-      input.leafId,
-      input.observation,
-      input.root,
-      input.subagentArtifact,
+      {
+        leafId: input.leafId,
+        observation: input.observation,
+        inspectorRoot: input.root,
+        subagentArtifact: input.subagentArtifact,
+      },
     );
     return model
       ? {
@@ -457,24 +459,19 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             const model = await loadCurrentSessionReport(
               sessionFile,
               options.scope,
-              leafId,
-              observation,
-              root,
-              subagentArtifact,
+              { leafId, observation, inspectorRoot: root, subagentArtifact },
             );
             if (!model) return notifyCurrentUnavailable(ctx);
             await ctx.ui.custom((tui, theme, _keybindings, done) =>
               createCurrentTuiComponent({
                 model,
                 load: (scope) =>
-                  loadCurrentSessionReport(
-                    sessionFile,
-                    scope,
+                  loadCurrentSessionReport(sessionFile, scope, {
                     leafId,
                     observation,
-                    root,
+                    inspectorRoot: root,
                     subagentArtifact,
-                  ),
+                  }),
                 theme,
                 requestRender: () => tui.requestRender(),
                 done: () => done(undefined),

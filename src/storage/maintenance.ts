@@ -173,7 +173,8 @@ function foldedAggregateFields(
 > {
   const integrationCounters: [string, Record<string, number>][] = [];
   for (const integration of Object.keys(folded.counters).sort()) {
-    const counters = folded.counters[integration as keyof typeof folded.counters];
+    const counters =
+      folded.counters[integration as keyof typeof folded.counters];
     if (counters === undefined) continue;
     const counterKeys = Object.keys(counters).sort();
     if (counterKeys.length === 0) continue;

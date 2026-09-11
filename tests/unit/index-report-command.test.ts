@@ -125,7 +125,9 @@ test("production aliases replay local Pi data through TUI, cached HTML, explicit
     await run("current");
     assert.equal(tuiCalls, 1);
     await assert.rejects(access(cache));
-    const model = await loadCurrentSessionReport(sessionFile, "active", "main");
+    const model = await loadCurrentSessionReport(sessionFile, "active", {
+      leafId: "main",
+    });
     assert.ok(model);
     assert.equal(model.report.usage.totalTokens, 7);
     await run("current --format html");

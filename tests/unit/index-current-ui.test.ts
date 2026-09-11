@@ -35,7 +35,7 @@ function registerCommand(handlerRef: { current?: CommandHandler }): void {
 
 test("loads a durable current session report and leaves ephemeral sessions unavailable", async () => {
   assert.equal(
-    await loadCurrentSessionReport(undefined, "active", null),
+    await loadCurrentSessionReport(undefined, "active", { leafId: null }),
     undefined,
   );
 
@@ -49,7 +49,9 @@ test("loads a durable current session report and leaves ephemeral sessions unava
     ].join("\n"),
   );
 
-  const model = await loadCurrentSessionReport(file, "active", "entry-1");
+  const model = await loadCurrentSessionReport(file, "active", {
+    leafId: "entry-1",
+  });
   assert.equal(model?.report.sessionId, "fixture-session");
   assert.equal(model?.scope, "active");
   assert.deepEqual(model?.report.agents, []);
@@ -57,11 +59,20 @@ test("loads a durable current session report and leaves ephemeral sessions unava
   assert.deepEqual(model?.report.integrations, []);
 
   await writeFile(file, '{"type":"message"}\n');
-  assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
+  assert.equal(
+    await loadCurrentSessionReport(file, "active", { leafId: null }),
+    undefined,
+  );
   await writeFile(file, '{"type":"session","id":""}\n');
-  assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
+  assert.equal(
+    await loadCurrentSessionReport(file, "active", { leafId: null }),
+    undefined,
+  );
   await writeFile(file, "not JSONL\n");
-  assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
+  assert.equal(
+    await loadCurrentSessionReport(file, "active", { leafId: null }),
+    undefined,
+  );
   await writeFile(
     file,
     [
@@ -71,7 +82,7 @@ test("loads a durable current session report and leaves ephemeral sessions unava
     ].join("\n"),
   );
   assert.equal(
-    await loadCurrentSessionReport(file, "active", "entry-1"),
+    await loadCurrentSessionReport(file, "active", { leafId: "entry-1" }),
     undefined,
   );
 });
@@ -87,7 +98,7 @@ test("projects persisted Pi-entry integration evidence in the production loader"
     ].join("\n"),
   );
 
-  const model = await loadCurrentSessionReport(file, "tree", null);
+  const model = await loadCurrentSessionReport(file, "tree", { leafId: null });
   assert.deepEqual(model?.report.integrations, [
     {
       integration: "context",
@@ -154,14 +165,10 @@ test("projects only an explicitly supplied public subagent artifact in the produ
     await readFile("tests/fixtures/integrations/subagents.json", "utf8"),
   ) as { foreground: unknown };
 
-  const model = await loadCurrentSessionReport(
-    file,
-    "tree",
-    null,
-    undefined,
-    undefined,
-    artifacts.foreground,
-  );
+  const model = await loadCurrentSessionReport(file, "tree", {
+    leafId: null,
+    subagentArtifact: artifacts.foreground,
+  });
 
   assert.equal(model?.report.agentEvidence, "supported");
   assert.equal(model?.report.agents.length, 2);
@@ -176,7 +183,9 @@ test("uses Pi's active leaf rather than the latest appended branch", async () =>
     await readFile("tests/fixtures/pi/0.85.1/branching.jsonl", "utf8"),
   );
 
-  const model = await loadCurrentSessionReport(file, "active", "e6");
+  const model = await loadCurrentSessionReport(file, "active", {
+    leafId: "e6",
+  });
   assert.equal(model?.report.usage.totalTokens, 42);
 });
 
@@ -188,13 +197,16 @@ test("leaves active scope unavailable when Pi has no known active leaf", async (
     await readFile("tests/fixtures/pi/0.85.1/branching.jsonl", "utf8"),
   );
 
-  assert.equal(await loadCurrentSessionReport(file, "active", null), undefined);
   assert.equal(
-    await loadCurrentSessionReport(file, "active", "unknown-leaf"),
+    await loadCurrentSessionReport(file, "active", { leafId: null }),
+    undefined,
+  );
+  assert.equal(
+    await loadCurrentSessionReport(file, "active", { leafId: "unknown-leaf" }),
     undefined,
   );
 
-  const tree = await loadCurrentSessionReport(file, "tree", null);
+  const tree = await loadCurrentSessionReport(file, "tree", { leafId: null });
   assert.equal(tree?.report.usage.totalTokens, 72);
 });
 
@@ -343,14 +355,10 @@ test("preserves supplied public subagent evidence in current JSON export without
   const rendered = await readFile(output, "utf8");
   assert.match(rendered, /"agentEvidence":"supported"/);
   assert.equal(rendered.includes(artifactFile), false);
-  const model = await loadCurrentSessionReport(
-    sessionFile,
-    "active",
-    "entry-1",
-    undefined,
-    undefined,
-    artifacts.foreground,
-  );
+  const model = await loadCurrentSessionReport(sessionFile, "active", {
+    leafId: "entry-1",
+    subagentArtifact: artifacts.foreground,
+  });
   assert.ok(model);
   assert.equal(model.report.agentEvidence, "supported");
   const html = renderHtml({
@@ -595,13 +603,11 @@ test("current report shows presence rows and effective counters from the observa
       foldTelemetryCounters([permissionDecision("deny", "user_denied")]),
     ),
   } as const;
-  const model = await loadCurrentSessionReport(
-    sessionFile,
-    "active",
-    "entry-1",
+  const model = await loadCurrentSessionReport(sessionFile, "active", {
+    leafId: "entry-1",
     observation,
-    root,
-  );
+    inspectorRoot: root,
+  });
 
   assert.equal(model?.report.integrations.length, 7);
   const permission = model?.report.integrations.find(
@@ -625,13 +631,11 @@ test("current report shows presence rows and effective counters from the observa
   const checkpointFile = join(sessionDirectory, "checkpoint.json");
   const bytesBefore = await readFile(checkpointFile, "utf8");
   const before = await readCheckpoint({ directory: sessionDirectory });
-  const again = await loadCurrentSessionReport(
-    sessionFile,
-    "active",
-    "entry-1",
+  const again = await loadCurrentSessionReport(sessionFile, "active", {
+    leafId: "entry-1",
     observation,
-    root,
-  );
+    inspectorRoot: root,
+  });
   assert.deepEqual(
     again?.report.integrations.find((row) => row.integration === "permission")
       ?.counters,
@@ -764,20 +768,16 @@ test("reports read effective counters without mutating the checkpoint", async ()
     ),
   } as const;
 
-  const first = await loadCurrentSessionReport(
-    sessionFile,
-    "active",
-    "entry-1",
+  const first = await loadCurrentSessionReport(sessionFile, "active", {
+    leafId: "entry-1",
     observation,
-    root,
-  );
-  const second = await loadCurrentSessionReport(
-    sessionFile,
-    "active",
-    "entry-1",
+    inspectorRoot: root,
+  });
+  const second = await loadCurrentSessionReport(sessionFile, "active", {
+    leafId: "entry-1",
     observation,
-    root,
-  );
+    inspectorRoot: root,
+  });
 
   assert.deepEqual(
     first?.report.integrations.find((row) => row.integration === "permission")

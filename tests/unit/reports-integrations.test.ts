@@ -3,6 +3,8 @@ import { test } from "node:test";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
 import { readPiEntryEvidence } from "../../src/integrations/pi-entries.ts";
 import { readSubagentRuns } from "../../src/integrations/subagents.ts";
+import { MAX_COUNTER_KEYS } from "../../src/core/live-counter-fold.ts";
+import { isAllowedIntegrationCounter } from "../../src/core/integration-counter-allowlists.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 
 const parent: ReducedSession = {
@@ -250,7 +252,8 @@ test("emits one row per known integration with observation presence and counters
   );
   assert.deepEqual(report.integrations[0], {
     integration: "context",
-    presence: "unknown",
+    // Supported evidence promotes the row to `present`; `unknown` is not a signal.
+    presence: "present",
     version: 1,
     state: "supported",
     counters: { calls: 2 },
@@ -324,4 +327,140 @@ test("projects only bounded folded counter names and safe counts", () => {
     JSON.stringify(report).includes("private-evidence-sentinel"),
     false,
   );
+});
+
+const foldedPermission = {
+  counters: {
+    permission: {
+      decisions: 2,
+      allowed: 1,
+      denied: 1,
+      prompts: 1,
+      promptToolCall: 1,
+      promptSkillInput: 1,
+      promptSkillRead: 1,
+      gateErrors: 1,
+    },
+  },
+  skillInvocations: {},
+  otherInvocations: 0,
+  presence: { permission: true },
+} as const;
+
+test("projects folded permission counters named by the v1 allowlist", () => {
+  const report = toSessionReport(parent, {
+    presence: observedPresence,
+    counters: foldedPermission,
+  });
+
+  const permission = report.integrations.find(
+    (row) => row.integration === "permission",
+  );
+  assert.equal(permission?.state, "supported");
+  assert.equal(permission?.presence, "present");
+  assert.deepEqual(permission?.counters, foldedPermission.counters.permission);
+});
+
+test("rejects folded counters outside the per-integration allowlist", () => {
+  const report = toSessionReport(parent, {
+    presence: observedPresence,
+    counters: {
+      counters: {
+        permission: { arbitraryName: 1, events: 1, granted: 1, decisions: 3 },
+        subagents: { foo: 1 },
+      },
+      skillInvocations: {},
+      otherInvocations: 0,
+      presence: { permission: true },
+    },
+  });
+
+  const permission = report.integrations.find(
+    (row) => row.integration === "permission",
+  );
+  assert.deepEqual(permission?.counters, { decisions: 3 });
+  const subagents = report.integrations.find(
+    (row) => row.integration === "subagents",
+  );
+  assert.equal(subagents?.counters, undefined);
+  assert.equal(subagents?.state, "unavailable");
+});
+
+test("carries exactly the spec 4.6 permission v1 counter allowlist", () => {
+  const allowed = [
+    "decisions",
+    "allowed",
+    "denied",
+    "prompts",
+    "promptToolCall",
+    "promptSkillInput",
+    "promptSkillRead",
+    "gateErrors",
+  ] as const;
+  for (const key of allowed) {
+    assert.equal(isAllowedIntegrationCounter("permission", 1, key), true, key);
+  }
+  for (const key of ["events", "granted", "arbitraryName", "gateWarning"]) {
+    assert.equal(isAllowedIntegrationCounter("permission", 1, key), false, key);
+  }
+  assert.deepEqual(
+    allowed.filter((key) => !isAllowedIntegrationCounter("permission", 1, key)),
+    [],
+  );
+  // Subagents has no v1 folded counter vocabulary; rows come from agentActivity.
+  assert.equal(isAllowedIntegrationCounter("subagents", 1, "foo"), false);
+  assert.equal(isAllowedIntegrationCounter("subagents", 1, "runs"), false);
+});
+
+test("reports present for an evidence-only row with no inventory signal", () => {
+  const report = toSessionReport(parent, {
+    counters: {
+      counters: { rtk: { compactions: 2 } },
+      skillInvocations: {},
+      otherInvocations: 0,
+      presence: { permission: false },
+    },
+    integrations: [
+      {
+        integration: "rtk",
+        version: 1,
+        state: "supported",
+        counters: { compactions: 2 },
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    report.integrations.find((row) => row.integration === "rtk"),
+    {
+      integration: "rtk",
+      presence: "present",
+      version: 1,
+      state: "supported",
+      counters: { compactions: 2 },
+    },
+  );
+});
+
+test("rejects rather than truncates a folded bucket above the fold key cap", () => {
+  const permission: Record<string, number> = { decisions: 1 };
+  for (let index = 0; index <= MAX_COUNTER_KEYS; index++)
+    permission[`extra${index}`] = 1;
+  assert.equal(Object.keys(permission).length, MAX_COUNTER_KEYS + 2);
+
+  const report = toSessionReport(parent, {
+    presence: observedPresence,
+    counters: {
+      counters: { permission },
+      skillInvocations: {},
+      otherInvocations: 0,
+      presence: { permission: true },
+    },
+  });
+
+  const row = report.integrations.find(
+    (item) => item.integration === "permission",
+  );
+  assert.equal(row?.state, "unavailable");
+  assert.equal(row?.counters, undefined);
 });

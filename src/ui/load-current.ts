@@ -11,16 +11,22 @@ import { selectScope } from "../pi/sessions.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
 import type { SessionObservation } from "./observation.ts";
 
+/** Options for {@link loadCurrentSessionReport}; one object so later wiring cannot mis-bind. */
+export type LoadCurrentSessionReportOptions = {
+  leafId: string | null;
+  observation?: SessionObservation;
+  inspectorRoot?: string;
+  subagentArtifact?: unknown;
+};
+
 /** Replays a persisted current session into the renderer-neutral TUI model. */
 export async function loadCurrentSessionReport(
   sessionFile: string | undefined,
   scope: Scope,
-  leafId: string | null,
-  observation?: SessionObservation,
-  inspectorRoot?: string,
-  subagentArtifact?: unknown,
+  options: LoadCurrentSessionReportOptions,
 ): Promise<CurrentTuiModel | undefined> {
   if (!sessionFile) return undefined;
+  const { leafId, observation, inspectorRoot, subagentArtifact } = options;
 
   try {
     const session = parseSessionJsonl(await readFile(sessionFile, "utf8"));

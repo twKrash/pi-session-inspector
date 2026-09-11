@@ -22,7 +22,18 @@ const COUNTER_KEYS: Readonly<
   ponytail: { 1: new Set(["changes"]) },
   caveman: { 1: new Set(["changes"]) },
   mode: { 1: new Set(["changes"]) },
-  permission: { 1: new Set(["events", "granted"]) },
+  permission: {
+    1: new Set([
+      "decisions",
+      "allowed",
+      "denied",
+      "prompts",
+      "promptToolCall",
+      "promptSkillInput",
+      "promptSkillRead",
+      "gateErrors",
+    ]),
+  },
   subagents: { 1: new Set() },
   lens: { 1: new Set(["calls"]) },
 };
