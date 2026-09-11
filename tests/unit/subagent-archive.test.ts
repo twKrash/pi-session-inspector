@@ -230,6 +230,75 @@ test("leaves artifacts absent for runs without a published reference", async () 
   assert.equal(evidence.runs[0]?.artifacts, undefined);
 });
 
+test("follows only the completion surface and ignores a results-row archivePath", async () => {
+  const fixture = await readFixture();
+  const directory = await mkdtemp(
+    join(tmpdir(), "inspector-archive-boundary-"),
+  );
+  const archivePath = join(directory, "run-raw.json");
+  await writeFile(archivePath, fixture.replace('"run-a"', '"run-raw"'));
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          content: [{ type: "toolCall", id: "c1", name: "subagent_wait" }],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-11T10:00:01.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "subagent_wait",
+          isError: false,
+          content: [],
+          details: {
+            runId: "aggregate-run",
+            completions: [
+              {
+                runId: "run-raw",
+                agent: "reviewer",
+                success: true,
+                archivePath,
+              },
+            ],
+            results: [
+              {
+                index: 0,
+                agent: "worker",
+                exitCode: 0,
+                archivePath,
+              },
+            ],
+          },
+        },
+      }),
+    ].join("\n"),
+  ).entries;
+
+  const evidence = await readSubagentEvidenceWithArchives(entries);
+
+  const reviewer = evidence.runs.find((run) => run.agent === "reviewer");
+  const worker = evidence.runs.find((run) => run.agent === "worker");
+  assert.equal(evidence.runs.length, 2);
+  // The completion reference is validated and published.
+  assert.equal(reviewer?.artifacts, "available");
+  // A results-row reference is deliberately not followed: absent, not "missing".
+  assert.equal(worker?.artifacts, undefined);
+  assert.equal(JSON.stringify(evidence).includes(archivePath), false);
+});
+
 test("a rejected or non-absolute reference yields missing for that run only", async () => {
   const fixture = await readFixture();
   const directory = await mkdtemp(join(tmpdir(), "inspector-archive-mixed-"));
@@ -281,6 +350,12 @@ test("a rejected or non-absolute reference yields missing for that run only", as
                 success: true,
                 archivePath: join(directory, "absent.json"),
               },
+              {
+                runId: "run-oversize",
+                agent: "d",
+                success: true,
+                archivePath: `/${"a".repeat(5000)}`,
+              },
             ],
           },
         },
@@ -291,7 +366,7 @@ test("a rejected or non-absolute reference yields missing for that run only", as
   const evidence = await readSubagentEvidenceWithArchives(entries);
   assert.deepEqual(
     evidence.runs.map((run) => run.artifacts),
-    ["available", "missing", "missing"],
+    ["available", "missing", "missing", undefined],
   );
 });
 
@@ -311,6 +386,7 @@ test("production report path consumes archive enrichment", async () => {
   assert.equal(model?.report.agents.length, 1);
   assert.equal(model?.report.agents[0]?.artifacts, "available");
   assert.equal(model?.report.agentEvidence, "supported");
+  assert.equal(model?.report.agentActivity.calls, 1);
   assert.equal(JSON.stringify(model?.report).includes(archivePath), false);
 
   await rm(archivePath, { force: true });
@@ -319,6 +395,7 @@ test("production report path consumes archive enrichment", async () => {
   });
   assert.equal(missing?.report.agents[0]?.artifacts, "missing");
   assert.equal(missing?.report.agentEvidence, "supported");
+  assert.equal(missing?.report.agentActivity.calls, 1);
 
   // Native activity is unchanged by archive absence (agentActivity.calls stays 1).
   const entries = parseSessionJsonl(

@@ -20,6 +20,8 @@ const RAW_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const AGENT_LABEL = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$/;
 const MAX_RUNS = 256;
 const MAX_TOTAL_TOKENS = 1_000_000_000;
+/** Bound on a published archive path so a corrupt session cannot retain an arbitrarily large string. */
+const MAX_ARCHIVE_PATH = 4096;
 const MAX_COST = 1_000_000_000;
 
 /** Native subagent tool activity; usage is a breakdown, never a session total. */
@@ -399,6 +401,16 @@ function readCostTotal(value: unknown): number | undefined {
  * Reads documented `details.completions[]` rows keyed by the opaque identity
  * of the run that published the reference. The raw path and raw run id are
  * held only long enough to validate them, then discarded.
+ *
+ * Archive references are followed only from `details.completions[]` because
+ * that is the only surface the pinned producer publishes `archivePath` on
+ * (`WaitCompletion` in pi-subagents). Child-row references are deliberately
+ * not followed: the archive records the aggregate run's own `runId`, while a
+ * foreground child is identified as `opaque("<aggregate>#<index>")`, so
+ * validating a child-level reference would require weakening the exact-runId
+ * check that makes the archive adapter trustworthy. A `details.results[]` row
+ * that happens to publish `archivePath` is therefore deliberately ignored —
+ * the run keeps `artifacts` absent (not `"missing"`).
  */
 function collectArchiveReferences(
   entries: readonly SessionEntry[],
@@ -428,9 +440,16 @@ function collectArchiveReferences(
   return references;
 }
 
-/** A published reference must be a non-empty string; `isAbsolute` is checked at read. */
+/**
+ * A published reference must be a non-empty string no longer than
+ * `MAX_ARCHIVE_PATH`; `isAbsolute` is checked at read.
+ */
 function readArchivePath(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_ARCHIVE_PATH
+    ? value
+    : undefined;
 }
 
 function readRawRunId(value: unknown): string | undefined {
