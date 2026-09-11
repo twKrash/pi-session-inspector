@@ -97,10 +97,9 @@ export function readInventory(
 
     return {
       schemaVersion: 1,
-      // Commands and skills are disjoint views of the same producer list.
-      commands: commandRows
-        .filter((row) => row.source !== "skill")
-        .slice(0, MAX_COMMANDS),
+      // `commands` is every invokable row (extension, prompt, and skill);
+      // `skills` is the `source === "skill"` subset of the same list.
+      commands: commandRows.slice(0, MAX_COMMANDS),
       skills: commandRows
         .filter((row) => row.source === "skill")
         .map(toSkillRow)

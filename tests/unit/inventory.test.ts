@@ -45,16 +45,32 @@ test("sanitizes command, skill, tool, and resource-source inventory", async () =
   }
 
   assert.deepEqual(
-    snapshot.commands.map((row) => row.name),
-    ["session-inspector", "council-mode", "web-search"],
+    snapshot.commands.map((row) => `${row.source}:${row.name}`),
+    [
+      "extension:session-inspector",
+      "skill:council-mode",
+      "skill:hf-cli",
+      "extension:council-mode",
+      "prompt:web-search",
+    ],
+  );
+  assert.deepEqual(
+    snapshot.commands
+      .filter((row) => row.name === "council-mode")
+      .map((row) => row.source),
+    ["skill", "extension"],
   );
   assert.equal(
     snapshot.commands.find((row) => row.name === "web-search")?.source,
     "prompt",
   );
+  assert.deepEqual(
+    snapshot.skills.map((row) => row.name),
+    ["council-mode", "hf-cli"],
+  );
   assert.equal(
-    snapshot.skills.map((row) => row.name).join(","),
-    "council-mode,hf-cli",
+    snapshot.skills.every((row) => !row.name.startsWith("skill:")),
+    true,
   );
   assert.equal(snapshot.toolSources.subagent, "npm:pi-subagents");
   assert.equal(snapshot.toolSources.read, "builtin");
