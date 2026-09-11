@@ -117,7 +117,72 @@ test("fills the evidence tabs with reviewed copy and columns", () => {
     "PRESENCE_LABELS",
     'tr("table.message")',
     "orUnavailable(row.source)",
+    "orUnavailable(row.sourceLabel||row.source||null)",
   ]) {
     assert.equal(html.includes(fragment), true, fragment);
   }
+});
+
+test("renders a bounded truncation notice only when the active view was capped", () => {
+  const untruncated = renderInspectorBundle(bundleFixture());
+
+  // An uncapped view ships no notice element at all; the copy still lives in
+  // the translated catalog, but nothing renders it.
+  assert.equal(
+    untruncated.includes('<p class="range-note" id="range-truncated"'),
+    false,
+  );
+
+  const bundle = bundleFixture();
+  bundle.current.tree.dailyTruncated = true;
+  const html = renderInspectorBundle(bundle);
+  const data = embeddedJson(html);
+
+  assert.equal(data.current.tree.dailyTruncated, true);
+  assert.match(
+    html,
+    /<p class="range-note" id="range-truncated">Older days beyond the retained window are not shown\.<\/p>/,
+  );
+  // The notice is the only change: no rows are fabricated to fill the window.
+  assert.deepEqual(
+    data.current.tree.daily,
+    embeddedJson(untruncated).current.tree.daily,
+  );
+  assert.equal(
+    /id="range-truncated"[^>]*\shidden/.test(html),
+    false,
+    "a capped view shows the notice",
+  );
+});
+
+test("escapes hostile session ids and command names in the bundle payload", () => {
+  const hostileSessionId = "session</script><& \u2028 ";
+  const hostileCommand = "</script><b>&\u2028 cmd";
+  const bundle = bundleFixture();
+  const active = bundle.current.active.report;
+  const tree = bundle.current.tree.report;
+  if (active === undefined || tree === undefined) {
+    throw new Error("bundle fixture must carry both current view reports");
+  }
+  active.sessionId = hostileSessionId;
+  tree.sessionId = hostileSessionId;
+  tree.commands.items[0].name = hostileCommand;
+
+  const html = renderInspectorBundle(bundle);
+  const match =
+    /<script type="application\/json" id="report-data">([\s\S]*?)<\/script>/.exec(
+      html,
+    );
+  const payload = match?.[1] ?? "";
+
+  // The payload is valid JSON (it parsed) and every hostile value round-trips.
+  const data = embeddedJson(html);
+  assert.equal(data.current.active.report.sessionId, hostileSessionId);
+  assert.equal(data.current.tree.report.sessionId, hostileSessionId);
+  assert.equal(data.current.tree.report.commands.items[0].name, hostileCommand);
+
+  for (const raw of ["<", ">", "&", "\u2028"]) {
+    assert.equal(payload.includes(raw), false, `raw ${JSON.stringify(raw)}`);
+  }
+  assert.equal(payload.includes("</script"), false);
 });
