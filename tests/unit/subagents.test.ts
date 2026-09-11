@@ -37,9 +37,18 @@ test("derives native tool activity and cooperative runs from persisted results",
   assert.equal(JSON.stringify(evidence).includes("run-raw-id"), false);
   assert.equal(JSON.stringify(evidence).includes("/home/dev/PRIVATE"), false);
 
-  const completed = evidence.runs.find((run) => run.status === "succeeded");
+  const completed = evidence.runs.find((run) => run.agent === "reviewer");
   assert.deepEqual(completed?.usage, { totalTokens: 700, cost: 0.1 });
   assert.equal(completed?.agent, "reviewer");
+
+  // The persisted foreground `results[]` row: `exitCode: 1` maps to failed, a
+  // partial usage group yields no usage, and the row is parented by its run.
+  const foreground = evidence.runs.find((run) => run.agent === "worker");
+  assert.ok(foreground);
+  assert.equal(foreground.status, "failed");
+  assert.equal(foreground.usage, undefined);
+  assert.match(foreground.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.notEqual(foreground.parentId, foreground.id);
 });
 
 test("degrades to native activity when details are absent or malformed", () => {
@@ -295,6 +304,182 @@ test("never throws on malformed entries and yields no fabricated rows", () => {
   assert.deepEqual(evidence.activity.usage, undefined);
   assert.deepEqual(evidence.runs, []);
   assert.equal(evidence.state, "unavailable");
+});
+
+test("identifies two foreground children of one parallel run by index", () => {
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [{ type: "toolCall", id: "c1", name: "subagent" }],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-11T10:00:01Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "subagent",
+          isError: false,
+          content: [],
+          details: {
+            mode: "parallel",
+            runId: "parallel-run",
+            results: [
+              {
+                index: 0,
+                agent: "worker",
+                exitCode: 0,
+                task: "PRIVATE_TASK one",
+                sessionFile: "/home/dev/PRIVATE/session.jsonl",
+                usage: {
+                  input: 200,
+                  output: 100,
+                  cacheRead: 50,
+                  cacheWrite: 0,
+                  cost: 0.2,
+                  turns: 2,
+                },
+              },
+              {
+                index: 1,
+                agent: "builder",
+                exitCode: 1,
+                task: "PRIVATE_TASK two",
+                usage: { input: 100, output: 50, cost: 0.05 },
+              },
+            ],
+          },
+        },
+      }),
+    ].join("\n"),
+  ).entries;
+
+  const evidence = readSubagentEvidence(entries);
+
+  assert.equal(evidence.state, "supported");
+  assert.equal(evidence.runs.length, 2);
+  const [complete, partial] = evidence.runs;
+  assert.notEqual(complete?.id, partial?.id);
+  assert.equal(complete?.agent, "worker");
+  assert.equal(partial?.agent, "builder");
+  assert.equal(complete?.status, "succeeded");
+  assert.equal(partial?.status, "failed");
+  assert.deepEqual(complete?.usage, { totalTokens: 350, cost: 0.2 });
+  assert.equal(partial?.usage, undefined);
+  // Both children share the opaque aggregate run id as their parent.
+  assert.match(complete?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.equal(complete?.parentId, partial?.parentId);
+  assert.notEqual(complete?.parentId, complete?.id);
+  assert.equal(JSON.stringify(evidence).includes("PRIVATE_TASK"), false);
+  assert.equal(JSON.stringify(evidence).includes("/home/dev/PRIVATE"), false);
+});
+
+test("skips foreground result rows without a usable run id and index", () => {
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [
+            { type: "toolCall", id: "c1", name: "subagent" },
+            { type: "toolCall", id: "c2", name: "subagent" },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-11T10:00:01Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "subagent",
+          isError: false,
+          content: [],
+          details: {
+            runId: "agg-run",
+            results: [
+              { agent: "no-index", exitCode: 0 },
+              { index: -1, agent: "negative", exitCode: 0 },
+              { index: 1.5, agent: "fractional", exitCode: 0 },
+              {
+                index: 2,
+                agent: "worker",
+                exitCode: 0,
+                usage: {
+                  input: 1,
+                  output: 2,
+                  cacheRead: 3,
+                  cacheWrite: 4,
+                  cost: 0.1,
+                },
+              },
+              { index: 3, agent: "other", exitCode: 1 },
+            ],
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m3",
+        parentId: "m2",
+        timestamp: "2026-09-11T10:00:02Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c2",
+          toolName: "subagent",
+          isError: false,
+          content: [],
+          // A usable index without an aggregate run id is still unidentifiable.
+          details: { results: [{ index: 0, agent: "orphan", exitCode: 0 }] },
+        },
+      }),
+    ].join("\n"),
+  ).entries;
+
+  const evidence = readSubagentEvidence(entries);
+
+  assert.equal(evidence.activity.calls, 2);
+  assert.equal(evidence.runs.length, 2);
+  assert.equal(
+    evidence.runs.every(
+      (run) =>
+        /^subagent-[a-f0-9]{64}$/.test(run.id) &&
+        run.parentId !== undefined &&
+        /^subagent-[a-f0-9]{64}$/.test(run.parentId),
+    ),
+    true,
+  );
+  const [complete, partial] = evidence.runs;
+  assert.notEqual(complete?.id, partial?.id);
+  assert.equal(complete?.parentId, partial?.parentId);
+  assert.equal(complete?.agent, "worker");
+  assert.deepEqual(complete?.usage, { totalTokens: 10, cost: 0.1 });
+  assert.equal(partial?.agent, "other");
+  assert.equal(partial?.status, "failed");
+  assert.equal(partial?.usage, undefined);
+  assert.equal(JSON.stringify(evidence).includes("no-index"), false);
+  assert.equal(JSON.stringify(evidence).includes("orphan"), false);
 });
 
 test("counts a joined call id's tool-result usage exactly once", () => {

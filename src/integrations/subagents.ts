@@ -169,41 +169,63 @@ function collectRuns(
 ): void {
   const details = snapshotRecord(result.details);
   if (details === undefined) return;
-  // A `subagent` result names its own run; anonymous children inherit it.
-  const fallbackRunId = readRawRunId(details.runId);
+  // The aggregate foreground run id; child rows carry no own run id.
+  const aggregateRunId = readRawRunId(details.runId);
 
   if (Array.isArray(details.completions)) {
     for (const value of details.completions.slice(0, MAX_RUNS)) {
       const completion = snapshotRecord(value);
       if (completion === undefined) continue;
       const completionRunId = readRawRunId(completion.runId);
-      pushRun(completion, runs, seenRunIds, completionRunId, undefined);
+      pushRun(
+        completion,
+        runs,
+        seenRunIds,
+        completionRunId === undefined
+          ? undefined
+          : opaqueSubagentId(completionRunId),
+        undefined,
+      );
       if (!Array.isArray(completion.results)) continue;
       for (const child of completion.results.slice(0, MAX_RUNS)) {
         const record = snapshotRecord(child);
         if (record === undefined) continue;
-        // Nested children need their own run id to stay distinct rows.
+        // Nested completion children are identified by their own run id.
+        const childRunId = readRawRunId(record.runId);
         pushRun(
           record,
           runs,
           seenRunIds,
-          readRawRunId(record.runId),
-          completionRunId,
+          childRunId === undefined ? undefined : opaqueSubagentId(childRunId),
+          completionRunId === undefined
+            ? undefined
+            : opaqueSubagentId(completionRunId),
         );
       }
     }
   }
 
   if (Array.isArray(details.results)) {
+    const parentId =
+      aggregateRunId === undefined
+        ? undefined
+        : opaqueSubagentId(aggregateRunId);
     for (const value of details.results.slice(0, MAX_RUNS)) {
       const record = snapshotRecord(value);
       if (record === undefined) continue;
+      const index = readChildIndex(record.index);
+      // Foreground children have no own run id; their stable identity is the
+      // aggregate run id plus the launch-order `index`. Without both, the row
+      // is unidentifiable, so it is skipped rather than collapsed onto the
+      // parent (which would drop every child after the first).
       pushRun(
         record,
         runs,
         seenRunIds,
-        readRawRunId(record.runId) ?? fallbackRunId,
-        undefined,
+        aggregateRunId === undefined || index === undefined
+          ? undefined
+          : opaqueSubagentId(`${aggregateRunId}#${index}`),
+        parentId,
       );
     }
   }
@@ -213,23 +235,18 @@ function pushRun(
   record: Readonly<Record<string, unknown>>,
   runs: AgentRun[],
   seenRunIds: Set<string>,
-  rawRunId: string | undefined,
-  parentRawRunId: string | undefined,
+  id: string | undefined,
+  parentId: string | undefined,
 ): void {
-  if (rawRunId === undefined || runs.length >= MAX_RUNS) return;
-  const id = opaqueSubagentId(rawRunId);
+  if (id === undefined || runs.length >= MAX_RUNS) return;
   if (seenRunIds.has(id)) return;
   seenRunIds.add(id);
 
-  const parentId =
-    parentRawRunId !== undefined && parentRawRunId !== rawRunId
-      ? opaqueSubagentId(parentRawRunId)
-      : undefined;
   const agent = isAgentLabel(record.agent) ? record.agent : undefined;
   const usage = readChildUsage(record.usage);
   runs.push({
     id,
-    ...(parentId === undefined ? {} : { parentId }),
+    ...(parentId === undefined || parentId === id ? {} : { parentId }),
     ...(agent === undefined ? {} : { agent }),
     status: mapRunStatus(record),
     confidence: "cooperative",
@@ -332,6 +349,16 @@ function readCostTotal(value: unknown): number | undefined {
 
 function readRawRunId(value: unknown): string | undefined {
   return typeof value === "string" && RAW_RUN_ID.test(value)
+    ? value
+    : undefined;
+}
+
+/**
+ * A foreground child's stable identity within its aggregate run. Only a safe
+ * non-negative integer is usable; anything else leaves the row unidentifiable.
+ */
+function readChildIndex(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : undefined;
 }
