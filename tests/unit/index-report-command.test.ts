@@ -16,7 +16,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import registerSessionInspector from "../../src/index.ts";
+import registerSessionInspector, { registerTracking } from "../../src/index.ts";
 
 type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type CustomFactory = Parameters<ExtensionCommandContext["ui"]["custom"]>[0];
@@ -519,6 +519,93 @@ test("runtime unavailability keeps its distinct current-session message", async 
       "Current session Inspector data is unavailable.",
     );
     assert.equal(harness.rendered.length, 0);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("a repeated session_start for one session registers live observation exactly once", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-tracking-"));
+  const sessionDirectory = join(directory, "native");
+  await mkdir(sessionDirectory);
+  const sessionFile = join(sessionDirectory, "session.jsonl");
+  await writeFile(sessionFile, SESSION_SOURCE);
+  try {
+    let handler:
+      | ((event: unknown, context: unknown) => Promise<void>)
+      | undefined;
+    let setups = 0;
+    let schedules = 0;
+    registerTracking(
+      {
+        on: (
+          _event: string,
+          registered: (event: unknown, context: unknown) => Promise<void>,
+        ) => {
+          handler = registered;
+        },
+        appendEntry: () => {},
+      } as unknown as Parameters<typeof registerTracking>[0],
+      {
+        agentDir: directory,
+        track: async () => true,
+        setupSessionWal: async () => {
+          setups += 1;
+        },
+        schedule: () => {
+          schedules += 1;
+        },
+      },
+    );
+    assert.ok(handler);
+    const context = {
+      sessionManager: {
+        getSessionId: () => "real-session",
+        getSessionFile: () => sessionFile,
+        getSessionDir: () => sessionDirectory,
+      },
+    };
+    await handler({}, context);
+    await handler({}, context);
+    // Tracking promotion is detached; let the microtask queue settle.
+    await sleep(20);
+
+    assert.equal(setups, 1, "second session_start must not register a writer");
+    assert.equal(schedules, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a skill named after an absent extension is not reported present", async () => {
+  const harness = await createHarness({
+    getCommands: () => [
+      {
+        name: "skill:ponytail",
+        source: "skill",
+        sourceInfo: {
+          source: "local",
+          scope: "user",
+          origin: "top-level",
+        },
+      },
+    ],
+    getAllTools: () => [],
+  });
+  try {
+    const output = join(harness.directory, "skill-presence.json");
+    await harness.handler()(
+      `json --scope tree --output ${JSON.stringify(output)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    const report = JSON.parse(await readFile(output, "utf8"));
+    const ponytail = (
+      report.integrations as {
+        integration: string;
+        presence: string;
+      }[]
+    ).find((row) => row.integration === "ponytail");
+    assert.equal(ponytail?.presence, "absent");
   } finally {
     await harness.cleanup();
   }

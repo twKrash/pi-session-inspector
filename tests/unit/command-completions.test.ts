@@ -22,6 +22,12 @@ test("offers only valid completions for the current token", () => {
   assert.deepEqual(values("tui --theme "), []);
   assert.equal(completeInspectorCommand("ui --nope "), null);
   assert.equal(completeInspectorCommand("nonsense "), null);
+  // `json history|global` force `--scope tree`; `active` is a parser error there.
+  assert.deepEqual(values("json history --scope "), ["tree"]);
+  assert.deepEqual(values("json global --scope "), ["tree"]);
+  assert.deepEqual(values("json current --scope "), ["active", "tree"]);
+  assert.deepEqual(values("json --scope "), ["active", "tree"]);
+  assert.deepEqual(values("tui --scope "), ["active", "tree"]);
 });
 
 test("keeps completing after a settled target without offering options too early", () => {

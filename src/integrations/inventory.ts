@@ -107,13 +107,18 @@ export function readInventory(
         .map(toSkillRow)
         .slice(0, MAX_SKILLS),
       resources: groupResources(commandRows, toolRows),
-      toolSources: Object.fromEntries(
-        toolRows.map((row) => [row.name, row.sourceLabel]),
-      ),
+      toolSources: toToolSources(toolRows),
     };
   } catch {
     return emptySnapshot();
   }
+}
+
+/** Null prototype so `Object.prototype` member names never resolve as sources. */
+function toToolSources(toolRows: readonly ToolRow[]): Record<string, string> {
+  const sources: Record<string, string> = Object.create(null);
+  for (const row of toolRows) sources[row.name] = row.sourceLabel;
+  return sources;
 }
 
 function sanitizeCommands(input: readonly unknown[]): readonly CommandRow[] {
@@ -304,6 +309,6 @@ function emptySnapshot(): InventorySnapshot {
     commands: [],
     skills: [],
     resources: [],
-    toolSources: {},
+    toolSources: Object.create(null),
   };
 }

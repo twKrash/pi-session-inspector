@@ -153,7 +153,9 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
             inventory === undefined
               ? undefined
               : readIntegrationPresence({
-                  commands: inventory.commands.map((row) => row.name),
+                  extensionCommands: inventory.commands
+                    .filter((row) => row.source === "extension")
+                    .map((row) => row.name),
                   tools: Object.keys(inventory.toolSources),
                   permissionsReady: counters?.presence.permission ?? false,
                   inventoryAvailable: true,

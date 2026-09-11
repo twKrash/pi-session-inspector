@@ -13,10 +13,19 @@ import {
 } from "./grammar.ts";
 
 /** Fixed value choices for value-consuming options; arity lives in the grammar. */
-const VALUE_CHOICES: Readonly<Record<string, readonly string[]>> = {
-  "--scope": INSPECTOR_SCOPE_VALUES,
-  "--theme": INSPECTOR_THEME_VALUES,
-};
+function valueChoices(
+  option: string,
+  mode: InspectorMode,
+  target: InspectorTarget | undefined,
+): readonly string[] | undefined {
+  // `json history|global` forces `--scope tree`; `active` is a parser error.
+  if (option === "--scope")
+    return mode === "json" && (target === "history" || target === "global")
+      ? ["tree"]
+      : INSPECTOR_SCOPE_VALUES;
+  if (option === "--theme") return INSPECTOR_THEME_VALUES;
+  return undefined;
+}
 
 const HELP_TOKENS = new Set(["help", "--help", "-h"]);
 
@@ -52,6 +61,7 @@ export function completeInspectorCommand(
   const typedMode = mode as InspectorMode;
 
   let targetChosen = false;
+  let chosenTarget: InspectorTarget | undefined;
   let pendingValue: string | undefined;
 
   for (let index = 1; index < tokens.length; index += 1) {
@@ -63,7 +73,7 @@ export function completeInspectorCommand(
       continue;
     }
     if (pendingValue) {
-      const choices = VALUE_CHOICES[pendingValue];
+      const choices = valueChoices(pendingValue, typedMode, chosenTarget);
       if (pendingValue === "--output") {
         if (token.length === 0) return null;
       } else if (!choices || !choices.includes(token)) {
@@ -80,10 +90,11 @@ export function completeInspectorCommand(
       return null;
     }
     targetChosen = true;
+    chosenTarget = token as InspectorTarget;
   }
 
   if (pendingValue) {
-    const choices = VALUE_CHOICES[pendingValue];
+    const choices = valueChoices(pendingValue, typedMode, chosenTarget);
     return choices ? items(choices, current) : null;
   }
 

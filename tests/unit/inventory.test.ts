@@ -92,6 +92,18 @@ test("sanitizes command, skill, tool, and resource-source inventory", async () =
   assert.deepEqual(readInventory(commands, tools), snapshot);
 });
 
+test("builds a null-prototype tool source map", () => {
+  const snapshot = readInventory(
+    [],
+    [{ name: "read", sourceInfo: { source: "builtin" } }],
+  );
+  assert.equal(Object.getPrototypeOf(snapshot.toolSources), null);
+  assert.equal(snapshot.toolSources.read, "builtin");
+  // `Object.prototype` members must never resolve as a source.
+  assert.equal(snapshot.toolSources.toString, undefined);
+  assert.equal(snapshot.toolSources.constructor, undefined);
+});
+
 test("drops secret-like and path-like command descriptions", () => {
   const snapshot = readInventory(
     [

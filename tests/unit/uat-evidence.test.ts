@@ -114,7 +114,9 @@ function uatObservation(): SessionObservation {
   return {
     ...emptyObservation(),
     presence: readIntegrationPresence({
-      commands: inventory.commands.map((row) => row.name),
+      extensionCommands: inventory.commands
+        .filter((row) => row.source === "extension")
+        .map((row) => row.name),
       tools: Object.keys(inventory.toolSources),
       permissionsReady: false,
       inventoryAvailable: true,

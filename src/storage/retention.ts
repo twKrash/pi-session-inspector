@@ -38,18 +38,22 @@ export async function pruneExpiredWalSegments({
 }): Promise<number> {
   if (!isMaintenanceLeaseHeld(lease, directory)) return 0;
 
-  const checkpoint = await readCheckpoint({ directory });
-  if (checkpoint === undefined) return 0;
   const cutoff = cutoffDate(now());
   if (cutoff === undefined) return 0;
 
-  let writers: Dir;
+  // Inventory expiry does not require a checkpoint: a session whose WAL was
+  // never checkpointed must still let its aged `inventory.json` expire.
   let deleted = 0;
   try {
     deleted += await pruneExpiredInventory({ directory, cutoff, remove });
   } catch {
     // Inventory expiry is observer-only and never blocks WAL maintenance.
   }
+
+  const checkpoint = await readCheckpoint({ directory });
+  if (checkpoint === undefined) return deleted;
+
+  let writers: Dir;
   try {
     writers = await opendir(join(directory, "wal"), { encoding: "utf8" });
   } catch {

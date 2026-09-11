@@ -54,7 +54,7 @@ const EMPTY_SNAPSHOT: InventorySnapshot = {
   commands: [],
   skills: [],
   resources: [],
-  toolSources: {},
+  toolSources: Object.create(null),
 };
 
 function serializedBytes(snapshot: InventorySnapshot): number {
@@ -114,9 +114,10 @@ export function boundInventorySnapshot(
   const commands = [...withoutDescriptions.commands];
   const skills = [...withoutDescriptions.skills];
   const resources = [...withoutDescriptions.resources];
-  const toolSources: Record<string, string> = {
-    ...withoutDescriptions.toolSources,
-  };
+  const toolSources: Record<string, string> = Object.assign(
+    Object.create(null),
+    withoutDescriptions.toolSources,
+  );
   let candidate: InventorySnapshot = {
     schemaVersion: 1,
     commands,
@@ -338,12 +339,13 @@ function parseToolSources(
 ): Readonly<Record<string, string>> | undefined {
   const record = asRecord(value);
   if (record === undefined) return undefined;
-  const entries: [string, string][] = [];
+  // Null prototype so inherited `Object.prototype` members are never sources.
+  const sources: Record<string, string> = Object.create(null);
   for (const [name, label] of Object.entries(record)) {
     if (!isBoundedName(name)) return undefined;
-    entries.push([name, sanitizeSourceLabel(label)]);
+    sources[name] = sanitizeSourceLabel(label);
   }
-  return Object.fromEntries(entries);
+  return sources;
 }
 
 function readSource(value: unknown): Source | undefined {

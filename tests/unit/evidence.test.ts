@@ -127,6 +127,20 @@ test("snapshots validated adapter counters", () => {
   });
 });
 
+test("rejects prototype-member integration names as invalid evidence", () => {
+  for (const integration of [
+    "__proto__",
+    "constructor",
+    "toString",
+    "hasOwnProperty",
+  ]) {
+    assert.deepEqual(registry().read({ integration, version: 1, value: {} }), {
+      state: "unsupported",
+      diagnostic: "invalid-evidence",
+    });
+  }
+});
+
 test("rejects malformed adapter output with a fixed diagnostic", () => {
   const hiddenOutput = Object.create(null, {
     counters: { enumerable: true, value: { calls: 1 } },

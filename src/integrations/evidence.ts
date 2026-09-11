@@ -133,7 +133,9 @@ function isEvidenceInput(value: Record<string, unknown>): boolean {
 function normalizeIntegration(
   value: unknown,
 ): IntegrationKey | "mode" | undefined {
-  return typeof value === "string"
+  // `Object.hasOwn` so `__proto__`, `constructor`, and other prototype member
+  // names are rejected as invalid evidence rather than resolving to a value.
+  return typeof value === "string" && Object.hasOwn(INTEGRATION_ALIASES, value)
     ? INTEGRATION_ALIASES[value as keyof typeof INTEGRATION_ALIASES]
     : undefined;
 }

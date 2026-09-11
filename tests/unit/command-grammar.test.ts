@@ -91,6 +91,13 @@ test("rejects invalid combinations and removed syntax with a usable message", ()
     "ui --scope branch",
     "ui --output",
     "ui 'unterminated",
+    // Prototype-member names must not be mistaken for declared options.
+    "ui constructor",
+    "ui --scope tree constructor",
+    "ui --scope tree toString",
+    "ui --scope tree hasOwnProperty",
+    "ui --scope tree __proto__",
+    "ui __proto__",
   ];
   for (const input of cases) {
     const parsed = parseInspectorCommand(input);

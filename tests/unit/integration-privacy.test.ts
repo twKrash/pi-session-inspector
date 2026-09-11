@@ -246,6 +246,7 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
       flush: async () => {},
     },
     {
+      sessionId: "privacy-corpus",
       inventoryNames: () => new Set(["council-mode"]),
       now: () => new Date("2026-09-11T10:00:00Z"),
     },
@@ -288,7 +289,9 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
   const observation = {
     ...emptyObservation(),
     presence: readIntegrationPresence({
-      commands: inventory.commands.map((row) => row.name),
+      extensionCommands: inventory.commands
+        .filter((row) => row.source === "extension")
+        .map((row) => row.name),
       tools: Object.keys(inventory.toolSources),
       permissionsReady: false,
       inventoryAvailable: true,

@@ -170,11 +170,16 @@ test("re-sanitizes tampered labels and drops unknown fields on read", () => {
       },
     ],
     resources: [resourceRow({ sourceLabel: "other", commands: 1 })],
-    toolSources: { read: "other" },
+    toolSources: Object.assign(Object.create(null), { read: "other" }),
   };
   assert.deepEqual(parsed, expected);
   // Stable: re-parsing the sanitized result is a no-op.
   assert.deepEqual(parseInventorySnapshot(parsed), parsed);
+  // A null prototype means a tool named after an `Object.prototype` member
+  // (for example `toString`) can never resolve to an inherited value.
+  assert.ok(parsed);
+  assert.equal(Object.getPrototypeOf(parsed.toolSources), null);
+  assert.equal(parsed.toolSources.toString, undefined);
 });
 
 test("drops a description that fails the bounded privacy policy", () => {

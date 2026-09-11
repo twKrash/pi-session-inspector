@@ -56,34 +56,50 @@ type SessionWalSetup = (input: {
 const description = "Open Pi Session Inspector reports";
 
 /**
- * Live observer handle for the active session. Report reads flush it first so
- * the WAL contains every already-observed event before counters are computed.
+ * Live observer state kept per tracked session so a repeated promotion cannot
+ * overwrite another session's writer/readiness/inventory, and so a second
+ * registration for the same session never adds a duplicate listener set.
  */
-let liveWriter: LiveWalWriter | undefined;
-/** Live `permissions:ready` sighting in this process; durable presence is folded. */
-let liveReady = false;
-/** Sanitized inventory of the active tracked session, read after promotion. */
-let liveInventory: InventorySnapshot | undefined;
-/** Bounded skill names the live counter producers may count. */
-let liveInventoryNames: ReadonlySet<string> = new Set<string>();
-/** Active tracked session location, used to refresh the snapshot on reload. */
+type LiveSessionState = {
+  writer?: LiveWalWriter;
+  ready: boolean;
+  inventory?: InventorySnapshot;
+  inventoryNames: ReadonlySet<string>;
+};
+const liveSessions = new Map<string, LiveSessionState>();
+/** Latest promoted session location, used to refresh the snapshot on reload. */
 let liveInventoryScope: { root: string; sessionId: string } | undefined;
+
+function liveSession(sessionId: string): LiveSessionState {
+  let state = liveSessions.get(sessionId);
+  if (state === undefined) {
+    state = { ready: false, inventoryNames: new Set<string>() };
+    liveSessions.set(sessionId, state);
+  }
+  return state;
+}
 
 function rememberInventory(
   inventory: InventorySnapshot,
   scope: { root: string; sessionId: string },
 ): void {
-  liveInventory = inventory;
-  liveInventoryNames = new Set(inventory.skills.map((skill) => skill.name));
+  const state = liveSession(scope.sessionId);
+  state.inventory = inventory;
+  state.inventoryNames = new Set(inventory.skills.map((skill) => skill.name));
   liveInventoryScope = scope;
 }
 
 /** Flushes live evidence before a report read; failures never affect Pi. */
 export async function flushLiveEvidence(): Promise<void> {
-  try {
-    await liveWriter?.flush();
-  } catch {
-    // Flush failures must not affect reports or Pi.
+  const writers = [...liveSessions.values()]
+    .map((state) => state.writer)
+    .filter((writer): writer is LiveWalWriter => writer !== undefined);
+  for (const writer of writers) {
+    try {
+      await writer.flush();
+    } catch {
+      // Flush failures must not affect reports or Pi.
+    }
   }
 }
 
@@ -108,6 +124,7 @@ export function registerTracking(
     }): void;
   },
 ): void {
+  const promotedSessions = new Set<string>();
   registerSessionStartTracking(
     api,
     join(agentDir, "session-inspector", "v1"),
@@ -121,8 +138,8 @@ export function registerTracking(
         liveInventoryScope = scope;
         const snapshot = readSessionInventory(api);
         if (snapshot === undefined) {
-          liveInventory = undefined;
-          liveInventoryNames = new Set<string>();
+          liveSession(input.sessionId).inventory = undefined;
+          liveSession(input.sessionId).inventoryNames = new Set<string>();
         } else {
           rememberInventory(snapshot, scope);
           void refreshInventorySnapshot({
@@ -130,21 +147,27 @@ export function registerTracking(
             snapshot,
           }).catch(() => undefined);
         }
-        try {
-          schedule({
+        // Promotions are idempotent per session: a second `session_start` for
+        // the same session must never register a second writer/listener set
+        // (which would double-count the same bus events in the cursor fold).
+        if (!promotedSessions.has(input.sessionId)) {
+          promotedSessions.add(input.sessionId);
+          try {
+            schedule({
+              root: input.root,
+              sessionId: input.sessionId,
+              sessionFile: input.sessionFile,
+            });
+          } catch {
+            // Detached maintenance must not affect tracking or Pi.
+          }
+          await setup({
             root: input.root,
             sessionId: input.sessionId,
             sessionFile: input.sessionFile,
+            api,
           });
-        } catch {
-          // Detached maintenance must not affect tracking or Pi.
         }
-        await setup({
-          root: input.root,
-          sessionId: input.sessionId,
-          sessionFile: input.sessionFile,
-          api,
-        });
       }
       return tracked;
     },
@@ -160,7 +183,7 @@ function scheduleProductionMaintenance({
   sessionId: string;
   sessionFile: string;
 }): void {
-  const inventory = liveInventory;
+  const inventory = liveSessions.get(sessionId)?.inventory;
   scheduleMaintenance({
     root,
     sessionId,
@@ -190,7 +213,9 @@ function setupProductionSessionWal(input: {
         now: () => new Date(),
         onSegmentRotation,
       });
-      liveWriter = writer;
+      // Keyed by session so a concurrent/repeated promotion never clobbers
+      // another session's writer handle.
+      liveSession(input.sessionId).writer = writer;
       return writer;
     },
     registerLive: (api, writer) =>
@@ -202,11 +227,15 @@ function setupProductionSessionWal(input: {
       registerLiveCounterProducers(
         api as LiveCounterApi,
         writer as LiveCounterWriter,
-        { inventoryNames: context.inventoryNames, now: () => new Date() },
+        {
+          sessionId: context.sessionId,
+          inventoryNames: context.inventoryNames,
+          now: () => new Date(),
+        },
       );
-      observePermissionsReady(api);
+      observePermissionsReady(api, context.sessionId);
     },
-    readInventoryNames: () => liveInventoryNames,
+    readInventoryNames: () => liveSession(input.sessionId).inventoryNames,
     scheduleMaintenance: scheduleProductionMaintenance,
   });
 }
@@ -216,10 +245,10 @@ type PermissionBusApi = {
 };
 
 /** Records a live `permissions:ready` sighting; presence only, never a counter. */
-function observePermissionsReady(api: unknown): void {
+function observePermissionsReady(api: unknown, sessionId: string): void {
   try {
     (api as PermissionBusApi).events?.on?.("permissions:ready", () => {
-      liveReady = true;
+      liveSession(sessionId).ready = true;
     });
   } catch {
     // Live presence observation is observer-only.
@@ -295,17 +324,23 @@ async function readSessionObservation(input: {
       foldedFromCheckpointAggregates(checkpoint?.aggregates),
       recovered.deltaCounters,
     );
-    const inventory = liveInventory;
+    const inventory = liveSessions.get(input.sessionId)?.inventory;
+    const session = liveSessions.get(input.sessionId);
     return {
       presence: readIntegrationPresence({
-        commands:
+        // Only `source === "extension"` rows may signal extension presence; a
+        // skill sharing the name must never be reported as the extension.
+        extensionCommands:
           inventory === undefined
             ? []
-            : inventory.commands.map((row) => row.name),
+            : inventory.commands
+                .filter((row) => row.source === "extension")
+                .map((row) => row.name),
         tools:
           inventory === undefined ? [] : Object.keys(inventory.toolSources),
         // Durable presence: the bus may have been observed in a previous process.
-        permissionsReady: liveReady || counters.presence.permission,
+        permissionsReady:
+          (session?.ready ?? false) || counters.presence.permission,
         inventoryAvailable: inventory !== undefined,
       }),
       counters,

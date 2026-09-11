@@ -1431,3 +1431,42 @@ test("expires an aged inventory snapshot while keeping a current one and persist
     await rm(root, { force: true, recursive: true });
   }
 });
+
+test("expires an aged inventory snapshot even when no checkpoint exists", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const inventory = join(directory, "inventory.json");
+    await writeFile(inventory, "{}");
+    const lease = await acquireLease(directory);
+
+    // No checkpoint: the inventory prune must still run and expire the file.
+    await setModifiedTime(inventory, "2026-09-07T12:00:00.000Z");
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      1,
+    );
+    assert.equal((await readdir(directory)).includes("inventory.json"), false);
+
+    // A snapshot inside the retention window survives the identical pass.
+    await writeFile(inventory, "{}");
+    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      0,
+    );
+    assert.equal((await readdir(directory)).includes("inventory.json"), true);
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});

@@ -47,14 +47,34 @@ export type LiveCounterApi = {
   on(
     event: "input",
     handler: (event: { text: string }, ctx?: unknown) => void,
-  ): void;
+  ): unknown;
 };
+
+export type LiveCounterRegistration = {
+  /** Removes every retained listener; safe to call repeatedly. */
+  dispose(): void;
+};
+
+/**
+ * Exactly one live registration per session. A repeated `session_start` for a
+ * session that already has listeners returns the existing registration instead
+ * of attaching a second set, which would append every event twice and double
+ * the cursor-fold counters.
+ */
+const activeRegistrations = new Map<string, LiveCounterRegistration>();
 
 export function registerLiveCounters(
   api: LiveCounterApi,
   writer: LiveCounterWriter,
-  options: { inventoryNames(): ReadonlySet<string>; now(): Date },
-): void {
+  options: {
+    sessionId: string;
+    inventoryNames(): ReadonlySet<string>;
+    now(): Date;
+  },
+): LiveCounterRegistration {
+  const existing = activeRegistrations.get(options.sessionId);
+  if (existing !== undefined) return existing;
+
   const append = (envelope: unknown): void => {
     try {
       writer.appendTelemetry(envelope);
@@ -110,12 +130,22 @@ export function registerLiveCounters(
       });
     } catch {}
   };
-  try {
-    api.events.on("permissions:ready", ready);
-    api.events.on("permissions:ui_prompt", prompt);
-    api.events.on("permissions:decision", decision);
-  } catch {}
-  try {
+  // Bus `on` returns an unsubscribe function; retain it so the registration can
+  // be disposed. Pi's `on` may return a disposer too, which is retained when
+  // present (its public type is `void`).
+  const disposers: Array<() => void> = [];
+  const subscribe = (register: () => unknown): void => {
+    try {
+      const dispose = register();
+      if (typeof dispose === "function") disposers.push(dispose as () => void);
+    } catch {
+      // Subscription failures are observer-only.
+    }
+  };
+  subscribe(() => api.events.on("permissions:ready", ready));
+  subscribe(() => api.events.on("permissions:ui_prompt", prompt));
+  subscribe(() => api.events.on("permissions:decision", decision));
+  subscribe(() =>
     api.on("input", (event) => {
       try {
         const name = readSkillCommandName(
@@ -134,8 +164,25 @@ export function registerLiveCounters(
       } catch {
         // Input observation must never affect Pi execution.
       }
-    });
-  } catch {}
+    }),
+  );
+
+  const registration: LiveCounterRegistration = {
+    dispose() {
+      for (const dispose of disposers.splice(0)) {
+        try {
+          dispose();
+        } catch {
+          // Disposal failures are observer-only.
+        }
+      }
+      if (activeRegistrations.get(options.sessionId) === registration) {
+        activeRegistrations.delete(options.sessionId);
+      }
+    },
+  };
+  activeRegistrations.set(options.sessionId, registration);
+  return registration;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

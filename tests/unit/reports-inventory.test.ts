@@ -5,6 +5,42 @@ import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { emptyObservation } from "../../src/ui/observation.ts";
+import { renderJson } from "../../src/ui/json.ts";
+
+test("never attaches a prototype-derived tool source to an unknown tool", () => {
+  const reduced = reduceEntries("session-proto", [
+    {
+      id: "p1",
+      parentId: null,
+      timestamp: "2026-09-11T10:00:00Z",
+      type: "message",
+      message: {
+        role: "assistant",
+        provider: "acme",
+        model: "alpha",
+        content: [{ type: "toolCall", id: "call-1", name: "toString" }],
+      },
+    },
+  ]);
+  const report = toSessionReport(reduced, {
+    inventory: {
+      schemaVersion: 1,
+      commands: [],
+      skills: [],
+      resources: [],
+      toolSources: {},
+    },
+  });
+
+  assert.equal(report.tools.length, 1);
+  assert.equal(report.tools[0]?.name, "toString");
+  // A `toString` tool absent from the inventory must not resolve to the
+  // inherited `Object.prototype.toString` function.
+  assert.equal(report.tools[0]?.source, undefined);
+  assert.equal(typeof report.tools[0]?.source, "undefined");
+  assert.equal(renderJson(report).includes("native code"), false);
+  assert.equal(renderJson(report).includes("[object"), false);
+});
 
 test("composes inventory, invocation counts, and tool source attribution", () => {
   const reduced = reduceEntries("session-a", [

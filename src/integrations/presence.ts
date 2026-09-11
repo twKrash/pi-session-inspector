@@ -1,7 +1,12 @@
 import type { IntegrationKey, IntegrationPresence } from "../core/events.ts";
 
 export type PresenceSignals = {
-  commands: readonly string[];
+  /**
+   * Names of `source === "extension"` commands only. Skill/prompt rows may
+   * share a name with an extension (for example a `skill:ponytail`), so the
+   * caller must filter by source before signalling presence.
+   */
+  extensionCommands: readonly string[];
   tools: readonly string[];
   permissionsReady: boolean;
   inventoryAvailable: boolean;
@@ -10,8 +15,8 @@ export type PresenceSignals = {
 type Signal = (input: PresenceSignals) => boolean;
 
 const SIGNALS: Partial<Record<IntegrationKey, Signal>> = {
-  ponytail: ({ commands }) => commands.includes("ponytail"),
-  caveman: ({ commands }) => commands.includes("caveman"),
+  ponytail: ({ extensionCommands }) => extensionCommands.includes("ponytail"),
+  caveman: ({ extensionCommands }) => extensionCommands.includes("caveman"),
   context: ({ tools }) => tools.some((tool) => tool.startsWith("ctx_")),
   subagents: ({ tools }) =>
     tools.some((tool) =>

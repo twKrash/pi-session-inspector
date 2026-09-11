@@ -33,6 +33,7 @@ test("translates public permission bus events into bounded envelopes only", asyn
       flush: async () => {},
     },
     {
+      sessionId: "live-counters-session",
       inventoryNames: () => new Set(["council-mode", "hf-cli"]),
       now: () => new Date("2026-09-11T10:00:00Z"),
     },
@@ -157,4 +158,75 @@ test("translates public permission bus events into bounded envelopes only", asyn
   const readyFolded = foldTelemetryCounters(readyEnvelopes);
   assert.deepEqual(readyFolded.counters, {});
   assert.equal(readyFolded.presence.permission, true);
+});
+
+test("repeated registration for one session keeps exactly one listener set", () => {
+  const busHandlers = new Map<string, (data: unknown) => void>();
+  const inputHandlers: Array<(event: { text: string }) => void> = [];
+  let busSubscriptions = 0;
+  const api = {
+    events: {
+      on: (channel: string, handler: (data: unknown) => void) => {
+        busSubscriptions += 1;
+        busHandlers.set(channel, handler);
+        return () => {};
+      },
+    },
+    on: (_event: "input", handler: (event: { text: string }) => void) => {
+      inputHandlers.push(handler);
+    },
+  };
+  const firstEnvelopes: unknown[] = [];
+  const secondEnvelopes: unknown[] = [];
+  const options = {
+    sessionId: "live-dedupe-session",
+    inventoryNames: () => new Set(["council-mode"]),
+    now: () => new Date("2026-09-11T10:00:00Z"),
+  };
+
+  const first = registerLiveCounters(
+    api,
+    {
+      appendTelemetry: (envelope) => firstEnvelopes.push(envelope),
+      flush: async () => {},
+    },
+    options,
+  );
+  // A second registration for the same session must be a no-op: no new bus or
+  // input listeners, and no second envelope for a single observed event.
+  const second = registerLiveCounters(
+    api,
+    {
+      appendTelemetry: (envelope) => secondEnvelopes.push(envelope),
+      flush: async () => {},
+    },
+    options,
+  );
+  assert.equal(second, first);
+  assert.equal(busSubscriptions, 3);
+  assert.equal(inputHandlers.length, 1);
+
+  inputHandlers[0]?.({ text: "/skill:council-mode" });
+  assert.equal(
+    firstEnvelopes.filter(
+      (envelope) =>
+        (envelope as { metric: string }).metric === "skill.invocation",
+    ).length,
+    1,
+  );
+  assert.equal(secondEnvelopes.length, 0);
+
+  // Disposal releases the session so a later registration attaches again.
+  first.dispose();
+  registerLiveCounters(
+    api,
+    {
+      appendTelemetry: (envelope) => secondEnvelopes.push(envelope),
+      flush: async () => {},
+    },
+    options,
+  );
+  assert.equal(inputHandlers.length, 2);
+  inputHandlers[1]?.({ text: "/skill:council-mode" });
+  assert.equal(secondEnvelopes.length, 1);
 });

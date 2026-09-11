@@ -214,7 +214,9 @@ export function toSessionReport(
     const source = inventory?.toolSources[tool.name];
     const projected: SessionReportTool = { ...tool };
     if (durationMs !== undefined) projected.durationMs = durationMs;
-    if (source !== undefined) projected.source = source;
+    // Guard against a prototype-derived value when a tool is named after an
+    // `Object.prototype` member but absent from the inventory.
+    if (typeof source === "string") projected.source = source;
     return projected;
   });
   return {
@@ -942,12 +944,14 @@ function projectToolSources(
 ): Record<string, string> | undefined {
   const record = snapshotRecord(value);
   if (record === undefined) return undefined;
-  const entries: [string, string][] = [];
+  // Null prototype so a tool named after an `Object.prototype` member never
+  // resolves to an inherited value during later lookups.
+  const sources: Record<string, string> = Object.create(null);
   for (const name of Object.keys(record).sort()) {
     if (!isInventoryName(name)) return undefined;
-    entries.push([name, sanitizeSourceLabel(record[name])]);
+    sources[name] = sanitizeSourceLabel(record[name]);
   }
-  return Object.fromEntries(entries);
+  return sources;
 }
 
 function projectCommands(

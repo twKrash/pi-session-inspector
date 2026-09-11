@@ -160,7 +160,11 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
 
   while (tokens.length > 0) {
     const option = tokens.shift() as string;
-    const arity = INSPECTOR_OPTION_ARITY[option];
+    // `Object.hasOwn` so a prototype member name (`constructor`, `toString`,
+    // `__proto__`, ...) is never mistaken for a declared option.
+    const arity = Object.hasOwn(INSPECTOR_OPTION_ARITY, option)
+      ? INSPECTOR_OPTION_ARITY[option]
+      : undefined;
     if (arity === undefined) return reject();
     // Value-consuming options take the next token; flags never do.
     const value = arity === "value" ? tokens.shift() : undefined;
@@ -176,10 +180,13 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
       if (mode === "tui") return reject();
       if (!value || value.startsWith("-")) return reject();
       output = value;
-    } else {
-      // `--no-open` (the only remaining arity entry) is ui-only.
+    } else if (option === "--no-open") {
+      // The only remaining arity entry is ui-only.
       if (mode !== "ui") return reject();
       noOpen = true;
+    } else {
+      // Unknown option: reject explicitly, never fall through to `--no-open`.
+      return reject();
     }
   }
 

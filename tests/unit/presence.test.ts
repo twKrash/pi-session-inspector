@@ -4,7 +4,7 @@ import { readIntegrationPresence } from "../../src/integrations/presence.ts";
 
 test("maps native inventory signals to presence without guessing", () => {
   const rows = readIntegrationPresence({
-    commands: ["ponytail", "caveman", "skill:council-mode"],
+    extensionCommands: ["ponytail", "caveman"],
     tools: [
       "subagent",
       "subagent_wait",
@@ -29,7 +29,7 @@ test("maps native inventory signals to presence without guessing", () => {
 
 test("reports absence only with an available inventory, and presence from a ready bus", () => {
   const rows = readIntegrationPresence({
-    commands: [],
+    extensionCommands: [],
     tools: ["read", "bash"],
     permissionsReady: true,
     inventoryAvailable: true,
@@ -43,7 +43,7 @@ test("reports absence only with an available inventory, and presence from a read
   assert.equal(rows.permission, "present");
 
   const unknown = readIntegrationPresence({
-    commands: [],
+    extensionCommands: [],
     tools: [],
     permissionsReady: false,
     inventoryAvailable: false,
@@ -57,4 +57,35 @@ test("reports absence only with an available inventory, and presence from a read
     subagents: "unknown",
     lens: "unknown",
   });
+});
+
+test("never reports an extension present from a same-named skill or prompt command", () => {
+  // A loaded skill named `ponytail` contributes no extension command, so the
+  // extension stays absent with an available inventory and never `present`.
+  const skillOnly = readIntegrationPresence({
+    extensionCommands: [],
+    tools: [],
+    permissionsReady: false,
+    inventoryAvailable: true,
+  });
+  assert.equal(skillOnly.ponytail, "absent");
+  assert.equal(skillOnly.caveman, "absent");
+
+  const unavailable = readIntegrationPresence({
+    extensionCommands: [],
+    tools: [],
+    permissionsReady: false,
+    inventoryAvailable: false,
+  });
+  assert.equal(unavailable.ponytail, "unknown");
+
+  // A real extension command named `ponytail` still reports present.
+  const extension = readIntegrationPresence({
+    extensionCommands: ["ponytail"],
+    tools: [],
+    permissionsReady: false,
+    inventoryAvailable: true,
+  });
+  assert.equal(extension.ponytail, "present");
+  assert.equal(extension.caveman, "absent");
 });
