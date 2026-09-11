@@ -151,6 +151,80 @@ test("folds recovered telemetry into checkpoint aggregates exactly once across r
   }
 });
 
+test("canonicalizes folded aggregate key order so no-new-telemetry passes stay byte-identical", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  try {
+    const sessionId = "session-1";
+    const sessionFile = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    const writerId = "writer-a";
+    const walSegment = join(directory, "wal", writerId, "2026-09-07.jsonl");
+    await mkdir(join(directory, "wal", writerId), { recursive: true });
+    await writeFile(sessionFile, `${trackingMarkerLine}\n`);
+
+    const maintain = (maintenanceWriterId: string) =>
+      maintainSession({
+        root,
+        sessionId,
+        sessionFile,
+        writerId: maintenanceWriterId,
+        now: () => new Date("2026-09-07T12:00:00.000Z"),
+      });
+
+    // Pass 1 folds only the deny decision (`decisions` + `denied`).
+    await appendTelemetry(
+      walSegment,
+      writerId,
+      1,
+      "permission-1",
+      permissionEnvelope("user_denied", "deny"),
+    );
+    assert.equal((await maintain("m1")).status, "available");
+    assert.deepEqual(
+      (await readCheckpoint({ directory }))?.aggregates.integrationCounters
+        ?.permission,
+      { decisions: 1, denied: 1 },
+    );
+
+    // Pass 2 folds `allowed`, which sorts BEFORE the already-stored keys. The
+    // merge keeps stored keys first, so without write-boundary canonicalization
+    // this writes `{decisions, denied, allowed}` and the next no-new-telemetry
+    // pass (rebuilding the base in sorted order) would rewrite the bytes.
+    await appendTelemetry(
+      walSegment,
+      writerId,
+      2,
+      "permission-2",
+      permissionEnvelope("user_approved", "allow"),
+    );
+    assert.equal((await maintain("m2")).status, "available");
+    assert.deepEqual(
+      (await readCheckpoint({ directory }))?.aggregates.integrationCounters
+        ?.permission,
+      { decisions: 2, allowed: 1, denied: 1 },
+    );
+    const secondBytes = await readFile(
+      join(directory, "checkpoint.json"),
+      "utf8",
+    );
+
+    // Two additional passes with no new telemetry must not rewrite the bytes.
+    await maintain("m3");
+    await maintain("m4");
+    assert.deepEqual(
+      (await readCheckpoint({ directory }))?.aggregates.integrationCounters
+        ?.permission,
+      { decisions: 2, allowed: 1, denied: 1 },
+    );
+    assert.equal(
+      await readFile(join(directory, "checkpoint.json"), "utf8"),
+      secondBytes,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("invalidates a same-line-count Pi rewrite with a bounded source revision", async () => {
   const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
   try {

@@ -115,7 +115,12 @@ export async function maintainSession({
           ...foldedAggregateFields(folded),
           ...(resourceCounts === undefined
             ? {}
-            : { resourceCounts: { ...resourceCounts } }),
+            : {
+                resourceCounts: {
+                  commands: resourceCounts.commands,
+                  skills: resourceCounts.skills,
+                },
+              }),
         },
       },
     });
@@ -149,6 +154,13 @@ function unavailableMaintenance(): MaintenanceResult {
  * zero counts are omitted rather than written as `{}`/`0` filler, so repeated
  * passes with no new telemetry stay byte-identical. `resourceCounts` is owned
  * by inventory maintenance and is not part of the counter fold.
+ *
+ * Every emitted map is canonicalized into sorted key order at this write
+ * boundary. `mergeFoldedCounters` keeps already-stored keys first and appends
+ * newly-seen delta keys, so without this sort a pass that folds a key sorting
+ * before a stored key would serialize different bytes than the following
+ * no-new-telemetry pass (which rebuilds the base in sorted order), even though
+ * the values are identical.
  */
 function foldedAggregateFields(
   folded: FoldedCounters,
@@ -160,18 +172,31 @@ function foldedAggregateFields(
   | "presence"
 > {
   const integrationCounters: [string, Record<string, number>][] = [];
-  for (const [integration, counters] of Object.entries(folded.counters)) {
-    if (counters !== undefined && Object.keys(counters).length > 0) {
-      integrationCounters.push([integration, { ...counters }]);
-    }
+  for (const integration of Object.keys(folded.counters).sort()) {
+    const counters = folded.counters[integration as keyof typeof folded.counters];
+    if (counters === undefined) continue;
+    const counterKeys = Object.keys(counters).sort();
+    if (counterKeys.length === 0) continue;
+    integrationCounters.push([
+      integration,
+      Object.fromEntries(counterKeys.map((key) => [key, counters[key] ?? 0])),
+    ]);
   }
+  const skillNames = Object.keys(folded.skillInvocations).sort();
   return {
     ...(integrationCounters.length === 0
       ? {}
       : { integrationCounters: Object.fromEntries(integrationCounters) }),
-    ...(Object.keys(folded.skillInvocations).length === 0
+    ...(skillNames.length === 0
       ? {}
-      : { skillInvocations: { ...folded.skillInvocations } }),
+      : {
+          skillInvocations: Object.fromEntries(
+            skillNames.map((name) => [
+              name,
+              folded.skillInvocations[name] ?? 0,
+            ]),
+          ),
+        }),
     ...(folded.otherInvocations > 0
       ? { skillOverflowInvocations: folded.otherInvocations }
       : {}),
