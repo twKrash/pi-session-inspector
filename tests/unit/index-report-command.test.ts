@@ -5,10 +5,12 @@ import {
   mkdtemp,
   readFile,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import type {
   ExtensionAPI,
@@ -70,7 +72,10 @@ const SESSION_SOURCE = `${[
   .map((row) => JSON.stringify(row))
   .join("\n")}\n`;
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(inventory?: {
+  getCommands(): readonly unknown[];
+  getAllTools(): readonly unknown[];
+}): Promise<Harness> {
   const directory = await mkdtemp(join(tmpdir(), "inspector-command-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
@@ -90,6 +95,12 @@ async function createHarness(): Promise<Harness> {
     on: () => {},
     registerCommand: (name: string, command: { handler: Handler }) =>
       handlers.set(name, command.handler),
+    ...(inventory === undefined
+      ? {}
+      : {
+          getCommands: () => inventory.getCommands(),
+          getAllTools: () => inventory.getAllTools(),
+        }),
     exec: async (command: string, args: string[]) => {
       opens.push([command, args]);
       if (openerResult === -1) throw new Error("PRIVATE_OPENER");
@@ -295,6 +306,102 @@ test("json current, history and global export deterministically and never open",
     assert.equal(global.usage.totalTokens, 18);
     assert.equal(harness.opens.length, 0);
     assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("a report load refreshes the inventory snapshot only when the producer changed", async () => {
+  const commands: unknown[] = [
+    {
+      name: "ponytail",
+      source: "extension",
+      sourceInfo: {
+        source: "npm:ponytail",
+        scope: "user",
+        origin: "package",
+      },
+    },
+  ];
+  const tools: unknown[] = [
+    {
+      name: "read",
+      sourceInfo: { source: "builtin", scope: "user", origin: "top-level" },
+    },
+  ];
+  let failing = false;
+  const harness = await createHarness({
+    getCommands: () => {
+      if (failing) throw new Error("producer down");
+      return commands;
+    },
+    getAllTools: () => tools,
+  });
+  try {
+    const sessionDirectory = join(harness.root, "sessions", "real-session");
+    await mkdir(sessionDirectory, { recursive: true });
+    const snapshotPath = join(sessionDirectory, "inventory.json");
+    const output = join(harness.directory, "report.json");
+    const names = (bytes: string) =>
+      (JSON.parse(bytes).commands as { name: string }[]).map((row) => row.name);
+    const run = () =>
+      harness.handler()(
+        `json --scope tree --output ${JSON.stringify(output)}`,
+        harness.context({ mode: "interactive" }),
+      );
+
+    // The first report load captures the current producer rows.
+    await run();
+    const firstBytes = await readFile(snapshotPath, "utf8");
+    assert.deepEqual(names(firstBytes), ["ponytail"]);
+    const first = await stat(snapshotPath);
+
+    // An unchanged producer hashes equal: the next load writes nothing.
+    await sleep(20);
+    await run();
+    assert.equal(await readFile(snapshotPath, "utf8"), firstBytes);
+    assert.equal((await stat(snapshotPath)).mtimeMs, first.mtimeMs);
+
+    // A late runtime registration changes the hash: one atomic rewrite.
+    commands.push({
+      name: "caveman",
+      source: "extension",
+      sourceInfo: { source: "local", scope: "user", origin: "top-level" },
+    });
+    await sleep(20);
+    await run();
+    const changedBytes = await readFile(snapshotPath, "utf8");
+    assert.notEqual(changedBytes, firstBytes);
+    assert.deepEqual(names(changedBytes), ["ponytail", "caveman"]);
+    const changed = await stat(snapshotPath);
+    assert.ok(changed.mtimeMs > first.mtimeMs);
+
+    // The refreshed snapshot feeds presence and the report injection...
+    const report = JSON.parse(await readFile(output, "utf8"));
+    assert.deepEqual(
+      (report.commands.items as { name: string }[]).map((row) => row.name),
+      ["ponytail", "caveman"],
+    );
+    assert.equal(
+      (report.integrations as { integration: string; presence: string }[]).find(
+        (row) => row.integration === "ponytail",
+      )?.presence,
+      "present",
+    );
+
+    // ...and the next identical load is a no-write again, so the change
+    // produced exactly one rewrite.
+    await sleep(20);
+    await run();
+    assert.equal(await readFile(snapshotPath, "utf8"), changedBytes);
+    assert.equal((await stat(snapshotPath)).mtimeMs, changed.mtimeMs);
+
+    // An unreadable producer keeps the last readable snapshot: no wipe, no
+    // fabricated zero inventory, and the report still sees the last snapshot.
+    failing = true;
+    await run();
+    assert.equal(await readFile(snapshotPath, "utf8"), changedBytes);
+    assert.deepEqual(names(changedBytes), ["ponytail", "caveman"]);
   } finally {
     await harness.cleanup();
   }

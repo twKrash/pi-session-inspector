@@ -44,6 +44,7 @@ import { generatedReportPath, writeReportOutput } from "./ui/report-output.ts";
 type SessionStartTrackingApi = Parameters<
   typeof registerSessionStartTracking
 >[0];
+type ReportInventoryApi = Parameters<typeof refreshSessionInventory>[0]["api"];
 type SessionTracker = Parameters<typeof registerSessionStartTracking>[2];
 type SessionWalSetup = (input: {
   root: string;
@@ -237,19 +238,51 @@ function readSessionId(sessionManager: unknown): string | undefined {
 }
 
 /**
+ * Re-reads the sanitized inventory when a report is loaded, the third refresh
+ * trigger, so runtime registrations (commands/agents added after start, a
+ * late-connecting MCP server) are captured at the next report load at the
+ * latest. `refreshSessionInventory` hash-compares against the persisted
+ * snapshot, so an unchanged row set writes nothing. Observer-only: an
+ * unreadable producer keeps the last readable in-memory snapshot instead of
+ * fabricating an empty one, and no failure reaches the report path or Pi.
+ */
+async function refreshReportInventory(
+  api: ReportInventoryApi,
+  scope: { root: string; sessionId: string },
+): Promise<void> {
+  try {
+    const snapshot = await refreshSessionInventory({
+      api,
+      root: scope.root,
+      sessionId: scope.sessionId,
+    });
+    if (snapshot !== undefined) rememberInventory(snapshot, scope);
+  } catch {
+    // Inventory refresh must never affect reports or Pi.
+  }
+}
+
+/**
  * Builds the process-local observation the report loader consumes. Counters are
  * the effective `merge(on-disk checkpoint aggregates, post-cursor WAL delta)`;
  * the checkpoint read here is never written back. Presence is durable because
  * `counters.presence.permission` ORs every folded `permissions:ready` from
- * earlier processes. Inventory lands in a later task, so until it exists every
- * non-permission key stays `unknown`, never a guessed `absent`.
+ * earlier processes, and derives from the current in-memory inventory; without
+ * a readable inventory every non-permission key stays `unknown`, never a
+ * guessed `absent`. The inventory snapshot is refreshed here before use.
  */
 async function readSessionObservation(input: {
+  api: ReportInventoryApi;
   root: string;
   sessionId: string | undefined;
 }): Promise<SessionObservation | undefined> {
   if (input.sessionId === undefined) return undefined;
   try {
+    // Report-load refresh before any snapshot is read or projected.
+    await refreshReportInventory(input.api, {
+      root: input.root,
+      sessionId: input.sessionId,
+    });
     const directory = join(input.root, "sessions", input.sessionId);
     const checkpoint = await readCheckpoint({ directory });
     const recovered = await recoverSession({
@@ -262,16 +295,21 @@ async function readSessionObservation(input: {
       foldedFromCheckpointAggregates(checkpoint?.aggregates),
       recovered.deltaCounters,
     );
+    const inventory = liveInventory;
     return {
       presence: readIntegrationPresence({
-        commands: [],
-        tools: [],
+        commands:
+          inventory === undefined
+            ? []
+            : inventory.commands.map((row) => row.name),
+        tools:
+          inventory === undefined ? [] : Object.keys(inventory.toolSources),
         // Durable presence: the bus may have been observed in a previous process.
         permissionsReady: liveReady || counters.presence.permission,
-        inventoryAvailable: false,
+        inventoryAvailable: inventory !== undefined,
       }),
       counters,
-      ...(liveInventory === undefined ? {} : { inventory: liveInventory }),
+      ...(inventory === undefined ? {} : { inventory }),
     };
   } catch {
     return undefined;
@@ -424,6 +462,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           const observation =
             command.mode === "ui" || target === "current" || target === "ledger"
               ? await readSessionObservation({
+                  api: pi,
                   root,
                   sessionId: readSessionId(sessionManager),
                 })
