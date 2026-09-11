@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"mode-session"}
+{"type":"custom","id":"p1","parentId":null,"timestamp":"2026-09-11T10:00:00Z","customType":"ponytail-mode","data":{"mode":"lite"}}
+{"type":"custom","id":"c1","parentId":"p1","timestamp":"2026-09-11T10:00:01Z","customType":"caveman-level","data":{"level":"full"}}
+{"type":"custom","id":"p2","parentId":"c1","timestamp":"2026-09-11T10:00:02Z","customType":"ponytail-mode","data":{"mode":"ultra"}}
+{"type":"custom","id":"p3","parentId":"p2","timestamp":"2026-09-11T10:00:03Z","customType":"ponytail-mode","data":{"mode":"not-a-mode"}}
+{"type":"custom","id":"c2","parentId":"p3","timestamp":"2026-09-11T10:00:04Z","customType":"caveman-level","data":{"level":"wenyan-ultra"}}
+{"type":"custom","id":"c3","parentId":"c2","timestamp":"2026-09-11T10:00:05Z","customType":"caveman-level","data":{"level":null}}
+{"type":"custom","id":"legacy","parentId":"c3","timestamp":"2026-09-11T10:00:06Z","customType":"mode","data":{"schemaVersion":1,"changes":5}}

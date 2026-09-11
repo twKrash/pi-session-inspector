@@ -13,11 +13,13 @@ const INTEGRATION_ALIASES = {
   context: "context",
   ctx: "context",
   rtk: "rtk",
+  ponytail: "ponytail",
+  caveman: "caveman",
   mode: "mode",
   permission: "permission",
   subagents: "subagents",
   lens: "lens",
-} as const satisfies Record<string, IntegrationKey>;
+} as const satisfies Record<string, IntegrationKey | "mode">;
 
 export type BoundedEvidenceValue = Readonly<Record<string, number | boolean>>;
 
@@ -69,7 +71,11 @@ export function createEvidenceRegistry(
         }
 
         const integration = normalizeIntegration(evidenceInput.integration);
-        if (integration === undefined || !isVersion(evidenceInput.version)) {
+        if (
+          integration === undefined ||
+          integration === "mode" ||
+          !isVersion(evidenceInput.version)
+        ) {
           return invalidEvidence();
         }
         const value = toBoundedValue(evidenceInput.value);
@@ -123,7 +129,9 @@ function isEvidenceInput(value: Record<string, unknown>): boolean {
   );
 }
 
-function normalizeIntegration(value: unknown): IntegrationKey | undefined {
+function normalizeIntegration(
+  value: unknown,
+): IntegrationKey | "mode" | undefined {
   return typeof value === "string"
     ? INTEGRATION_ALIASES[value as keyof typeof INTEGRATION_ALIASES]
     : undefined;

@@ -6,7 +6,10 @@ import type { IntegrationKey } from "./events.ts";
  * supplied names that merely resemble safe identifiers.
  */
 const COUNTER_KEYS: Readonly<
-  Record<IntegrationKey, Readonly<Record<number, ReadonlySet<string>>>>
+  Record<
+    IntegrationKey | "mode",
+    Readonly<Record<number, ReadonlySet<string>>>
+  >
 > = {
   context: { 1: new Set(["calls"]) },
   rtk: {
@@ -19,6 +22,8 @@ const COUNTER_KEYS: Readonly<
       "truncated",
     ]),
   },
+  ponytail: { 1: new Set(["changes"]) },
+  caveman: { 1: new Set(["changes"]) },
   mode: { 1: new Set(["changes"]) },
   permission: { 1: new Set(["events", "granted"]) },
   subagents: { 1: new Set() },
@@ -26,14 +31,14 @@ const COUNTER_KEYS: Readonly<
 };
 
 export function isKnownIntegrationVersion(
-  integration: IntegrationKey,
+  integration: IntegrationKey | "mode",
   version: number,
 ): boolean {
   return COUNTER_KEYS[integration][version] !== undefined;
 }
 
 export function isAllowedIntegrationCounter(
-  integration: IntegrationKey,
+  integration: IntegrationKey | "mode",
   version: number,
   key: string,
 ): boolean {

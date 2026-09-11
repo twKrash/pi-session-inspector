@@ -22,7 +22,7 @@ test("reads allowlisted, sanitized Pi-entry integration evidence", async () => {
   );
   assert.deepEqual(
     rows.map((row) => row.integration),
-    ["context", "rtk", "mode", "permission", "lens"],
+    ["context", "rtk", "permission", "lens"],
   );
   assert.deepEqual(
     rows.find((row) => row.integration === "context"),
@@ -53,9 +53,6 @@ test("reads allowlisted, sanitized Pi-entry integration evidence", async () => {
     rows.find((row) => row.integration === "rtk")?.state,
     "supported",
   );
-  assert.deepEqual(rows.find((row) => row.integration === "mode")?.counters, {
-    changes: 1,
-  });
   assert.deepEqual(
     rows.find((row) => row.integration === "permission")?.counters,
     { events: 1, granted: 1 },
@@ -289,4 +286,26 @@ test("never returns custom data or tool input/output", () => {
       counters: { calls: 1 },
     },
   ]);
+});
+
+test("reads schema-less Ponytail and Caveman mode entries as independent evidence", async () => {
+  const fixture = await readFile(
+    new URL("../fixtures/pi/0.85.1/ponytail-caveman.jsonl", import.meta.url),
+    "utf8",
+  );
+  const { entries } = parseSessionJsonl(fixture);
+
+  const rows = readPiEntryEvidence(entries);
+
+  assert.deepEqual(
+    rows.map((row) => row.integration),
+    ["ponytail", "caveman"],
+  );
+  assert.deepEqual(rows[0]?.counters, { changes: 2 });
+  assert.deepEqual(rows[1]?.counters, { changes: 2 });
+  assert.equal(
+    rows.every((row) => row.state === "supported" && row.version === 1),
+    true,
+  );
+  assert.equal(JSON.stringify(rows).includes("not-a-mode"), false);
 });

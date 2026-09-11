@@ -13,7 +13,8 @@ export type Confidence =
 export type IntegrationKey =
   | "context"
   | "rtk"
-  | "mode"
+  | "ponytail"
+  | "caveman"
   | "permission"
   | "subagents"
   | "lens";

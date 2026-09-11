@@ -11,11 +11,41 @@ import {
 } from "./evidence.ts";
 
 const SUPPORTED_SCHEMA_VERSION = 1;
-const MODE_CUSTOM_TYPES = new Set(["caveman-level", "ponytail-mode"]);
+const MODE_CUSTOM_TYPES: Readonly<
+  Record<
+    string,
+    {
+      integration: "ponytail" | "caveman";
+      field: string;
+      values: ReadonlySet<string>;
+    }
+  >
+> = {
+  "ponytail-mode": {
+    integration: "ponytail",
+    field: "mode",
+    values: new Set(["off", "lite", "full", "ultra", "review"]),
+  },
+  "caveman-level": {
+    integration: "caveman",
+    field: "level",
+    values: new Set([
+      "off",
+      "lite",
+      "full",
+      "ultra",
+      "wenyan-lite",
+      "wenyan",
+      "wenyan-ultra",
+      "micro",
+    ]),
+  },
+};
 const OBSERVATION_ORDER = [
   "context",
   "rtk",
-  "mode",
+  "ponytail",
+  "caveman",
   "permission",
   "lens",
 ] as const;
@@ -62,7 +92,12 @@ function createPiEntryEvidenceRegistry(): EvidenceRegistry {
       },
     },
     {
-      integration: "mode",
+      integration: "ponytail",
+      version: SUPPORTED_SCHEMA_VERSION,
+      read: count("changes"),
+    },
+    {
+      integration: "caveman",
       version: SUPPORTED_SCHEMA_VERSION,
       read: count("changes"),
     },
@@ -158,13 +193,23 @@ class PiEntryEvidence {
     if (entry.type !== "custom" || typeof entry.customType !== "string") {
       return;
     }
+    const modeProducer = MODE_CUSTOM_TYPES[entry.customType];
+    if (modeProducer !== undefined) {
+      const value = isRecord(entry.data)
+        ? entry.data[modeProducer.field]
+        : undefined;
+      if (typeof value === "string" && modeProducer.values.has(value)) {
+        this.add(modeProducer.integration, SUPPORTED_SCHEMA_VERSION, {
+          changes: 1,
+        });
+      }
+      return;
+    }
     const version = schemaVersion(entry.data);
     if (version === undefined) return;
 
     if (entry.customType.startsWith("ctx_")) {
       this.recordContextCall("custom", version, 1);
-    } else if (MODE_CUSTOM_TYPES.has(entry.customType)) {
-      this.add("mode", version, { changes: 1 });
     } else if (PERMISSION_CUSTOM_TYPES.has(entry.customType)) {
       const granted = booleanField(entry.data, "granted") === true ? 1 : 0;
       this.add("permission", version, { events: 1, granted });

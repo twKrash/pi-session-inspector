@@ -6,6 +6,7 @@ import type {
   AgentRun,
   Compaction,
   EvidenceState,
+  IntegrationKey,
   IntegrationObservation,
   ReducedSession,
   Tool,
@@ -38,9 +39,11 @@ const EVIDENCE_STATES = new Set<EvidenceState>([
   "unavailable",
   "unsupported",
 ]);
-const INTEGRATION_KEYS = new Set<IntegrationObservation["integration"]>([
+const INTEGRATION_KEYS = new Set<IntegrationKey | "mode">([
   "context",
   "rtk",
+  "ponytail",
+  "caveman",
   "mode",
   "permission",
   "subagents",
