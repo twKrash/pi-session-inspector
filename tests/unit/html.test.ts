@@ -609,6 +609,7 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
   assert.deepEqual(view.integrations, [
     {
       integration: "context",
+      presence: "unknown",
       version: 1,
       state: "supported",
       counters: ["calls: 2"],

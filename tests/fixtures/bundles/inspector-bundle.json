@@ -1,0 +1,411 @@
+{
+  "schemaVersion": 1,
+  "theme": "dark",
+  "initialScope": "tree",
+  "current": {
+    "active": {
+      "availability": "available",
+      "daily": [
+        {
+          "date": "2026-02-02",
+          "sessions": 1,
+          "totalTokens": 600,
+          "cost": 0.12,
+          "generations": 1,
+          "tools": 0
+        }
+      ],
+      "dailyTruncated": false,
+      "report": {
+        "sessionId": "session-a",
+        "usage": {
+          "totalTokens": 600,
+          "cost": 0.12,
+          "inputTokens": 500,
+          "outputTokens": 70,
+          "cacheReadTokens": 30
+        },
+        "usageComposition": {
+          "generations": {
+            "totalTokens": 600,
+            "cost": 0.12,
+            "inputTokens": 500,
+            "outputTokens": 70,
+            "cacheReadTokens": 30
+          },
+          "toolResults": { "totalTokens": 0, "cost": 0 },
+          "compactions": { "totalTokens": 0, "cost": 0 },
+          "branchSummaries": { "totalTokens": 0, "cost": 0 }
+        },
+        "models": [
+          {
+            "provider": "acme",
+            "model": "alpha",
+            "generations": 1,
+            "totalTokens": 600,
+            "cost": 0.12
+          }
+        ],
+        "tools": [],
+        "compactions": [],
+        "generations": [
+          {
+            "id": "generation:g2",
+            "timestamp": "2026-02-02T10:00:00.000Z",
+            "provider": "acme",
+            "model": "alpha",
+            "usage": {
+              "totalTokens": 600,
+              "cost": 0.12,
+              "inputTokens": 500,
+              "outputTokens": 70,
+              "cacheReadTokens": 30
+            }
+          }
+        ],
+        "errors": [],
+        "agents": [],
+        "agentEvidence": "unavailable",
+        "agentActivity": {
+          "state": "unavailable",
+          "calls": 0,
+          "succeeded": 0,
+          "failed": 0,
+          "interrupted": 0,
+          "tools": []
+        },
+        "integrations": [],
+        "durationEvidence": "unavailable",
+        "commands": { "state": "unavailable", "items": [], "count": null },
+        "skills": {
+          "state": "unavailable",
+          "items": [],
+          "invocationState": "unavailable",
+          "invocationCount": null,
+          "otherInvocations": null
+        },
+        "resources": { "state": "unavailable", "items": [] }
+      }
+    },
+    "tree": {
+      "availability": "available",
+      "daily": [
+        {
+          "date": "2026-02-01",
+          "sessions": 1,
+          "totalTokens": 400,
+          "cost": 0.08,
+          "generations": 1,
+          "tools": 1
+        },
+        {
+          "date": "2026-02-02",
+          "sessions": 1,
+          "totalTokens": 800,
+          "cost": 0.16,
+          "generations": 1,
+          "tools": 1
+        }
+      ],
+      "dailyTruncated": false,
+      "report": {
+        "sessionId": "session-a",
+        "usage": {
+          "totalTokens": 1200,
+          "cost": 0.24,
+          "inputTokens": 900,
+          "outputTokens": 220,
+          "cacheReadTokens": 60,
+          "cacheWriteTokens": 20
+        },
+        "usageComposition": {
+          "generations": {
+            "totalTokens": 1000,
+            "cost": 0.2,
+            "inputTokens": 800,
+            "outputTokens": 150,
+            "cacheReadTokens": 40,
+            "cacheWriteTokens": 10
+          },
+          "toolResults": {
+            "totalTokens": 180,
+            "cost": 0.04,
+            "inputTokens": 100,
+            "outputTokens": 70,
+            "cacheReadTokens": 20,
+            "cacheWriteTokens": 10
+          },
+          "compactions": { "totalTokens": 20, "cost": 0 },
+          "branchSummaries": { "totalTokens": 0, "cost": 0 }
+        },
+        "models": [
+          {
+            "provider": "acme",
+            "model": "alpha",
+            "generations": 2,
+            "totalTokens": 1000,
+            "cost": 0.2
+          }
+        ],
+        "tools": [
+          {
+            "id": "tool:call-a",
+            "timestamp": "2026-02-02T10:05:00.000Z",
+            "name": "read",
+            "status": "succeeded",
+            "usage": { "totalTokens": 180, "cost": 0.04 },
+            "durationMs": 42,
+            "source": "local"
+          },
+          {
+            "id": "tool:call-b",
+            "timestamp": "2026-02-01T10:05:00.000Z",
+            "name": "bash",
+            "status": "failed"
+          }
+        ],
+        "compactions": [
+          {
+            "id": "compaction:c1",
+            "timestamp": "2026-02-02T10:10:00.000Z",
+            "kind": "compaction",
+            "usage": { "totalTokens": 20, "cost": 0 }
+          }
+        ],
+        "generations": [
+          {
+            "id": "generation:g1",
+            "timestamp": "2026-02-01T10:00:00.000Z",
+            "provider": "acme",
+            "model": "alpha",
+            "usage": {
+              "totalTokens": 400,
+              "cost": 0.08,
+              "inputTokens": 300,
+              "outputTokens": 80,
+              "cacheReadTokens": 10,
+              "cacheWriteTokens": 10
+            }
+          },
+          {
+            "id": "generation:g2",
+            "timestamp": "2026-02-02T10:00:00.000Z",
+            "provider": "acme",
+            "model": "alpha",
+            "usage": {
+              "totalTokens": 600,
+              "cost": 0.12,
+              "inputTokens": 500,
+              "outputTokens": 70,
+              "cacheReadTokens": 30
+            }
+          }
+        ],
+        "errors": [
+          {
+            "id": "generation:g2",
+            "timestamp": "2026-02-02T10:01:00.000Z",
+            "kind": "generation-error",
+            "confidence": "native",
+            "message": "429 rate limit from [URL]"
+          }
+        ],
+        "agents": [
+          {
+            "id": "subagent-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "status": "succeeded",
+            "confidence": "cooperative",
+            "usage": { "totalTokens": 50, "cost": 0.01 }
+          }
+        ],
+        "agentEvidence": "supported",
+        "agentActivity": {
+          "state": "supported",
+          "calls": 3,
+          "succeeded": 2,
+          "failed": 1,
+          "interrupted": 0,
+          "tools": [{ "name": "subagent", "calls": 3 }],
+          "usage": { "totalTokens": 40, "cost": 0.01 }
+        },
+        "integrations": [
+          {
+            "integration": "context",
+            "presence": "present",
+            "version": 1,
+            "state": "supported",
+            "counters": { "calls": 2 }
+          },
+          {
+            "integration": "rtk",
+            "presence": "absent",
+            "version": 1,
+            "state": "unavailable"
+          },
+          {
+            "integration": "subagents",
+            "presence": "present",
+            "version": 1,
+            "state": "supported",
+            "counters": { "runs": 3 }
+          }
+        ],
+        "durationEvidence": "supported",
+        "commands": {
+          "state": "supported",
+          "items": [
+            {
+              "name": "review",
+              "source": "extension",
+              "sourceLabel": "local",
+              "scope": "user",
+              "origin": "top-level",
+              "description": "Run the review command"
+            }
+          ],
+          "count": 1
+        },
+        "skills": {
+          "state": "supported",
+          "items": [
+            {
+              "name": "build",
+              "sourceLabel": "local",
+              "scope": "user",
+              "origin": "top-level",
+              "explicitInvocations": 2
+            },
+            { "name": "deploy", "sourceLabel": "other" }
+          ],
+          "invocationState": "supported",
+          "invocationCount": 3,
+          "otherInvocations": 1
+        },
+        "resources": {
+          "state": "supported",
+          "items": [
+            {
+              "sourceLabel": "local",
+              "scope": "user",
+              "origin": "top-level",
+              "commands": 1,
+              "skills": 1,
+              "prompts": 0,
+              "tools": 2
+            },
+            {
+              "sourceLabel": "other",
+              "scope": "project",
+              "origin": "package",
+              "commands": 0,
+              "skills": 1,
+              "prompts": 0,
+              "tools": 0
+            }
+          ]
+        }
+      }
+    }
+  },
+  "history": {
+    "availability": "available",
+    "sessions": [
+      {
+        "availability": "available",
+        "sessionId": "session-a",
+        "report": {
+          "sessionId": "session-a",
+          "usage": { "totalTokens": 1200, "cost": 0.24 },
+          "usageComposition": {
+            "generations": { "totalTokens": 1000, "cost": 0.2 },
+            "toolResults": { "totalTokens": 180, "cost": 0.04 },
+            "compactions": { "totalTokens": 20, "cost": 0 },
+            "branchSummaries": { "totalTokens": 0, "cost": 0 }
+          },
+          "models": [
+            {
+              "provider": "acme",
+              "model": "alpha",
+              "generations": 2,
+              "totalTokens": 1000,
+              "cost": 0.2
+            }
+          ],
+          "tools": [
+            {
+              "id": "tool:call-a",
+              "timestamp": "2026-02-02T10:05:00.000Z",
+              "name": "read",
+              "status": "succeeded",
+              "usage": { "totalTokens": 180, "cost": 0.04 },
+              "source": "local"
+            }
+          ],
+          "compactions": [],
+          "generations": [
+            {
+              "id": "generation:g1",
+              "timestamp": "2026-02-01T10:00:00.000Z",
+              "provider": "acme",
+              "model": "alpha",
+              "usage": { "totalTokens": 400, "cost": 0.08 }
+            },
+            {
+              "id": "generation:g2",
+              "timestamp": "2026-02-02T10:00:00.000Z",
+              "provider": "acme",
+              "model": "alpha",
+              "usage": { "totalTokens": 600, "cost": 0.12 }
+            }
+          ],
+          "errors": [],
+          "agents": [],
+          "agentEvidence": "unavailable",
+          "agentActivity": {
+            "state": "unavailable",
+            "calls": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "interrupted": 0,
+            "tools": []
+          },
+          "integrations": [],
+          "durationEvidence": "unavailable",
+          "commands": { "state": "unavailable", "items": [], "count": null },
+          "skills": {
+            "state": "unavailable",
+            "items": [],
+            "invocationState": "unavailable",
+            "invocationCount": null,
+            "otherInvocations": null
+          },
+          "resources": { "state": "unavailable", "items": [] }
+        }
+      },
+      { "availability": "unavailable", "sessionId": "session-b" }
+    ],
+    "diagnostics": []
+  },
+  "global": {
+    "availability": "available",
+    "sessions": [
+      { "availability": "available", "sessionId": "session-a" },
+      { "availability": "unavailable", "sessionId": "session-b" }
+    ],
+    "usage": { "totalTokens": 1200, "cost": 0.24 },
+    "dates": [
+      {
+        "date": "2026-02-01",
+        "sessions": 1,
+        "usage": { "totalTokens": 400, "cost": 0.08 }
+      },
+      {
+        "date": "2026-02-02",
+        "sessions": 1,
+        "usage": { "totalTokens": 800, "cost": 0.16 }
+      }
+    ],
+    "diagnostics": [],
+    "inventory": { "commands": 1, "skills": 1, "resources": 2 }
+  }
+}
