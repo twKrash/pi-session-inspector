@@ -16,6 +16,10 @@ import {
 
 const WIDE_TABS_WIDTH = 87;
 
+/** Availability copy shared by the inventory tabs; never an activity claim. */
+const INVENTORY_NOT_INVOCATIONS =
+  "Inventory != invocations; counts are availability, never activity.";
+
 type CurrentTuiComponent = Component & {
   handleInput(data: string): void;
 };
@@ -112,9 +116,13 @@ export function createCurrentTuiComponent({
       case "models":
         return [`Models: ${currentModel.report.models.length}`];
       case "tools":
-        return [`Tools: ${currentModel.report.tools.length}`];
+        return renderTools();
+      case "commands":
+        return renderCommands();
       case "agents":
         return renderAgents();
+      case "skills":
+        return renderSkills();
       case "integrations":
         return renderIntegrations();
       case "errors":
@@ -127,6 +135,17 @@ export function createCurrentTuiComponent({
     }
   }
 
+  function renderTools(): string[] {
+    const tools = currentModel.report.tools;
+    return [
+      `Tools: ${tools.length}`,
+      ...tools.map(
+        (tool) =>
+          `Tool: ${tool.name}  Source: ${tool.source ?? "Unavailable"}  Status: ${tool.status}`,
+      ),
+    ];
+  }
+
   function renderErrors(): string[] {
     const errors = currentModel.report.errors;
     if (errors.length === 0) return ["No persisted error records"];
@@ -134,6 +153,7 @@ export function createCurrentTuiComponent({
       `Error: ${error.kind}`,
       `Record: ${error.id}`,
       `Timestamp: ${error.timestamp}`,
+      `Message: ${error.message ?? "Unavailable"}`,
       `Confidence: ${error.confidence}`,
     ]);
   }
@@ -148,31 +168,163 @@ export function createCurrentTuiComponent({
     ];
   }
 
-  function renderAgents(): string[] {
-    if (currentModel.report.agents.length === 0) {
-      return [evidenceLabel(currentModel.report.agentEvidence)];
+  function renderCommands(): string[] {
+    const commands = currentModel.report.commands;
+    if (commands.state !== "supported") {
+      return [
+        evidenceLabel(commands.state),
+        ...(commands.count === null
+          ? []
+          : [`Recorded at session start: ${commands.count}`]),
+        INVENTORY_NOT_INVOCATIONS,
+      ];
     }
-    return currentModel.report.agents.flatMap((agent) => [
-      `Agent: ${agent.id}`,
-      `Parent: ${agent.parentId ?? "Unavailable"}`,
-      `Status: ${agent.status}`,
-      `Evidence: ${agent.confidence}`,
-      ...(agent.usage === undefined
+    if (commands.items.length === 0) {
+      return [
+        "No commands inventory",
+        ...(commands.count === null
+          ? []
+          : [`Recorded at session start: ${commands.count}`]),
+        INVENTORY_NOT_INVOCATIONS,
+      ];
+    }
+    return [
+      `Commands: ${commands.items.length}`,
+      INVENTORY_NOT_INVOCATIONS,
+      ...commands.items.flatMap((command) => [
+        `Command: ${command.name}`,
+        `Source: ${command.sourceLabel || command.source}`,
+        `Scope: ${command.scope}`,
+      ]),
+    ];
+  }
+
+  function renderSkills(): string[] {
+    const skills = currentModel.report.skills;
+    // The inventory is the tab's spine: without it the tab degrades wholesale
+    // rather than fabricating rows from counted names alone.
+    if (skills.state !== "supported") {
+      return [evidenceLabel(skills.state), INVENTORY_NOT_INVOCATIONS];
+    }
+    if (skills.items.length === 0) {
+      return ["No skills inventory", INVENTORY_NOT_INVOCATIONS];
+    }
+    const countsKnown = skills.invocationState === "supported";
+    return [
+      `Skills: ${skills.items.length}`,
+      INVENTORY_NOT_INVOCATIONS,
+      ...(countsKnown && skills.invocationCount !== null
+        ? [`Invocations: ${skills.invocationCount}`]
+        : []),
+      ...(skills.otherInvocations === null || skills.otherInvocations === 0
         ? []
-        : [`Tokens: ${agent.usage.totalTokens}`, `Cost: ${agent.usage.cost}`]),
-    ]);
+        : [`+ ${skills.otherInvocations} other invocations`]),
+      ...skills.items.flatMap((skill) => [
+        `Skill: ${skill.name}`,
+        // An absent per-skill count is unknown evidence, never zero.
+        `invocations: ${skill.explicitInvocations ?? "Unavailable"}`,
+        `Source: ${skill.sourceLabel ?? "Unavailable"}`,
+        `Scope: ${skill.scope ?? "Unavailable"}`,
+      ]),
+    ];
+  }
+
+  function renderAgents(): string[] {
+    const lines = renderAgentActivity();
+    const agents = currentModel.report.agents;
+    if (agents.length === 0) {
+      // Native activity alone keeps the tab non-empty; otherwise the tab states
+      // that no rich run evidence exists at all.
+      return lines.length === 0
+        ? [evidenceLabel(currentModel.report.agentEvidence)]
+        : lines;
+    }
+    return [
+      ...lines,
+      ...agents.flatMap((agent) => [
+        `Agent: ${agent.id}`,
+        `Parent: ${agent.parentId ?? "Unavailable"}`,
+        ...(agent.agent === undefined ? [] : [`Label: ${agent.agent}`]),
+        `Status: ${agent.status}`,
+        ...(agent.artifacts === undefined
+          ? []
+          : [`Artifacts: ${agent.artifacts}`]),
+        `Evidence: ${agent.confidence}`,
+        ...(agent.usage === undefined
+          ? []
+          : [
+              `Tokens: ${agent.usage.totalTokens}`,
+              `Cost: ${agent.usage.cost}`,
+              "Child usage is a breakdown only; never added to session totals.",
+            ]),
+      ]),
+    ];
+  }
+
+  function renderAgentActivity(): string[] {
+    const activity = currentModel.report.agentActivity;
+    if (activity.state !== "supported") return [];
+    return [
+      `Calls: ${activity.calls}`,
+      `Succeeded: ${activity.succeeded}`,
+      `Failed: ${activity.failed}`,
+      `Interrupted: ${activity.interrupted}`,
+      ...activity.tools.map(
+        (tool) => `Activity tool: ${tool.name}  Calls: ${tool.calls}`,
+      ),
+      ...(activity.usage === undefined
+        ? []
+        : [
+            `Subagent tokens: ${activity.usage.totalTokens}`,
+            `Subagent cost: ${activity.usage.cost}`,
+            "Subagent usage is a breakdown only; never added to session totals.",
+          ]),
+    ];
   }
 
   function renderIntegrations(): string[] {
-    if (currentModel.report.integrations.length === 0) return ["Unavailable"];
-    return currentModel.report.integrations.flatMap((integration) => [
-      `Integration: ${integration.integration}`,
-      `Status: ${evidenceLabel(integration.state)}`,
-      `Version: ${integration.version}`,
-      ...Object.entries(integration.counters ?? {}).map(
-        ([name, value]) => `${name}: ${value}`,
+    const integrations = currentModel.report.integrations;
+    return [
+      ...(integrations.length === 0
+        ? ["Unavailable"]
+        : integrations.flatMap((integration) => [
+            `Integration: ${integration.integration}`,
+            `Presence: ${presenceLabel(integration.presence)}`,
+            `State: ${evidenceLabel(integration.state)}`,
+            `Version: ${integration.version ?? "Unavailable"}`,
+            ...Object.entries(integration.counters ?? {}).map(
+              ([name, value]) => `${name}: ${value}`,
+            ),
+          ])),
+      ...renderResourceSources(),
+    ];
+  }
+
+  function renderResourceSources(): string[] {
+    const resources = currentModel.report.resources;
+    if (resources.state !== "supported" || resources.items.length === 0) {
+      return ["Resource sources: Unavailable"];
+    }
+    return [
+      `Resource sources: ${resources.items.length}`,
+      ...resources.items.map(
+        (source) =>
+          `Source: ${source.sourceLabel}  Scope: ${source.scope}  Origin: ${source.origin}  commands: ${source.commands}  skills: ${source.skills}  prompts: ${source.prompts}  tools: ${source.tools}`,
       ),
-    ]);
+    ];
+  }
+}
+
+function presenceLabel(
+  presence: "present" | "absent" | "unknown",
+): string {
+  switch (presence) {
+    case "present":
+      return "Present";
+    case "absent":
+      return "Not observed";
+    case "unknown":
+      return "Unknown";
   }
 }
 

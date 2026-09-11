@@ -4,7 +4,12 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 import type { SessionReport } from "../../src/core/reports.ts";
 import { createCurrentTuiComponent } from "../../src/ui/current-tui.ts";
-import { CURRENT_TABS, createCurrentTuiModel } from "../../src/ui/current.ts";
+import {
+  CURRENT_TABS,
+  createCurrentTuiModel,
+  type CurrentTab,
+  type CurrentTuiModel,
+} from "../../src/ui/current.ts";
 
 const report: SessionReport = {
   sessionId: "session-1",
@@ -44,6 +49,44 @@ const report: SessionReport = {
 };
 
 const theme = { fg: (_color: string, text: string) => text };
+
+/** Builds a model from the shared base report with the patched DTO fields. */
+function modelWith(patch: Partial<SessionReport>): CurrentTuiModel {
+  return createCurrentTuiModel({ ...report, ...patch }, "active");
+}
+
+/** Renders one tab through the real component's initial tab selection. */
+function renderTab(
+  model: CurrentTuiModel,
+  tab: CurrentTab,
+  width = 120,
+): string[] {
+  return createCurrentTuiComponent({
+    model,
+    load: async () => model,
+    theme,
+    initialTab: tab,
+    requestRender: () => {},
+    done: () => {},
+  }).render(width);
+}
+
+test("renders inventory, presence, agent activity, and bounded error messages", () => {
+  const model = modelWith({
+    commands: { state: "supported", count: 1, items: [{ name: "ponytail", source: "extension", sourceLabel: "npm:ponytail", scope: "user", origin: "package" }] },
+    skills: { state: "supported", invocationState: "supported", invocationCount: 2, otherInvocations: 0, items: [{ name: "council-mode", explicitInvocations: 2 }] },
+    resources: { state: "supported", items: [{ sourceLabel: "npm:ponytail", scope: "user", origin: "package", commands: 1, skills: 0, prompts: 0, tools: 0 }] },
+    agentActivity: { state: "supported", calls: 3, succeeded: 1, failed: 1, interrupted: 1, tools: [{ name: "subagent", calls: 2 }] },
+    integrations: [{ integration: "caveman", presence: "absent", state: "unavailable" }],
+    errors: [{ id: "generation:a1", timestamp: "2026-09-11T10:00:00Z", kind: "generation-error", confidence: "native", message: "429 rate limit from [URL]" }],
+  });
+
+  assert.match(renderTab(model, "commands").join("\n"), /ponytail/);
+  assert.match(renderTab(model, "skills").join("\n"), /council-mode/);
+  assert.match(renderTab(model, "agents").join("\n"), /Calls: 3/);
+  assert.match(renderTab(model, "integrations").join("\n"), /Not observed/);
+  assert.match(renderTab(model, "errors").join("\n"), /429 rate limit/);
+});
 
 test("renders fixed tabs, changes scope, and closes", async () => {
   let closed = false;
