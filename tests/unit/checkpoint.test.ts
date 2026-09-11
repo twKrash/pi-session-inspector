@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { foldedFromCheckpointAggregates } from "../../src/core/live-counter-fold.ts";
 import {
   readCheckpoint,
   writeCheckpoint,
@@ -185,6 +186,153 @@ test("accepts only finite bounded totals and safe integer aggregate counts", asy
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
+});
+
+test("accepts validated folded aggregates and rejects unsafe ones", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-"));
+  try {
+    const lease = await acquireLease(directory);
+    const written = await writeCheckpoint({
+      directory,
+      lease,
+      checkpoint: {
+        schemaVersion: 1,
+        cursors: { pi: sourceCursor(1), wal: { "writer-a": 2 } },
+        aggregates: {
+          totalTokens: 1,
+          totalCost: 0,
+          generations: 1,
+          tools: 0,
+          compactions: 0,
+          integrationCounters: {
+            permission: { decisions: 2, allowed: 1, denied: 1 },
+          },
+          skillInvocations: { "council-mode": 3 },
+          skillOverflowInvocations: 4,
+          presence: { permission: true },
+          resourceCounts: { commands: 12, skills: 4 },
+        },
+      },
+    });
+    assert.equal(written, true);
+
+    const read = await readCheckpoint({ directory });
+    assert.deepEqual(read?.aggregates.integrationCounters, {
+      permission: { decisions: 2, allowed: 1, denied: 1 },
+    });
+    assert.deepEqual(read?.aggregates.skillInvocations, { "council-mode": 3 });
+    assert.equal(read?.aggregates.skillOverflowInvocations, 4);
+    assert.equal(read?.aggregates.presence?.permission, true);
+    assert.deepEqual(read?.aggregates.resourceCounts, {
+      commands: 12,
+      skills: 4,
+    });
+    await lease.release();
+
+    for (const bad of [
+      { skillInvocations: { "../escape": 1 } },
+      { skillInvocations: { ok: -1 } },
+      { skillInvocations: { ok: 1.5 } },
+      {
+        skillInvocations: Object.fromEntries(
+          Array.from({ length: 65 }, (_, i) => [`s${i}`, 1]),
+        ),
+      },
+      { skillOverflowInvocations: -1 },
+      { skillOverflowInvocations: 1.5 },
+      { presence: { permission: "yes" } },
+      { presence: { context: true } },
+      { resourceCounts: { commands: 1 } },
+      { integrationCounters: { permission: { decisions: "2" } } },
+    ]) {
+      const candidate = {
+        schemaVersion: 1,
+        cursors: { pi: sourceCursor(1), wal: {} },
+        aggregates: {
+          totalTokens: 0,
+          totalCost: 0,
+          generations: 0,
+          tools: 0,
+          compactions: 0,
+          ...bad,
+        },
+      };
+      const isolated = await mkdtemp(
+        join(tmpdir(), "inspector-checkpoint-bad-"),
+      );
+      const isolatedLease = await acquireLease(isolated);
+      try {
+        assert.equal(
+          await writeCheckpoint({
+            directory: isolated,
+            lease: isolatedLease,
+            checkpoint: candidate,
+          }),
+          false,
+          `expected rejection for ${JSON.stringify(bad)}`,
+        );
+      } finally {
+        await isolatedLease.release();
+        await rm(isolated, { force: true, recursive: true });
+      }
+    }
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("reads legacy and folded checkpoint fixtures", async () => {
+  const cases = [
+    {
+      name: "legacy-v1.json",
+      skillInvocations: undefined,
+      resourceCounts: undefined,
+      presence: undefined,
+    },
+    {
+      name: "folded-v1.json",
+      skillInvocations: { "council-mode": 2, "caveman-mode": 1 },
+      resourceCounts: { commands: 12, skills: 4 },
+      presence: { permission: true },
+    },
+  ];
+  for (const fixture of cases) {
+    const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-"));
+    try {
+      const contents = await readFile(
+        new URL(`../fixtures/checkpoints/${fixture.name}`, import.meta.url),
+        "utf8",
+      );
+      await writeFile(join(directory, "checkpoint.json"), contents);
+      const read = await readCheckpoint({ directory });
+      assert.notEqual(read, undefined);
+      assert.deepEqual(
+        read?.aggregates.skillInvocations,
+        fixture.skillInvocations,
+      );
+      assert.deepEqual(read?.aggregates.resourceCounts, fixture.resourceCounts);
+      assert.deepEqual(read?.aggregates.presence, fixture.presence);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
+  }
+});
+
+test("reads folded aggregates through the counter-fold reader without coercion", () => {
+  const folded = foldedFromCheckpointAggregates({
+    integrationCounters: {
+      permission: { decisions: 2, impossible: -1 },
+      "../escape": { decisions: 1 },
+    },
+    skillInvocations: { "council-mode": 3, "../escape": 1 },
+    skillOverflowInvocations: 2,
+    presence: { permission: true },
+  });
+
+  assert.deepEqual(folded.counters, { permission: { decisions: 2 } });
+  assert.deepEqual(folded.skillInvocations, { "council-mode": 3 });
+  assert.equal(folded.otherInvocations, 2);
+  assert.equal(folded.presence.permission, true);
 });
 
 test("requires a held session maintenance lease at the write boundary", async () => {

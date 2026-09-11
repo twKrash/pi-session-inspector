@@ -2,8 +2,11 @@ import type { IntegrationKey } from "./events.ts";
 
 export const MAX_SKILL_KEYS = 64;
 export const MAX_COUNTER_KEYS = 16;
+/** Upper bound shared by the fold, the checkpoint parser, and the reader. */
+export const MAX_FOLDED_COUNT = 1_000_000_000;
 /** Bounded skill-name grammar; shared by the fold table and the producer adapter. */
 export const SKILL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
+const COUNTER_KEY_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 const SKILL_SOURCE = "pi-input";
 export type FoldedCounters = {
   counters: Partial<Record<IntegrationKey, Record<string, number>>>;
@@ -69,6 +72,74 @@ export function mergeFoldedCounters(
     }
   }
   return merged;
+}
+
+/**
+ * Reader-side view of persisted checkpoint counter aggregates. Checkpoint
+ * parsing already rejects invalid state, but this reader re-validates so a
+ * caller holding partially typed aggregates can never inject a name or an
+ * unsafe number: invalid entries are dropped, never repaired or coerced.
+ */
+export type CheckpointCounterAggregates = {
+  integrationCounters?: Record<string, Record<string, number>>;
+  skillInvocations?: Record<string, number>;
+  skillOverflowInvocations?: number;
+  presence?: { permission?: boolean };
+};
+
+/**
+ * Reconstructs the already-folded bucket from persisted checkpoint aggregates
+ * so maintenance adds only the post-cursor delta and repeated passes stay
+ * idempotent. Absent fields mean "not folded", never zero.
+ */
+export function foldedFromCheckpointAggregates(
+  aggregates: CheckpointCounterAggregates | undefined,
+): FoldedCounters {
+  const folded = emptyFoldedCounters();
+  if (aggregates === undefined) return folded;
+
+  if (isSafeCount(aggregates.skillOverflowInvocations)) {
+    folded.otherInvocations = aggregates.skillOverflowInvocations;
+  }
+
+  const skills = aggregates.skillInvocations;
+  if (isRecord(skills)) {
+    for (const name of Object.keys(skills).sort()) {
+      const count = skills[name];
+      if (!SKILL_NAME_PATTERN.test(name) || !isSafeCount(count)) continue;
+      if (Object.keys(folded.skillInvocations).length >= MAX_SKILL_KEYS)
+        continue;
+      folded.skillInvocations[name] = count;
+    }
+  }
+
+  const counters = aggregates.integrationCounters;
+  if (isRecord(counters)) {
+    const parsed: [string, Record<string, number>][] = [];
+    for (const integration of Object.keys(counters).sort()) {
+      const entries = counters[integration];
+      if (!COUNTER_KEY_PATTERN.test(integration) || !isRecord(entries))
+        continue;
+      const keys = Object.keys(entries);
+      if (keys.length > MAX_COUNTER_KEYS) continue;
+      const countersForIntegration: [string, number][] = [];
+      for (const key of keys.sort()) {
+        const count = entries[key];
+        if (!COUNTER_KEY_PATTERN.test(key) || !isSafeCount(count)) continue;
+        countersForIntegration.push([key, count]);
+      }
+      if (countersForIntegration.length > 0)
+        parsed.push([integration, Object.fromEntries(countersForIntegration)]);
+    }
+    if (parsed.length > 0) {
+      folded.counters = Object.fromEntries(
+        parsed,
+      ) as FoldedCounters["counters"];
+    }
+  }
+
+  folded.presence = { permission: aggregates.presence?.permission === true };
+  return folded;
 }
 
 /**
@@ -186,4 +257,13 @@ function bump(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isSafeCount(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_FOLDED_COUNT
+  );
 }

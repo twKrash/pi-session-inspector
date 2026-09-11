@@ -1,0 +1,1 @@
+{"schemaVersion":1,"cursors":{"pi":{"lineCount":2,"revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"wal":{"writer-a":1}},"aggregates":{"totalTokens":120,"totalCost":0.05,"generations":1,"tools":2,"compactions":0}}

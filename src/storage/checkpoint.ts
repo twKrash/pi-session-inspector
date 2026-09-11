@@ -2,12 +2,19 @@ import { randomUUID } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import {
+  MAX_COUNTER_KEYS,
+  MAX_FOLDED_COUNT,
+  MAX_SKILL_KEYS,
+  SKILL_NAME_PATTERN,
+} from "../core/live-counter-fold.js";
 import { isMaintenanceLeaseHeld, type MaintenanceLease } from "./lease.js";
 
 const CHECKPOINT_FILE_NAME = "checkpoint.json";
 const MAX_CHECKPOINT_BYTES = 64 * 1024;
 const MAX_WAL_WRITERS = 256;
 const MAX_WRITER_ID_LENGTH = 128;
+const MAX_COUNTER_KEY_LENGTH = 128;
 const SHA256_HEX_LENGTH = 64;
 const MAX_TOTAL_TOKENS = Number.MAX_SAFE_INTEGER;
 const MAX_TOTAL_COST = Number.MAX_SAFE_INTEGER;
@@ -33,6 +40,16 @@ export type Checkpoint = {
     generations: number;
     tools: number;
     compactions: number;
+    /**
+     * Already-folded live counters. Absence means "not folded", never zero:
+     * maintenance adds only post-cursor telemetry to whatever is stored here.
+     */
+    integrationCounters?: Record<string, Record<string, number>>;
+    skillInvocations?: Record<string, number>;
+    skillOverflowInvocations?: number;
+    presence?: { permission?: boolean };
+    /** Owned by inventory maintenance; carried across counter folds unchanged. */
+    resourceCounts?: { commands: number; skills: number };
   };
   /** Cursors whose analyzer-owned detail was safely expired after sealing. */
   sealedWal?: Record<string, number>;
@@ -160,6 +177,42 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
     ) {
       return undefined;
     }
+    // Optional folded aggregates: absent is omitted, present-but-invalid makes
+    // the whole checkpoint unavailable so no wrong number is ever reported.
+    const integrationCounters =
+      aggregates.integrationCounters === undefined
+        ? undefined
+        : parseIntCounterMap(aggregates.integrationCounters);
+    const skillInvocations =
+      aggregates.skillInvocations === undefined
+        ? undefined
+        : parseSkillInvocations(aggregates.skillInvocations);
+    const skillOverflowInvocations = isSafeCount(
+      aggregates.skillOverflowInvocations,
+      MAX_FOLDED_COUNT,
+    )
+      ? aggregates.skillOverflowInvocations
+      : undefined;
+    const presence =
+      aggregates.presence === undefined
+        ? undefined
+        : parsePresence(aggregates.presence);
+    const resourceCounts =
+      aggregates.resourceCounts === undefined
+        ? undefined
+        : parseResourceCounts(aggregates.resourceCounts);
+    if (
+      (aggregates.integrationCounters !== undefined &&
+        integrationCounters === undefined) ||
+      (aggregates.skillInvocations !== undefined &&
+        skillInvocations === undefined) ||
+      (aggregates.skillOverflowInvocations !== undefined &&
+        skillOverflowInvocations === undefined) ||
+      (aggregates.presence !== undefined && presence === undefined) ||
+      (aggregates.resourceCounts !== undefined && resourceCounts === undefined)
+    ) {
+      return undefined;
+    }
 
     if (value.sealingVersion !== undefined && value.sealingVersion !== 1)
       return undefined;
@@ -189,6 +242,15 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
         generations: aggregates.generations,
         tools: aggregates.tools,
         compactions: aggregates.compactions,
+        ...(integrationCounters === undefined ? {} : { integrationCounters }),
+        ...(skillInvocations === undefined ? {} : { skillInvocations }),
+        ...(skillOverflowInvocations === undefined
+          ? {}
+          : { skillOverflowInvocations }),
+        ...(presence === undefined || presence.permission === undefined
+          ? {}
+          : { presence }),
+        ...(resourceCounts === undefined ? {} : { resourceCounts }),
       },
       ...(sealedWal === undefined ? {} : { sealedWal }),
       ...(value.sealingVersion === 1 ? { sealingVersion: 1 } : {}),
@@ -205,6 +267,74 @@ const aggregateKeys = [
   "tools",
   "compactions",
 ];
+
+function parseIntCounterMap(
+  value: unknown,
+): Record<string, Record<string, number>> | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const rows = Object.entries(value);
+  if (rows.length > MAX_COUNTER_KEYS) return undefined;
+  const parsed: [string, Record<string, number>][] = [];
+  for (const [integration, counterValue] of rows) {
+    if (!isCounterKey(integration) || !isPlainRecord(counterValue))
+      return undefined;
+    const counterRows = Object.entries(counterValue);
+    if (counterRows.length > MAX_COUNTER_KEYS) return undefined;
+    const counters: [string, number][] = [];
+    for (const [key, count] of counterRows) {
+      if (!isCounterKey(key) || !isSafeCount(count, MAX_FOLDED_COUNT))
+        return undefined;
+      counters.push([key, count]);
+    }
+    parsed.push([integration, Object.fromEntries(counters)]);
+  }
+  return Object.fromEntries(parsed);
+}
+
+function parseSkillInvocations(
+  value: unknown,
+): Record<string, number> | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const rows = Object.entries(value);
+  if (rows.length > MAX_SKILL_KEYS) return undefined;
+  const parsed: [string, number][] = [];
+  for (const [name, count] of rows) {
+    if (!SKILL_NAME_PATTERN.test(name) || !isSafeCount(count, MAX_FOLDED_COUNT))
+      return undefined;
+    parsed.push([name, count]);
+  }
+  return Object.fromEntries(parsed);
+}
+
+function parsePresence(value: unknown): { permission?: boolean } | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  if (Object.keys(value).some((key) => key !== "permission")) return undefined;
+  const permission = value.permission;
+  if (permission !== undefined && typeof permission !== "boolean")
+    return undefined;
+  return permission === undefined ? {} : { permission };
+}
+
+function parseResourceCounts(
+  value: unknown,
+): { commands: number; skills: number } | undefined {
+  if (!isPlainRecord(value) || !hasRequiredKeys(value, ["commands", "skills"]))
+    return undefined;
+  if (
+    !isSafeCount(value.commands, MAX_FOLDED_COUNT) ||
+    !isSafeCount(value.skills, MAX_FOLDED_COUNT)
+  )
+    return undefined;
+  return { commands: value.commands, skills: value.skills };
+}
+
+function isCounterKey(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_COUNTER_KEY_LENGTH &&
+    ASCII_TOKEN.test(value)
+  );
+}
 
 function parseWalCursors(
   value: Record<string, unknown>,

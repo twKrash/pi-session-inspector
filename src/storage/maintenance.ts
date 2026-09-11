@@ -3,11 +3,20 @@ import { createReadStream } from "node:fs";
 import { join } from "node:path";
 
 import type { EvidenceState, SessionEntry } from "../core/events.js";
+import {
+  foldedFromCheckpointAggregates,
+  type FoldedCounters,
+  mergeFoldedCounters,
+} from "../core/live-counter-fold.js";
 import { reduceEntries } from "../core/reduce.js";
 import { hasTrackingStartMarker, selectScope } from "../pi/sessions.js";
 import { acquireMaintenanceLease } from "./lease.js";
 import { recoverSession, type RecoveredRunningRecord } from "./recovery.js";
-import { readCheckpoint, writeCheckpoint } from "./checkpoint.js";
+import {
+  type Checkpoint,
+  readCheckpoint,
+  writeCheckpoint,
+} from "./checkpoint.js";
 import { pruneExpiredWalSegments } from "./retention.js";
 
 const MAX_SOURCE_LINE_BYTES = 1024 * 1024;
@@ -58,6 +67,15 @@ export async function maintainSession({
       piCursor: source.cursor,
     });
     const existing = await readCheckpoint({ directory });
+    // Checkpoint aggregates are already folded, so this is the counter base:
+    // it is cursor-consistent with `deltaCounters`. `recovered.aggregates` is
+    // deliberately not used because recovery zeroes it when the Pi source no
+    // longer matches, which would silently drop folded live counters.
+    const folded = mergeFoldedCounters(
+      foldedFromCheckpointAggregates(existing?.aggregates),
+      recovered.deltaCounters,
+    );
+    const resourceCounts = existing?.aggregates.resourceCounts;
     const reduced = reduceEntries(
       sessionId,
       selectScope(source.entries, null, "tree"),
@@ -94,6 +112,10 @@ export async function maintainSession({
           generations: reduced.generations.length,
           tools: reduced.tools.length,
           compactions: reduced.compactions.length,
+          ...foldedAggregateFields(folded),
+          ...(resourceCounts === undefined
+            ? {}
+            : { resourceCounts: { ...resourceCounts } }),
         },
       },
     });
@@ -120,6 +142,41 @@ export async function maintainSession({
 
 function unavailableMaintenance(): MaintenanceResult {
   return { status: "unavailable", durationEvidence: "unavailable" };
+}
+
+/**
+ * Serializes only the folded fields that carry information: empty maps and
+ * zero counts are omitted rather than written as `{}`/`0` filler, so repeated
+ * passes with no new telemetry stay byte-identical. `resourceCounts` is owned
+ * by inventory maintenance and is not part of the counter fold.
+ */
+function foldedAggregateFields(
+  folded: FoldedCounters,
+): Pick<
+  Checkpoint["aggregates"],
+  | "integrationCounters"
+  | "skillInvocations"
+  | "skillOverflowInvocations"
+  | "presence"
+> {
+  const integrationCounters: [string, Record<string, number>][] = [];
+  for (const [integration, counters] of Object.entries(folded.counters)) {
+    if (counters !== undefined && Object.keys(counters).length > 0) {
+      integrationCounters.push([integration, { ...counters }]);
+    }
+  }
+  return {
+    ...(integrationCounters.length === 0
+      ? {}
+      : { integrationCounters: Object.fromEntries(integrationCounters) }),
+    ...(Object.keys(folded.skillInvocations).length === 0
+      ? {}
+      : { skillInvocations: { ...folded.skillInvocations } }),
+    ...(folded.otherInvocations > 0
+      ? { skillOverflowInvocations: folded.otherInvocations }
+      : {}),
+    ...(folded.presence.permission ? { presence: { permission: true } } : {}),
+  };
 }
 
 /**
