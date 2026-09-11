@@ -4,6 +4,17 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.6.1]
+
+### Changed
+
+- Legacy shards with no usable owner record (missing, empty, or unparseable `.owner`) are no longer unconditionally unprunable. They may expire once their segment mtime precedes the cutoff day and its exact size, mtime, device and inode are re-verified immediately before unlink, so a delayed append or path swap aborts the deletion. A live owner PID, an `ESRCH`-only death proof, and a genuinely unreadable owner record all keep preserving detail.
+- ADR 0012 and the spec retention paragraph now describe exactly what the code guarantees, including the residual non-atomic window between the final recheck and unlink.
+
+### Added
+
+- Crash-injection tests for every seal phase (interrupted validation, mid-stream validation failure, checkpoint-publication failure, unlink failure, orphaned closed marker, repeated maintenance passes) and an end-to-end cold-detail notice test asserting the state reaches the DTO, JSON and the embedded HTML report data.
+
 ## [0.6.0]
 
 ### Added

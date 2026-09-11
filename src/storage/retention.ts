@@ -22,6 +22,9 @@ export async function pruneExpiredWalSegments({
   now,
   validate,
   remove = (path) => rm(path, { force: false }),
+  killProcess = (pid: number): void => {
+    process.kill(pid, 0);
+  },
 }: {
   directory: string;
   lease: MaintenanceLease;
@@ -29,6 +32,8 @@ export async function pruneExpiredWalSegments({
   /** Rechecks Pi source immediately before a WAL segment is sealed/deleted. */
   validate: () => Promise<boolean>;
   remove?: (path: string) => Promise<void>;
+  /** Liveness probe for a shard's `.owner` PID; injected in tests. */
+  killProcess?: (pid: number) => void;
 }): Promise<number> {
   if (!isMaintenanceLeaseHeld(lease, directory)) return 0;
 
@@ -60,6 +65,7 @@ export async function pruneExpiredWalSegments({
         checkpoint,
         validate,
         remove,
+        killProcess,
       });
     }
   } catch {
@@ -78,6 +84,7 @@ async function pruneWriter({
   cutoff,
   validate,
   remove,
+  killProcess,
 }: {
   directory: string;
   lease: MaintenanceLease;
@@ -88,6 +95,7 @@ async function pruneWriter({
   cutoff: string;
   validate: () => Promise<boolean>;
   remove: (path: string) => Promise<void>;
+  killProcess: (pid: number) => void;
 }): Promise<number> {
   // Discover only the next contiguous prefix. Date order is not sequence order.
   // Scanning headers is bounded-memory even when durable input exceeds replay limits.
@@ -110,10 +118,15 @@ async function pruneWriter({
           ? (checkpoint.sealedWal?.[writerId] ?? 0)
           : 0;
       if (candidate.first > sealed + 1) break;
-      if (!(await isClosed(candidate.path, shardDirectory))) break;
-      const size = (await stat(candidate.path)).size;
-      if (bytes > 0 && bytes + size > 64 * 1024 * 1024) break;
-      bytes += size;
+      const quiescence = await segmentQuiescence(
+        candidate.path,
+        shardDirectory,
+        cutoff,
+        killProcess,
+      );
+      if (quiescence === undefined) break;
+      if (bytes > 0 && bytes + quiescence.size > 64 * 1024 * 1024) break;
+      bytes += quiescence.size;
       const segment = await readSegmentBoundary(candidate.path, writerId);
       if (segment === undefined || segment.newestDate >= cutoff) break;
       if (!(await validate())) break;
@@ -140,6 +153,16 @@ async function pruneWriter({
         break;
       Object.assign(checkpoint, next);
       if (!(await validate())) break;
+      // Mtime-only quiescence can be invalidated by a delayed append or a path
+      // swap. Recheck the exact size/time/identity immediately before unlink so
+      // a change aborts the deletion. This is not atomic with the unlink: a
+      // write landing inside that final window can still be lost, but the
+      // published seal still covers only the validated prefix.
+      if (
+        quiescence.revalidate &&
+        !(await unchangedSince(candidate.path, quiescence))
+      )
+        break;
       await remove(candidate.path);
       await rm(`${candidate.path}.closed`, { force: true });
       deleted += 1;
@@ -150,25 +173,114 @@ async function pruneWriter({
   return deleted;
 }
 
-async function isClosed(path: string, shard: string): Promise<boolean> {
+type SegmentQuiescence = {
+  size: number;
+  mtimeMs: number;
+  dev: number;
+  ino: number;
+  /**
+   * True when eligibility rests on legacy mtime evidence alone rather than a
+   * `.closed` marker or an owner PID proven dead. The exact size/mtime/dev/ino
+   * must be rechecked immediately before unlink.
+   */
+  revalidate: boolean;
+};
+
+/**
+ * Decides whether a candidate segment can no longer be appended to. A `.closed`
+ * marker or an owner PID proven dead (`ESRCH`) is direct proof. For a legacy
+ * shard whose `.owner` record is genuinely missing, empty, or unparseable, only
+ * file quiescence dated strictly before the cutoff authorizes deletion. Any
+ * owner that cannot be proven dead - a live PID, a non-`ESRCH` probe failure
+ * such as `EPERM`, or an owner record that exists but cannot be read - is
+ * refused. Leaving this evidence unproven preserves detail.
+ */
+async function segmentQuiescence(
+  path: string,
+  shard: string,
+  cutoff: string,
+  killProcess: (pid: number) => void,
+): Promise<SegmentQuiescence | undefined> {
+  const metadata = await stat(path);
+  const observed = {
+    size: metadata.size,
+    mtimeMs: metadata.mtimeMs,
+    dev: metadata.dev,
+    ino: metadata.ino,
+  };
+  if (await isClosed(path)) return { ...observed, revalidate: false };
+  const owner = await ownerLiveness(join(shard, ".owner"), killProcess);
+  if (owner === "dead") return { ...observed, revalidate: false };
+  if (owner === "alive") return undefined;
+  // Genuinely ownerless legacy shard: local mtime is the only evidence left.
+  if (metadata.mtime.toISOString().slice(0, 10) >= cutoff) return undefined;
+  return { ...observed, revalidate: true };
+}
+
+async function isClosed(path: string): Promise<boolean> {
   try {
-    if ((await readFile(`${path}.closed`, "utf8")) === "1\n") return true;
+    return (await readFile(`${path}.closed`, "utf8")) === "1\n";
   } catch {
     /* Legacy writers have no closure marker. */
   }
-  try {
-    const owner = await readFile(join(shard, ".owner"), "utf8");
-    if (!/^[1-9][0-9]{0,9}\n$/.test(owner)) return false;
-    process.kill(Number(owner.trim()), 0);
-  } catch (error) {
-    return (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "ESRCH"
-    );
-  }
   return false;
+}
+
+type OwnerLiveness = "dead" | "alive" | "absent";
+
+/**
+ * Classifies a shard's writer from its `.owner` record. Only `ESRCH` proves the
+ * recorded owner exited; `EPERM` and every other kill failure mean the process
+ * may still be running (for example under another OS user) and must be treated
+ * as alive. A `.owner` read that fails for any reason other than a genuinely
+ * missing file is treated the same way: a failed read never proves
+ * ownerlessness. An empty or unparseable record carries no PID to check, so it
+ * stays on the legacy quiescence path.
+ */
+async function ownerLiveness(
+  ownerPath: string,
+  killProcess: (pid: number) => void,
+): Promise<OwnerLiveness> {
+  let owner: string;
+  try {
+    owner = await readFile(ownerPath, "utf8");
+  } catch (error) {
+    return hasErrorCode(error, "ENOENT") ? "absent" : "alive";
+  }
+  if (!/^[1-9][0-9]{0,9}\n$/.test(owner)) return "absent";
+  try {
+    killProcess(Number(owner.trim()));
+    return "alive";
+  } catch (error) {
+    return hasErrorCode(error, "ESRCH") ? "dead" : "alive";
+  }
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code
+  );
+}
+
+async function unchangedSince(
+  path: string,
+  expected: SegmentQuiescence,
+): Promise<boolean> {
+  try {
+    const metadata = await stat(path);
+    // Device+inode also catch a path swapped for a same-size, same-mtime copy.
+    return (
+      metadata.size === expected.size &&
+      metadata.mtimeMs === expected.mtimeMs &&
+      metadata.dev === expected.dev &&
+      metadata.ino === expected.ino
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function firstSequence(

@@ -31,19 +31,35 @@ There is no guessed migration for already deleted ranges.
 A writer exclusively creates `.owner` containing its PID. Before moving to another
 dated fragment it publishes `<segment>.closed` containing only `1\n`, after its
 last append has completed. It never appends that path again, including on clock
-rollback; a new fragment is used. Maintenance requires this marker or a valid
-owner PID proven dead by ESRCH. Missing/empty legacy owner, PID reuse, and
-indeterminate liveness preserve detail rather than risk deleting an active file.
+rollback; a new fragment is used. Maintenance requires this marker or an owner
+PID proven dead by ESRCH, which remain eligible exactly as before. A live owner
+PID is always refused. Only `ESRCH` proves death: `EPERM` and every other liveness
+probe failure mean the owner may still be running (for example under another OS
+user) and are refused. A `.owner` read that fails for any reason other than a
+genuinely missing file is likewise refused.
+
+For a legacy shard whose `.owner` record is genuinely missing, empty, or
+unparseable, deletion is authorized only by provable file quiescence: the
+segment mtime is strictly before the cutoff UTC day, and its exact size, mtime,
+device, and inode are re-verified identical immediately before unlink. Device
+and inode catch a path swapped for a same-size, same-mtime replacement. This
+recheck detects a delayed append or path swap in the overwhelming majority of
+cases, but a stat-then-unlink sequence is not atomic, so a write landing inside
+that final window can still be lost. If quiescence is not provable, detail is
+preserved rather than risk deleting an active or unreadable owner record.
 
 Maintenance streams and fully validates each candidate's records and contiguous
 sequences, selecting prefixes by sequence rather than date/directory order. A
 recent or mutable prefix blocks deletion of later expired segments. Under its
 lease it rechecks Pi source, publishes the versioned seal atomically, rechecks
 source, then unlinks. Published seals never regress, even when unlink throws or
-source changes: an interruption may have occurred after deletion. Remaining WAL
-can still be replayed; missing sealed detail is explicitly cold. Pi aggregate
-validity is separately tied to its source revision; a seal never supplies Pi
-billing authority. Repeated maintenance freshly reduces Pi and preserves seals.
+source changes: an interruption may have occurred after deletion. A seal covers
+only the validated prefix, so publishing a seal and then aborting the unlink is
+safe: recovery seeds its cursor from the seal and replays the remaining records
+contiguously. Remaining WAL can still be replayed; missing sealed detail is
+explicitly cold. Pi aggregate validity is separately tied to its source
+revision; a seal never supplies Pi billing authority. Repeated maintenance
+freshly reduces Pi and preserves seals.
 
 Retention is independent of full WAL replay's byte/record budgets. Each writer
 pass processes at most 64 segments and normally 64 MiB. A single oversized
@@ -57,5 +73,15 @@ Current and history loaders project validated seals into the renderer-neutral
 `SessionReport.walDetail: "expired"` state, including after Pi source changes.
 JSON and HTML reports render this state explicitly; the current TUI carries it
 in its report DTO without a dedicated visible row. No record payload or
-producer diagnostic is copied to the seal or report notice.
-Process interruption is covered; power-loss durability/fsync is not promised.
+producer diagnostic is copied to the seal or report notice. When all detail for
+a session is sealed and pruned, that notice reaches JSON and HTML while native
+Pi aggregates, models, and tools stay available and expired live detail is
+`unavailable` rather than fabricated as zero.
+
+Deterministic tests inject interruption at every seal phase: before validation,
+during streaming validation, after validation before seal publication, after
+seal publication before unlink, and after unlink before the `.closed` marker is
+removed. Each interruption leaves raw WAL or a validated sealed checkpoint, and
+no partial state is treated as authority; repeated passes are idempotent and
+never regress a seal. Process interruption is covered; power-loss
+durability/fsync is not promised.
