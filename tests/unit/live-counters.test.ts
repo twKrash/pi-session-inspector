@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { registerLiveCounters } from "../../src/integrations/live-counters.ts";
+import { foldTelemetryCounters } from "../../src/core/live-counter-fold.ts";
 
 test("translates public permission bus events into bounded envelopes only", async () => {
   const rows = JSON.parse(
@@ -61,7 +62,10 @@ test("translates public permission bus events into bounded envelopes only", asyn
   // Missing or unrecognised producer resolutions are bounded to the closed
   // vocabulary; the raw producer string must never reach the writer.
   const decisionHandler = handlers.get("permissions:decision");
-  decisionHandler?.({ result: "allow", resolution: "sentinel-unknown-resolution" });
+  decisionHandler?.({
+    result: "allow",
+    resolution: "sentinel-unknown-resolution",
+  });
   decisionHandler?.({ result: "deny" });
   assert.deepEqual(
     envelopes
@@ -106,4 +110,51 @@ test("translates public permission bus events into bounded envelopes only", asyn
     ],
   );
   assert.equal(JSON.stringify(envelopes).includes("secret prompt text"), false);
+
+  // permission.prompt: every valid promptSource maps to its bounded envelope.
+  const promptHandler = handlers.get("permissions:ui_prompt");
+  promptHandler?.({ source: "skill_input" });
+  promptHandler?.({ source: "skill_read" });
+  promptHandler?.({ source: "sentinel-unknown-source" });
+  assert.deepEqual(
+    envelopes
+      .filter(
+        (envelope) =>
+          (envelope as { metric: string }).metric === "permission.prompt",
+      )
+      .map(
+        (envelope) =>
+          (envelope as { dimensions: Record<string, string> }).dimensions,
+      ),
+    [
+      { promptSource: "tool_call" },
+      { promptSource: "skill_input" },
+      { promptSource: "skill_read" },
+    ],
+  );
+  assert.equal(
+    JSON.stringify(envelopes).includes("sentinel-unknown-source"),
+    false,
+  );
+
+  // permissions:ready is a presence envelope with no dimensions, and folding it
+  // must not invent or change any counter.
+  const readyEnvelopes = envelopes.filter(
+    (envelope) =>
+      (envelope as { metric: string }).metric === "permission.ready",
+  );
+  assert.deepEqual(readyEnvelopes, [
+    {
+      schemaVersion: 1,
+      source: "permission-system",
+      metric: "permission.ready",
+      kind: "counter",
+      value: 1,
+      timestamp: Date.parse("2026-09-11T10:00:00Z"),
+    },
+  ]);
+  assert.equal(Object.hasOwn(readyEnvelopes[0] as object, "dimensions"), false);
+  const readyFolded = foldTelemetryCounters(readyEnvelopes);
+  assert.deepEqual(readyFolded.counters, {});
+  assert.equal(readyFolded.presence.permission, true);
 });

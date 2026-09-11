@@ -1,3 +1,5 @@
+import { SKILL_NAME_PATTERN } from "../core/live-counter-fold.ts";
+
 const SKILL_PREFIX = "/skill:";
 
 /**
@@ -32,7 +34,7 @@ export function readSkillCommandName(text: string): string | undefined {
   const rest = text.slice(SKILL_PREFIX.length);
   const end = rest.search(/\s/);
   const name = end === -1 ? rest : rest.slice(0, end);
-  return /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/.test(name) ? name : undefined;
+  return SKILL_NAME_PATTERN.test(name) ? name : undefined;
 }
 
 export type LiveCounterWriter = {

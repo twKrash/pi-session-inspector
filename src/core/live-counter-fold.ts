@@ -2,7 +2,8 @@ import type { IntegrationKey } from "./events.ts";
 
 export const MAX_SKILL_KEYS = 64;
 export const MAX_COUNTER_KEYS = 16;
-const SKILL_NAME = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
+/** Bounded skill-name grammar; shared by the fold table and the producer adapter. */
+export const SKILL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
 const SKILL_SOURCE = "pi-input";
 export type FoldedCounters = {
   counters: Partial<Record<IntegrationKey, Record<string, number>>>;
@@ -20,7 +21,14 @@ export function emptyFoldedCounters(): FoldedCounters {
   };
 }
 
-/** Adds two counter buckets; presence is a logical OR, every count is an integer sum. */
+/**
+ * Adds two counter buckets; presence is a logical OR, every count is an integer
+ * sum. The binding caps are re-applied here so every caller inherits them:
+ * base keys are kept first, then delta keys are considered in sorted order.
+ * A skill key that would exceed `MAX_SKILL_KEYS` is not tracked, but its whole
+ * count is added to `otherInvocations` (exactness), matching the fold rule; a
+ * counter key that would exceed `MAX_COUNTER_KEYS` per integration is dropped.
+ */
 export function mergeFoldedCounters(
   base: FoldedCounters | undefined,
   delta: FoldedCounters,
@@ -31,17 +39,33 @@ export function mergeFoldedCounters(
   merged.presence = {
     permission: merged.presence.permission || delta.presence.permission,
   };
-  for (const [name, count] of Object.entries(delta.skillInvocations)) {
-    merged.skillInvocations[name] =
-      (merged.skillInvocations[name] ?? 0) + count;
+  for (const name of Object.keys(delta.skillInvocations).sort()) {
+    const count = delta.skillInvocations[name] ?? 0;
+    if (merged.skillInvocations[name] !== undefined) {
+      merged.skillInvocations[name] += count;
+      continue;
+    }
+    if (Object.keys(merged.skillInvocations).length >= MAX_SKILL_KEYS) {
+      // Not tracked, but the invocations are still counted exactly.
+      merged.otherInvocations += count;
+      continue;
+    }
+    merged.skillInvocations[name] = count;
   }
-  for (const [integration, counters] of Object.entries(delta.counters) as Array<
-    [IntegrationKey, Record<string, number>]
-  >) {
+  for (const integration of Object.keys(
+    delta.counters,
+  ).sort() as IntegrationKey[]) {
+    const deltaCounters = delta.counters[integration] ?? {};
     const target = merged.counters[integration] ?? {};
     merged.counters[integration] = target;
-    for (const [key, count] of Object.entries(counters)) {
-      target[key] = (target[key] ?? 0) + count;
+    for (const key of Object.keys(deltaCounters).sort()) {
+      const count = deltaCounters[key] ?? 0;
+      if (target[key] !== undefined) {
+        target[key] += count;
+        continue;
+      }
+      if (Object.keys(target).length >= MAX_COUNTER_KEYS) continue;
+      target[key] = count;
     }
   }
   return merged;
@@ -131,7 +155,7 @@ function addEnvelope(folded: FoldedCounters, input: unknown): void {
   }
   if (input.source === SKILL_SOURCE && metric === "skill.invocation") {
     const skill = dimensions?.skill;
-    if (typeof skill !== "string" || !SKILL_NAME.test(skill)) return;
+    if (typeof skill !== "string" || !SKILL_NAME_PATTERN.test(skill)) return;
     if (folded.skillInvocations[skill] !== undefined) {
       folded.skillInvocations[skill] = folded.skillInvocations[skill] + 1;
       return;
