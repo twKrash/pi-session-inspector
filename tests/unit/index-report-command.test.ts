@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -287,6 +294,60 @@ test("json current, history and global export deterministically and never open",
     );
     assert.equal(global.usage.totalTokens, 18);
     assert.equal(harness.opens.length, 0);
+    assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("json history --output leaves the Pi session, pending marker, and lease untouched", async () => {
+  const harness = await createHarness();
+  try {
+    const sessionRoot = join(harness.root, "sessions", "real-session");
+    await mkdir(sessionRoot, { recursive: true });
+    const metadata = JSON.stringify({
+      schemaVersion: 2,
+      sessionId: "real-session",
+      sourceFile: "session.jsonl",
+      state: "tracking",
+    });
+    await writeFile(join(sessionRoot, "meta.json"), metadata);
+
+    const output = join(harness.directory, "maintenance.json");
+    await harness.handler()(
+      `json history --output ${JSON.stringify(output)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(JSON.parse(await readFile(output, "utf8")).sessions.length, 1);
+    // Reading history must never create a maintenance lease.
+    await assert.rejects(access(join(sessionRoot, "maintenance.lease")));
+
+    // Pi's live maintenance parks the metadata as a pending marker and holds
+    // an expired lease; the observer must not reclaim, consume, or rewrite it.
+    await rm(join(sessionRoot, "meta.json"));
+    await writeFile(join(sessionRoot, "meta.json.pending"), metadata);
+    const leaseDirectory = join(sessionRoot, "maintenance.lease");
+    await mkdir(leaseDirectory);
+    const owner = JSON.stringify({
+      schemaVersion: 1,
+      writerId: "live-maintainer",
+      pid: process.pid,
+      acquiredAt: Date.now() - 120_000,
+      expiresAt: Date.now() - 90_000,
+    });
+    await writeFile(join(leaseDirectory, "owner.json"), owner);
+
+    await harness.handler()(
+      `json history --output ${JSON.stringify(output)}`,
+      harness.context({ mode: "interactive" }),
+    );
+
+    assert.equal(
+      await readFile(join(leaseDirectory, "owner.json"), "utf8"),
+      owner,
+    );
+    await access(join(sessionRoot, "meta.json.pending"));
+    await assert.rejects(access(join(sessionRoot, "meta.json")));
     assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
   } finally {
     await harness.cleanup();

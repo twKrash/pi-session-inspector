@@ -533,34 +533,42 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
 });
 
 test("renders the daily activity line chart for every report kind", () => {
-  for (const html of [
-    renderHtml(richCurrent),
-    renderHtml(historyReport()),
-    renderHtml(globalReport()),
-  ]) {
+  const currentHtml = renderHtml(richCurrent);
+  const historyHtml = renderHtml(historyReport());
+  const globalHtml = renderHtml(globalReport());
+
+  for (const html of [currentHtml, historyHtml, globalHtml]) {
     const script = scriptOf(html);
     assert.match(script, /function chart\(\)\{/);
     assert.equal(script.includes("nodes.push(chart())"), true);
     // One call site per report path: global, history list, history detail, current.
     assert.equal((script.match(/nodes\.push\(chart\(\)\)/g) ?? []).length, 4);
-    assert.match(script, /chartMetrics/);
     assert.match(script, /id="chart-metric"/);
     assert.match(script, /tr\("chart\.data"\)/);
   }
 
-  const data = embedded(renderHtml(richCurrent));
+  const data = embedded(currentHtml);
   assert.equal(data.current.tree.daily.length, 2);
-  const script = scriptOf(renderHtml(richCurrent));
+  // Current metrics are the fixed session metric set the client runtime ships.
+  const script = scriptOf(currentHtml);
   assert.match(
     script,
     /const CURRENT_METRICS=\["sessions","cost","tokens","generations","tools"\]/,
   );
-  assert.deepEqual(embedded(renderHtml(globalReport())).global.chartMetrics, [
+  // History and global carry their metric choices in the payload itself.
+  assert.deepEqual(embedded(historyHtml).history.chartMetrics, [
+    "sessions",
+    "cost",
+    "tokens",
+    "generations",
+    "tools",
+  ]);
+  assert.deepEqual(embedded(globalHtml).global.chartMetrics, [
     "sessions",
     "cost",
     "tokens",
   ]);
-  const globalScript = scriptOf(renderHtml(globalReport()));
+  const globalScript = scriptOf(globalHtml);
   assert.equal(
     globalScript.includes('["generations","metric.generations"]'),
     false,
@@ -770,6 +778,31 @@ test("presents usage composition that reconciles to the session total", () => {
 });
 
 test("drives the evidence panel from real evidence state for every report kind", () => {
+  const data = embedded(renderHtml(richCurrent));
+  const confidences = data.current.tree.evidence.map(
+    (row: { confidence: string }) => row.confidence,
+  );
+  assert.equal(confidences.includes("native"), true);
+  assert.equal(confidences.includes("live"), true);
+  assert.equal(confidences.includes("cooperative"), true);
+  assert.equal(confidences.includes("unavailable"), true);
+  for (const row of data.current.tree.evidence) {
+    assert.equal(typeof row.source, "string");
+    assert.equal(typeof row.observation, "string");
+    assert.equal(typeof row.confidence, "string");
+  }
+
+  // A bare current view still carries its rows with an explicit Unavailable
+  // confidence instead of zeros.
+  const bare = embedded(renderHtml(current));
+  assert.equal(bare.current.active.evidence.length > 0, true);
+  assert.equal(
+    bare.current.active.evidence.some(
+      (row: { confidence: string }) => row.confidence === "unavailable",
+    ),
+    true,
+  );
+
   const historyData = embedded(renderHtml(historyReport()));
   const globalData = embedded(renderHtml(globalReport()));
   for (const rows of [
@@ -796,14 +829,14 @@ test("drives the evidence panel from real evidence state for every report kind",
     true,
   );
 
-  // The current view's evidence is derived in the browser from the same
-  // session projection; the shared script owns that path now.
+  // The panel reads the precomputed rows from the shared payload for the
+  // selected scope; it never re-derives them in the browser.
   const script = scriptOf(renderHtml(richCurrent));
-  assert.match(script, /function currentEvidence\(\)\{/);
+  assert.match(
+    script,
+    /function currentEvidence\(\)\{const view=data\.current\[state\.scope\];/,
+  );
   assert.match(script, /evidence\.map\(row=>\[row\.source,row\.observation/);
-  for (const confidence of ["native", "live", "cooperative", "unavailable"]) {
-    assert.equal(script.includes(`"${confidence}"`), true, confidence);
-  }
 });
 
 test("computes durations from evidence and never guesses", () => {
