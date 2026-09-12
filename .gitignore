@@ -6,3 +6,5 @@ benchmark/artifacts/
 .DS_Store
 .codex
 .agents 
+graphify-out/
+report*.json
