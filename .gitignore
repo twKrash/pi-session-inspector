@@ -9,3 +9,4 @@ benchmark/artifacts/
 graphify-out/
 report*.json
 .pi/
+.superpowers/
