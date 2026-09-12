@@ -933,7 +933,13 @@ test("folds native session usage once into deterministic sorted date rows and in
     });
     assert.deepEqual(global, {
       availability: "available",
-      sessions: [{ availability: "available", sessionId: "history-session" }],
+      sessions: [
+        {
+          availability: "available",
+          sessionId: "history-session",
+          usageByDateTruncated: false,
+        },
+      ],
       usage: { totalTokens: 20, cost: 0.2 },
       dates: [
         {
@@ -1233,4 +1239,109 @@ test("a missing marker keeps its own reason, not replay-failed", async () => {
   assert.equal(history.sessions[0]?.availability, "unavailable");
   assert.deepEqual(history.coverage?.reasons, { "marker-unavailable": 1 });
   assert.equal(history.coverage?.available, 0);
+});
+
+/** One usage-bearing assistant generation line for the dated-window cases. */
+function usageGenerationLine(input: {
+  id: string;
+  parentId: string;
+  timestamp: string;
+}): string {
+  return JSON.stringify({
+    type: "message",
+    id: input.id,
+    parentId: input.parentId,
+    timestamp: input.timestamp,
+    message: {
+      role: "assistant",
+      provider: "acme",
+      model: "alpha",
+      content: [],
+      usage: { totalTokens: 2, cost: { total: 0.02 } },
+    },
+  });
+}
+
+/**
+ * A marker-first source with one usage-bearing generation on each of `days`
+ * distinct UTC dates, chained from the marker (the >366-date pattern of
+ * `tests/unit/dated-usage.test.ts`).
+ */
+function datedSource(days: number): string {
+  const lines = [headerFor(COVERAGE_SESSION_ID), trackingMarkerLine()];
+  let parentId = "marker";
+  for (let index = 0; index < days; index += 1) {
+    const id = `g${index}`;
+    lines.push(
+      usageGenerationLine({
+        id,
+        parentId,
+        timestamp: new Date(
+          Date.UTC(2026, 1, 2) + index * 86_400_000,
+        ).toISOString(),
+      }),
+    );
+    parentId = id;
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Writes one manifest and one marker-first dated window into a fresh temp root
+ * and returns LoadHistoryOptions.
+ */
+async function datedWindowOptions(
+  days: number,
+): Promise<Parameters<typeof loadGlobalReport>[0]> {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-dated-"));
+  const sessionDirectory = join(root, "public-sessions");
+  await mkdir(sessionDirectory);
+  await writeFile(
+    join(sessionDirectory, `${COVERAGE_SESSION_ID}.jsonl`),
+    `${datedSource(days)}\n`,
+  );
+  const directory = join(root, "sessions", COVERAGE_SESSION_ID);
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "meta.json"),
+    `${JSON.stringify({ schemaVersion: 2, sessionId: COVERAGE_SESSION_ID, sourceFile: `${COVERAGE_SESSION_ID}.jsonl`, state: "tracking" })}\n`,
+  );
+  return {
+    root,
+    sessionDirectory: () => sessionDirectory,
+    scope: "tree",
+    maintenance,
+  };
+}
+
+test("the global rows publish each session's dated-window partiality", async () => {
+  const partialOptions = await datedWindowOptions(400);
+  try {
+    const partial = await loadGlobalReport(partialOptions);
+    // A capped window is visible on the aggregate's own rows, so the global
+    // report never reads as complete while a contribution is partial.
+    assert.deepEqual(partial.sessions, [
+      {
+        availability: "available",
+        sessionId: COVERAGE_SESSION_ID,
+        usageByDateTruncated: true,
+      },
+    ]);
+  } finally {
+    await rm(partialOptions.root, { force: true, recursive: true });
+  }
+
+  const completeOptions = await datedWindowOptions(3);
+  try {
+    const complete = await loadGlobalReport(completeOptions);
+    assert.deepEqual(complete.sessions, [
+      {
+        availability: "available",
+        sessionId: COVERAGE_SESSION_ID,
+        usageByDateTruncated: false,
+      },
+    ]);
+  } finally {
+    await rm(completeOptions.root, { force: true, recursive: true });
+  }
 });

@@ -1424,7 +1424,7 @@ function projectReport(input: HtmlReport): Record<string, unknown> {
   // window cannot represent its spend still makes the aggregate partial.
   const dailyTruncated = input.report.sessions.some(
     (session) =>
-      "usageByDateTruncated" in session &&
+      session.availability === "available" &&
       session.usageByDateTruncated === true,
   );
   return {

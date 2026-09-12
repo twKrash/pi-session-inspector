@@ -110,6 +110,22 @@ export type HistoryReport = {
   coverage?: SessionCoverage;
 };
 
+/**
+ * One global aggregate row: the session's identity plus, for an available
+ * session, whether its dated window can represent its whole native usage. The
+ * per-session dated rows themselves stay on the history report; the aggregate
+ * only needs the partiality of each contribution (spec §5.6, ADR-level honesty
+ * carry-forward: a partial contribution makes the aggregate visibly partial).
+ */
+export type GlobalSessionRow =
+  | {
+      availability: "available";
+      sessionId: string;
+      /** True when this session's dated window cannot represent its whole native usage. */
+      usageByDateTruncated: boolean;
+    }
+  | { availability: "unavailable"; sessionId: string };
+
 export type DateRange = { from?: string; to?: string };
 
 export type DateUsage = {
@@ -120,7 +136,7 @@ export type DateUsage = {
 
 export type GlobalReport = {
   availability: "available" | "unavailable";
-  sessions: Array<Omit<HistoricalSession, "report">>;
+  sessions: GlobalSessionRow[];
   usage: Usage;
   dates: DateUsage[];
   diagnostics: HistoryDiagnostic[];
@@ -439,6 +455,16 @@ function defaultReplay(input: HistoryReplayInput): SessionReport {
   );
 }
 
+function toGlobalSessionRow(session: SessionScan): GlobalSessionRow {
+  return session.availability === "available"
+    ? {
+        availability: "available",
+        sessionId: session.sessionId,
+        usageByDateTruncated: session.usageByDateTruncated,
+      }
+    : { availability: "unavailable", sessionId: session.sessionId };
+}
+
 function toHistoricalSession(session: SessionScan): HistoricalSession {
   return session.availability === "available"
     ? {
@@ -485,10 +511,7 @@ export async function loadGlobalReport(
     }));
   return {
     availability: history.availability,
-    sessions: history.sessions.map(({ availability, sessionId }) => ({
-      availability,
-      sessionId,
-    })),
+    sessions: history.sessions.map(toGlobalSessionRow),
     usage: dates.reduce(
       (total, row) => addUsage(total, row.usage),
       zeroUsage(),

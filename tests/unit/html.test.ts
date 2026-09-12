@@ -304,13 +304,21 @@ function historyReport(session: SessionReport = richReport): HtmlReport {
   };
 }
 
-function globalReport(): HtmlReport {
+function globalReport({
+  usageByDateTruncated = false,
+}: {
+  usageByDateTruncated?: boolean;
+} = {}): HtmlReport {
   return {
     kind: "global",
     report: {
       availability: "available",
       sessions: [
-        { availability: "available", sessionId: "session-rich" },
+        {
+          availability: "available",
+          sessionId: "session-rich",
+          usageByDateTruncated,
+        },
         { availability: "unavailable", sessionId: "session-missing" },
       ],
       usage: { totalTokens: 84, cost: 0.02 },
@@ -596,8 +604,10 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
 test("a partial session keeps the history and global aggregates partial", () => {
   const complete = embedded(renderHtml(historyReport()));
   assert.equal(complete.history.dailyTruncated, false);
+  // Available global rows that are all exact keep the aggregate exact.
   assert.equal(
-    embedded(renderHtml(globalReport())).global.dailyTruncated,
+    embedded(renderHtml(globalReport({ usageByDateTruncated: false }))).global
+      .dailyTruncated,
     false,
   );
 
@@ -648,16 +658,9 @@ test("a partial session keeps the history and global aggregates partial", () => 
     true,
   );
 
-  const partialGlobal = globalReport();
-  if (partialGlobal.kind !== "global") {
-    throw new Error("the global fixture must be a global report");
-  }
-  // The loader sets this on every available global row; the collapsed global
-  // session type hides it, so the fixture carries it as the loader would.
-  const globalSession = partialGlobal.report.sessions[0] as {
-    usageByDateTruncated?: boolean;
-  };
-  globalSession.usageByDateTruncated = true;
+  // The loader publishes the flag on every available global row, so a partial
+  // one makes the aggregate partial.
+  const partialGlobal = globalReport({ usageByDateTruncated: true });
   assert.equal(embedded(renderHtml(partialGlobal)).global.dailyTruncated, true);
 });
 
