@@ -229,6 +229,25 @@ test("uses Pi's active leaf rather than the latest appended branch", async () =>
   assert.equal(model?.report.usage.totalTokens, 42);
 });
 
+test("keeps understood facts when Pi's active leaf is an unknown-typed entry", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const file = join(directory, "branching.jsonl");
+  await writeFile(
+    file,
+    await readFile("tests/fixtures/pi/0.85.1/branching.jsonl", "utf8"),
+  );
+
+  // The newest entry `e8` has unknown semantics (`type: "future_entry"`), and
+  // Pi can still report it as the active leaf. Active scope must span its exact
+  // `parentId` ancestry and reduce the understood facts on that path — never a
+  // defined all-zero report that turns `unavailable` into `0`.
+  const model = await loadCurrentSessionReport(file, "active", {
+    leafId: "e8",
+  });
+  assert.ok(model);
+  assert.equal(model.report.usage.totalTokens, 30);
+});
+
 test("leaves active scope unavailable when Pi has no known active leaf", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const file = join(directory, "branching.jsonl");

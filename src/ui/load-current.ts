@@ -9,7 +9,6 @@ import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
 import { readSubagentEvidenceWithArchives } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { resolveScope } from "../pi/scope.ts";
-import { selectScope } from "../pi/sessions.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
 import type { SessionObservation } from "./observation.ts";
 
@@ -42,13 +41,23 @@ export async function loadCurrentSessionReport(
       scope,
     );
     if (resolution.state === "unavailable") return undefined;
+    // The entry list is derived from the authoritative resolution, not
+    // `selectScope` (which rebuilds nodes from known entries only and can
+    // return `[]` when the active leaf is structurally valid but unknown).
+    // This preserves the resolution order exactly and keeps only entries the
+    // reducer understands, so an unknown active leaf degrades to the
+    // understood facts on its path instead of a fabricated all-zero report.
+    const byId = new Map(session.entries.map((entry) => [entry.id, entry]));
+    const entries = resolution.entryIds.flatMap((id) => {
+      const entry = byId.get(id);
+      return entry === undefined ? [] : [entry];
+    });
     const checkpoint =
       inspectorRoot === undefined
         ? undefined
         : await readCheckpoint({
             directory: join(inspectorRoot, "sessions", session.id),
           });
-    const entries = selectScope(session.entries, leafId, scope);
     // Subagent runs are auto-discovered from persisted tool results; the
     // evidence usage stays a child-agent breakdown, never a session total.
     // Only validated published archive references add presence evidence.
