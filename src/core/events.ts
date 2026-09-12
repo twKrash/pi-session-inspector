@@ -38,6 +38,20 @@ export type IntegrationObservation = IntegrationObservationInput & {
   presence: IntegrationPresence;
 };
 
+/**
+ * Bounded failure classification for one cooperative run. `reason` is a closed
+ * enum and `detail` is a bounded exit code or signal token; free text is never
+ * carried.
+ */
+export type AgentFailure = {
+  reason:
+    | "exit-nonzero"
+    | "process-signal"
+    | "completion-failed"
+    | "output-absent";
+  detail?: number | string;
+};
+
 export type AgentRun = {
   id: string;
   parentId?: string;
@@ -50,6 +64,21 @@ export type AgentRun = {
    * identity. Absent when the run published no reference; never a path.
    */
   artifacts?: "available" | "missing";
+  /**
+   * Publication time of the persisted result that observed this run. This is
+   * observation time only: it is never a run start, end, or duration claim.
+   */
+  observedAt?: string;
+  /**
+   * Canonical `tool:<toolCallId>` of the persisted result that published the
+   * row. One result may publish many runs; the relation is one-to-many.
+   */
+  evidenceToolId?: string;
+  /** Bounded model label; absent when the producer value is unusable. */
+  model?: string;
+  /** Bounded thinking/reasoning-effort label. */
+  thinking?: string;
+  failure?: AgentFailure;
   usage?: Usage;
 };
 

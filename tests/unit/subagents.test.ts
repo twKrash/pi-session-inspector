@@ -5,7 +5,41 @@ import {
   readSubagentEvidence,
   readSubagentEvidenceWithArchives,
 } from "../../src/integrations/subagents.ts";
+import type { SessionEntry } from "../../src/core/events.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+
+const assistantEntry = (
+  id: string,
+  callId: string,
+  name = "subagent",
+): SessionEntry => ({
+  id,
+  parentId: null,
+  timestamp: "2026-09-12T10:00:00.000Z",
+  type: "message",
+  message: {
+    role: "assistant",
+    content: [{ type: "toolCall", id: callId, name }],
+  },
+});
+
+const resultEntry = (
+  id: string,
+  callId: string,
+  details: unknown,
+  timestamp: string,
+): SessionEntry => ({
+  id,
+  parentId: null,
+  timestamp,
+  type: "message",
+  message: {
+    role: "toolResult",
+    toolCallId: callId,
+    toolName: "subagent",
+    details,
+  },
+});
 
 test("derives native tool activity and cooperative runs from persisted results", async () => {
   const fixture = await readFile(
@@ -184,13 +218,18 @@ test("maps nested completion children with bounded parents and unknown statuses"
 
   const evidence = readSubagentEvidence(entries);
 
-  // The nested entry repeating the completion's own run id is not a second run.
+  // The nested entry repeating the completion's own run id is not a second run:
+  // it merges as a repeated observation. Its conflicting agent is dropped with a
+  // `cooperative-evidence-conflict` diagnostic rather than overwriting the first.
   assert.equal(evidence.runs.length, 2);
   const [completion, child] = evidence.runs;
   assert.match(completion?.id ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(completion?.parentId, undefined);
-  assert.equal(completion?.agent, "workflow");
+  assert.equal(completion?.agent, undefined);
   assert.equal(completion?.status, "succeeded");
+  assert.deepEqual(evidence.diagnostics, [
+    { code: "cooperative-evidence-conflict", count: 1 },
+  ]);
   assert.equal(child?.parentId, completion?.id);
   assert.equal(child?.agent, undefined);
   assert.equal(child?.status, "unknown");
@@ -595,5 +634,237 @@ test("reports unavailable activity for a session without subagent calls", () => 
     },
     runs: [],
     state: "unavailable",
+    diagnostics: [],
   });
+});
+
+test("run carries publication time, evidence tool id, model and failure", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r",
+      "call_1",
+      {
+        results: [
+          {
+            runId: "run-1",
+            agent: "delegate",
+            success: false,
+            exitCode: 2,
+            model: "gpt-5",
+            thinking: "high",
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.01,
+            },
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  const run = evidence.runs[0];
+  assert.equal(run?.observedAt, "2026-09-12T10:00:05.000Z");
+  assert.equal(run?.evidenceToolId, "tool:call_1");
+  assert.equal(run?.model, "gpt-5");
+  assert.equal(run?.thinking, "high");
+  assert.deepEqual(run?.failure, { reason: "exit-nonzero", detail: 2 });
+  assert.deepEqual(evidence.diagnostics, []);
+});
+
+test("repeated publications keep the latest observation exactly once", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      { results: [{ runId: "run-1", agent: "delegate", success: true }] },
+      "2026-09-12T10:00:05.000Z",
+    ),
+    assistantEntry("b", "call_2", "subagent_wait"),
+    resultEntry(
+      "r2",
+      "call_2",
+      { completions: [{ runId: "run-1", agent: "delegate", success: true }] },
+      "2026-09-12T10:01:00.000Z",
+    ),
+  ]);
+  assert.equal(evidence.runs.length, 1);
+  assert.equal(evidence.runs[0]?.observedAt, "2026-09-12T10:01:00.000Z");
+  assert.equal(evidence.runs[0]?.evidenceToolId, "tool:call_2");
+  assert.deepEqual(evidence.diagnostics, []);
+});
+
+test("drops conflicting identity fields with a conflict diagnostic", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      { results: [{ runId: "run-1", agent: "delegate", success: true }] },
+      "2026-09-12T10:00:05.000Z",
+    ),
+    assistantEntry("b", "call_2", "subagent_wait"),
+    resultEntry(
+      "r2",
+      "call_2",
+      { completions: [{ runId: "run-1", agent: "reviewer", success: true }] },
+      "2026-09-12T10:01:00.000Z",
+    ),
+  ]);
+  assert.equal(evidence.runs.length, 1);
+  assert.equal(evidence.runs[0]?.agent, undefined);
+  assert.deepEqual(evidence.diagnostics, [
+    { code: "cooperative-evidence-conflict", count: 1 },
+  ]);
+});
+
+test("terminal-to-running regression yields unknown plus a diagnostic", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      { results: [{ runId: "run-1", agent: "delegate", success: true }] },
+      "2026-09-12T10:00:05.000Z",
+    ),
+    assistantEntry("b", "call_2", "subagent_wait"),
+    resultEntry(
+      "r2",
+      "call_2",
+      {
+        completions: [{ runId: "run-1", agent: "delegate", state: "running" }],
+      },
+      "2026-09-12T10:01:00.000Z",
+    ),
+  ]);
+  assert.equal(evidence.runs.length, 1);
+  assert.equal(evidence.runs[0]?.status, "unknown");
+  assert.deepEqual(evidence.diagnostics, [
+    { code: "cooperative-evidence-conflict", count: 1 },
+  ]);
+});
+
+test("derives only closed bounded failure reasons", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        results: [
+          {
+            runId: "run-signal",
+            agent: "a",
+            state: "failed",
+            processSignal: "SIGTERM",
+          },
+          { runId: "run-failed", agent: "b", success: false },
+          {
+            runId: "run-absent",
+            agent: "c",
+            state: "failed",
+            outputState: "absent",
+          },
+          {
+            runId: "run-free",
+            agent: "d",
+            state: "failed",
+            reason: "PRIVATE free text",
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  assert.deepEqual(byAgent.get("a")?.failure, {
+    reason: "process-signal",
+    detail: "SIGTERM",
+  });
+  assert.deepEqual(byAgent.get("b")?.failure, { reason: "completion-failed" });
+  assert.deepEqual(byAgent.get("c")?.failure, { reason: "output-absent" });
+  assert.equal(byAgent.get("d")?.failure, undefined);
+  assert.equal(JSON.stringify(evidence).includes("PRIVATE free text"), false);
+});
+
+test("bounds model and thinking producer labels", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        results: [
+          {
+            runId: "run-1",
+            agent: "a",
+            model: "/home/dev/PRIVATE/model",
+            thinking: "high",
+          },
+          {
+            runId: "run-2",
+            agent: "b",
+            model: "gpt-5",
+            thinking: "sk-abcdef123456",
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  assert.equal(byAgent.get("a")?.model, undefined);
+  assert.equal(byAgent.get("a")?.thinking, "high");
+  assert.equal(byAgent.get("b")?.model, "gpt-5");
+  assert.equal(byAgent.get("b")?.thinking, undefined);
+  assert.equal(JSON.stringify(evidence).includes("PRIVATE"), false);
+});
+
+test("selects the latest child usage instead of summing repeated publications", () => {
+  const usage = (input: number, cost: number) => ({
+    input,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost,
+  });
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        completions: [
+          {
+            runId: "run-1",
+            agent: "delegate",
+            success: true,
+            usage: usage(10, 0.1),
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+    assistantEntry("b", "call_2", "subagent_wait"),
+    resultEntry(
+      "r2",
+      "call_2",
+      {
+        completions: [
+          {
+            runId: "run-1",
+            agent: "delegate",
+            success: true,
+            usage: usage(20, 0.2),
+          },
+        ],
+      },
+      "2026-09-12T10:01:00.000Z",
+    ),
+  ]);
+  assert.deepEqual(evidence.runs[0]?.usage, { totalTokens: 20, cost: 0.2 });
 });

@@ -17,8 +17,10 @@ import {
   type SkillRow,
 } from "../integrations/inventory.ts";
 import { boundedDescription } from "./redact.ts";
+import { boundedProducerLabel } from "./evidence.ts";
 import {
   isAgentLabel,
+  isProcessSignal,
   type AgentToolActivity,
 } from "../integrations/subagents.ts";
 
@@ -26,6 +28,7 @@ import {
 // native subagent evidence has exactly one DTO definition (never re-declared).
 export type { AgentToolActivity };
 import type {
+  AgentFailure,
   AgentRun,
   Compaction,
   EvidenceState,
@@ -54,6 +57,17 @@ const MAX_COUNTERS = 12;
 const MAX_TOTAL_TOKENS = 1_000_000_000;
 const MAX_COST = 1_000_000_000;
 const OPAQUE_SUBAGENT_ID = /^subagent-[a-f0-9]{64}$/;
+// The adapter emits `tool:<native toolCallId>`; re-validate the bounded form.
+const OPAQUE_TOOL_ID = /^tool:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const FAILURE_REASONS = new Set<AgentFailure["reason"]>([
+  "exit-nonzero",
+  "process-signal",
+  "completion-failed",
+  "output-absent",
+]);
+const MAX_EXIT_CODE = 255;
 const AGENT_STATUSES = new Set<AgentRun["status"]>([
   "running",
   "succeeded",
@@ -435,6 +449,13 @@ function projectAgent(value: unknown): AgentRun | undefined {
   const agent = isAgentLabel(run.agent) ? run.agent : undefined;
   const usage = projectUsage(run.usage);
   const artifacts = isArchiveState(run.artifacts) ? run.artifacts : undefined;
+  const observedAt = isObservedAt(run.observedAt) ? run.observedAt : undefined;
+  const evidenceToolId = isOpaqueToolId(run.evidenceToolId)
+    ? run.evidenceToolId
+    : undefined;
+  const model = boundedProducerLabel(run.model);
+  const thinking = boundedProducerLabel(run.thinking);
+  const failure = projectAgentFailure(run.failure);
   return {
     id: run.id,
     ...(parentId === undefined ? {} : { parentId }),
@@ -442,8 +463,69 @@ function projectAgent(value: unknown): AgentRun | undefined {
     status: run.status,
     confidence: run.confidence,
     ...(artifacts === undefined ? {} : { artifacts }),
+    ...(observedAt === undefined ? {} : { observedAt }),
+    ...(evidenceToolId === undefined ? {} : { evidenceToolId }),
+    ...(model === undefined ? {} : { model }),
+    ...(thinking === undefined ? {} : { thinking }),
+    ...(failure === undefined ? {} : { failure }),
     ...(usage === undefined ? {} : { usage }),
   };
+}
+
+/** Re-validates bounded publication time and closed failure vocabulary. */
+function isObservedAt(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 35 &&
+    ISO_INSTANT.test(value) &&
+    !Number.isNaN(Date.parse(value))
+  );
+}
+
+function isOpaqueToolId(value: unknown): value is string {
+  return typeof value === "string" && OPAQUE_TOOL_ID.test(value);
+}
+
+function projectAgentFailure(value: unknown): AgentFailure | undefined {
+  const failure = snapshotRecord(value);
+  if (failure === undefined) return undefined;
+  const reason = failure.reason;
+  if (
+    typeof reason !== "string" ||
+    !FAILURE_REASONS.has(reason as AgentFailure["reason"])
+  ) {
+    return undefined;
+  }
+  const detail = projectFailureDetail(
+    reason as AgentFailure["reason"],
+    failure.detail,
+  );
+  return {
+    reason: reason as AgentFailure["reason"],
+    ...(detail === undefined ? {} : { detail }),
+  };
+}
+
+/**
+ * A failure detail is meaningful only for the two reasons that publish one:
+ * a bounded signal token for `process-signal`, a bounded integer exit code for
+ * `exit-nonzero`. Anything else is dropped, never guessed.
+ */
+function projectFailureDetail(
+  reason: AgentFailure["reason"],
+  detail: unknown,
+): number | string | undefined {
+  if (reason === "process-signal") {
+    return isProcessSignal(detail) ? detail : undefined;
+  }
+  if (reason === "exit-nonzero") {
+    return typeof detail === "number" &&
+      Number.isSafeInteger(detail) &&
+      Math.abs(detail) <= MAX_EXIT_CODE
+      ? detail
+      : undefined;
+  }
+  return undefined;
 }
 
 function projectUsage(value: unknown): Usage | undefined {
