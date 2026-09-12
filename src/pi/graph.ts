@@ -1,4 +1,4 @@
-const MAX_ID_BYTES = 128;
+export const MAX_ID_BYTES = 128;
 const MAX_TYPE_BYTES = 64;
 const MAX_TIMESTAMP_BYTES = 64;
 const encoder = new TextEncoder();

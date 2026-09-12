@@ -101,3 +101,49 @@ test("invalid leaf never falls back to tree", () => {
     reason: "active-leaf-unavailable",
   });
 });
+
+test("boundary is the marker node ordinal, not a records-derived id set", () => {
+  const knownA = node("knownA", null);
+  const preUnknown = node("preUnknown", "knownA", "future_widget");
+  const markerRecord = marker("m", "preUnknown");
+  const knownB = node("knownB", "m");
+  // The records list is not the list that produced the nodes: the nodes carry
+  // a pre-boundary unknown node the records list omits. An id-set boundary
+  // would leak it; the marker node's ordinal must not.
+  const records = [knownA, markerRecord, knownB];
+  const nodes = buildGraphNodes([knownA, preUnknown, markerRecord, knownB]);
+  const resolved = resolveScope(records, nodes, "knownB", "tree");
+  assert.equal(resolved.state, "available");
+  assert.deepEqual(resolved.state === "available" ? resolved.entryIds : [], [
+    "knownB",
+  ]);
+});
+
+test("a marker id that is unbounded, missing, or unmatched is unavailable", () => {
+  const validMarker = marker("m", null);
+  const missingId = { ...validMarker, id: undefined };
+  const numericId = { ...validMarker, id: 42 };
+  const overBoundId = { ...validMarker, id: "x".repeat(129) };
+  for (const record of [missingId, numericId, overBoundId]) {
+    assert.deepEqual(
+      resolveScope(
+        [record, node("a", null)],
+        buildGraphNodes([node("a", null)]),
+        "a",
+        "tree",
+      ),
+      { state: "unavailable", reason: "tracking-marker-missing" },
+    );
+  }
+  // A bounded marker id with no matching node cannot anchor a boundary.
+  const ghost = marker("ghost", null);
+  assert.deepEqual(
+    resolveScope(
+      [ghost, node("a", "ghost")],
+      buildGraphNodes([node("a", null)]),
+      "a",
+      "tree",
+    ),
+    { state: "unavailable", reason: "tracking-marker-missing" },
+  );
+});

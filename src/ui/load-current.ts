@@ -8,7 +8,7 @@ import { toSessionReport } from "../core/reports.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
 import { readSubagentEvidenceWithArchives } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
-import { selectScope } from "../pi/sessions.ts";
+import { hasTrackingStartMarker, selectScope } from "../pi/sessions.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
 import type { SessionObservation } from "./observation.ts";
 
@@ -31,6 +31,9 @@ export async function loadCurrentSessionReport(
   try {
     const session = parseSessionJsonl(await readFile(sessionFile, "utf8"));
     if (!session.hasSessionHeader || session.hasMalformedJson) return undefined;
+    // No tracking boundary means the current report is unavailable, never an
+    // all-zero report: "unavailable" must not silently become 0.
+    if (!hasTrackingStartMarker(session.entries)) return undefined;
     if (
       scope === "active" &&
       (leafId === null || !session.entries.some((entry) => entry.id === leafId))

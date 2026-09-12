@@ -1,8 +1,9 @@
 import type { Scope } from "../core/events.ts";
-import type { PiGraphNode } from "./graph.ts";
+import { MAX_ID_BYTES, type PiGraphNode } from "./graph.ts";
 
 const TRACKING_START_TYPE = "session-inspector:tracking-start";
 const TRACKING_START_SCHEMA_VERSION = 1;
+const encoder = new TextEncoder();
 
 export type ScopeResolution =
   | {
@@ -44,18 +45,24 @@ export function resolveScope(
     return { state: "unavailable", reason: "tracking-marker-missing" };
   }
   const markerRecord = records[markerIndex] as Record<string, unknown>;
-  const markerEntryId =
-    typeof markerRecord.id === "string" ? markerRecord.id : "";
+  // The boundary is the marker node's append ordinal, never an id set derived
+  // from a records list that may differ from the list that produced the nodes
+  // (controller ruling R16). A marker whose id is not a bounded string, or
+  // whose id has no node, cannot anchor a boundary and is unavailable.
+  const markerEntryId = boundedMarkerId(markerRecord.id);
+  const markerNode =
+    markerEntryId === undefined
+      ? undefined
+      : nodes.find((node) => node.entryId === markerEntryId);
+  if (markerEntryId === undefined || markerNode === undefined) {
+    return { state: "unavailable", reason: "tracking-marker-missing" };
+  }
   const duplicateMarkers = records
     .slice(markerIndex + 1)
     .filter(isTrackingMarkerRecord).length;
-  const preMarkerIds = new Set<string>();
-  for (const record of records.slice(0, markerIndex + 1)) {
-    if (typeof record.id === "string") preMarkerIds.add(record.id);
-  }
 
   const postMarkerNodes = nodes.filter(
-    (node) => !preMarkerIds.has(node.entryId),
+    (node) => node.appendOrdinal > markerNode.appendOrdinal,
   );
 
   if (scope === "tree") {
@@ -94,4 +101,13 @@ export function resolveScope(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** The marker id is usable only when it is a non-empty id bounded like a node id. */
+function boundedMarkerId(value: unknown): string | undefined {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    encoder.encode(value).byteLength <= MAX_ID_BYTES
+    ? value
+    : undefined;
 }

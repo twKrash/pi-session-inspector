@@ -44,6 +44,7 @@ test("loads a durable current session report and leaves ephemeral sessions unava
     file,
     [
       '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"custom","id":"tracking-marker","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
       '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
     ].join("\n"),
   );
@@ -56,6 +57,24 @@ test("loads a durable current session report and leaves ephemeral sessions unava
   assert.deepEqual(model?.report.agents, []);
   assert.equal(model?.report.agentEvidence, "unavailable");
   assert.deepEqual(model?.report.integrations, []);
+
+  // A structurally valid session without a tracking marker is unavailable, so
+  // an all-zero report can never masquerade as a real one.
+  await writeFile(
+    file,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
+    ].join("\n"),
+  );
+  assert.equal(
+    await loadCurrentSessionReport(file, "active", { leafId: "entry-1" }),
+    undefined,
+  );
+  assert.equal(
+    await loadCurrentSessionReport(file, "tree", { leafId: null }),
+    undefined,
+  );
 
   await writeFile(file, '{"type":"message"}\n');
   assert.equal(
@@ -401,6 +420,7 @@ test("opens /ledger directly on the lazy Ledger tab", async () => {
     file,
     [
       '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"custom","id":"tracking-marker","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
       '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
     ].join("\n"),
   );
@@ -527,6 +547,7 @@ const SESSION_ID = "fixture-session";
 
 const sessionSource = [
   '{"type":"session","version":3,"id":"fixture-session"}',
+  '{"type":"custom","id":"tracking-marker","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
   '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
 ].join("\n");
 
