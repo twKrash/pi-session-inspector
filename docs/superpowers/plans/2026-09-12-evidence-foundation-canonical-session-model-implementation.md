@@ -570,7 +570,8 @@ git commit -m "feat: keep graph nodes for every structurally valid Pi entry"
 **Interfaces:**
 
 - Consumes: `PiGraphNode` (Task 3).
-- Produces: `type ScopeResolution = { state: "available"; entryIds: string[]; markerEntryId: string; duplicateMarkers: number } | { state: "unavailable"; reason: "tracking-marker-missing" | "active-leaf-unavailable" }`, `resolveScope(nodes, leafId, scope): ScopeResolution`.
+- Produces: `type ScopeResolution = { state: "available"; entryIds: string[]; markerEntryId: string; duplicateMarkers: number } | { state: "unavailable"; reason: "tracking-marker-missing" | "active-leaf-unavailable" }`, `isTrackingMarkerRecord(value): boolean`, `resolveScope(records, nodes, leafId, scope): ScopeResolution`.
+- Controller ruling R13: marker detection cannot be derived from `PiGraphNode[]` (nodes carry no `customType`/`data`), so `resolveScope` takes the parsed records for marker detection and the graph nodes for ancestry. `src/pi/scope.ts` owns `isTrackingMarkerRecord` (the single marker rule) and `src/pi/sessions.ts`'s `isTrackingStartMarker` delegates to it, so the rule exists in exactly one place.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -578,7 +579,7 @@ git commit -m "feat: keep graph nodes for every structurally valid Pi entry"
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildGraphNodes } from "../../src/pi/graph.ts";
-import { resolveScope } from "../../src/pi/scope.ts";
+import { isTrackingMarkerRecord, resolveScope } from "../../src/pi/scope.ts";
 
 const marker = (id: string, parentId: string | null) => ({
   type: "custom",
@@ -596,14 +597,20 @@ const node = (id: string, parentId: string | null, type = "message") => ({
   message: { role: "user", content: [] },
 });
 
+const scopeOf = (
+  records: Record<string, unknown>[],
+  leafId: string | null,
+  scope: "active" | "tree",
+) => resolveScope(records, buildGraphNodes(records), leafId, scope);
+
 test("unknown node between known nodes keeps active ancestry resolvable", () => {
-  const nodes = buildGraphNodes([
+  const records = [
     marker("m", null),
     node("a", "m"),
     node("b", "a", "future_widget"),
     node("c", "b"),
-  ]);
-  const resolved = resolveScope(nodes, "c", "active");
+  ];
+  const resolved = scopeOf(records, "c", "active");
   assert.equal(resolved.state, "available");
   assert.deepEqual(
     resolved.state === "available" ? resolved.entryIds : [],
@@ -611,19 +618,40 @@ test("unknown node between known nodes keeps active ancestry resolvable", () => 
   );
 });
 
+test("marker detection is exact: other custom entries are never the boundary", () => {
+  const otherCustom = {
+    type: "custom",
+    customType: "ctx_execute",
+    id: "x",
+    parentId: null,
+    timestamp: "2026-09-12T10:00:00.000Z",
+    data: { schemaVersion: 1 },
+  };
+  const wrongVersion = { ...marker("m2", null), data: { schemaVersion: 2 } };
+  assert.equal(isTrackingMarkerRecord(otherCustom), false);
+  assert.equal(isTrackingMarkerRecord(wrongVersion), false);
+  assert.deepEqual(scopeOf([otherCustom, wrongVersion, node("a", null)], "a", "tree"), {
+    state: "unavailable",
+    reason: "tracking-marker-missing",
+  });
+});
+
 test("missing marker is unavailable, never all-entries", () => {
-  const resolved = resolveScope(buildGraphNodes([node("a", null)]), "a", "tree");
-  assert.deepEqual(resolved, { state: "unavailable", reason: "tracking-marker-missing" });
+  const resolved = scopeOf([node("a", null)], "a", "tree");
+  assert.deepEqual(resolved, {
+    state: "unavailable",
+    reason: "tracking-marker-missing",
+  });
 });
 
 test("earliest marker wins and duplicates are counted", () => {
-  const nodes = buildGraphNodes([
+  const records = [
     marker("m1", null),
     node("a", "m1"),
     marker("m2", "a"),
     node("b", "m2"),
-  ]);
-  const resolved = resolveScope(nodes, "b", "tree");
+  ];
+  const resolved = scopeOf(records, "b", "tree");
   assert.equal(resolved.state, "available");
   assert.equal(resolved.state === "available" ? resolved.markerEntryId : "", "m1");
   assert.equal(resolved.state === "available" ? resolved.duplicateMarkers : 0, 1);
@@ -634,8 +662,8 @@ test("earliest marker wins and duplicates are counted", () => {
 });
 
 test("invalid leaf never falls back to tree", () => {
-  const nodes = buildGraphNodes([marker("m", null), node("a", "m")]);
-  assert.deepEqual(resolveScope(nodes, "missing", "active"), {
+  const records = [marker("m", null), node("a", "m")];
+  assert.deepEqual(scopeOf(records, "missing", "active"), {
     state: "unavailable",
     reason: "active-leaf-unavailable",
   });
@@ -649,7 +677,7 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 3: Write minimal implementation**
 
-`src/pi/scope.ts` resolves the first schema-version-1 marker node, verifies the leaf exists, walks `parentId` over the graph with a visited set (cycle-safe), and returns post-marker node ids in append order (tree) or root-first ancestry order (active). Marker detection reuses the `customType` string and `data.schemaVersion === 1` rule; unknown semantic nodes are ordinary graph nodes here and are never filtered by type.
+`src/pi/scope.ts` resolves the first record for which `isTrackingMarkerRecord` is true (`type === "custom"`, `customType === "session-inspector:tracking-start"`, `data.schemaVersion === 1`), counts every other matching record as a duplicate, verifies the leaf node exists in the graph, walks `parentId` over the graph with a visited set (cycle-safe), and returns post-marker node ids in append order (tree) or root-first ancestry order (active). Unknown semantic nodes are ordinary graph nodes here and are never filtered by type. `src/pi/sessions.ts` must keep exporting `hasTrackingStartMarker` and make `isTrackingStartMarker` delegate to `isTrackingMarkerRecord` so the rule lives in one place; do not duplicate the predicate.
 
 - [ ] **Step 4: Run test to verify it passes**
 
