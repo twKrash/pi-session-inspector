@@ -211,6 +211,7 @@ Current loss:
 - no `observedAt` or `capturedAt`;
 - unchanged snapshots deliberately preserve old mtime;
 - mtime therefore means neither occurrence time nor reliable observation time;
+- freshness therefore cannot be recovered from stored state and must be made explicit: `observedAt` is the latest successful observation time and advances even when inventory content is byte-equivalent.
 - retention can remove detail while checkpoint counts remain, but reports cannot explain the boundary exactly.
 
 ### 4.7 Integration evidence
@@ -1257,34 +1258,60 @@ Do not persist Lens path/message payloads. Do not add a new event kind for Conte
 
 ### 14.1 Checkpoint remains schema v1, additive
 
-A storage-directory or schema-version bump is unnecessary. Add optional fields accepted by new readers and ignored by old readers:
+A storage-directory or schema-version bump is unnecessary. Exactly one physical representation is defined: existing `aggregates.resourceCounts` is **extended in place**, and one sibling `evidence` object is added. No second resource-count location and no second metadata object may be introduced.
 
 ```ts
-type CheckpointEvidenceMetadata = {
-  checkpointedAt?: string;
-  detailCoverage?: {
-    walDetailExpiredBefore?: string;
-    inventoryDetailExpiredAt?: string;
+type Checkpoint = {
+  schemaVersion: 1;
+  cursors: {
+    pi: PiSourceCursor;
+    wal: Record<string, number>;
   };
-  usageCoverage?: {
-    generations: "complete" | "partial" | "unavailable";
-    toolResults: "complete" | "partial" | "unavailable";
-    compactions: "complete" | "partial" | "unavailable";
-    branchSummaries: "complete" | "partial" | "unavailable";
+  aggregates: {
+    totalTokens: number;
+    totalCost: number;
+    generations: number;
+    tools: number;
+    compactions: number;
+    integrationCounters?: Record<string, Record<string, number>>;
+    skillInvocations?: Record<string, number>;
+    skillOverflowInvocations?: number;
+    presence?: { permission?: boolean };
+    /** Extended in place; never duplicated elsewhere. */
+    resourceCounts?: {
+      commands: number;
+      skills: number;
+      resources?: number;
+      toolSources?: number;
+      observedAt?: string;
+    };
   };
-  resourceCounts?: {
-    commands?: number;
-    skills?: number;
-    resources?: number;
-    toolSources?: number;
-    observedAt?: string;
+  /** Cursors whose analyzer-owned detail was safely expired after sealing. */
+  sealedWal?: Record<string, number>;
+  sealingVersion?: 1;
+  /** Single additive metadata sibling; no other metadata object exists. */
+  evidence?: {
+    checkpointedAt?: string;
+    detailCoverage?: {
+      walDetailExpiredBefore?: string;
+      inventoryDetailExpiredAt?: string;
+    };
+    usageCoverage?: {
+      generations: "complete" | "partial" | "unavailable";
+      toolResults: "complete" | "partial" | "unavailable";
+      compactions: "complete" | "partial" | "unavailable";
+      branchSummaries: "complete" | "partial" | "unavailable";
+    };
   };
 };
 ```
 
-Extend resource counts additively with all bounded count classes and `observedAt`, keeping the existing `commands`/`skills` keys readable.
+Rules:
 
-Checkpoint stores no atomic events, per-tool rows, agent rows, raw IDs, or paths. It cannot recreate a timeline after detail expiration.
+- `resourceCounts` remains under `checkpoint.aggregates`; its existing `commands`/`skills` keys stay required when present, and `resources`, `toolSources`, `observedAt` are additive optional keys.
+- `evidence` is the only new top-level object. Readers ignore unknown keys; writers never relocate or mirror `resourceCounts` into it.
+- `resourceCounts.observedAt` is the observation time of the inventory snapshot that produced the counts, never the checkpoint write time. `evidence.checkpointedAt` is materialization time only.
+- Checkpoint stores no atomic events, per-tool rows, agent rows, raw IDs, or paths. It cannot recreate a timeline after detail expiration.
 
 #### 14.1.1 Normative aggregate supplementation
 
@@ -1324,17 +1351,29 @@ type InventorySnapshotV1 = {
 };
 ```
 
-New capture writes the actual completion time of that observation. Content identity excludes `observedAt`; freshness policy does not. Legacy snapshots without it remain readable but health reports `inventory-observation-time-missing`.
+New capture writes the actual completion time of that observation. Legacy snapshots without it remain readable but health reports `inventory-observation-time-missing`.
 
-Retention uses explicit observation metadata, not mtime, once available. While the snapshot is retained it is the atomic resource observation and takes precedence; once it is gone, checkpoint `resourceCounts` may stand in only as `aggregate-only` with the last known `observedAt`.
+#### 14.2.1 Observation freshness is normative
+
+`observedAt` is the time of the **latest successful inventory observation**, never the time the inventory content last changed:
+
+1. Observation at `T1` writes the inventory snapshot with `observedAt = T1`.
+2. A later successful observation at `T2` with byte-equivalent inventory content **must** advance `observedAt` to `T2`.
+3. Content equality may skip rebuilding or revalidating unchanged payload data; it must never preserve a stale observation timestamp.
+4. If a snapshot is retained while a newer observation exists, the newer `observedAt` is authoritative for freshness and retention; the payload may still be the older reused content.
+5. `mtime` is never evidence time, never a freshness input, and never a retention input once `observedAt` exists.
+6. A failed observation leaves the previous `observedAt` untouched and never advances it.
+
+Retention uses explicit observation metadata, not mtime, once available: a cutoff between `T1` and `T2` keeps the snapshot because the latest successful observation is `T2`. While the snapshot is retained it is the atomic resource observation and takes precedence; once it is gone, checkpoint `resourceCounts` may stand in only as `aggregate-only` with the last known `observedAt`.
 
 ### 14.3 Downgrade behavior
 
 - Old WAL readers accept additive `subjectId` but ignore it; aggregate timing still works.
 - Old writers continue producing anonymous rows; new readers mark correlation unavailable.
 - Older WAL writers persist no skill-invocation detail; retained counts appear only after the fold boundary and health reports the aggregate-only state rather than inventing invocation rows.
-- Old checkpoint writers may drop new optional health fields when rewriting. Pi facts remain recoverable; affected health becomes unavailable, never fabricated.
-- Old inventory readers may ignore `observedAt`; unchanged files retain it because unknown JSON keys are not rewritten solely for content equality. If an old writer rewrites changed inventory content, it drops `observedAt`; a new reader then reports `inventory-observation-time-missing` and never fabricates freshness.
+- Old checkpoint writers may drop the additive `evidence` object and additive `resourceCounts` keys when rewriting. Pi facts remain recoverable; affected health becomes unavailable, never fabricated.
+- Old inventory readers may ignore `observedAt`. A new writer keeps `observedAt` on the same physical snapshot, so an observation-time update also republishes the snapshot even when payload content is byte-equivalent; payload reuse is an implementation choice, timestamp reuse is not.
+- If an old writer rewrites inventory content and drops `observedAt`, a new reader reports `inventory-observation-time-missing` and never fabricates freshness.
 - Metadata v1 remains unavailable for source location; no guessed migration.
 - The 80 observed legacy lifecycle-kind rows are counted as `wal-record-legacy` and not treated as corrupt current events.
 
@@ -1370,13 +1409,13 @@ Existing hot-retention policy remains:
 
 Pruning survives per evidence class exactly as tabulated in §14.1.1: integration counters, named/overflow skill counts, permission presence, and resource counts remain available as `aggregate-only`; skill invocation rows, per-event permission telemetry, live timing rows, and inventory rows do not. `aggregates.detail` in evidence health states which of the two the reader is holding.
 
-Inventory detail follows its own retention policy. Preserved checkpoint counts remain aggregate-only and carry the last valid inventory observation time when known.
+Inventory detail follows its own retention policy and is measured against `observedAt` (latest successful observation, §14.2.1), never file mtime or content-change time. Preserved checkpoint counts remain aggregate-only and carry the last valid inventory observation time when known.
 
 ### 15.3 Freshness
 
 - Pi source revision uses the existing internal line-count/SHA-256 cursor; revision hash is not exposed in report JSON.
 - WAL freshness uses writer sequences and latest observer time.
-- Inventory freshness uses `observedAt`.
+- Inventory freshness uses `observedAt`, defined as the latest successful observation time; content equality never freezes it and mtime is never a substitute.
 - Aggregate freshness is the fold boundary, never a derived timestamp: `checkpointedAt` describes materialization and no aggregate value may claim an event time it does not have.
 - Current environment presence is stamped in memory at collection and labeled current; it is never presented as historical session state.
 - Checkpoint time describes materialization only.
@@ -1447,7 +1486,7 @@ Implementation is accepted only if all invariants hold:
 17. Missing evidence never serializes as zero.
 18. Expired detail never serializes as absent activity.
 19. Checkpoints never become semantic authority.
-20. Inventory mtime is never evidence time.
+20. Inventory mtime is never evidence time; `observedAt` advances on every successful observation, including byte-equivalent content, and a failed observation never advances it.
 21. All numbers are finite, nonnegative, and bounded.
 22. Every producer string is enum-validated, bounded/redacted, hashed, or dropped.
 23. Privacy scanner finds no prohibited key/value in WAL, checkpoints, health JSON, or report JSON.
@@ -1537,8 +1576,9 @@ Use existing Node test infrastructure and sanitized synthetic fixtures. Add no t
 ### 18.6 Storage/recovery/retention
 
 - additive `live_timing.subjectId` old/new reader compatibility;
-- checkpoint additive metadata round-trip and old-writer downgrade;
-- inventory `observedAt` round-trip, legacy absence, and old-writer changed-content rewrite loss;
+- checkpoint additive `evidence` round-trip and old-writer downgrade of `evidence`/`resourceCounts` extension keys;
+- inventory `observedAt` round-trip, legacy absence, and old-writer rewrite loss;
+- observation freshness: `T1` write, byte-equivalent successful `T2` observation advances `observedAt` without payload rebuild, failed observation does not advance it, and a retention cutoff between `T1` and `T2` keeps the snapshot without consulting mtime;
 - writer gap/duplicate detection;
 - seal-before-prune enforcement;
 - aggregate-only state after WAL/inventory expiry;
