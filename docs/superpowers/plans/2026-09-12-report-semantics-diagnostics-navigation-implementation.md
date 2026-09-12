@@ -37,8 +37,8 @@ the findings, and this section is the authority for task status.
 | 2 Coverage assembly | **Execute, retargeted**: `src/core/session-coverage.ts`, `SessionCoverage`, `buildSessionCoverage`; the five real `scanHistory` failure paths replace the plan's assumed two |
 | 3 Coverage surfaces + wording | **Execute** as written (html.ts anchors updated) |
 | 4 `AgentRun.observedAt` / `evidenceToolId` | **RETIRED — already on `main`.** Its cross-midnight fixture/regression moves into Tasks 5/9 |
-| 5 Bounded `usageByDate` | **Execute, retargeted**: grouped from `CanonicalUsageLine.attributedAt`, not re-walked from `SessionReport`; the truncation flag also covers `evidenceHealth.usage.dated === "partial"` |
-| 6 Dated model rows + composition | **Execute, retargeted**: also collapse the two date-bucketing builders into one (`src/ui/daily.ts`) and add the capability table |
+| 5 Single dated projection | **Execute, retargeted**: `src/ui/dated-usage.ts` groups from `CanonicalUsageLine.attributedAt` and joins model rows by `ownerId`; the truncation flag also covers `evidenceHealth.usage.dated === "partial"` |
+| 6 Daily rows + capability table | **Execute, retargeted**: `src/ui/daily.ts` folds the dated projection (no second bucketing) and `bundle.ts` adds the server-side capability table |
 | 7 `sameReportProjection` + scope copy | **Execute** as written |
 | 8 Pure range module | **Execute** as written |
 | 9 One range filter for every tab | **Execute, retargeted**: replaces the span-overlap `inPeriod` membership rule; gains the cross-midnight fixture |
@@ -70,8 +70,10 @@ must run in order.
 - `toSessionReport`/`projectAgent` already validate `agent`, `artifacts`,
   `observedAt`, `evidenceToolId`, `model`, `thinking` and `failure`; `readSubagentEvidence`
   already publishes them. `SubagentEvidence` has **no** `runsWithUsage`.
-- `src/ui/bundle.ts` already has `dailyRows()` (one report, no composition);
-  `src/ui/html.ts` already has `buildDailyActivityRows()` (many reports).
+- `src/ui/bundle.ts` already has a private `dailyRows()` (one report, no
+  composition) and `src/ui/html.ts` already has `buildDailyActivityRows()` (many
+  reports); both bucket timestamps today and both become folds over the Task 5
+  projection.
 - `src/ui/html.ts` already has `currentViewProjection`, `sectionProjection`,
   `sessionView`, `toolRows`, `agentRows`, `buildDailyLedger`; `agentRows` drops
   `agent`/`artifacts`/`observedAt`/`model`/`thinking`/`failure`/`evidenceToolId`,
@@ -154,19 +156,27 @@ type HistoricalSession =
   | { availability: "available"; sessionId: string; report: SessionReport; usageByDate: readonly DateUsageRow[]; usageByDateTruncated: boolean }
   | { availability: "unavailable"; sessionId: string; reason?: CoverageReason };
 
-// Task 6: src/ui/bundle.ts + src/ui/daily.ts (new: the single date-bucketing builder)
+// Task 5: src/ui/dated-usage.ts (new) — THE dated projection (spec §5.4/R19)
 type SafeUsage = { totalTokens: number; cost: number };
 type DatedModelRow = { date: string; provider: string; model: string; generations: number; totalTokens: number; cost: number };
+function sessionDatedUsage(session: CanonicalSession): {
+  dates: DateUsageRow[]; models: DatedModelRow[]; truncated: boolean; modelsTruncated: boolean };
+
+// Task 6: src/ui/daily.ts (new) — folding only; src/ui/bundle.ts — capabilities
 type DailyRow = { date: string; sessions: number; totalTokens: number; cost: number; generations: number; tools: number;
                   composition: { generations: SafeUsage; toolResults: SafeUsage; compactions: SafeUsage; branchSummaries: SafeUsage } };
+function buildDailyRows(contributions: readonly { sessionId: string; rows: readonly DateUsageRow[]; truncated: boolean }[]):
+  { rows: DailyRow[]; truncated: boolean };
 type CurrentView = { availability: "available" | "unavailable"; diagnostic?: string; report?: SessionReport;
-                     daily?: readonly DailyRow[]; dailyTruncated?: boolean;
+                     usageByDate?: readonly DateUsageRow[]; daily?: readonly DailyRow[]; dailyTruncated?: boolean;
                      datedModels?: readonly DatedModelRow[]; modelsTruncated?: boolean; capabilities: readonly Tab[] };
 type InspectorBundle = { schemaVersion: 1; theme: "light" | "dark"; initialScope: Scope;
                          current: { active: CurrentView; tree: CurrentView; sameReportProjection: boolean };
                          history: HistoryReport; global: GlobalReport };
 // src/ui/bundle.ts also exports the per-section capability table:
 const CAPABILITIES: Readonly<Record<"current" | "history" | "global", readonly Tab[]>>;
+// src/ui/load-current.ts attaches `sessionDatedUsage(session)` to CurrentTuiModel
+// as `datedUsage`, so bundle.ts only copies and folds it.
 
 // Task 7: src/ui/html.ts (server projection only)
 function currentViewProjection(view: CurrentView, scope: Scope): Record<string, unknown>;
@@ -621,7 +631,7 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
       } catch {
         return { availability: "unavailable", sessionId, reason: "replay-failed" };
       }
-      const dated = sessionUsageByDate(session);
+      const dated = sessionDatedUsage(session);
       return { availability: "available", sessionId, report, usageByDate: dated.rows, usageByDateTruncated: dated.truncated };
     }),
   );
@@ -1161,30 +1171,34 @@ git commit -m "feat: attribute child runs by observation time and add the cross-
 
 ---
 
-### Task 5: Bounded per-session `usageByDate` grouped from the canonical attribution
+### Task 5: The single dated projection (`sessionDatedUsage`) over the canonical session
 
 **Files:**
 
-- Modify: `src/ui/load-history.ts` (computed inside `scanHistory`, where the
-  `CanonicalSession` is in scope)
+- Create: `src/ui/dated-usage.ts` (the one dated projection, spec §5.4/R19)
+- Modify: `src/ui/load-history.ts` (call it inside `scanHistory`, attach the rows),
+  `src/ui/load-current.ts` + `src/ui/current.ts` (attach the same projection to
+  `CurrentTuiModel` for the current views)
 - Create: `tests/fixtures/pi/0.85.1/mixed-usage.jsonl`
-- Test: `tests/unit/history-reports.test.ts`, `tests/unit/report-range.test.ts`,
-  plus a generated long-session fixture (`longSessionOptions({ days: 400 })`)
+- Test: `tests/unit/history-reports.test.ts`, `tests/unit/dated-usage.test.ts` (new),
+  `tests/unit/report-range.test.ts`, plus a generated long-session fixture
+  (`longSessionOptions({ days: 400 })`)
 
 **Interfaces:**
 
 - Consumes: `CanonicalSession` — `usage.lines` (with `domain`, `bucket`,
-  `attributedAt`), `generations`, `tools`, `errors`, and
-  `health.usage.dated`.
-- Produces: `DateUsageRow`, `sessionUsageByDate`, and the available
+  `attributedAt`), `generations`, `tools`, `errors`, and `health.usage.dated`.
+- Produces: `DateUsageRow`, `DatedModelRow`, `sessionDatedUsage` (the only
+  dated-projection function in the codebase), and the available
   `HistoricalSession` variant gaining `usageByDate` / `usageByDateTruncated`.
 
-> **Retargeted for v0.8.0 (spec R19, §5.6).** The rows are grouped from the
-> builder's own attribution (`CanonicalUsageLine.attributedAt`), never re-walked
-> from `SessionReport` timestamps — the report is only the reconciliation
-> **assertion target**. `usageByDateTruncated` is also true when
+> **Retargeted for v0.8.0 (spec R19, §5.6).** One module owns the dates, because
+> the bundle only ever sees a `SessionReport` and must not re-derive attribution.
+> `usageByDateTruncated` is true when the 366-date cap drops rows **or** when
 > `health.usage.dated === "partial"` (an unattributable native line), so partial is
-> never presented as complete.
+> never presented as complete. Per-date **model** rows live here too, joined to
+> their line by `ownerId`, so a generation cannot appear in one projection and not
+> the other.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1204,7 +1218,9 @@ git commit -m "feat: attribute child runs by observation time and add the cross-
 > this task's).
 
 ```ts
-// append to tests/unit/history-reports.test.ts
+// append to tests/unit/dated-usage.test.ts (new file)
+// (the fixture helper and `projectUsage` below live here; history-reports.test.ts
+//  imports `sessionDatedUsage` only for the wiring assertions)
 function canonicalOf(file: string, sessionId: string): CanonicalSession {
   const source = readFileSync(`tests/fixtures/pi/0.85.1/${file}`, "utf8");
   const built = buildCanonicalSession({
@@ -1214,6 +1230,7 @@ function canonicalOf(file: string, sessionId: string): CanonicalSession {
     evidence: { atomic: [], folded: [] },
   });
   if (built.state !== "ready") throw new Error("fixture must build");
+  assert.equal(built.session.sessionId, sessionId);
   return built.session;
 }
 
@@ -1238,7 +1255,7 @@ function projectUsage(report: SessionReport, range: { from: string; to: string }
 }
 
 test("usageByDate attributes every usage source by logical call", () => {
-  const { rows, truncated } = sessionUsageByDate(canonicalOf("mixed-usage.jsonl", "mixed-usage"));
+  const { dates: rows, truncated } = sessionDatedUsage(canonicalOf("mixed-usage.jsonl", "mixed-usage"));
   assert.equal(truncated, false);
   assert.deepEqual(rows.map((row) => [row.date, row.totalTokens, row.generations, row.tools, row.errors]), [
     ["2026-09-01", 165, 1, 1, 0], // generation 150 + tool-result usage 15, on the CALL day
@@ -1257,7 +1274,7 @@ test("usageByDate attributes every usage source by logical call", () => {
 
 test("a fully retained range reconciles with the same range projection of the report", () => {
   const report = mixedReport();
-  const rows = sessionUsageByDate(canonicalOf("mixed-usage.jsonl", "mixed-usage")).rows;
+  const rows = sessionDatedUsage(canonicalOf("mixed-usage.jsonl", "mixed-usage")).dates;
   assert.equal(rows.reduce((sum, row) => sum + row.totalTokens, 0), report.usage?.totalTokens);
   assert.equal(Math.round(rows.reduce((sum, row) => sum + row.cost, 0) * 1e6) / 1e6, report.usage?.cost);
   const range = { preset: null, from: "2026-09-01", to: "2026-09-02" };
@@ -1293,15 +1310,16 @@ test("a short session is exact and not truncated", async () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `node --import tsx --test tests/unit/history-reports.test.ts`
-Expected: FAIL — `usageByDate` is undefined.
+Run: `node --import tsx --test tests/unit/dated-usage.test.ts`
+Expected: FAIL — cannot resolve `../../src/ui/dated-usage.ts`.
 
-- [ ] **Step 3: Implement the bounded per-date projection**
+- [ ] **Step 3: Implement the dated projection**
 
 ```ts
-// src/ui/load-history.ts
+// src/ui/dated-usage.ts
 import type { CanonicalSession, CanonicalUsageLine } from "../core/canonical.ts";
 
+export type SafeUsage = { totalTokens: number; cost: number };
 export type DateUsageRow = {
   date: string;
   totalTokens: number;
@@ -1311,8 +1329,10 @@ export type DateUsageRow = {
   errors: number;
   composition: { generations: SafeUsage; toolResults: SafeUsage; compactions: SafeUsage; branchSummaries: SafeUsage };
 };
+export type DatedModelRow = { date: string; provider: string; model: string; generations: number; totalTokens: number; cost: number };
 
-const MAX_USAGE_BY_DATE = 366;
+export const MAX_DATED_DATES = 366;
+export const MAX_MODELS_PER_DATE = 64;
 /** Bucket -> composition part. Child runs are a breakdown and never appear here. */
 const COMPOSITION_PART: Readonly<Record<CanonicalUsageLine["bucket"], keyof DateUsageRow["composition"] | undefined>> = {
   generation: "generations",
@@ -1323,19 +1343,32 @@ const COMPOSITION_PART: Readonly<Record<CanonicalUsageLine["bucket"], keyof Date
 };
 const zero = (): SafeUsage => ({ totalTokens: 0, cost: 0 });
 const round = (value: number): number => Math.round(value * 1e6) / 1e6;
+const dayOf = (timestamp: unknown): string | undefined => {
+  if (typeof timestamp !== "string") return undefined;
+  const date = timestamp.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined;
+};
 
 /**
- * Dated evidence for one canonical session, newest window first, grouped from the
- * builder's own attribution (spec R19): each `CanonicalUsageLine` states its
- * `attributedAt`, so tool-result usage lands on the tool's CALL date, compaction
- * and branch-summary usage on their own entry dates, and child usage is excluded
- * by `domain`. `session.generations`/`session.tools`/`session.errors` add
- * observation-only membership counters even when they carry no usage (§5.7).
- * `totalTokens`/`cost` are the sums of the four composition parts, so the retained
- * window reconciles with `SessionReport.usage`; partiality is reported, never
- * hidden.
+ * THE dated projection (spec §5.4/R19). Every per-date figure a renderer needs
+ * comes from here, grouped from the builder's own attribution: each
+ * `CanonicalUsageLine` states `attributedAt`, so tool-result usage lands on the
+ * tool's CALL date, compaction/branch-summary usage on their own entry dates, and
+ * child usage is excluded by `domain`. `session.generations`/`session.tools`/
+ * `session.errors` add observation-only membership counters even when they carry
+ * no usage (§5.7). Model rows join their line by `ownerId`, so an unattributed
+ * generation can never appear in one projection and not the other.
+ *
+ * `truncated` is true when `dates` cannot represent the session's whole native
+ * usage: the `MAX_DATED_DATES` cap, or `health.usage.dated === "partial"` (an
+ * unattributable native line). Partiality is reported, never hidden.
  */
-export function sessionUsageByDate(session: CanonicalSession): { rows: DateUsageRow[]; truncated: boolean } {
+export function sessionDatedUsage(session: CanonicalSession): {
+  dates: DateUsageRow[];
+  models: DatedModelRow[];
+  truncated: boolean;
+  modelsTruncated: boolean;
+} {
   const byDate = new Map<string, DateUsageRow>();
   const rowFor = (date: string): DateUsageRow => {
     const existing = byDate.get(date) ?? {
@@ -1351,56 +1384,84 @@ export function sessionUsageByDate(session: CanonicalSession): { rows: DateUsage
     row.totalTokens += usage.totalTokens;
     row.cost = round(row.cost + usage.cost);
   };
-  // Usage comes from the builder's lines; a line with no known attribution date
-  // cannot be dated, so it is omitted AND the window is marked partial below.
+  // Line -> attributed date, so the model rows use the SAME attribution decision.
+  const dateByOwner = new Map<string, string>();
   let unattributed = false;
   if (session.usage.state === "known") {
     for (const line of session.usage.lines) {
       if (line.domain !== "native-session") continue;
+      const date = line.attributedAt.state === "known" ? dayOf(line.attributedAt.at) : undefined;
+      if (date === undefined) {
+        unattributed = true;
+        continue;
+      }
+      dateByOwner.set(line.ownerId, date);
       const part = COMPOSITION_PART[line.bucket];
       if (part === undefined) continue;
-      if (line.attributedAt.state !== "known") {
-        unattributed = true;
-        continue;
-      }
-      const date = line.attributedAt.at.slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        unattributed = true;
-        continue;
-      }
       addUsage(rowFor(date), line.usage, part);
     }
   }
   // Membership counters describe observed activity, not spend.
   for (const generation of session.generations) {
-    const date = generation.timestamp.slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) rowFor(date).generations += 1;
+    const date = dayOf(generation.timestamp);
+    if (date !== undefined) rowFor(date).generations += 1;
   }
   for (const tool of session.tools) {
-    const date = tool.timestamp.slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) rowFor(date).tools += 1;
+    const date = dayOf(tool.timestamp);
+    if (date !== undefined) rowFor(date).tools += 1;
   }
   for (const error of session.errors) {
-    const date = error.timestamp.slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) rowFor(date).errors += 1;
+    const date = dayOf(error.timestamp);
+    if (date !== undefined) rowFor(date).errors += 1;
+  }
+  // Model rows: only a generation whose own line is attributed can be dated.
+  const byModelKey = new Map<string, DatedModelRow>();
+  const modelsPerDate = new Map<string, Set<string>>();
+  let modelsTruncated = false;
+  for (const generation of session.generations) {
+    const date = dateByOwner.get(generation.id);
+    if (date === undefined) continue;
+    const key = `${date}\u0000${generation.provider}\u0000${generation.model}`;
+    const seen = modelsPerDate.get(date) ?? new Set<string>();
+    if (!seen.has(key)) {
+      if (seen.size >= MAX_MODELS_PER_DATE) {
+        modelsTruncated = true;
+        continue;
+      }
+      seen.add(key);
+      modelsPerDate.set(date, seen);
+    }
+    const row = byModelKey.get(key) ?? {
+      date, provider: generation.provider, model: generation.model, generations: 0, totalTokens: 0, cost: 0,
+    };
+    row.generations += 1;
+    row.totalTokens += generation.usage.totalTokens;
+    row.cost = round(row.cost + generation.usage.cost);
+    byModelKey.set(key, row);
   }
   const dates = [...byDate.keys()].sort();
-  const capped = dates.length > MAX_USAGE_BY_DATE;
-  const retained = capped ? dates.slice(dates.length - MAX_USAGE_BY_DATE) : dates;
-  // Two causes, one flag: the 366-date cap and any unattributed native usage.
-  const truncated = capped || unattributed || session.health.usage.dated === "partial";
-  return { rows: retained.map((date) => byDate.get(date) as DateUsageRow), truncated };
+  const capped = dates.length > MAX_DATED_DATES;
+  const retained = capped ? dates.slice(dates.length - MAX_DATED_DATES) : dates;
+  const kept = new Set(retained);
+  const models = [...byModelKey.values()]
+    .filter((row) => kept.has(row.date))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model));
+  return {
+    dates: retained.map((date) => byDate.get(date) as DateUsageRow),
+    models,
+    truncated: capped || unattributed || session.health.usage.dated === "partial",
+    modelsTruncated,
+  };
 }
 ```
 
-Attach it to the scan result (Task 2 already returns `usageByDate` on the
-available variant; this is where it is computed — the canonical session is in
-scope, the report is unchanged):
+Attach it in both loaders (Task 2 already returns `usageByDate` on the available
+history variant; the current model gains the same projection in Task 6):
 
 ```ts
-      const report = (options.replay ?? defaultReplay)({ session, entries, observation, subagentEvidence, sealed });
-      const dated = sessionUsageByDate(session);
-      return { availability: "available", sessionId, report, usageByDate: dated.rows, usageByDateTruncated: dated.truncated };
+// src/ui/load-history.ts — inside scanHistory, before returning the available row
+      const dated = sessionDatedUsage(session);
+      return { availability: "available", sessionId, report, usageByDate: dated.dates, usageByDateTruncated: dated.truncated };
 ```
 
 ```ts
@@ -1426,8 +1487,16 @@ test("the newest retained date reconciles with the session detail", async () => 
   assert.equal(rowTotal, detailTotal);
 });
 
+test("per-date model rows join the same attribution as the date rows", () => {
+  const { dates, models } = sessionDatedUsage(canonicalOf("mixed-usage.jsonl", "mixed-usage"));
+  for (const date of dates) {
+    const fromModels = models.filter((row) => row.date === date.date).reduce((sum, row) => sum + row.totalTokens, 0);
+    assert.equal(fromModels, date.composition.generations.totalTokens, date.date);
+  }
+});
+
 test("an observation-only date is membership evidence with zero usage", () => {
-  const rows = sessionUsageByDate(canonicalOf("mixed-usage.jsonl", "mixed-usage")).rows;
+  const rows = sessionDatedUsage(canonicalOf("mixed-usage.jsonl", "mixed-usage")).dates;
   const observationOnly = rows.find((row) => row.errors > 0) as DateUsageRow;
   assert.equal(observationOnly.totalTokens, 0);
   assert.equal(observationOnly.date, "2026-09-05");
@@ -1439,50 +1508,53 @@ test("an unattributable native usage line marks the window partial, never zero",
   // An entry with no usable timestamp cannot be dated: the row must not be
   // silently dropped from a window that then reads as complete.
   const session = canonicalOf("usage-composition.jsonl", "usage-composition");
-  const { rows, truncated } = sessionUsageByDate({
+  const { dates, truncated } = sessionDatedUsage({
     ...session,
     health: { ...session.health, usage: { ...session.health.usage, dated: "partial" } },
   });
   assert.equal(truncated, true);
-  assert.equal(rows.reduce((sum, row) => sum + row.totalTokens, 0) > 0, true);
+  assert.equal(dates.reduce((sum, row) => sum + row.totalTokens, 0) > 0, true);
 });
 ```
 
 - [ ] **Step 5: Run the tests and commit**
 
-Run: `node --import tsx --test tests/unit/history-reports.test.ts && npm test`
+Run: `node --import tsx --test tests/unit/dated-usage.test.ts tests/unit/history-reports.test.ts && npm test`
 Expected: PASS.
 
 ```bash
-git add src/ui/load-history.ts tests/unit/history-reports.test.ts tests/fixtures/pi/0.85.1/mixed-usage.jsonl
-git commit -m "feat: add bounded per-session usageByDate with an explicit truncation flag"
+git add src/ui/dated-usage.ts src/ui/load-history.ts src/ui/load-current.ts src/ui/current.ts tests/unit/dated-usage.test.ts tests/unit/history-reports.test.ts tests/fixtures/pi/0.85.1/mixed-usage.jsonl
+git commit -m "feat: add one dated usage projection over the canonical attribution"
 ```
 
 ---
 
-### Task 6: Dated model rows, daily usage composition, and the capability table
+### Task 6: Daily composition and capability table, folded from the dated projection
 
 **Files:**
 
-- Create: `src/ui/daily.ts` (the single date-bucketing builder)
-- Modify: `src/ui/bundle.ts` (dated model rows, `capabilities`, `sameReportProjection` payload)
-- Modify: `src/ui/html.ts` (re-export/migrate `buildDailyActivityRows` off `bundle.ts:dailyRows`)
+- Create: `src/ui/daily.ts` (the single daily-row folder)
+- Modify: `src/ui/bundle.ts` (`capabilities`, `dateModels`, `sameReportProjection` payload),
+  `src/ui/load-current.ts` + `src/ui/current.ts` (attach `sessionDatedUsage` —
+  Task 5 — to the current model so the bundle never re-derives dates),
+  `src/ui/html.ts` (re-export `buildDailyRows` under its existing name)
 - Test: `tests/unit/bundle.test.ts`, `tests/unit/html.test.ts`
 
 **Interfaces:**
 
-- Consumes: `SessionReport.generations`, `.models`, `.usageComposition`;
-  `CanonicalUsageLine` attribution for dates (spec R19).
-- Produces: `DatedModelRow`, `DailyRow.composition`, `CurrentView.datedModels`,
+- Consumes: `sessionDatedUsage` (Task 5) through the current model; `DatedModelRow`
+  and `DateUsageRow` from `src/ui/dated-usage.ts`.
+- Produces: `DailyRow` (composition included), `CurrentView.datedModels`,
   `CurrentView.modelsTruncated`, `CurrentView.capabilities`, `CAPABILITIES`.
 
 > **Retargeted for v0.8.0.** `src/ui/bundle.ts` already has a private `dailyRows()`
-> and `src/ui/html.ts` already has `buildDailyActivityRows()` doing the same
-> bucketing twice (spec §0.2 item 9). Move **one** builder into `src/ui/daily.ts`,
-> give it the composition object, and delete the other; `html.ts` already imports
-> from `bundle.ts`, so both may import the shared module without a cycle. The
-> existing `buildDailyActivityRows` tests in `tests/unit/html.test.ts` (lines ~492,
-> 514, 520) are the fixture to extend — their expectations gain `composition`.
+> and `src/ui/html.ts` already has `buildDailyActivityRows()` bucketing dates
+> independently; neither can see the canonical attribution (the bundle holds a
+> `SessionReport`). With Task 5's projection attached to the current model and to
+> `HistoricalSession`, both become **folds**: `buildDailyRows(rows)` sums
+> `usageByDate` rows by date (spec §5.4, R19) and there is no timestamp walk left
+> anywhere in the bundle or the client. `DatedModelRow` is **defined in
+> `src/ui/dated-usage.ts`** (Task 5); this task only passes it through.
 >
 > **Size gate (P0-B).** Before the first edit, record
 > `renderInspectorBundle(bundleFixture()).length` and write the number into the
@@ -1543,10 +1615,9 @@ Expected: FAIL — `view.datedModels` is undefined.
 - [ ] **Step 3: Implement the projections**
 
 ```ts
-// src/ui/daily.ts — the ONLY date-bucketing builder (moved out of html.ts)
-import type { SessionReport } from "../core/reports.ts";
+// src/ui/daily.ts — the ONLY daily-row builder; it folds, it never buckets
+import type { DateUsageRow, SafeUsage } from "./dated-usage.ts";
 
-export type SafeUsage = { totalTokens: number; cost: number };
 export type DailyRow = {
   date: string;
   sessions: number;
@@ -1558,58 +1629,30 @@ export type DailyRow = {
 };
 
 /**
- * Builds the daily rows every view charts and filters. Buckets exactly like
- * `sessionUsageByDate` (Task 5): generation usage on the generation date,
- * tool-result usage on the tool's CALL date, compactions/branch summaries on
- * their own entry dates. `sessions` counts the distinct session ids that
- * contributed to that date.
+ * Sums per-session dated rows by date (spec §5.4/R19). Each contribution is one
+ * `HistoricalSession.usageByDate` or one current view's `usageByDate`; a session
+ * that cannot be dated contributes nothing (`unavailable != 0`). `sessions`
+ * counts distinct contributing sessions, so two sessions on one date give one row.
+ *
+ * `truncated` is true when ANY contributing session's window was capped or
+ * partial (`usageByDateTruncated`), or when the fold itself exceeds
+ * `MAX_DATED_DATES`: the chart can then never present a partial total as complete.
  */
-export function buildDailyRows(reports: readonly SessionReport[]): DailyRow[] { /* composed from the existing buildDailyActivityRows body + composition */ }
+export function buildDailyRows(
+  contributions: readonly { sessionId: string; rows: readonly DateUsageRow[]; truncated: boolean }[],
+): { rows: DailyRow[]; truncated: boolean } { /* sum by date; keep the newest MAX_DATED_DATES */ }
 ```
 
 `bundle.ts` replaces its private `dailyRows()` with
-`buildDailyRows([model.report])`; `html.ts` imports and re-exports
-`buildDailyRows` as `buildDailyActivityRows` (its existing public name, used by
-`renderHtml`'s adapter and by `tests/unit/html.test.ts`) so no other call site
-changes. **Delete** the old `dailyRows()` body — leaving both is a second
-attribution implementation (spec R19).
+`buildDailyRows([{ sessionId: model.report.sessionId, rows: view.usageByDate, truncated: view.usageByDateTruncated }])`;
+`html.ts` imports and re-exports `buildDailyRows` under its existing public name
+`buildDailyActivityRows` so `renderHtml`'s adapter and `tests/unit/html.test.ts`
+keep working (that test's expectations gain `composition`; lines ~492, 514, 520).
+**Delete** the old `dailyRows()`/`buildDailyActivityRows` bodies — leaving either
+is a second date implementation (spec R19).
 
-```ts
-// src/ui/bundle.ts
-export type DatedModelRow = { date: string; provider: string; model: string; generations: number; totalTokens: number; cost: number };
-const MAX_MODELS_PER_DATE = 64;
-
-function datedModelRows(report: SessionReport): { rows: DatedModelRow[]; truncated: boolean } {
-  const byKey = new Map<string, DatedModelRow>();
-  let truncated = false;
-  const perDate = new Map<string, Set<string>>();
-  for (const generation of report.generations) {
-    const date = generation.timestamp.slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-    const key = `${date}\u0000${generation.provider}\u0000${generation.model}`;
-    const seen = perDate.get(date) ?? new Set<string>();
-    if (!seen.has(key)) {
-      if (seen.size >= MAX_MODELS_PER_DATE) {
-        truncated = true;
-        continue;
-      }
-      seen.add(key);
-      perDate.set(date, seen);
-    }
-    const row = byKey.get(key) ?? { date, provider: generation.provider, model: generation.model, generations: 0, totalTokens: 0, cost: 0 };
-    row.generations += 1;
-    row.totalTokens += generation.usage.totalTokens;
-    row.cost = roundCost(row.cost + generation.usage.cost);
-    byKey.set(key, row);
-  }
-  const rows = [...byKey.values()].sort(
-    (a, b) => a.date.localeCompare(b.date) || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
-  );
-  const dates = [...new Set(rows.map((row) => row.date))].sort();
-  const retained = new Set(dates.slice(Math.max(0, dates.length - MAX_DAILY_ROWS)));
-  return { rows: rows.filter((row) => retained.has(row.date)), truncated };
-}
-```
+The history/global daily fold passes every available session's rows; an
+unavailable session contributes nothing and is counted only in the coverage line.
 
 ```ts
 // src/ui/bundle.ts — the per-section capability table (spec R8, server-side truth)
@@ -1624,26 +1667,22 @@ export const CAPABILITIES: Readonly<Record<"current" | "history" | "global", rea
 const NO_CAPABILITIES: readonly Tab[] = [];
 ```
 
-`currentView()` returns the rows, the dated models and the capability list —
-the builder returns `{ rows, truncated }` so the cap flag keeps meaning what it
-means today (only the most recent `MAX_DAILY_ROWS = 366` dates are kept):
-
-```ts
-// src/ui/daily.ts
-export function buildDailyRows(reports: readonly SessionReport[]): { rows: DailyRow[]; truncated: boolean };
-```
+`currentView()` copies the projection the loader attached (Task 5) and folds it:
 
 ```ts
 // src/ui/bundle.ts — inside currentView()
-  const daily = buildDailyRows([model.report]);
-  const dated = datedModelRows(model.report);
+  const projection = model.datedUsage;   // attached by load-current.ts: { dates, models, truncated, modelsTruncated }
+  const daily = buildDailyRows([
+    { sessionId: model.report.sessionId, rows: projection.dates, truncated: projection.truncated },
+  ]);
   return {
     availability: "available",
     report: model.report,
+    usageByDate: projection.dates,
     daily: daily.rows,
     dailyTruncated: daily.truncated,
-    datedModels: dated.rows,
-    modelsTruncated: dated.truncated,
+    datedModels: projection.models,
+    modelsTruncated: projection.modelsTruncated,
     capabilities: CAPABILITIES.current,
   };
 ```
@@ -1669,8 +1708,8 @@ Run: `node --import tsx --test tests/unit/bundle.test.ts && npm test`
 Expected: PASS.
 
 ```bash
-git add src/ui/bundle.ts tests/unit/bundle.test.ts
-git commit -m "feat: add per-date model rows and daily usage composition to the bundle"
+git add src/ui/daily.ts src/ui/bundle.ts src/ui/load-current.ts src/ui/current.ts src/ui/html.ts tests/unit/bundle.test.ts tests/unit/html.test.ts
+git commit -m "feat: fold the dated projection into daily rows and add the capability table"
 ```
 
 ---
@@ -2215,6 +2254,7 @@ git commit -m "feat: filter every tab through one range projection with honest a
 > `runsWithUsage <= runsTotal`).
 >
 > **Steps:**
+>
 > 1. Failing test: a `subagent` result publishing three runs where two carry
 >    `usage` ⇒ `evidence.runsWithUsage === 2`; a report built from it carries
 >    `agentUsage: { runsTotal: 3, runsWithUsage: 2 }`; a run set with no usage
@@ -3880,7 +3920,7 @@ git commit -m "test: extend the privacy corpus, add coverage and long-session fi
 
 **Placeholder scan.** No `TBD`/`TODO`/"similar to Task N"; every step carries runnable code, an exact command, or an exact checklist item. Four steps intentionally require a measured or environment-dependent value rather than a fixed number: Task 5's oldest retained date in `longSessionOptions`, the document-size measurement of P0-B, Task 20's installed `pi-tui` version, and Task 23's header refresh; each states exactly what to record.
 
-**Type consistency.** `CoverageReason` (Task 1) and `SessionCoverage`/`buildSessionCoverage` (Task 2) are used verbatim in Tasks 3, 23 — the older names `CoverageSummary`/`buildCoverage` are gone (spec R18). `AgentRun.observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` already exist on `main` (Task 4 retired) and are consumed by Tasks 11, 12, 14, 18 and the fixtures. `RangeState` (Task 8) is the only range type in Tasks 9, 16, 17. `InspectorRoute`/`deriveView` (Task 16) are consumed by Tasks 17-18 and asserted in `tests/unit/html-navigation.test.ts`. `scanInspectorArgs` (Task 19) is the only span source used by completions in Tasks 19-20. `capabilities` is produced by Task 6 (`CAPABILITIES`) and consumed by Tasks 15-18. `sessionUsageByDate` (Task 5) takes a `CanonicalSession`; `buildDailyRows` (Task 6) is the only date-bucketing builder and takes reports.
+**Type consistency.** `CoverageReason` (Task 1) and `SessionCoverage`/`buildSessionCoverage` (Task 2) are used verbatim in Tasks 3, 23 — the older names `CoverageSummary`/`buildCoverage` are gone (spec R18). `AgentRun.observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` already exist on `main` (Task 4 retired) and are consumed by Tasks 11, 12, 14, 18 and the fixtures. `RangeState` (Task 8) is the only range type in Tasks 9, 16, 17. `InspectorRoute`/`deriveView` (Task 16) are consumed by Tasks 17-18 and asserted in `tests/unit/html-navigation.test.ts`. `scanInspectorArgs` (Task 19) is the only span source used by completions in Tasks 19-20. `capabilities` is produced by Task 6 (`CAPABILITIES`) and consumed by Tasks 15-18. `sessionDatedUsage` (Task 5, in `src/ui/dated-usage.ts`) is the only function that turns timestamps into dates; `buildDailyRows` (Task 6, in `src/ui/daily.ts`) only folds its output, and `DateUsageRow`/`DatedModelRow`/`SafeUsage` are defined once there.
 
 **Re-baseline amendments (v2).** Applied on top of the six review amendments below: (a) Tasks 4 and 10 are retired — `main` already derives agent `observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` and validates them (`910a665`), and Task 10 is reduced to the child-usage fraction; (b) the coverage aggregate is `SessionCoverage` in `src/core/session-coverage.ts` with a total reason→code mapping (spec R18/R20); (c) Task 2's reason plumbing now names all five real `scanHistory` failure paths instead of the two the pre-merge plan assumed; (d) Task 5 groups dates from `CanonicalUsageLine.attributedAt` and the truncation flag also covers `usage.dated === "partial"`, so `SessionReport` is an assertion target rather than a second attribution source (spec R19); (e) Task 6 adds `src/ui/daily.ts` as the single date-bucketing builder and the server-side capability table; (f) the file anchors were re-pointed at the real v0.8.0 code (`sessionView`/`toolRows`/`agentRows` in `html.ts`, error rows in `sessionView`, no `tests/unit/helpers/` directory, `pi-tui` already installed); (g) version is 0.9.0 and the ADR is 0017.
 

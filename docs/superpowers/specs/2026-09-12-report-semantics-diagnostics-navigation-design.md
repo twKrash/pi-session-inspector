@@ -80,8 +80,11 @@ the affected sections carry an inline pointer.
    `applyCompletion(lines, cursorLine, cursorCol, item, prefix)` are the boundary
    the regression test must drive.
 9. **Duplicate daily-row builders.** `src/ui/bundle.ts` (`dailyRows`) and
-   `src/ui/html.ts` (`buildDailyActivityRows`) bucket dates independently. P0-B
-   collapses them into one builder so one attribution feeds one row set.
+   `src/ui/html.ts` (`buildDailyActivityRows`) bucket dates independently, and
+   neither can see the canonical attribution (the bundle holds a `SessionReport`).
+   P0-B introduces `src/ui/dated-usage.ts`, attaches its rows to the current model
+   and to `HistoricalSession`, and reduces both builders to a fold over those rows
+   (spec §5.4, R19).
 10. **Version targets.** The release slice targets **0.8.0 → 0.9.0**; the new ADR
     is **0017** (0016 is the evidence foundation).
 
@@ -715,13 +718,50 @@ agents and errors (`Tool.timestamp`, `AgentRun.observedAt`, `ErrorRecord.timesta
 per call/run/error, no dated duplicate. Only the two values that exist solely as
 aggregates need a per-date form: model summaries and the usage composition.
 
-Both per-date forms are computed from the **canonical builder's own attribution**
-(R19, §0.2 item 2): a `CanonicalUsageLine` already states `attributedAt`,
-`domain` and `bucket`, so `usageByDate`, `DailyRow.composition` and
-`DatedModelRow` group those lines by `attributedAt` date — they never re-walk
-`SessionReport` timestamps in a second implementation. `SessionReport.usage` is
-the **assertion target** (`sum(usageByDate) === usage` for a fully retained
-window), not the source of the dates.
+Both per-date forms are computed by **one** function over the canonical session
+(R19, §0.2 item 2), in a shared module both loaders import:
+
+```ts
+// src/ui/dated-usage.ts (new)
+/**
+ * The single dated projection. Everything a browser needs per date comes from
+ * here, so no second implementation can disagree with it.
+ */
+export function sessionDatedUsage(session: CanonicalSession): {
+  /** Per-date usage + observation counters, composed from `usage.lines` and the
+   *  canonical generation/tool/error rows (≤ `MAX_DATED_DATES` = 366 dates). */
+  dates: DateUsageRow[];
+  /** Per-date per-model rows, joined to their line by `ownerId` so an
+   *  unattributed generation can never appear here but not in `dates`
+   *  (≤ 366 dates × `MAX_MODELS_PER_DATE` = 64 rows). */
+  models: DatedModelRow[];
+  /** True when `dates` cannot represent the session's whole native usage:
+   *  the 366-date cap, or `evidenceHealth.usage.dated === "partial"`. */
+  truncated: boolean;
+  /** True when the model cap dropped a row. */
+  modelsTruncated: boolean;
+};
+```
+
+- **Current views**: `load-current.ts` attaches the projection to
+  `CurrentTuiModel` (`usageByDate`, `datedModels`, both flags) next to the report
+  it already returns; `bundle.ts` copies it onto the `CurrentView` and **folds**
+  it into `DailyRow.composition`. The report DTO is not extended and
+  `json current` output is unchanged.
+- **History/global**: `scanHistory` attaches `dates` to the available
+  `HistoricalSession` variant (spec §5.6's bounded per-session evidence); the
+  browser's history/global daily rows and the global `dates` fold the same rows
+  instead of walking `SessionReport` timestamps a second time.
+- **Tools, Agents and Errors** are still filtered from their canonical rows in the
+  client (`Tool.timestamp`, `AgentRun.observedAt`, `ErrorRecord.timestamp`); no
+  dated copies exist for them.
+- Aggregation only ever **sums** these rows: `buildDailyRows(contributions)`
+  (`{ sessionId, rows, truncated }[]`, in `src/ui/daily.ts`) folds `usageByDate`
+  rows by date and `sessions` counts the distinct sessions that contributed to
+  that date. Two sessions, one date, one row.
+
+Growth stays bounded by (366 × 64) model rows per view plus one composition object
+per day.
 
 ```ts
 // Models: ModelSummary is an aggregate, so it needs a dated form.
@@ -1486,11 +1526,17 @@ the v0.8.0 baseline is 588 passing tests at `81f65b7`.
 
 ### P0-B — Range correctness and scope labels
 
-- **Files:** `src/ui/bundle.ts` (per-date model rows, daily composition,
-  `sameReportProjection`, capability table), `src/ui/daily.ts` (new: the single
-  date-bucketing builder that replaces `bundle.ts:dailyRows` and
-  `html.ts:buildDailyActivityRows`, §0.2 item 9), `src/ui/html.ts` (one server
+- **Files:** `src/ui/dated-usage.ts` (new: the single dated projection of
+  §5.4), `src/ui/load-current.ts` + `src/ui/current.ts` (attach it to the
+  current model), `src/ui/bundle.ts` (fold it into the daily rows, per-date model
+  rows, `sameReportProjection`, capability table), `src/ui/html.ts` (one server
   projection + one client range filter over canonical rows), i18n catalog, tests.
+- **Contract delta:** `DatedModelRow`, composition in `DailyRow`,
+  `current.sameReportProjection`, per-section `capabilities`, per-view
+  `usageByDate`/`datedModels` + their truncation flags, history
+  `usageByDate`/`usageByDateTruncated`; range semantics per §5 (clamping removed),
+  session membership per §5.6, and logical-call attribution per §5.7 — all from the
+  one dated projection (R19).
 - **Contract delta:** `DatedModelRow`, composition in `DailyRow`,
   `current.sameReportProjection`, per-section `capabilities`, history
   `usageByDate`/`usageByDateTruncated`; range semantics per §5 (clamping removed),
@@ -1705,7 +1751,7 @@ start before §3-§10 are settled, and it changes no contract.)
 | R16 | Per-session `usageByDate` is capped at 366 dates, with a single `usageByDateTruncated` flag and a `Known` qualifier for older ranges. The flag is also set when the builder reports `evidenceHealth.usage.dated === "partial"`, because unattributed native usage cannot be dated | Keeps the aggregate bounded without ever faking completeness or zero, and gives the two partial causes one honest rendering | Ranges older than the retained window show partial/`Known` per-session figures rather than exact ones; an unattributable session is partial for every range |
 | R17 | No Agent → Models navigation target, even when `AgentRun.model` matches a parent-session model | Native parent generations and child-run usage are different domains; a name match is not evidence of identity | Child model/thinking stay agent-detail metadata; a future child-model breakdown can add a real target |
 | R18 | The aggregate coverage type is `SessionCoverage` (not `CoverageSummary`), in `src/core/session-coverage.ts` | The canonical model already owns `UsageCoverage`; two types named "coverage" with different meanings invite exactly the confusion this milestone exists to remove | One rename now; §3.1's field names are unchanged |
-| R19 | Per-date rows (`usageByDate`, `DailyRow.composition`, `DatedModelRow`) are grouped from `CanonicalUsageLine.attributedAt`/`domain`/`bucket`; `SessionReport` dates are never re-walked into a second attribution implementation | The builder is the single attribution authority (R15/§5.7); two implementations would drift at the first producer change | A per-date figure can only differ from the report if the builder is wrong, which is then a single place to fix |
+| R19 | Per-date rows come from **one** module (`src/ui/dated-usage.ts`), computed over the canonical session from `CanonicalUsageLine.attributedAt`/`domain`/`bucket` and joined to the canonical generation rows by `ownerId`. Every consumer (current views, history/global, the chart) folds those rows; nothing re-walks `SessionReport` timestamps to build a second dated projection | The builder is the single attribution authority (R15/§5.7) and the bundle only sees the report, so a second date-bucketing walk there would drift at the first producer change | A per-date figure can only differ from the report if the builder is wrong, which is then a single place to fix; the cost is one small module and a fold instead of a walk |
 | R20 | Every `CoverageReason` maps onto an existing `EvidenceDiagnosticCode` or `HistoryDiagnostic`, asserted by a totality test | Invariant 8 (degrade, never guess) plus the ban on a second vocabulary: a runnability reason must be traceable to a bounded code | Adding a reason requires naming the code it projects |
 
 ---
