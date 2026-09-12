@@ -25,8 +25,12 @@ import {
   currentModelWithMixedToolUsage,
   currentModelWithPartialToolUsage,
   currentModelWithTools,
+  modelWithErrorAndThreeChildren,
+  modelWithGenerationError,
   modelWithOrphanChild,
   modelWithOrphanChildAndParent,
+  modelWithToolError,
+  modelWithToolErrorAndTwoChildren,
 } from "../helpers/bundle-scenarios.ts";
 
 function bundleFixture(): InspectorBundle {
@@ -901,6 +905,27 @@ function has(values: string[], fragment: string): boolean {
   return values.some((value) => value.includes(fragment));
 }
 
+/** Every node whose own text is exactly the value, so it can be located in the tree. */
+function nodesWithText(view: StubElement, value: string): StubElement[] {
+  const found: StubElement[] = [];
+  const walk = (node: StubElement): void => {
+    if (node.textContent === value) found.push(node);
+    for (const child of node.children) walk(child);
+  };
+  walk(view);
+  return found;
+}
+
+/** The rendered anchors carrying one reference attribute. */
+function anchorsWith(
+  view: StubElement,
+  attribute: "childLink" | "toolLink",
+): StubElement[] {
+  return view
+    .querySelectorAll("a")
+    .filter((node) => node.dataset[attribute] !== undefined);
+}
+
 /**
  * One rendered card, found by the title its heading renders. The tools panel is
  * two cards over one projection, so an assertion about the summary must not
@@ -1077,6 +1102,128 @@ test("range-scoped empty tabs carry the range-qualified line", () => {
     errors.includes("No persisted error records. An observed zero stays zero."),
     false,
   );
+});
+
+test("the Errors tab leads with the failed tool's identity and keeps its record id in the details", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithToolError(),
+    }),
+  );
+  const { client, element, texts } = harness;
+  client.state.tab = "errors";
+  client.render();
+  const view = element("view");
+  const rendered = texts(view);
+
+  // The headline is the joined tool, with the bounded classification and the
+  // persisted time beside it.
+  assert.equal(rendered.includes("bash failed"), true);
+  assert.equal(rendered.includes("tool-error"), true);
+  assert.equal(rendered.includes("2026-02-02T00:01:00.000Z"), true);
+  // A tool error has no safe structured message at all, so the row states
+  // Unavailable rather than text from `content`, arguments, or child output.
+  assert.equal(rendered.includes("Message"), true);
+  assert.equal(rendered.includes("Unavailable"), true);
+
+  // The internal `tool:call_…` id is rendered once and only inside the row's
+  // details panel, never as a column's own value.
+  const ids = nodesWithText(view, "tool:call_bash");
+  assert.equal(ids.length, 1);
+  assert.notEqual(ids[0]?.closest("details"), null);
+  // No child run published through this call, so the section is omitted
+  // entirely: never padded, never inferred from a timestamp.
+  assert.equal(rendered.includes("Related child run(s)"), false);
+});
+
+test("the Errors tab lists every related child run and names none as the cause", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithErrorAndThreeChildren(),
+    }),
+  );
+  const { client, element, texts } = harness;
+  client.state.tab = "errors";
+  client.render();
+  const view = element("view");
+
+  // One anchor per candidate, labelled with that candidate's own role: the
+  // relation is one-to-many and no candidate is named as the cause.
+  assert.equal(texts(view).includes("Related child run(s)"), true);
+  assert.deepEqual(
+    anchorsWith(view, "childLink").map((anchor) => anchor.textContent),
+    ["reviewer", "researcher", "validator"],
+  );
+  assert.equal(has(texts(view), "caused by"), false);
+  assert.equal(has(texts(view), "cause of"), false);
+  // The tool-call reference carries the call's canonical id, so Task 15 can
+  // point it at the calls route without re-deriving the join.
+  assert.deepEqual(
+    anchorsWith(view, "toolLink").map((anchor) => [
+      anchor.textContent,
+      anchor.dataset.toolLink,
+    ]),
+    [["bash", "tool:call_bash"]],
+  );
+
+  // A candidate whose run carries no role is labelled Unavailable: a role is
+  // never invented and the raw run id is never rendered as the label.
+  const roleless = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithToolErrorAndTwoChildren(),
+    }),
+  );
+  roleless.client.state.tab = "errors";
+  roleless.client.render();
+  assert.deepEqual(
+    anchorsWith(roleless.element("view"), "childLink").map(
+      (anchor) => anchor.textContent,
+    ),
+    ["Unavailable", "Unavailable"],
+  );
+});
+
+test("a generation error renders its bounded message and Unavailable without one", async () => {
+  const kept = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () =>
+        modelWithGenerationError("Request failed at [URL]"),
+    }),
+  );
+  kept.client.state.tab = "errors";
+  kept.client.render();
+  const rendered = kept.texts(kept.element("view"));
+  assert.equal(rendered.includes("Request failed at [URL]"), true);
+  // The generation error has no tool to lead with, so its bounded
+  // classification family is the headline and the exact kind stays beside it.
+  assert.equal(rendered.includes("Generation error"), true);
+  assert.equal(rendered.includes("generation-error"), true);
+  assert.equal(
+    kept.texts(kept.element("view")).includes("Related tool"),
+    false,
+  );
+  assert.equal(
+    kept.texts(kept.element("view")).includes("Related child run(s)"),
+    false,
+  );
+
+  // The same scenario with no usable persisted message says Unavailable.
+  const silent = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithGenerationError(),
+    }),
+  );
+  silent.client.state.tab = "errors";
+  silent.client.render();
+  const silentTexts = silent.texts(silent.element("view"));
+  assert.equal(silentTexts.includes("Request failed at [URL]"), false);
+  assert.equal(silentTexts.includes("generation-error"), true);
+  assert.equal(silentTexts.includes("Unavailable"), true);
 });
 
 test("the Tools and Agents tabs filter their canonical rows and drop the label in range", () => {

@@ -136,6 +136,43 @@ test("exposes only the bounded redacted persisted error message", async () => {
   );
 });
 
+test("a tool error keeps no message even when its result persists one", () => {
+  const report = toSessionReport(
+    reduceEntries("tool-error-message", [
+      assistant("g1", "2026-01-01T00:00:01.000Z", "toolUse", [
+        { type: "toolCall", id: "call-x", name: "read" },
+      ]),
+      {
+        type: "message",
+        id: "r1",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:02.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-x",
+          isError: true,
+          errorMessage: "SECRET_RESULT_BODY",
+          content: [{ type: "text", text: "SECRET_RESULT_BODY" }],
+          usage: { totalTokens: 1, cost: { total: 0.01 } },
+        },
+      },
+    ]),
+  );
+
+  // A tool error has no safe structured message (design §7.5-4): the reducer
+  // never reads a tool result's own text, so the row's `Message: Unavailable`
+  // is the projection, not a rendering accident.
+  assert.deepEqual(report.errors, [
+    {
+      id: "tool:call-x",
+      timestamp: "2026-01-01T00:00:02.000Z",
+      kind: "tool-error",
+      confidence: "native",
+    },
+  ]);
+  assert.equal(renderJson(report).includes("SECRET_RESULT_BODY"), false);
+});
+
 test("omits the message field when no usable persisted error message exists", () => {
   const report = toSessionReport(
     reduceEntries("no-message", [

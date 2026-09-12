@@ -9,6 +9,9 @@ import {
 } from "../../src/ui/bundle.ts";
 import {
   aggregateUsageLabels,
+  ENGLISH_CATALOG,
+  errorHeadline,
+  errorMessage,
   inlineModuleSource,
   renderInspectorBundle,
   toolCalls,
@@ -26,6 +29,8 @@ import {
   embedOf,
   hostileToolArgumentEntries,
   modelWithActivityAndRuns,
+  modelWithErrorAndThreeChildren,
+  modelWithGenerationError,
   modelWithOrphanChild,
   modelWithOrphanChildAndParent,
   modelWithStatuses,
@@ -783,4 +788,164 @@ test("the agents panel reads the rows it renders, never a stored fraction", () =
   // never reuse a full-session count: no derived fraction travels in the
   // payload at all.
   assert.equal(/"agentUsage"/.test(html), false);
+});
+
+test("an error row's headline is the joined tool's name, never its id", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithToolError(),
+    }),
+  );
+  const error = (
+    embedOf(html).current.active as {
+      report: { errors: Record<string, unknown>[] };
+    }
+  ).report.errors[0];
+  // The join Task 8 resolved in Node is what the headline reads: the raw id
+  // stays a detail of the row, and the tool's own status travels with it so the
+  // row never has to re-join in the browser.
+  assert.deepEqual(
+    [error.id, error.toolName, error.toolSource, error.toolStatus],
+    ["tool:call_bash", "bash", null, "failed"],
+  );
+
+  // One headline rule, and the document runs it: the browser cannot drift from
+  // the function these assertions exercise.
+  assert.equal(inlineModuleSource().includes("const errorHeadline="), true);
+  const inlined = new Function(
+    `${inlineModuleSource()}\nreturn {errorHeadline};`,
+  )() as { errorHeadline: typeof errorHeadline };
+  const cases = [
+    { kind: "tool-error", toolName: "bash" },
+    { kind: "tool-error", toolName: null },
+    { kind: "generation-error", toolName: null },
+  ];
+  assert.deepEqual(
+    inlined.errorHeadline(cases[0]),
+    errorHeadline(cases[0]),
+    "the inlined source must be the tested source",
+  );
+  assert.deepEqual(errorHeadline(cases[0]), {
+    key: "errors.toolFailed",
+    values: { tool: "bash" },
+  });
+  // A tool error with no joined tool has no name to lead with, so the bounded
+  // classification label takes the headline instead of a fabricated name.
+  assert.deepEqual(errorHeadline(cases[1]), {
+    key: "errors.failed",
+    values: null,
+  });
+  // A generation error never joins a tool at all.
+  assert.deepEqual(errorHeadline(cases[2]), {
+    key: "errors.generation",
+    values: null,
+  });
+  // The template fills to the headline the design pins, from the one catalog.
+  assert.equal(
+    ENGLISH_CATALOG["errors.toolFailed"].replace("{tool}", "bash"),
+    "bash failed",
+  );
+});
+
+test("a tool error's message is always Unavailable", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithToolError(),
+    }),
+  );
+  assert.equal(ENGLISH_CATALOG["errors.messageUnavailable"], "Unavailable");
+
+  // A tool error has no safe structured message at all (design §7.5-4): the
+  // rule holds even for a forged row, so no path can render text from
+  // `content`, tool output, arguments, or child output.
+  assert.equal(errorMessage({ kind: "tool-error", message: "SECRET" }), null);
+  // A generation error keeps the bounded redacted message the reducer kept.
+  assert.equal(
+    errorMessage({ kind: "generation-error", message: "429 rate limit" }),
+    "429 rate limit",
+  );
+  // An absent message is Unavailable, never an empty string or a guess.
+  assert.equal(errorMessage({ kind: "generation-error" }), null);
+  assert.equal(inlineModuleSource().includes("const errorMessage="), true);
+  // The Unavailable value is catalog copy the rule selects, never text
+  // reconstructed from a persisted field: the client reads the key, not the row.
+  assert.equal(html.includes('tr("errors.messageUnavailable")'), true);
+
+  // The rendered document carries no persisted error text beyond the bounded
+  // `message` field, so an error row's only copy source is the catalog.
+  const generation = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () =>
+        modelWithGenerationError("Request failed at [URL]"),
+    }),
+  );
+  const errors = (
+    embedOf(generation).current.active as {
+      report: { errors: Record<string, unknown>[] };
+    }
+  ).report.errors;
+  assert.deepEqual(
+    errors.map((row) => [row.id, row.kind, row.message]),
+    [["generation:g-error", "generation-error", "Request failed at [URL]"]],
+  );
+  // The same scenario without a persisted message carries no message at all.
+  const silent = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithGenerationError(),
+    }),
+  );
+  const silentErrors = (
+    embedOf(silent).current.active as {
+      report: { errors: Record<string, unknown>[] };
+    }
+  ).report.errors;
+  assert.deepEqual(
+    silentErrors.map((row) => [row.kind, "message" in row]),
+    [["generation-error", false]],
+  );
+});
+
+test("related child runs are one-to-many and never causal", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithErrorAndThreeChildren(),
+    }),
+  );
+  const report = (
+    embedOf(html).current.active as {
+      report: {
+        errors: Record<string, unknown>[];
+        agents: Record<string, unknown>[];
+      };
+    }
+  ).report;
+  // One publishing result, three candidates: every run is listed and no run is
+  // singled out as the cause.
+  assert.deepEqual(
+    report.errors[0].relatedChildIds,
+    report.agents.map((run) => run.id),
+  );
+  assert.equal((report.errors[0].relatedChildIds as unknown[]).length, 3);
+  assert.deepEqual(
+    report.agents.map((run) => run.agent),
+    ["reviewer", "researcher", "validator"],
+  );
+
+  // The rendered list is one anchor per candidate, and zero candidates omit the
+  // section entirely rather than padding it or inferring one.
+  for (const fragment of [
+    "dataset.childLink",
+    'tr("errors.relatedChildren")',
+    "row.relatedChildIds.length===0)return null",
+  ]) {
+    assert.equal(html.includes(fragment), true, fragment);
+  }
+  // Explicit refusal: no copy in the document may attribute the failure to a
+  // child run.
+  assert.equal(/caused by|cause of|blame/i.test(html), false);
 });

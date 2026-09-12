@@ -481,6 +481,58 @@ export function modelWithOrphanChildAndParent(): CurrentTuiModel {
   );
 }
 
+/**
+ * One failed bash call whose publishing result observed three child runs, each
+ * with its own role, so the error join is proven one-to-many over the common
+ * `subagent` case and the rendered list names none of them as the cause.
+ */
+export function modelWithErrorAndThreeChildren(): CurrentTuiModel {
+  return modelOf(
+    reportWith(
+      [{ callId: "call_bash", name: "bash", isError: true }],
+      ["reviewer", "researcher", "validator"].map((agent, index) =>
+        agentRun({
+          id: runId(index + 1),
+          agent,
+          observedAt: OBSERVED_AT,
+          evidenceToolId: "tool:call_bash",
+        }),
+      ),
+    ),
+    "tree",
+  );
+}
+
+/**
+ * One failed generation, with the persisted message a caller passes through the
+ * reducer: a test can never assert a message the reducer would have dropped for
+ * being unusable. Omitting the message is the `Message: Unavailable` case.
+ */
+export function modelWithGenerationError(message?: string): CurrentTuiModel {
+  return modelOf(
+    toSessionReport(
+      reduceEntries(SESSION_ID, [
+        ...callEntries([CHILD_CALL]),
+        {
+          id: "g-error",
+          parentId: null,
+          timestamp: OBSERVED_AT,
+          type: "message",
+          message: {
+            role: "assistant",
+            provider: "acme",
+            model: "alpha",
+            content: [],
+            stopReason: "error",
+            ...(message === undefined ? {} : { errorMessage: message }),
+          },
+        },
+      ]),
+    ),
+    "tree",
+  );
+}
+
 /** One failed bash call with no child run: the error join's negative case. */
 export function modelWithToolError(): CurrentTuiModel {
   return modelOf(

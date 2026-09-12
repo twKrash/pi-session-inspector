@@ -744,6 +744,7 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
       confidence: "native",
       toolName: "bash",
       toolSource: null,
+      toolStatus: "failed",
       relatedChildIds: [],
     },
   ]);

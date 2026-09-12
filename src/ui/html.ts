@@ -206,6 +206,7 @@ export const ENGLISH_CATALOG = {
   "resources.note":
     "Loaded or available resources by source. Counts are availability, never activity.",
   "resources.unavailable": "No resource-source inventory recorded.",
+  "table.error": "Error",
   "table.name": "Name",
   "table.invocations": "Invocations",
   "table.scope": "Scope",
@@ -223,6 +224,19 @@ export const ENGLISH_CATALOG = {
   "integrations.note": "Evidence availability is not installation status.",
   "errors.note": "Bounded classifications from persisted stop and error state.",
   "errors.none": "No persisted error records. An observed zero stays zero.",
+  // The Errors row leads with what failed: the joined tool's name when the
+  // record has one, else the bounded classification label. The raw
+  // `tool:call_…` id is never a headline; it stays a row detail.
+  "errors.toolFailed": "{tool} failed",
+  "errors.failed": "Tool call failed",
+  "errors.generation": "Generation error",
+  "errors.relatedTool": "Related tool",
+  // One row may have many candidates, so the label stays plural-safe and no
+  // candidate is ever named as the cause (design §7.5-3).
+  "errors.relatedChildren": "Related child run(s)",
+  // A tool error has no safe structured message at all, so this is the only
+  // value its message column may carry (design §7.5-4).
+  "errors.messageUnavailable": "Unavailable",
   "empty.ledger": "No persisted records to order.",
   "history.note":
     "Open a row to inspect its full-tree sections with the same tabs.",
@@ -446,6 +460,8 @@ type ErrorRow = {
   toolName: string | null;
   /** The joined tool's bounded source label; null when absent or unmatched. */
   toolSource: string | null;
+  /** The joined tool's persisted status; null when no tool carries this id. */
+  toolStatus: SessionReport["tools"][number]["status"] | null;
   /**
    * Every child run the publishing result observed, in run order. The relation
    * is one-to-many and names no run as the cause (design §7.5).
@@ -534,6 +550,8 @@ const INLINED_FUNCTIONS = [
   toolSummary,
   toolCalls,
   toolDuration,
+  errorHeadline,
+  errorMessage,
 ] as const;
 
 /**
@@ -1302,6 +1320,44 @@ function agentRows(report: SessionReport): AgentRow[] {
 }
 
 /**
+ * The headline an error row renders (design §7.5-1): the joined tool's name when
+ * the record carries one, else the bounded classification label for its kind
+ * family. The template and the fill value are returned separately so the
+ * browser fills the one catalog entry the tests read; the raw `tool:call_…` id
+ * is never a headline. Exported and inlined, so the browser and the tests run
+ * the same rule (see `INLINED_FUNCTIONS`).
+ */
+export function errorHeadline(row: {
+  kind: string;
+  toolName: string | null;
+}):
+  | { key: "errors.toolFailed"; values: { tool: string } }
+  | { key: "errors.failed" | "errors.generation"; values: null } {
+  if (row.toolName !== null) {
+    return { key: "errors.toolFailed", values: { tool: row.toolName } };
+  }
+  return row.kind === "tool-error"
+    ? { key: "errors.failed", values: null }
+    : { key: "errors.generation", values: null };
+}
+
+/**
+ * The bounded message a row may render, or `null` for `Unavailable`. A tool
+ * error has no safe structured message at all (design §7.5-4), so a row for one
+ * is `null` whatever it carries; a generation error renders the persisted
+ * bounded redacted `errorMessage` when present. No text is ever taken from
+ * `content`, tool output, arguments, or child output. Exported and inlined, so
+ * the browser and the tests run the same rule.
+ */
+export function errorMessage(row: {
+  kind: string;
+  message?: string;
+}): string | null {
+  if (row.kind === "tool-error") return null;
+  return row.message ?? null;
+}
+
+/**
  * The one error → tool → child joint projection (design §7.5). A tool error and
  * its call share the reducer's canonical id, so the join is `error.id ===
  * tool.id`; every run whose `evidenceToolId` is that same id was observed by
@@ -1327,6 +1383,7 @@ function errorRows(report: SessionReport): ErrorRow[] {
       ...(error.message === undefined ? {} : { message: error.message }),
       toolName: tool?.name ?? null,
       toolSource: tool?.source ?? null,
+      toolStatus: tool?.status ?? null,
       relatedChildIds: childrenById.get(error.id) ?? [],
     };
   });
@@ -1903,7 +1960,33 @@ function toolCallCells(rows,evidence){return rows.map(row=>[row.timestamp,row.na
 function toolFilterBar(filter){const bar=el("div","toolbar"),clear=el("button","",tr("tools.clearFilter"));clear.dataset.clearFilter="true";bar.append(el("span","muted",tr("tools.filteredBy",{tool:filter})),clear);return bar;}
 function toolCallsCard(rows,filtered,evidence,filter){const section=card(tr("tools.calls"),tr("tools.note")+(filtered?"":ALL_DATES));if(filter!==null)section.append(toolFilterBar(filter));return simpleTable(section,[tr("table.timestamp"),tr("table.tool"),tr("table.source"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.duration")],toolCallCells(rows,evidence));}
 function toolsPanel(view,title,filtered,context){const summary=toolSummary(context);if(summary.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("tools.none"),"evidence.native");const filter=activeToolFilter(),calls=toolCalls(context,filter),wrap=el("div",""),summarySection=table(tr("tools.summary"),tr("tools.note")+(filtered?"":ALL_DATES),[tr("table.tool"),tr("table.calls"),tr("tools.succeeded"),tr("tools.failed"),tr("tools.interrupted"),tr("table.tokens"),tr("table.cost"),tr("tools.lastUsed"),tr("table.source")],summary.map(toolSummaryCells),toolSummaryMetrics(summary)),callsSection=calls.length===0?emptyCard(tr("tools.calls"),tr("chart.empty"),"evidence.unavailable"):toolCallsCard(calls,filtered,view.durationEvidence,filter);if(filter!==null&&calls.length===0)callsSection.append(toolFilterBar(filter));wrap.append(summarySection,callsSection);return wrap;}
-function detail(view,title,source){if(state.tab==="models")return modelsPanel(view,title,source);if(state.tab==="tools"){const filtered=filteredView(view);return toolsPanel(view,title,filtered,filtered||view);}if(state.tab==="commands"){const commands=view.commands;if(!commands||commands.items.length===0)return emptyCard(title,commands&&commands.count!==null?tr("commands.count",{count:number(commands.count)}):tr("unavailable.commands"),"evidence.unavailable");return table(title,tr("commands.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.description")],commands.items.map(row=>[row.name,orUnavailable(row.sourceLabel||row.source||null),row.scope,row.origin,orUnavailable(row.description)]));}if(state.tab==="agents")return agentsPanel(view,title);if(state.tab==="skills")return skillsPanel(view,title);if(state.tab==="integrations")return integrationsPanel(view,title);if(state.tab==="errors"){const filtered=filteredView(view),errors=filtered?filtered.errors:view.errors;if(errors.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("errors.none"),"evidence.native");return table(title,tr("errors.note")+(filtered?"":ALL_DATES),[tr("table.id"),tr("table.kind"),tr("table.timestamp"),tr("table.message"),tr("table.confidence")],errors.map(row=>[row.id,row.kind,row.timestamp,orUnavailable(row.message),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}return unavailableSection(title,tr("unavailable.copy"));}
+// Errors are identity-first (design §7.5): the first column is what failed and
+// the internal tool:call_… id never reaches a column — it stays in the row's
+// details panel beside the tool join, the calls reference and the related child
+// candidates. The headline and the message are the rules inlined above
+// (errorHeadline/errorMessage), so the browser cannot drift from the tests.
+function errorHeadlineText(row){const headline=errorHeadline(row);return tr(headline.key,headline.values||{});}
+function errorMessageText(row){const message=errorMessage(row);return message===null?tr("errors.messageUnavailable"):message;}
+// One labelled value line inside a row's details panel; the value is a node when
+// it is itself a reference.
+function errorFieldLine(label,value){const line=el("div","breakdown-row"),cell=el("span","mono","");if(value instanceof Node)cell.append(value);else cell.textContent=text(value);line.append(el("span","",label),cell);return line;}
+// The tool-call reference carries the call's own canonical id in data-tool-link:
+// Task 15 points that reference at the calls route, and until the route exists it
+// is an anchor with no href, so no dead destination is emitted (design §7.4).
+function errorToolReference(row){const anchor=el("a","mono",text(row.toolName));anchor.dataset.toolLink=row.id;return anchor;}
+// Every candidate the publishing result observed, in run order, one anchor per
+// run and none of them named as a cause: the relation is one-to-many. A run whose
+// role the projection does not carry is labelled Unavailable, never the raw run
+// id. Zero candidates returns null, so the section is omitted entirely rather
+// than inferred from a timestamp or padded with an unrelated run (design §7.5-3).
+function errorChildrenLine(row,runs){if(row.relatedChildIds.length===0)return null;const list=el("span","mono","");row.relatedChildIds.forEach(id=>{const run=runs[id],anchor=el("a","mono",run&&run.agent?run.agent:tr("evidence.unavailable"));anchor.dataset.childLink=id;list.append(anchor);});return errorFieldLine(tr("errors.relatedChildren"),list);}
+function errorDetails(row,runs){const details=document.createElement("details"),summary=el("summary","",errorHeadlineText(row)),body=el("div","breakdown");details.append(summary);body.append(errorFieldLine(tr("table.id"),row.id));if(row.toolName!==null)body.append(errorFieldLine(tr("errors.relatedTool"),errorToolReference(row)),errorFieldLine(tr("table.source"),orUnavailable(row.toolSource)),errorFieldLine(tr("table.status"),row.toolStatus===null?tr("evidence.unavailable"):badge(tr("tools."+row.toolStatus),row.toolStatus==="succeeded"?"":"warn")));const related=errorChildrenLine(row,runs);if(related!==null)body.append(related);details.append(body);return details;}
+// The runs of the unfiltered view: a range filter narrows which errors are
+// listed, never which run a candidate names — the join is a session fact — so a
+// candidate keeps its own role even when its run falls outside the range.
+function runRowsById(view){const runs={};(view.agents||[]).forEach(run=>{runs[run.id]=run;});return runs;}
+function errorsPanel(view,title,filtered){const errors=filtered?filtered.errors:view.errors;if(errors.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("errors.none"),"evidence.native");const runs=runRowsById(view);return table(title,tr("errors.note")+(filtered?"":ALL_DATES),[tr("table.error"),tr("table.kind"),tr("table.timestamp"),tr("table.message"),tr("table.confidence")],errors.map(row=>[errorDetails(row,runs),row.kind,row.timestamp,errorMessageText(row),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}
+function detail(view,title,source){if(state.tab==="models")return modelsPanel(view,title,source);if(state.tab==="tools"){const filtered=filteredView(view);return toolsPanel(view,title,filtered,filtered||view);}if(state.tab==="commands"){const commands=view.commands;if(!commands||commands.items.length===0)return emptyCard(title,commands&&commands.count!==null?tr("commands.count",{count:number(commands.count)}):tr("unavailable.commands"),"evidence.unavailable");return table(title,tr("commands.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.description")],commands.items.map(row=>[row.name,orUnavailable(row.sourceLabel||row.source||null),row.scope,row.origin,orUnavailable(row.description)]));}if(state.tab==="agents")return agentsPanel(view,title);if(state.tab==="skills")return skillsPanel(view,title);if(state.tab==="integrations")return integrationsPanel(view,title);if(state.tab==="errors"){const filtered=filteredView(view);return errorsPanel(view,title,filtered);}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}return unavailableSection(title,tr("unavailable.copy"));}
 function sessionCell(entry){const cell=document.createElement("div");cell.append(el("span","mono",entry.sessionId));cell.append(el("small","",entry.firstDate?(entry.firstDate+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")):tr("evidence.unavailable")));return cell;}
 function openButton(index){const button=el("button","",tr("table.open"));button.dataset.session=String(index);button.setAttribute("aria-label",tr("table.open")+" "+historySessions()[index].sessionId);return button;}
 function historyRowCells(item,group){const entry=item.entry,verdict=item.verdict,partial=group==="member"&&verdict.partial,member=group==="member";return [sessionCell(entry),orUnavailable(entry.durationLabel),member?(partial?knownValue(number(verdict.totalTokens),"metric.knownTokens"):number(verdict.totalTokens)):tr("evidence.unavailable"),entry.generationCount===null?tr("evidence.unavailable"):number(entry.generationCount),entry.agentCount===null?tr("evidence.unavailable"):number(entry.agentCount),entry.status?badge(tr(entry.status.key),entry.status.tone):tr("evidence.unavailable"),member?(partial?knownValue(money(verdict.cost),"metric.knownCost"):money(verdict.cost)):tr("evidence.unavailable"),entry.view?openButton(item.index):""];}
