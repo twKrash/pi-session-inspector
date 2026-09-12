@@ -16,6 +16,8 @@ let linkPath: string;
 let nestedLinkDirectory: string;
 let outsidePath: string;
 let hugePath: string;
+let overBoundPaddingPath: string;
+let smallPaddingPath: string;
 let v2Path: string;
 let selfPath: string;
 let bodyPath: string;
@@ -49,6 +51,32 @@ before(async () => {
   await writeFile(
     hugePath,
     `${JSON.stringify({ type: "session", version: 3, id: "a".repeat(20_000) })}\n`,
+  );
+  // First line is a *valid* v3 header with a bounded id, but carries more than
+  // the 16 KiB header-read bound of padding inside the JSON. The newline only
+  // arrives past the bound, so an enforced bound rejects it; an unbounded read
+  // would parse it as a valid header.
+  overBoundPaddingPath = join(root, "padded-over-bound.jsonl");
+  await writeFile(
+    overBoundPaddingPath,
+    `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "padded-parent-session",
+      padding: "a".repeat(17_000),
+    })}\n`,
+  );
+  // Same shape, but the padding is well under the bound, so the header still
+  // resolves. Pins the lower side of the bound against an over-narrow cap.
+  smallPaddingPath = join(root, "padded-small.jsonl");
+  await writeFile(
+    smallPaddingPath,
+    `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "padded-parent-session",
+      padding: "a".repeat(256),
+    })}\n`,
   );
   await writeFile(join(root, "empty.jsonl"), "");
   missingPath = join(root, "missing.jsonl");
@@ -108,6 +136,36 @@ test("symlink, outside-root, directory and oversize are unavailable", async () =
     await resolveParentSession({ parentPath: hugePath, sessionRoot: root }),
     { state: "unavailable" },
   );
+});
+
+test("a valid header longer than 16 KiB is unavailable and diagnostic", async () => {
+  // Mutant kill: dropping/widening MAX_HEADER_BYTES lets the unbounded read see
+  // the trailing newline past 16 KiB, parse the valid header and return
+  // { state: "known", id: "padded-parent-session" }.
+  const diagnostics = new Set<ParentSessionDiagnostic>();
+  assert.deepEqual(
+    await resolveParentSession({
+      parentPath: overBoundPaddingPath,
+      sessionRoot: root,
+      diagnostics,
+    }),
+    { state: "unavailable" },
+  );
+  assert.equal(diagnostics.has("parent-session-unavailable"), true);
+});
+
+test("a valid header with sub-bound padding still resolves", async () => {
+  // Pins the lower side: an over-narrow bound would reject this valid header.
+  const diagnostics = new Set<ParentSessionDiagnostic>();
+  assert.deepEqual(
+    await resolveParentSession({
+      parentPath: smallPaddingPath,
+      sessionRoot: root,
+      diagnostics,
+    }),
+    { state: "known", id: "padded-parent-session" },
+  );
+  assert.equal(diagnostics.size, 0);
 });
 
 test("a symlinked intermediate component is rejected", async () => {
