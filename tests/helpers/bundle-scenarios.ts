@@ -3,8 +3,15 @@ import {
   toSessionReport,
   type AgentToolActivity,
   type SessionReport,
+  type SessionReportEvidence,
 } from "../../src/core/reports.ts";
 import type { AgentRun, SessionEntry } from "../../src/core/events.ts";
+import type {
+  CommandRow,
+  InventorySnapshot,
+  ResourceSourceRow,
+  SkillRow,
+} from "../../src/integrations/inventory.ts";
 import type { InspectorBundleInput } from "../../src/ui/bundle.ts";
 import {
   createCurrentTuiModel,
@@ -149,12 +156,14 @@ function reportWith(
   calls: readonly Call[],
   runs: readonly AgentRun[],
   activity?: AgentToolActivity,
+  evidence?: SessionReportEvidence,
 ): SessionReport {
   return toSessionReport(reduceEntries(SESSION_ID, callEntries(calls)), {
     ...(activity === undefined ? {} : { agentActivity: activity }),
     ...(runs.length === 0
       ? {}
       : { agents: { state: "supported" as const, runs } }),
+    ...(evidence ?? {}),
   });
 }
 
@@ -562,6 +571,146 @@ export function modelWithToolErrorAndTwoChildren(): CurrentTuiModel {
         }),
       ],
     ),
+    "tree",
+  );
+}
+
+/** One bounded inventory command row: the producer grammar, never a path. */
+function commandInventoryRows(count: number): CommandRow[] {
+  const rows: CommandRow[] = [];
+  for (let ordinal = 1; ordinal <= count; ordinal++) {
+    rows.push({
+      name: `cmd-${ordinal}`,
+      source: "extension",
+      sourceLabel: "npm:pi-commands",
+      scope: "user",
+      origin: "package",
+    });
+  }
+  return rows;
+}
+
+/** One bounded inventory skill row; the first is the explicitly invoked name. */
+function skillInventoryRows(count: number): SkillRow[] {
+  const rows: SkillRow[] = [];
+  for (let ordinal = 1; ordinal <= count; ordinal++) {
+    rows.push({
+      name: ordinal === 1 ? "council-mode" : `skill-${ordinal}`,
+      sourceLabel: "npm:pi-skills",
+      scope: "user",
+      origin: "package",
+    });
+  }
+  return rows;
+}
+
+/** The bounded source labels the sanitizer passes through unchanged. */
+const RESOURCE_SOURCE_LABELS = ["local", "auto", "builtin", "sdk"] as const;
+
+/** One resource-source row per source label, with per-source inventory counts. */
+function resourceInventoryRows(count: number): ResourceSourceRow[] {
+  const rows: ResourceSourceRow[] = [];
+  for (let ordinal = 0; ordinal < count; ordinal++) {
+    rows.push({
+      sourceLabel:
+        RESOURCE_SOURCE_LABELS[ordinal % RESOURCE_SOURCE_LABELS.length],
+      scope: "user",
+      origin: "package",
+      commands: ordinal,
+      skills: ordinal === 0 ? 2 : 0,
+      prompts: 0,
+      tools: 0,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Design §8.1's environment: 119 commands, 42 skills and 11 resource sources
+ * alongside the explicit folded counters that are the only invocation evidence
+ * (`council-mode: 2` plus one other invocation). Commands carry no counter
+ * evidence at all, so their observed-invocation side is Unavailable.
+ */
+export function modelWithInventory(): CurrentTuiModel {
+  const inventory: InventorySnapshot = {
+    schemaVersion: 1,
+    commands: commandInventoryRows(119),
+    skills: skillInventoryRows(42),
+    resources: resourceInventoryRows(11),
+    toolSources: {},
+  };
+  return modelOf(
+    reportWith([CHILD_CALL], [], undefined, {
+      inventory,
+      counters: {
+        counters: {},
+        skillInvocations: { "council-mode": 2 },
+        otherInvocations: 1,
+        presence: { permission: false },
+      },
+    }),
+    "tree",
+  );
+}
+
+/**
+ * Design §8.2's four independent columns: a definite detection with supported
+ * telemetry (including an observed `false` counter, shown verbatim), an unknown
+ * detection with supported telemetry, and rows whose telemetry is unsupported
+ * or unavailable with no persisted counters at all.
+ */
+export function modelWithIntegrations(): CurrentTuiModel {
+  return modelOf(
+    reportWith([CHILD_CALL], [], undefined, {
+      integrations: [
+        {
+          integration: "context",
+          presence: "present",
+          version: 1,
+          state: "supported",
+          counters: { calls: 2 },
+        },
+        {
+          integration: "rtk",
+          presence: "unknown",
+          version: 1,
+          state: "supported",
+          counters: { compactions: 4, truncated: false },
+        },
+        {
+          integration: "ponytail",
+          presence: "absent",
+          version: 1,
+          state: "unsupported",
+        },
+        { integration: "caveman", presence: "absent", state: "unavailable" },
+        { integration: "lens", presence: "present", state: "unavailable" },
+      ],
+    }),
+    "tree",
+  );
+}
+
+/**
+ * ADR 0009/0014's contradiction case: `ponytail` is absent from the current
+ * inventory while its persisted telemetry is supported with counters, and
+ * `caveman` is absent with no telemetry evidence at all. Detection and
+ * telemetry stay independent and neither row is dropped or reconciled.
+ */
+export function modelWithAbsentDetectedTelemetry(): CurrentTuiModel {
+  return modelOf(
+    reportWith([CHILD_CALL], [], undefined, {
+      integrations: [
+        {
+          integration: "ponytail",
+          presence: "absent",
+          version: 1,
+          state: "supported",
+          counters: { changes: 0 },
+        },
+        { integration: "caveman", presence: "absent", state: "unavailable" },
+      ],
+    }),
     "tree",
   );
 }

@@ -25,8 +25,11 @@ import {
   currentModelWithMixedToolUsage,
   currentModelWithPartialToolUsage,
   currentModelWithTools,
+  modelWithAbsentDetectedTelemetry,
   modelWithErrorAndThreeChildren,
   modelWithGenerationError,
+  modelWithIntegrations,
+  modelWithInventory,
   modelWithOrphanChild,
   modelWithOrphanChildAndParent,
   modelWithToolError,
@@ -192,6 +195,7 @@ type StubElement = HarnessNode & {
   textContent: string;
   hidden: boolean;
   value: string;
+  placeholder: string;
   dataset: Record<string, string>;
   style: Record<string, string>;
   attributes: Record<string, string>;
@@ -239,6 +243,7 @@ function stubElement(
   element.textContent = "";
   element.hidden = false;
   element.value = "";
+  element.placeholder = "";
   element.dataset = {};
   element.style = {};
   element.attributes = {};
@@ -310,6 +315,8 @@ type ClientInternals = {
     scope: string;
     tab: string;
     session: number | null;
+    envTab: string;
+    query: string;
   };
   rangeIntents: Record<string, unknown>;
   render(): void;
@@ -1634,4 +1641,226 @@ test("an agent row resolves its parent to one of the three verdicts", async () =
   assert.equal(inScope.includes("reviewer"), true);
   assert.equal(inScope.includes("Parent: outside selected scope"), false);
   assert.equal(inScope.includes("Parent: Unavailable"), false);
+});
+
+/** One rendered sub-navigation control, by the inventory it selects. */
+function envSubNav(view: StubElement, envTab: string): StubElement {
+  const button = view
+    .querySelectorAll("button")
+    .find((candidate) => candidate.dataset.envTab === envTab);
+  if (button === undefined) {
+    throw new Error(`no environment sub-navigation control for ${envTab}`);
+  }
+  return button;
+}
+
+/** One rendered table row, by a text its cells render exactly. */
+function rowOf(
+  view: StubElement,
+  texts: (node: StubElement) => string[],
+  label: string,
+): StubElement {
+  const row = view
+    .querySelectorAll("tr")
+    .find((candidate) => texts(candidate).includes(label));
+  if (row === undefined) throw new Error(`no rendered row named ${label}`);
+  return row;
+}
+
+test("inventory renders as environment with no activity claim", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithInventory(),
+    }),
+  );
+  const { client, element, texts } = harness;
+  client.state.tab = "environment";
+  client.render();
+  const environment = cardOf(element("view"), texts, "Environment");
+  const rendered = texts(environment);
+
+  // The design's three summary lines: availability, and for skills only the
+  // explicit folded invocation counters (commands have no counter evidence).
+  assert.equal(
+    has(
+      rendered,
+      "Commands Available: 119 · Observed invocations: Unavailable",
+    ),
+    true,
+  );
+  assert.equal(
+    has(rendered, "Skills Available: 42 · Explicit invocations observed: 3"),
+    true,
+  );
+  assert.equal(has(rendered, "Resources Sources: 11"), true);
+  // 119 is availability: no inventory count may be spoken of as a call or an
+  // invocation, and the one invocation figure is the explicit counter above.
+  assert.equal(/119 (used|invoked|calls)/.test(rendered.join(" ")), false);
+  assert.equal(rendered.join(" ").includes("119 calls"), false);
+  // Inventory is environment state, so the panel carries the explicit period
+  // label and never the selected range's dates.
+  assert.equal(has(rendered, "Current environment"), true);
+  assert.equal(has(rendered, "→"), false);
+
+  // The selected range filters session activity, not inventory: a range with no
+  // observations leaves every environment line exactly as it was.
+  client.rangeIntents.current = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  assert.equal(element("range-dates").textContent, "2020-01-01 → 2020-12-31");
+  assert.deepEqual(
+    texts(cardOf(element("view"), texts, "Environment")),
+    rendered,
+  );
+});
+
+test("the Environment sub-navigation swaps inventory tables and keeps search", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithInventory(),
+    }),
+  );
+  const { client, element, texts } = harness;
+  client.state.tab = "environment";
+  client.render();
+  const view = (): StubElement => element("view");
+  const rendered = (): string[] => texts(view());
+
+  // Commands is the default sub-section, and its inventory table keeps the
+  // table-local search control beside its rows.
+  assert.equal(client.state.envTab, "commands");
+  assert.equal(has(rendered(), "cmd-1"), true);
+  assert.equal(element("search").placeholder, "Filter this table…");
+
+  // A sub-navigation control swaps the table inside the same Environment panel.
+  harness.click(envSubNav(view(), "skills"));
+  assert.equal(client.state.envTab, "skills");
+  assert.equal(has(rendered(), "council-mode"), true);
+  assert.equal(has(rendered(), "cmd-1"), false);
+  assert.equal(element("search").placeholder, "Filter this table…");
+  // The skills inventory keeps its own explicit-invocation column, and the
+  // summary above it is unchanged by the sub-section.
+  assert.equal(has(rendered(), "Explicit invocations observed: 3"), true);
+  assert.equal(
+    has(
+      rendered(),
+      "Commands Available: 119 · Observed invocations: Unavailable",
+    ),
+    true,
+  );
+
+  harness.click(envSubNav(view(), "resources"));
+  assert.equal(client.state.envTab, "resources");
+  assert.equal(has(rendered(), "Sources"), true);
+  assert.equal(has(rendered(), "council-mode"), false);
+
+  // The retained search still narrows the visible inventory table.
+  client.state.query = "cmd-99";
+  harness.click(envSubNav(view(), "commands"));
+  assert.equal(has(rendered(), "cmd-99"), true);
+  assert.equal(has(rendered(), "cmd-1"), false);
+});
+
+test("integrations render four independent columns", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithIntegrations(),
+    }),
+  );
+  const { client, element, texts } = harness;
+  client.state.tab = "integrations";
+  client.render();
+  const view = element("view");
+  const rendered = texts(view);
+
+  for (const label of [
+    "Integration",
+    "Detected",
+    "Telemetry",
+    "Activity",
+    "Version",
+  ]) {
+    assert.equal(has(rendered, label), true, label);
+  }
+
+  // §8.3-1: unknown detection with supported telemetry keeps every column, and
+  // the counters are verbatim `key: value` pairs under the session-scope label.
+  const rtk = texts(rowOf(view, texts, "rtk"));
+  assert.equal(has(rtk, "Unknown"), true);
+  assert.equal(has(rtk, "Supported"), true);
+  assert.equal(
+    has(rtk, "Session total · compactions: 4 · truncated: false"),
+    true,
+  );
+  assert.equal(has(rtk, "1"), true);
+
+  // A definite detection keeps its own counters under the same session label,
+  // which states the counters are not a range figure.
+  const context = texts(rowOf(view, texts, "context"));
+  assert.equal(has(context, "Present"), true);
+  assert.equal(has(context, "Session total · calls: 2"), true);
+
+  // §8.3-4: unsupported telemetry states its closed-vocabulary reason, and a
+  // row with no counter object says Unavailable for activity — never zero.
+  const ponytail = texts(rowOf(view, texts, "ponytail"));
+  assert.equal(has(ponytail, "Unsupported"), true);
+  assert.equal(has(ponytail, "no compatible telemetry evidence"), true);
+  // No counter object was persisted, so the activity column is Unavailable and
+  // the session-scope label is absent rather than rendered over an empty set.
+  assert.equal(has(ponytail, "Session total"), false);
+  assert.equal(has(ponytail, "Unavailable"), true);
+
+  // An unavailable row with no counters says Unavailable for telemetry,
+  // activity and version: never a fabricated zero.
+  const lens = texts(rowOf(view, texts, "lens"));
+  assert.equal(has(lens, "no telemetry observed in this session"), true);
+  assert.equal(has(lens, "Session total"), false);
+  assert.equal(lens.filter((value) => value === "Unavailable").length, 3);
+  assert.equal(/\b0\b/.test(lens.join(" ")), false);
+});
+
+test("an absent producer with persisted telemetry stays a valid row", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithAbsentDetectedTelemetry(),
+    }),
+  );
+  const { client, element, texts } = harness;
+  client.state.tab = "integrations";
+  client.render();
+  const view = element("view");
+
+  // Detection and telemetry are independent (ADR 0009/0014): the persisted
+  // counters still show, the version stays its validated integer, and the
+  // absence is a note that never changes the telemetry value.
+  const ponytail = texts(rowOf(view, texts, "ponytail"));
+  assert.equal(has(ponytail, "Not observed"), true);
+  assert.equal(has(ponytail, "Supported"), true);
+  assert.equal(
+    has(ponytail, "producer not detected in current inventory"),
+    true,
+  );
+  assert.equal(has(ponytail, "Session total · changes: 0"), true);
+  assert.equal(has(ponytail, "1"), true);
+
+  // The same non-state note renders on a row with no telemetry evidence at all,
+  // beside that row's own closed-vocabulary reason.
+  const caveman = texts(rowOf(view, texts, "caveman"));
+  assert.equal(
+    has(caveman, "producer not detected in current inventory"),
+    true,
+  );
+  assert.equal(has(caveman, "no telemetry observed in this session"), true);
+  assert.equal(has(caveman, "Unavailable"), true);
+
+  // Nothing is reconciled: both verdicts stand side by side and no copy claims
+  // the contradiction was resolved.
+  assert.equal(has(texts(view), "reconcil"), false);
 });

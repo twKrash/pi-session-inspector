@@ -29,8 +29,11 @@ import {
   embedOf,
   hostileToolArgumentEntries,
   modelWithActivityAndRuns,
+  modelWithAbsentDetectedTelemetry,
   modelWithErrorAndThreeChildren,
   modelWithGenerationError,
+  modelWithIntegrations,
+  modelWithInventory,
   modelWithOrphanChild,
   modelWithOrphanChildAndParent,
   modelWithStatuses,
@@ -948,4 +951,183 @@ test("related child runs are one-to-many and never causal", async () => {
   // Explicit refusal: no copy in the document may attribute the failure to a
   // child run.
   assert.equal(/caused by|cause of|blame/i.test(html), false);
+});
+
+test("inventory projects as environment state, never as activity", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithInventory(),
+    }),
+  );
+  const report = (
+    embedOf(html).current.active as {
+      report: {
+        commands: { state: string; count: number | null; items: unknown[] };
+        skills: { state: string; invocationCount: number | null };
+        resources: { state: string; items: unknown[] };
+      };
+    }
+  ).report;
+
+  assert.deepEqual(
+    [
+      report.commands.state,
+      report.commands.count,
+      report.commands.items.length,
+      report.skills.state,
+      report.skills.invocationCount,
+      report.resources.state,
+      report.resources.items.length,
+    ],
+    ["supported", 119, 119, "supported", 3, "supported", 11],
+  );
+
+  // The browser groups the inventory under one Environment entry: commands and
+  // skills are no longer primary tabs, and every environment view stays out of
+  // the range-filtered tab strip.
+  assert.equal(
+    html.includes(
+      'const TABS=["overview","models","tools","environment","agents","integrations","errors","ledger"]',
+    ),
+    true,
+  );
+  for (const fragment of [
+    'state.tab==="environment"',
+    'tr("env.available"',
+    'tr("env.observed"',
+    'tr("env.invocationsObserved"',
+    'tr("env.invocationsUnavailable"',
+    'tr("env.sources"',
+    'tr("env.note")',
+  ]) {
+    assert.equal(html.includes(fragment), true, fragment);
+  }
+
+  // The closed copy the panel renders: availability and the explicit folded
+  // counters, with the period label that marks inventory as environment state.
+  assert.equal(ENGLISH_CATALOG["env.available"], "Available: {count}");
+  assert.equal(
+    ENGLISH_CATALOG["env.observed"],
+    "Observed invocations: {value}",
+  );
+  assert.equal(
+    ENGLISH_CATALOG["env.invocationsObserved"],
+    "Explicit invocations observed: {count}",
+  );
+  assert.equal(
+    ENGLISH_CATALOG["env.invocationsUnavailable"],
+    "Explicit invocations observed: Unavailable",
+  );
+  assert.equal(ENGLISH_CATALOG["env.sources"], "Sources: {count}");
+  assert.match(ENGLISH_CATALOG["env.note"], /^Current environment/);
+});
+
+test("detection and telemetry stay independent in the integration projection", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithAbsentDetectedTelemetry(),
+    }),
+  );
+  const integrations = (
+    embedOf(html).current.active as {
+      report: {
+        integrations: {
+          integration: string;
+          presence: string;
+          state: string;
+          version: number | null;
+          counters: string[];
+        }[];
+      };
+    }
+  ).report.integrations;
+
+  // A row whose presence is absent and whose telemetry is supported is carried
+  // through unchanged: neither column is derived from the other, and the row is
+  // never dropped for the contradiction.
+  assert.deepEqual(
+    integrations.map((row) => [
+      row.integration,
+      row.presence,
+      row.state,
+      row.version,
+    ]),
+    [
+      ["ponytail", "absent", "supported", 1],
+      ["caveman", "absent", "unavailable", null],
+    ],
+  );
+  assert.deepEqual(integrations[0]?.counters, ["changes: 0"]);
+
+  // The same four columns over a definite, an unknown and an unsupported row:
+  // every value is the row's own, and none is derived from another column.
+  const columns = (
+    embedOf(
+      renderInspectorBundle(
+        await loadInspectorBundle({
+          ...bundleInput,
+          loadCurrent: async () => modelWithIntegrations(),
+        }),
+      ),
+    ).current.active as {
+      report: {
+        integrations: {
+          integration: string;
+          presence: string;
+          state: string;
+          version: number | null;
+        }[];
+      };
+    }
+  ).report.integrations;
+  assert.deepEqual(
+    columns.map((row) => [
+      row.integration,
+      row.presence,
+      row.state,
+      row.version,
+    ]),
+    [
+      ["context", "present", "supported", 1],
+      ["rtk", "unknown", "supported", 1],
+      ["ponytail", "absent", "unsupported", 1],
+      ["caveman", "absent", "unavailable", null],
+      ["lens", "present", "unavailable", null],
+    ],
+  );
+
+  for (const fragment of [
+    'tr("integration.detected")',
+    'tr("integration.telemetry")',
+    'tr("integration.activity")',
+    'tr("integration.version")',
+    'tr("integration.sessionTotal")',
+    'tr("integration.reasonUnsupported")',
+    'tr("integration.reasonMissing")',
+    'tr("integration.noteNotDetected")',
+  ]) {
+    assert.equal(html.includes(fragment), true, fragment);
+  }
+
+  // The closed telemetry vocabulary and the non-state note, verbatim.
+  assert.equal(
+    ENGLISH_CATALOG["integration.reasonUnsupported"],
+    "no compatible telemetry evidence",
+  );
+  assert.equal(
+    ENGLISH_CATALOG["integration.reasonMissing"],
+    "no telemetry observed in this session",
+  );
+  assert.equal(
+    ENGLISH_CATALOG["integration.noteNotDetected"],
+    "producer not detected in current inventory",
+  );
+  assert.equal(ENGLISH_CATALOG["integration.sessionTotal"], "Session total");
+  assert.equal(ENGLISH_CATALOG["integration.detected"], "Detected");
+  assert.equal(ENGLISH_CATALOG["integration.telemetry"], "Telemetry");
+  assert.equal(ENGLISH_CATALOG["integration.activity"], "Activity");
+  assert.equal(ENGLISH_CATALOG["integration.version"], "Version");
+  assert.equal(ENGLISH_CATALOG["tab.environment"], "Environment");
 });

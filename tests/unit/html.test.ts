@@ -780,9 +780,8 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
   for (const tab of [
     "models",
     "tools",
-    "commands",
+    "environment",
     "agents",
-    "skills",
     "integrations",
     "errors",
     "ledger",

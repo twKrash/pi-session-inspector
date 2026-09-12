@@ -64,6 +64,10 @@ export const ENGLISH_CATALOG = {
   "tab.overview": "Overview",
   "tab.models": "Models",
   "tab.tools": "Tools",
+  // The browser's inventory grouping (design §9.3): Commands, Skills and
+  // Resources are sub-navigation inside this one environment panel, never
+  // primary tabs beside Overview/Tools/Errors.
+  "tab.environment": "Environment",
   "tab.commands": "Commands",
   "tab.agents": "Agents",
   "tab.skills": "Skills",
@@ -206,6 +210,21 @@ export const ENGLISH_CATALOG = {
   "resources.note":
     "Loaded or available resources by source. Counts are availability, never activity.",
   "resources.unavailable": "No resource-source inventory recorded.",
+  // The Environment summary (design §8.1): availability is inventory state and,
+  // for skills only, the explicit folded counters are the invocation figure.
+  // Commands have no counter evidence, so their observed side is Unavailable.
+  "env.commands": "Commands",
+  "env.skills": "Skills",
+  "env.resources": "Resources",
+  "env.available": "Available: {count}",
+  "env.observed": "Observed invocations: {value}",
+  "env.invocationsObserved": "Explicit invocations observed: {count}",
+  "env.invocationsUnavailable": "Explicit invocations observed: Unavailable",
+  "env.sources": "Sources: {count}",
+  // Inventory is the current environment, not session activity, so the panel
+  // carries this period label instead of any range label (§5.2).
+  "env.note":
+    "Current environment · Inventory is availability, never activity, and is not filtered by the selected range.",
   "table.error": "Error",
   "table.name": "Name",
   "table.invocations": "Invocations",
@@ -222,6 +241,18 @@ export const ENGLISH_CATALOG = {
   "presence.absent": "Not observed",
   "presence.unknown": "Unknown",
   "integrations.note": "Evidence availability is not installation status.",
+  // The four independent integration columns (design §8.2). Detection is
+  // inventory-derived, telemetry is evidence-derived, and the two are never
+  // reconciled; the reason strings are the closed telemetry vocabulary and the
+  // note is a non-state remark that never changes the telemetry value.
+  "integration.detected": "Detected",
+  "integration.telemetry": "Telemetry",
+  "integration.activity": "Activity",
+  "integration.version": "Version",
+  "integration.sessionTotal": "Session total",
+  "integration.reasonUnsupported": "no compatible telemetry evidence",
+  "integration.reasonMissing": "no telemetry observed in this session",
+  "integration.noteNotDetected": "producer not detected in current inventory",
   "errors.note": "Bounded classifications from persisted stop and error state.",
   "errors.none": "No persisted error records. An observed zero stays zero.",
   // The Errors row leads with what failed: the joined tool's name when the
@@ -1805,7 +1836,7 @@ const BUNDLE_SCRIPT = String.raw`
 const data=JSON.parse(document.getElementById("report-data").textContent), t=JSON.parse(document.getElementById("catalog-data").textContent);
 // SVG namespace identifier only; it is never fetched, so the report stays network-free.
 const SVG_NS="http:"+"//www.w3.org/2000/svg";
-const TABS=["overview","models","tools","commands","agents","skills","integrations","errors","ledger"];
+const TABS=["overview","models","tools","environment","agents","integrations","errors","ledger"];
 const CURRENT_METRICS=["sessions","cost","tokens","generations","tools"];
 const GLOBAL_METRICS=["sessions","cost","tokens"];
 const CHART_LABELS={sessions:"chart.sessions",cost:"chart.cost",tokens:"chart.tokens",generations:"chart.generations",tools:"chart.tools"};
@@ -1821,7 +1852,7 @@ const confidenceTone=value=>value==="native"||value==="live"||value==="cooperati
 const orUnavailable=value=>(value===null||value===undefined)?tr("evidence.unavailable"):text(value);
 const numberOrUnavailable=value=>(value===null||value===undefined)?tr("evidence.unavailable"):number(value);
 const presenceBadge=value=>badge(tr(PRESENCE_LABELS[value]||"presence.unknown"),value==="absent"?"warn":"neutral");
-const state={section:"current",scope:data.initialScope,tab:"overview",session:null,query:"",sort:"default",metric:CURRENT_METRICS[0],resetScroll:false};
+const state={section:"current",scope:data.initialScope,tab:"overview",envTab:"commands",session:null,query:"",sort:"default",metric:CURRENT_METRICS[0],resetScroll:false};
 // One unresolved range intent per view identity: "current" is shared by both
 // scopes, history is split between its aggregate and each session.
 const rangeIntents={};
@@ -1923,9 +1954,35 @@ function agentSummary(rows){const total=rows.length,withUsage=rows.filter(run=>!
 // Child runs first (summary then table), then the separate native agent tool
 // activity card: how often the launching tool ran is never a child-run count.
 function agentsPanel(view,title){const wrap=el("div",""),activity=view.agentActivity;if(view.agentEvidence==="supported"){const filtered=filteredView(view),rows=filtered?filtered.agents:view.agents;if(rows.length===0&&filtered&&view.agents.length>0)wrap.append(emptyCard(title,agentRangeNote(view),"evidence.unavailable"));else{const section=table(title,tr("agents.note")+(filtered?"":ALL_DATES),[tr("table.role"),tr("table.status"),tr("table.model"),tr("table.tokens"),tr("table.cost"),tr("table.artifacts"),tr("table.parent")],agentRunCells(rows,sameSessionAgentIds(view)),agentSummary(rows));wrap.append(section);}}else wrap.append(unavailableSection(title,tr("agents.none")));if(activity&&activity.state==="supported"){const section=card(tr("panel.agentActivity"),tr("agents.activity.note")+ALL_DATES,badge(tr("evidence."+activity.state),confidenceTone(activity.state))),metrics=el("div","metrics");metrics.append(metric(tr("table.calls"),number(activity.calls),tr("metric.tools.note"),[[tr("agents.succeeded"),number(activity.succeeded)],[tr("agents.failed"),number(activity.failed)],[tr("agents.interrupted"),number(activity.interrupted)]]));section.append(metrics);if(activity.tools&&activity.tools.length>0)simpleTable(section,[tr("table.tool"),tr("table.calls")],activity.tools.map(row=>[row.name,number(row.calls)]));wrap.append(section);}return wrap;}
+function commandsPanel(view,title){const commands=view.commands;if(!commands||commands.items.length===0)return emptyCard(title,commands&&commands.count!==null?tr("commands.count",{count:number(commands.count)}):tr("unavailable.commands"),"evidence.unavailable");return table(title,tr("commands.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.description")],commands.items.map(row=>[row.name,orUnavailable(row.sourceLabel||row.source||null),row.scope,row.origin,orUnavailable(row.description)]));}
 function skillsPanel(view,title){const skills=view.skills;if(!skills)return unavailableSection(title,tr("unavailable.skills"));const section=skills.items.length===0?emptyCard(title,tr("skills.empty"),"evidence.unavailable"):table(title,tr("skills.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.invocations")],skills.items.map(row=>[row.name,orUnavailable(row.sourceLabel),orUnavailable(row.scope),orUnavailable(row.origin),row.explicitInvocations===undefined?tr("evidence.unavailable"):number(row.explicitInvocations)]));if(skills.otherInvocations!==null&&skills.otherInvocations!==undefined&&skills.otherInvocations>0)section.append(el("div","footnote",tr("skills.otherInvocations",{count:number(skills.otherInvocations)})));return section;}
 function resourcesCard(resources){if(!resources||resources.state!=="supported"||resources.items.length===0)return unavailableSection(tr("panel.resources"),tr("resources.unavailable"));return simpleTable(card(tr("panel.resources"),tr("resources.note")),[tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.commands"),tr("table.skills"),tr("table.prompts"),tr("table.tools")],resources.items.map(row=>[row.sourceLabel,row.scope,row.origin,number(row.commands),number(row.skills),number(row.prompts),number(row.tools)]));}
-function integrationsPanel(view,title){const wrap=el("div",""),integrations=view.integrations||[];if(integrations.length===0)wrap.append(unavailableSection(title,tr("unavailable.integrations")));else wrap.append(table(title,tr("integrations.note"),[tr("table.integration"),tr("table.presence"),tr("table.evidence"),tr("table.version"),tr("table.counters")],integrations.map(row=>[row.integration,presenceBadge(row.presence),badge(tr("evidence."+row.state),confidenceTone(row.state)),row.version===null?tr("evidence.unavailable"):String(row.version),row.counters.join(" · ")])));wrap.append(resourcesCard(view.resources));return wrap;}
+// The availability count of one inventory (design §8.1): its own persisted count
+// when the DTO carries one, else its rows. An unsupported inventory with neither
+// is Unavailable, and a folded counter that outlived its inventory is never read
+// as availability.
+function inventoryCount(inventory,items){if(!inventory)return null;if(inventory.count!==null&&inventory.count!==undefined)return inventory.count;if(inventory.state!=="supported")return null;return (items||[]).length;}
+function inventoryLine(label,inventory,items,observed){const count=inventoryCount(inventory,items);return el("div","metric",label+" "+tr("env.available",{count:count===null?tr("evidence.unavailable"):number(count)})+" · "+observed);}
+// The environment summary: availability is inventory state and, for skills only,
+// the explicit folded invocation counters are the invocation figure. No inventory
+// count is ever presented as activity, and no line is range-filtered or labelled
+// with the selected range.
+function environmentSummary(view){const lines=el("div","metrics"),commands=view.commands,skills=view.skills,resources=view.resources;lines.append(inventoryLine(tr("env.commands"),commands,commands&&commands.items,tr("env.observed",{value:tr("evidence.unavailable")})));const observed=skills&&skills.invocationState==="supported"&&skills.invocationCount!==null&&skills.invocationCount!==undefined?tr("env.invocationsObserved",{count:number(skills.invocationCount)}):tr("env.invocationsUnavailable");lines.append(inventoryLine(tr("env.skills"),skills,skills&&skills.items,observed));const sources=inventoryCount(resources,resources&&resources.items);lines.append(el("div","metric",tr("env.resources")+" "+tr("env.sources",{count:sources===null?tr("evidence.unavailable"):number(sources)})));return lines;}
+// One Environment panel: the summary lines stay visible while the sub-navigation
+// selects which inventory table is shown, so the inventory is secondary to the
+// diagnostic flow and never a primary tab (§8.1).
+function environmentPanel(view,title){const wrap=el("div",""),summary=card(title,tr("env.note")),subnav=el("div","segments");summary.append(environmentSummary(view));subnav.setAttribute("aria-label",tr("tab.environment"));[["commands",tr("env.commands")],["skills",tr("env.skills")],["resources",tr("env.resources")]].forEach(item=>{const button=el("button","",item[1]);button.dataset.envTab=item[0];button.setAttribute("aria-pressed",String(state.envTab===item[0]));subnav.append(button);});wrap.append(summary,subnav);wrap.append(state.envTab==="skills"?skillsPanel(view,tr("env.skills")):state.envTab==="resources"?resourcesCard(view.resources):commandsPanel(view,tr("env.commands")));return wrap;}
+// Telemetry is this row's evidence verdict plus its closed-vocabulary reason when
+// the state is not supported. The detection note is a non-state remark: it never
+// changes the telemetry value, and an absent producer with persisted telemetry
+// stays a valid row (ADR 0009/0014).
+function integrationTelemetry(row){const cell=el("span",""),reason=row.state==="unsupported"?tr("integration.reasonUnsupported"):row.state==="unavailable"?tr("integration.reasonMissing"):null;cell.append(badge(tr("evidence."+row.state),confidenceTone(row.state)));if(reason)cell.append(el("small","",reason));if(row.presence==="absent")cell.append(el("small","",tr("integration.noteNotDetected")));return cell;}
+// Counters are the session-scope activity value, so the cell states the period;
+// an absent counter object is Unavailable, never a fabricated zero.
+function integrationActivity(row){return row.counters.length===0?tr("evidence.unavailable"):tr("integration.sessionTotal")+" · "+row.counters.join(" · ");}
+function integrationVersion(row){return row.version===null?tr("evidence.unavailable"):String(row.version);}
+function integrationsTable(view){return table(tr("panel.integrations"),tr("integrations.note"),[tr("table.integration"),tr("integration.detected"),tr("integration.telemetry"),tr("integration.activity"),tr("integration.version")],(view.integrations||[]).map(row=>[row.integration,presenceBadge(row.presence),integrationTelemetry(row),integrationActivity(row),integrationVersion(row)]));}
+function integrationsPanel(view,title){const integrations=view.integrations||[];return integrations.length===0?unavailableSection(title,tr("unavailable.integrations")):integrationsTable(view);}
 // The Models tab reads the view's own per-date model rows through the one
 // filter, so a range change genuinely changes model figures (design §5.2). A
 // current view and a history session detail both thread their projection's dated
@@ -1986,7 +2043,7 @@ function errorDetails(row,runs){const details=document.createElement("details"),
 // candidate keeps its own role even when its run falls outside the range.
 function runRowsById(view){const runs={};(view.agents||[]).forEach(run=>{runs[run.id]=run;});return runs;}
 function errorsPanel(view,title,filtered){const errors=filtered?filtered.errors:view.errors;if(errors.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("errors.none"),"evidence.native");const runs=runRowsById(view);return table(title,tr("errors.note")+(filtered?"":ALL_DATES),[tr("table.error"),tr("table.kind"),tr("table.timestamp"),tr("table.message"),tr("table.confidence")],errors.map(row=>[errorDetails(row,runs),row.kind,row.timestamp,errorMessageText(row),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}
-function detail(view,title,source){if(state.tab==="models")return modelsPanel(view,title,source);if(state.tab==="tools"){const filtered=filteredView(view);return toolsPanel(view,title,filtered,filtered||view);}if(state.tab==="commands"){const commands=view.commands;if(!commands||commands.items.length===0)return emptyCard(title,commands&&commands.count!==null?tr("commands.count",{count:number(commands.count)}):tr("unavailable.commands"),"evidence.unavailable");return table(title,tr("commands.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.description")],commands.items.map(row=>[row.name,orUnavailable(row.sourceLabel||row.source||null),row.scope,row.origin,orUnavailable(row.description)]));}if(state.tab==="agents")return agentsPanel(view,title);if(state.tab==="skills")return skillsPanel(view,title);if(state.tab==="integrations")return integrationsPanel(view,title);if(state.tab==="errors"){const filtered=filteredView(view);return errorsPanel(view,title,filtered);}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}return unavailableSection(title,tr("unavailable.copy"));}
+function detail(view,title,source){if(state.tab==="models")return modelsPanel(view,title,source);if(state.tab==="tools"){const filtered=filteredView(view);return toolsPanel(view,title,filtered,filtered||view);}if(state.tab==="environment")return environmentPanel(view,title);if(state.tab==="agents")return agentsPanel(view,title);if(state.tab==="integrations")return integrationsPanel(view,title);if(state.tab==="errors"){const filtered=filteredView(view);return errorsPanel(view,title,filtered);}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}return unavailableSection(title,tr("unavailable.copy"));}
 function sessionCell(entry){const cell=document.createElement("div");cell.append(el("span","mono",entry.sessionId));cell.append(el("small","",entry.firstDate?(entry.firstDate+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")):tr("evidence.unavailable")));return cell;}
 function openButton(index){const button=el("button","",tr("table.open"));button.dataset.session=String(index);button.setAttribute("aria-label",tr("table.open")+" "+historySessions()[index].sessionId);return button;}
 function historyRowCells(item,group){const entry=item.entry,verdict=item.verdict,partial=group==="member"&&verdict.partial,member=group==="member";return [sessionCell(entry),orUnavailable(entry.durationLabel),member?(partial?knownValue(number(verdict.totalTokens),"metric.knownTokens"):number(verdict.totalTokens)):tr("evidence.unavailable"),entry.generationCount===null?tr("evidence.unavailable"):number(entry.generationCount),entry.agentCount===null?tr("evidence.unavailable"):number(entry.agentCount),entry.status?badge(tr(entry.status.key),entry.status.tone):tr("evidence.unavailable"),member?(partial?knownValue(money(verdict.cost),"metric.knownCost"):money(verdict.cost)):tr("evidence.unavailable"),entry.view?openButton(item.index):""];}
@@ -2006,7 +2063,7 @@ const tabsNode=q("tabs");TABS.forEach(tab=>{const button=el("button","",tr("tab.
 scopeButtons.forEach(button=>button.addEventListener("click",()=>{if(button.disabled)return;state.scope=button.dataset.scope;state.resetScroll=true;render();}));
 document.addEventListener("input",event=>{if(event.target.id!=="search")return;state.query=event.target.value;render();});
 document.addEventListener("change",event=>{if(event.target.id==="sort"){state.sort=event.target.value;render();}else if(event.target.id==="chart-metric"){state.metric=event.target.value;render();const select=q("chart-metric");if(select)select.focus();}});
-document.addEventListener("click",event=>{const button=event.target&&event.target.closest?event.target.closest("button"):null;if(!button)return;if(button.dataset.back!==undefined){state.session=null;state.tab="overview";state.resetScroll=true;render();}else if(button.dataset.session!==undefined){state.session=Number(button.dataset.session);state.tab="overview";state.resetScroll=true;render();}else if(button.dataset.toolFilter!==undefined){toolFilters[viewIdentity()]=button.dataset.toolFilter;render();}else if(button.dataset.clearFilter!==undefined){toolFilters[viewIdentity()]=null;render();}});
+document.addEventListener("click",event=>{const button=event.target&&event.target.closest?event.target.closest("button"):null;if(!button)return;if(button.dataset.back!==undefined){state.session=null;state.tab="overview";state.resetScroll=true;render();}else if(button.dataset.session!==undefined){state.session=Number(button.dataset.session);state.tab="overview";state.resetScroll=true;render();}else if(button.dataset.toolFilter!==undefined){toolFilters[viewIdentity()]=button.dataset.toolFilter;render();}else if(button.dataset.clearFilter!==undefined){toolFilters[viewIdentity()]=null;render();}else if(button.dataset.envTab!==undefined){state.envTab=button.dataset.envTab;render();}});
 [].slice.call(document.querySelectorAll("[data-days]")).forEach(button=>button.addEventListener("click",()=>{rangeIntents[viewIdentity()]={kind:"preset",preset:Number(button.dataset.days)};render();}));
 q("custom-range").addEventListener("click",()=>{const range=activeRange();q("date-from").value=range?range.from:"";q("date-to").value=range?range.to:"";q("date-error").textContent="";q("date-dialog").showModal();});
 q("date-cancel").addEventListener("click",()=>q("date-dialog").close());
