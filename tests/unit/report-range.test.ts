@@ -22,6 +22,9 @@ import {
 } from "../../src/ui/range.ts";
 import {
   bundleInput,
+  currentModelWithMixedToolUsage,
+  currentModelWithPartialToolUsage,
+  currentModelWithTools,
   modelWithOrphanChild,
   modelWithOrphanChildAndParent,
 } from "../helpers/bundle-scenarios.ts";
@@ -197,6 +200,7 @@ type StubElement = HarnessNode & {
   removeAttribute(name: string): void;
   querySelector(selector: string): StubElement | null;
   querySelectorAll(selector: string): StubElement[];
+  closest(selector: string): StubElement | null;
   addEventListener(type: string, listener: (event: unknown) => void): void;
   classList: { add(value: string): void; toggle(value: string): boolean };
   focus(): void;
@@ -273,6 +277,17 @@ function stubElement(
     }
     return found;
   };
+  element.closest = (selector) => {
+    let node: StubElement | null = element;
+    while (node !== null) {
+      const matches = selector.startsWith(".")
+        ? node.className.split(" ").includes(selector.slice(1))
+        : node.tagName === selector;
+      if (matches) return node;
+      node = node.parentNode;
+    }
+    return null;
+  };
   element.addEventListener = (type, listener) => {
     if (element.listeners[type] === undefined) element.listeners[type] = [];
     element.listeners[type].push(listener);
@@ -305,6 +320,7 @@ function runClient(bundle: InspectorBundle): {
   client: ClientInternals;
   preset(days: string): void;
   submit(): void;
+  click(node: StubElement): void;
   element(id: string): StubElement;
   texts(node: StubElement): string[];
 } {
@@ -419,6 +435,14 @@ function runClient(bundle: InspectorBundle): {
         .submit ?? []) {
         listener({ preventDefault: () => {} });
       }
+    },
+    // The client delegates every button to one document-level click handler, so
+    // a rendered control is exercised through that handler, not by calling the
+    // state logic the handler would have reached.
+    click: (node) => {
+      const listener = documentStub.listeners.click;
+      if (listener === undefined) throw new Error("no document click handler");
+      listener({ target: node });
     },
     element: (id) => {
       const found = documentStub.getElementById(id);
@@ -877,6 +901,23 @@ function has(values: string[], fragment: string): boolean {
   return values.some((value) => value.includes(fragment));
 }
 
+/**
+ * One rendered card, found by the title its heading renders. The tools panel is
+ * two cards over one projection, so an assertion about the summary must not
+ * read the calls timeline's texts and vice versa.
+ */
+function cardOf(
+  view: StubElement,
+  texts: (node: StubElement) => string[],
+  title: string,
+): StubElement {
+  const found = view
+    .querySelectorAll("section")
+    .find((node) => has(texts(node), title));
+  if (found === undefined) throw new Error(`no rendered card titled ${title}`);
+  return found;
+}
+
 /** The cells of one model row, counted from its model name. */
 function modelCells(values: string[], model: string, count = 3): string[] {
   const at = values.indexOf(model);
@@ -1112,6 +1153,129 @@ test("the Tools and Agents tabs filter their canonical rows and drop the label i
   );
   assert.equal(
     unknown.includes("No daily observations match the selected range."),
+    false,
+  );
+});
+
+test("a Tools summary row narrows the calls timeline and the clear control restores it", () => {
+  const harness = runClient(bundleFixture());
+  const { client, element, texts } = harness;
+  client.state.section = "current";
+  client.state.tab = "tools";
+  client.render();
+
+  // Both persisted calls are inside the default range: the timeline lists the
+  // whole call set before any filter is chosen.
+  const calls = (): StubElement =>
+    cardOf(element("view"), texts, "Calls timeline");
+  assert.equal(has(texts(calls()), "read"), true);
+  assert.equal(has(texts(calls()), "bash"), true);
+
+  // The summary row's own name is the anchor: selecting `bash` narrows the
+  // timeline to that tool's calls and states which filter is active.
+  const anchor = cardOf(element("view"), texts, "Tools summary")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.toolFilter === "bash");
+  if (anchor === undefined) throw new Error("no bash filter anchor");
+  harness.click(anchor);
+  const filtered = texts(calls());
+  assert.equal(has(filtered, "bash"), true);
+  assert.equal(has(filtered, "read"), false);
+  assert.equal(has(filtered, "Filtered by bash"), true);
+
+  // The clear control returns this view's whole call list, so the filter is a
+  // state a reader can always leave.
+  const clear = calls()
+    .querySelectorAll("button")
+    .find((button) => button.dataset.clearFilter !== undefined);
+  if (clear === undefined) throw new Error("no clear-filter control");
+  harness.click(clear);
+  const restored = texts(calls());
+  assert.equal(has(restored, "read"), true);
+  assert.equal(has(restored, "bash"), true);
+  assert.equal(has(restored, "Filtered by"), false);
+});
+
+test("the rendered tools panel states the partial row's own usage sentence", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithPartialToolUsage(),
+    }),
+  );
+  harness.client.state.tab = "tools";
+  harness.client.render();
+
+  // The sentence sits on the row whose calls were partial, in the cell carrying
+  // the Known value — not only in the panel's own metric note.
+  const summary = cardOf(
+    harness.element("view"),
+    harness.texts,
+    "Tools summary",
+  );
+  const tokensCell = summary
+    .querySelectorAll("td")
+    .find((cell) => has(harness.texts(cell), "180"));
+  if (tokensCell === undefined) throw new Error("no rendered tokens cell");
+  assert.equal(
+    has(harness.texts(tokensCell), "1 of 3 calls reported usage"),
+    true,
+  );
+  assert.equal(has(harness.texts(tokensCell), "Known tokens"), true);
+});
+
+test("a partial tool row states its own fraction, never the panel's aggregate", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithMixedToolUsage(),
+    }),
+  );
+  harness.client.state.tab = "tools";
+  harness.client.render();
+  const summary = cardOf(
+    harness.element("view"),
+    harness.texts,
+    "Tools summary",
+  );
+  // `read` reported usage once in three calls while `bash` reported it in its
+  // only call, so the panel groups four calls with two reporting: the panel's
+  // sentence cannot be read as the partial row's.
+  assert.equal(
+    has(harness.texts(summary), "2 of 4 calls reported usage"),
+    true,
+  );
+  const readCell = summary
+    .querySelectorAll("td")
+    .find((cell) => has(harness.texts(cell), "180"));
+  if (readCell === undefined) throw new Error("no rendered read tokens cell");
+  assert.equal(
+    has(harness.texts(readCell), "1 of 3 calls reported usage"),
+    true,
+  );
+});
+
+test("the tools panel states no usage fraction while no row is partial", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithTools(),
+    }),
+  );
+  harness.client.state.tab = "tools";
+  harness.client.render();
+  const summary = cardOf(
+    harness.element("view"),
+    harness.texts,
+    "Tools summary",
+  );
+  const rendered = harness.texts(summary);
+  // `read`'s only call reported usage while `bash` reported none at all, so no
+  // row is partial: the unknown side is Unavailable and the Known totals carry
+  // no fraction sentence anywhere in the card.
+  assert.equal(has(harness.texts(summary), "bash"), true);
+  assert.equal(
+    /[0-9]+ of [0-9]+ calls reported usage/.test(rendered.join(" ")),
     false,
   );
 });

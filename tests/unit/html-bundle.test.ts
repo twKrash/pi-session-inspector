@@ -9,19 +9,18 @@ import {
 } from "../../src/ui/bundle.ts";
 import {
   aggregateUsageLabels,
-  ENGLISH_CATALOG,
   inlineModuleSource,
   renderInspectorBundle,
   toolCalls,
   toolDuration,
   toolSummary,
   type ToolCallRow,
-  type ToolSummaryRow,
 } from "../../src/ui/html.ts";
 import {
   bundleInput,
   currentModelWithAgents,
   currentModelWithHostileToolArguments,
+  currentModelWithOutOfOrderToolCalls,
   currentModelWithPartialToolUsage,
   currentModelWithTools,
   embedOf,
@@ -588,12 +587,29 @@ function toolPayload(html: string): ToolCallRow[] {
     .tools;
 }
 
-/** The catalog sentence the browser renders for one summary row. */
-function usageFraction(row: ToolSummaryRow): string {
-  return ENGLISH_CATALOG["tools.usageFraction"]
-    .replace("{withUsage}", String(row.withUsage))
-    .replace("{total}", String(row.calls));
-}
+test("the summary's last used instant is the newest call, not the last row", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithOutOfOrderToolCalls(),
+    }),
+  );
+  const rows = toolPayload(html);
+  // The projection keeps entry order and this session persisted the name's older
+  // call after its newer one, so "the last row wins" would report the older.
+  assert.deepEqual(
+    rows.map((row) => row.timestamp),
+    ["2026-02-01T10:00:09.000Z", "2026-02-01T10:00:00.000Z"],
+  );
+  assert.deepEqual(
+    toolSummary({ tools: rows }).map((row) => [
+      row.name,
+      row.calls,
+      row.lastUsed,
+    ]),
+    [["read", 2, "2026-02-01T10:00:09.000Z"]],
+  );
+});
 
 test("tools summary aggregates and the calls view keeps real timestamps", async () => {
   const html = renderInspectorBundle(
@@ -697,7 +713,9 @@ test("partial tool usage is stated, never extrapolated", async () => {
     ],
     ["read", 3, 2, 1, 0, 180, 0.04, 1],
   );
-  assert.equal(usageFraction(row), "1 of 3 calls reported usage");
+  // The row's own partial sentence is asserted as rendered markup through the
+  // client harness in `tests/unit/report-range.test.ts`: a sentence computed
+  // here from the catalog template cannot fail for a client that renders none.
   assert.match(html, /Known tokens/);
   // The browser states that sentence from the catalog key over the rows it
   // renders, and a call set whose calls reported no usage is Unavailable.

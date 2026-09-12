@@ -249,6 +249,76 @@ export function currentModelWithPartialToolUsage(): CurrentTuiModel {
 }
 
 /**
+ * Two tool names where only one is partial: `read` reported usage in one of its
+ * three calls while `bash` reported it in its only call, so the panel's own
+ * fraction (`2 of 4`) can never stand in for the row's (`1 of 3`).
+ */
+export function currentModelWithMixedToolUsage(): CurrentTuiModel {
+  return modelOf(
+    reportWith(
+      [
+        {
+          callId: "call_read_1",
+          name: "read",
+          calledAt: "2026-02-01T10:00:00.000Z",
+          resultAt: "2026-02-01T10:00:01.000Z",
+          usage: { totalTokens: 180, cost: { total: 0.04 } },
+        },
+        {
+          callId: "call_read_2",
+          name: "read",
+          calledAt: "2026-02-01T10:00:05.000Z",
+          resultAt: "2026-02-01T10:00:06.000Z",
+        },
+        {
+          callId: "call_read_3",
+          name: "read",
+          calledAt: "2026-02-01T10:00:09.000Z",
+          resultAt: "2026-02-01T10:00:10.000Z",
+        },
+        {
+          callId: "call_bash_1",
+          name: "bash",
+          calledAt: "2026-02-01T09:00:00.000Z",
+          resultAt: "2026-02-01T09:00:01.000Z",
+          usage: { totalTokens: 20, cost: { total: 0.01 } },
+        },
+      ],
+      [],
+    ),
+    "tree",
+  );
+}
+
+/**
+ * One name whose older call is persisted after its newer one, so the summary's
+ * `lastUsed` can only be the maximum timestamp: an implementation taking the
+ * last row's timestamp would report the older instant.
+ */
+export function currentModelWithOutOfOrderToolCalls(): CurrentTuiModel {
+  return modelOf(
+    reportWith(
+      [
+        {
+          callId: "call_read_1",
+          name: "read",
+          calledAt: "2026-02-01T10:00:09.000Z",
+          resultAt: "2026-02-01T10:00:10.000Z",
+        },
+        {
+          callId: "call_read_2",
+          name: "read",
+          calledAt: "2026-02-01T10:00:00.000Z",
+          resultAt: "2026-02-01T10:00:01.000Z",
+        },
+      ],
+      [],
+    ),
+    "tree",
+  );
+}
+
+/**
  * The persisted call whose argument payload and result body both carry hostile
  * sentinels. It is one record so the model and the raw entries cannot drift.
  */
