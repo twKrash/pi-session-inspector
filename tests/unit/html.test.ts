@@ -1041,7 +1041,9 @@ test("preserves scroll position and search focus across re-renders", () => {
 
 test("filters presets and custom ranges with inclusive UTC validation", () => {
   const script = scriptOf(renderHtml(historyReport()));
-  assert.match(script, /latestDate\(\)/);
+  // The client preset anchor is the inlined range module's observed-date
+  // resolver; the old per-section `latestDate()` scan no longer exists.
+  assert.match(script, /latestObservedDate\(/);
   assert.match(script, /from>to/);
   assert.match(script, /tr\("range\.error"\)/);
   assert.match(script, /data-days/);

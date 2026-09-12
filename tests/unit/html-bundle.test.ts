@@ -75,11 +75,7 @@ test("renders inventory, resources, agent activity, integration presence, and er
 test("switches precomputed current views offline without host calls", () => {
   const html = renderInspectorBundle(bundleFixture());
 
-  for (const fragment of [
-    "data.current[state.scope]",
-    "state.scope=",
-    "periods[state.section]",
-  ]) {
+  for (const fragment of ["data.current[state.scope]", "state.scope="]) {
     assert.equal(html.includes(fragment), true, fragment);
   }
   // No host round-trip, no fetch, no client-side replay of raw records.
@@ -269,6 +265,33 @@ test("an empty inspection set is unavailable, never zero", () => {
   );
   assert.match(html, /No tracked sessions/);
   assert.equal(/\$0\.00/.test(html), false);
+});
+
+test("client range wiring replaced the per-section period and the clamp", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  for (const fragment of [
+    "function filterView",
+    "function historyRowRange",
+    "const parseRangeQuery",
+    "Range could not be restored; showing the default range.",
+  ]) {
+    assert.equal(html.includes(fragment), true, fragment);
+  }
+  assert.equal(/1970-01-01/.test(html), false);
+  assert.equal(html.includes("periods[state.section]"), false);
+});
+
+test("scope copy names the ancestry and claims only report equality", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  for (const fragment of [
+    "Active path",
+    "Full session tree",
+    "Selected entry and its parent ancestry",
+    "All tracked branches in this session",
+  ]) {
+    assert.equal(html.includes(fragment), true, fragment);
+  }
+  assert.equal(/children/.test(html), false);
 });
 
 test("the label resolver separates value availability from coverage availability", () => {
