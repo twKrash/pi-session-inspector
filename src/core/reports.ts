@@ -218,7 +218,9 @@ const TIME_BASES = new Set<Extract<TimeEvidence, { state: "known" }>["basis"]>([
 // Aggregate value maps share the checkpoint counter-key grammar.
 const RETAINED_COUNTER_KEY = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 // Boundary cursors carry a bounded writer token, never a path or free text.
-const WRITER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// Mirrors the storage writer grammar (`src/storage/wal.ts`) so a legitimately
+// created writer (e.g. an underscore-leading id) is never dropped here.
+const WRITER_ID = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 const ISO_INSTANT_OR_DATE =
   /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/;
 const MAX_TIMESTAMP_LENGTH = 35;
@@ -1328,7 +1330,7 @@ function projectEvidenceHealth(value: unknown): SessionEvidenceHealth {
     if (input === undefined || input.schemaVersion !== 1) {
       return unavailableEvidenceHealth();
     }
-    return buildEvidenceHealth({
+    const built = buildEvidenceHealth({
       // A forged `core` degrades to `unavailable`; valid members are still
       // projected rather than discarding the whole bounded health.
       core: isHealthState(input.core) ? input.core : "unavailable",
@@ -1338,6 +1340,9 @@ function projectEvidenceHealth(value: unknown): SessionEvidenceHealth {
       aggregates: projectHealthAggregates(input.aggregates),
       diagnostics: projectHealthDiagnostics(input.diagnostics),
     });
+    // Saturation is the only source of `truncated` in the rebuild, which cannot
+    // re-derive a producer's flag. Preserve a supplied boolean `true` only.
+    return input.truncated === true ? { ...built, truncated: true } : built;
   } catch {
     return unavailableEvidenceHealth();
   }
@@ -1480,6 +1485,23 @@ function projectRetainedAggregates(
     if (foldedThrough === undefined || sealedThrough === undefined) {
       return undefined;
     }
+    const detail =
+      boundaryRow.detail as CanonicalRetainedAggregates["boundary"]["detail"];
+    // Cross-map boundary consistency (mirrors `assertBoundaryConsistent` in
+    // `retained-aggregates.ts`). A boundary that cannot be merged is dropped
+    // whole, never repaired: a clamped seal or an expired-but-populated cursor
+    // map would silently move the fold point and could double count downstream.
+    if (
+      detail === "expired" &&
+      (Object.keys(foldedThrough).length > 0 ||
+        Object.keys(sealedThrough).length > 0)
+    ) {
+      return undefined;
+    }
+    for (const [writerId, sealed] of Object.entries(sealedThrough)) {
+      const folded = foldedThrough[writerId];
+      if (folded === undefined || sealed > folded) return undefined;
+    }
     const detailExpiredBefore = boundedInstant(boundaryRow.detailExpiredBefore);
     const valueBoundary: AggregateValue<unknown>["boundary"] = {
       foldedThrough,
@@ -1488,8 +1510,7 @@ function projectRetainedAggregates(
     const aggregates: CanonicalRetainedAggregates = {
       schemaVersion: 1,
       boundary: {
-        detail:
-          boundaryRow.detail as CanonicalRetainedAggregates["boundary"]["detail"],
+        detail,
         foldedThrough,
         sealedThrough,
         checkpointedAt: projectTimeEvidence(boundaryRow.checkpointedAt),

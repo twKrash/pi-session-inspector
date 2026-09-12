@@ -1019,3 +1019,92 @@ test("drops a whole retained aggregate when the boundary is forged", () => {
 
   assert.equal(report.retainedAggregates, undefined);
 });
+
+test("drops a retained aggregate when a sealed writer is missing from foldedThrough", () => {
+  // A seal without a fold cursor cannot be merged: the boundary is
+  // inconsistent, so the whole aggregate must be dropped, never repaired.
+  const report = toSessionReport(parent, {
+    retainedAggregates: {
+      ...sampleAggregates(),
+      boundary: {
+        ...sampleAggregates().boundary,
+        foldedThrough: { "writer-a": 4 },
+        sealedThrough: { "writer-b": 2 },
+      },
+    } as never,
+  });
+
+  assert.equal(report.retainedAggregates, undefined);
+});
+
+test("drops a retained aggregate when a seal exceeds its fold cursor", () => {
+  const report = toSessionReport(parent, {
+    retainedAggregates: {
+      ...sampleAggregates(),
+      boundary: {
+        ...sampleAggregates().boundary,
+        foldedThrough: { "writer-a": 4 },
+        sealedThrough: { "writer-a": 5 },
+      },
+    } as never,
+  });
+
+  assert.equal(report.retainedAggregates, undefined);
+});
+
+test("drops a retained aggregate when an expired boundary still carries cursors", () => {
+  const report = toSessionReport(parent, {
+    retainedAggregates: {
+      schemaVersion: 1,
+      boundary: {
+        detail: "expired",
+        foldedThrough: { "writer-a": 4 },
+        sealedThrough: { "writer-a": 4 },
+        checkpointedAt: { state: "unavailable" },
+      },
+    } as never,
+  });
+
+  assert.equal(report.retainedAggregates, undefined);
+});
+
+test("keeps a retained aggregate for an underscore-leading writer id", () => {
+  // The storage writer grammar accepts underscore-leading tokens; the report
+  // projection must use the same grammar so a real writer is never dropped.
+  const report = toSessionReport(parent, {
+    retainedAggregates: {
+      schemaVersion: 1,
+      boundary: {
+        detail: "aggregate-only",
+        foldedThrough: { _writer: 4 },
+        sealedThrough: { _writer: 4 },
+        checkpointedAt: { state: "unavailable" },
+      },
+      integration: {
+        permission: {
+          value: { decisions: 2 },
+          state: "aggregate-only",
+          boundary: { foldedThrough: { _writer: 4 }, sealedThrough: {} },
+        },
+      },
+    } as never,
+  });
+
+  assert.equal(report.retainedAggregates?.boundary.foldedThrough._writer, 4);
+  assert.equal(
+    report.retainedAggregates?.integration?.permission?.value.decisions,
+    2,
+  );
+});
+
+test("preserves a supplied truncated boolean and rejects other supplied types", () => {
+  const preserved = toSessionReport(parent, {
+    evidenceHealth: { ...sampleHealth(), truncated: true } as never,
+  });
+  assert.equal(preserved.evidenceHealth.truncated, true);
+
+  const rejected = toSessionReport(parent, {
+    evidenceHealth: { ...sampleHealth(), truncated: "yes" } as never,
+  });
+  assert.equal(rejected.evidenceHealth.truncated, undefined);
+});
