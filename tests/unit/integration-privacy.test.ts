@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 import { renderJson } from "../../src/ui/json.ts";
+import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
 import { createEvidenceRegistry } from "../../src/integrations/evidence.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { registerLiveCounters } from "../../src/integrations/live-counters.ts";
@@ -24,6 +25,8 @@ const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
   readSubagentEvidenceWithSession(entries, SUBAGENT_SESSION_ID);
 
 const secret = "m5-seeded-secret";
+/** Raw producer identity for the opaque `permission-request` domain (§18.7). */
+const rawPermissionRequestId = "PRIVATE_REQUEST_ID";
 const parent: ReducedSession = {
   sessionId: "session-1",
   usage: { totalTokens: 100, cost: 10 },
@@ -169,6 +172,7 @@ const fixtureUrl = (name: string) =>
 test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI tab", async () => {
   const sentinels = [
     "PRIVATE_TASK",
+    rawPermissionRequestId,
     "PRIVATE_BODY",
     "secret",
     "/home/dev/private",
@@ -224,6 +228,7 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
     data: {
       result: "allow",
       resolution: "policy_allow",
+      requestId: rawPermissionRequestId,
       value: "permission-value-secret",
       matchedPattern: "permission-matched-pattern-secret",
       request: { prompt: "PRIVATE_BODY" },
@@ -258,6 +263,23 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
   for (const row of permissionRows) handlers.get(row.channel)?.(row.data);
   inputHandlers[0]?.({ text: "/skill:council-mode PRIVATE_BODY secret" });
   assertNoSentinels(sentinels, envelopes, "permission adapter");
+  // §18.7: the raw producer identity never appears beside its opaque
+  // counterpart — only the domain-separated, session-scoped digest does.
+  const opaqueRequestId = `permission-request-${canonicalOpaqueDigest(
+    "permission-request",
+    "privacy-corpus",
+    rawPermissionRequestId,
+  )}`;
+  assert.match(opaqueRequestId, /^permission-request-[a-f0-9]{64}$/);
+  assert.equal(
+    JSON.stringify(envelopes).includes(opaqueRequestId),
+    true,
+    "the opaque counterpart must be published",
+  );
+  assert.equal(
+    JSON.stringify(envelopes).includes(rawPermissionRequestId),
+    false,
+  );
 
   // 3. Pi entry adapter: versioned counters only, never custom data payloads.
   const piEntryOutput = readPiEntryEvidence([
@@ -308,6 +330,11 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
   });
   assert.ok(model);
   const report = model.report;
+  // §18.7: `unavailable`/`expired` never serialize as a fabricated zero.
+  assert.equal(report.evidenceHealth.aggregates.detail, "expired");
+  assert.equal(report.skills.invocationState, "unavailable");
+  assert.equal(report.skills.invocationCount, null);
+  assert.equal(report.skills.otherInvocations, null);
   assertNoSentinels(sentinels, report, "SessionReport");
   assertNoSentinels(sentinels, renderJson(report), "renderJson");
 

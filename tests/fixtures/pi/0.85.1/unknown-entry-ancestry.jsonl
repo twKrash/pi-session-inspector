@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"unknown-entry-ancestry-session","timestamp":"2026-09-12T08:00:00.000Z","cwd":"/fixture"}
+{"type":"custom","id":"marker","parentId":null,"timestamp":"2026-09-12T08:00:01.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}
+{"type":"message","id":"known-parent","parentId":"marker","timestamp":"2026-09-12T08:00:02.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"input":8,"output":4,"cacheRead":0,"cacheWrite":0,"totalTokens":12,"cost":{"input":0.008,"output":0.004,"cacheRead":0,"cacheWrite":0,"total":0.012}}}}
+{"type":"future_entry","id":"unknown-middle","parentId":"known-parent","timestamp":"2026-09-12T08:00:03.000Z","note":"unknown semantic type; its payload is never a fact"}
+{"type":"message","id":"known-leaf","parentId":"unknown-middle","timestamp":"2026-09-12T08:00:04.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"input":20,"output":10,"cacheRead":0,"cacheWrite":0,"totalTokens":30,"cost":{"input":0.02,"output":0.01,"cacheRead":0,"cacheWrite":0,"total":0.03}}}}

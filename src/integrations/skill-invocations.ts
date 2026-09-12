@@ -27,7 +27,9 @@ export function readSkillInvocations(input: {
   const facts: SkillInvocationObservation[] = [];
   for (const record of input.records) {
     const telemetry = record.telemetry;
-    if (telemetry === undefined) continue;
+    // A `null`/non-object envelope carries no observation: trusting it would
+    // throw instead of yielding no fact (never a fabricated invocation).
+    if (typeof telemetry !== "object" || telemetry === null) continue;
     if (telemetry.kind !== "counter" || telemetry.value !== 1) continue;
     if (telemetry.source !== SKILL_SOURCE || telemetry.metric !== SKILL_METRIC)
       continue;

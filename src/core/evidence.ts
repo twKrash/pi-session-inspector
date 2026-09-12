@@ -2,6 +2,12 @@ import { boundedDescription, secretLikeValue } from "./redact.ts";
 
 const LABEL_MAX_BYTES = 96;
 const TOKEN = /^[A-Za-z0-9_][A-Za-z0-9._:-]*$/;
+// Bounded ISO-8601 instant; L0 evidence times are normative instants, never
+// free-form text. Shared by every derivation that turns a producer timestamp
+// into an L0 fact time.
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const MAX_TIMESTAMP_LENGTH = 35;
 const encoder = new TextEncoder();
 
 export type EvidenceAuthority =
@@ -140,6 +146,22 @@ export function isBoundedToken(
     value.length > 0 &&
     encoder.encode(value).byteLength <= maxBytes &&
     TOKEN.test(value)
+  );
+}
+
+/**
+ * A bounded, parseable ISO-8601 instant. Producer timestamps reach a WAL
+ * record through `Date.parse` + a length bound (which also accepts non-ISO
+ * forms), so a derivation must re-validate with this grammar before publishing
+ * the value as an L0 fact time.
+ */
+export function isBoundedIsoInstant(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_TIMESTAMP_LENGTH &&
+    ISO_INSTANT.test(value) &&
+    !Number.isNaN(Date.parse(value))
   );
 }
 

@@ -7,10 +7,11 @@ import {
 import { completeInspectorCommand } from "./commands/completions.ts";
 import { parseInspectorCommand } from "./commands/grammar.ts";
 import { createInspectorHelpComponent } from "./commands/help.ts";
-import type {
-  FoldedAggregateEvidence,
-  L0Evidence,
-  LiveTimingObservation,
+import {
+  type FoldedAggregateEvidence,
+  isBoundedIsoInstant,
+  type L0Evidence,
+  type LiveTimingObservation,
 } from "./core/evidence.ts";
 import {
   foldedFromCheckpointAggregates,
@@ -458,8 +459,10 @@ async function readSessionEvidence(input: {
  * has no complete partner, which is exactly what `recovery.running` reports; a
  * paired start's boundary is already carried by its complete record, so
  * re-emitting it as `running` would mark a fully paired WAL incomplete forever.
+ *
+ * Exported for its L0 derivation test; production calls it from the read path.
  */
-function readLiveTimings(input: {
+export function readLiveTimings(input: {
   sessionId: string;
   records: readonly RecoveredWalRecord[];
   running: readonly { eventId: string }[];
@@ -492,7 +495,13 @@ function readLiveTimings(input: {
         recordId: record.eventId,
         schemaVersion: 1,
       },
-      time: { state: "known", at: record.timestamp, basis: "wal-observer" },
+      // Recovery accepted this timestamp with `Date.parse` + a length bound,
+      // which also admits non-ISO forms. An L0 time is a normative instant, so
+      // a value outside the ISO grammar yields `unavailable` rather than an
+      // invalid instant (the fact itself is still real live evidence).
+      time: isBoundedIsoInstant(record.timestamp)
+        ? { state: "known", at: record.timestamp, basis: "wal-observer" }
+        : { state: "unavailable" },
     });
   }
   return facts;

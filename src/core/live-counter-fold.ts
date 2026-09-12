@@ -44,8 +44,12 @@ export function mergeFoldedCounters(
   };
   for (const name of Object.keys(delta.skillInvocations).sort()) {
     const count = delta.skillInvocations[name] ?? 0;
-    if (merged.skillInvocations[name] !== undefined) {
-      merged.skillInvocations[name] += count;
+    // Own-key check: `constructor`/`toString` are legal skill names, and an
+    // inherited prototype member would make the count a string concatenation
+    // instead of an integer addition (R45).
+    if (Object.hasOwn(merged.skillInvocations, name)) {
+      merged.skillInvocations[name] =
+        (merged.skillInvocations[name] ?? 0) + count;
       continue;
     }
     if (Object.keys(merged.skillInvocations).length >= MAX_SKILL_KEYS) {
@@ -63,8 +67,10 @@ export function mergeFoldedCounters(
     merged.counters[integration] = target;
     for (const key of Object.keys(deltaCounters).sort()) {
       const count = deltaCounters[key] ?? 0;
-      if (target[key] !== undefined) {
-        target[key] += count;
+      // Same own-key rule for counter keys: a prototype member name must be
+      // created as an ordinary data key, never read from `Object.prototype`.
+      if (Object.hasOwn(target, key)) {
+        target[key] = (target[key] ?? 0) + count;
         continue;
       }
       if (Object.keys(target).length >= MAX_COUNTER_KEYS) continue;
@@ -156,7 +162,12 @@ export function counterDeltaAfterCursors(
 ): FoldedCounters {
   return foldTelemetryCounters(
     records.flatMap((record) => {
-      const cursor = cursors[record.writerId];
+      // Own-key read: a plain object answers an absent cursor for a writer
+      // named `__proto__`/`constructor` with an inherited prototype member,
+      // silently excluding that writer's retained telemetry (an undercount).
+      const cursor = Object.hasOwn(cursors, record.writerId)
+        ? cursors[record.writerId]
+        : undefined;
       const afterCursor =
         cursor === undefined || record.writerSequence > cursor;
       return afterCursor && record.telemetry !== undefined
@@ -227,8 +238,11 @@ function addEnvelope(folded: FoldedCounters, input: unknown): void {
   if (input.source === SKILL_SOURCE && metric === "skill.invocation") {
     const skill = dimensions?.skill;
     if (typeof skill !== "string" || !SKILL_NAME_PATTERN.test(skill)) return;
-    if (folded.skillInvocations[skill] !== undefined) {
-      folded.skillInvocations[skill] = folded.skillInvocations[skill] + 1;
+    // Own-key check (R45): a skill named after a prototype member must start
+    // at an integer 1, not append to the inherited function's string form.
+    if (Object.hasOwn(folded.skillInvocations, skill)) {
+      folded.skillInvocations[skill] =
+        (folded.skillInvocations[skill] ?? 0) + 1;
       return;
     }
     if (Object.keys(folded.skillInvocations).length >= MAX_SKILL_KEYS) {

@@ -12,7 +12,10 @@ import type {
   LiveTimingObservation,
 } from "../../src/core/evidence.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
-import registerSessionInspector, { registerTracking } from "../../src/index.ts";
+import registerSessionInspector, {
+  readLiveTimings,
+  registerTracking,
+} from "../../src/index.ts";
 import { renderHtml } from "../../src/ui/html.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 
@@ -111,6 +114,61 @@ test("current report is produced from supplied L0 evidence", async () => {
   });
   assert.equal(partial?.report.evidenceHealth.core, "partial");
   assert.equal(partial?.report.usage.totalTokens, 7);
+});
+
+/**
+ * Task 15 carry: recovery validates a WAL record timestamp with `Date.parse`
+ * plus a length bound, which also accepts non-ISO forms. An L0 fact's time is a
+ * normative instant (`wal-observer`), so the derivation must apply the repo's
+ * ISO-instant grammar instead of copying whatever parsed.
+ */
+test("live timing facts derive a known time only from a bounded ISO instant", () => {
+  const timing = {
+    category: "turn" as const,
+    status: "unknown" as const,
+    confidence: "live" as const,
+    startedAt: "2026-09-11T10:00:00Z",
+    endedAt: "2026-09-11T10:00:05Z",
+    durationMs: 5000,
+  };
+  const record = (eventId: string, timestamp: string) => ({
+    eventId,
+    timestamp,
+    writerId: "writer-live",
+    writerSequence: 1,
+    kind: "live_timing" as const,
+    timing,
+  });
+
+  const facts = readLiveTimings({
+    sessionId: SESSION_ID,
+    records: [
+      record("live-iso", "2026-09-11T10:00:05Z"),
+      // `Date.parse` accepts all of these; the ISO grammar does not.
+      record("live-loose", "2026 Sep 11 10:00:05"),
+      record("live-slashes", "2026/09/11 10:00:05"),
+    ],
+    running: [],
+  });
+
+  assert.deepEqual(
+    facts.map((fact) => [fact.factId, fact.time]),
+    [
+      [
+        "live-timing:live-iso",
+        {
+          state: "known",
+          at: "2026-09-11T10:00:05Z",
+          basis: "wal-observer",
+        },
+      ],
+      // The fact survives (it is real live evidence) but publishes no
+      // unvalidated instant as its normative time.
+      ["live-timing:live-loose", { state: "unavailable" }],
+      ["live-timing:live-slashes", { state: "unavailable" }],
+    ],
+  );
+  assert.equal(facts.length, 3);
 });
 
 test("derives live timing facts from validated WAL records and correlates tool durations", async () => {
@@ -1132,6 +1190,8 @@ type ExportedReport = {
     state: string;
     counters?: Readonly<Record<string, number | boolean>>;
   }[];
+  /** Inventory rows, distinct from the retained aggregate counts. */
+  resources: { state: string; items: readonly unknown[] };
   evidenceHealth: {
     sources: readonly {
       source: string;
@@ -1140,7 +1200,28 @@ type ExportedReport = {
       factsAccepted: number;
     }[];
     joins: { agentRuns: number };
-    aggregates: { skillInvocations: { retainedInvocations: number } };
+    aggregates: {
+      skillInvocations: { retainedInvocations: number };
+      resources: string;
+    };
+    diagnostics: readonly {
+      code: string;
+      severity: string;
+      count: number;
+      source: string;
+    }[];
+  };
+  retainedAggregates?: {
+    resources?: {
+      counts: {
+        commands: number;
+        skills: number;
+        resources?: number;
+        toolSources?: number;
+      };
+      state: string;
+      observedAt: { state: string; at?: string; basis?: string };
+    };
   };
 };
 
@@ -1150,15 +1231,34 @@ const walSource = (report: ExportedReport) =>
 const integrationRow = (report: ExportedReport, integration: string) =>
   report.integrations.find((row) => row.integration === integration);
 
-/** Runs the production `json` export for one fixture session. */
+/**
+ * Runs the production `json` export for one fixture session. An optional
+ * inventory api makes the production inventory refresh succeed (readable
+ * inventory), which is what decides the inventory observation state.
+ */
 async function exportCurrentReport(input: {
   directory: string;
   sessionFile: string;
   sessionId: string;
+  api?: {
+    getCommands(): readonly unknown[];
+    getAllTools(): readonly unknown[];
+  };
 }): Promise<ExportedReport> {
   const output = join(input.directory, "report.json");
   const handlerRef: { current?: CommandHandler } = {};
-  registerCommand(handlerRef);
+  if (input.api === undefined) {
+    registerCommand(handlerRef);
+  } else {
+    registerSessionInspector({
+      on: () => {},
+      getCommands: input.api.getCommands,
+      getAllTools: input.api.getAllTools,
+      registerCommand: (name: string, command: { handler: CommandHandler }) => {
+        if (name === "session-inspector") handlerRef.current = command.handler;
+      },
+    } as unknown as ExtensionAPI);
+  }
   assert.ok(handlerRef.current);
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = input.directory;
@@ -1495,6 +1595,129 @@ test("production command folds checkpoint and WAL counters with durable permissi
   });
   assert.equal(exported.integrations.length, 7);
   assert.equal(await readFile(checkpointFile, "utf8"), checkpointBytes);
+});
+
+/**
+ * Task 15 carry: the `checkpoint-resource-aggregates` folded branch is the
+ * production translation of `aggregates.resourceCounts` + `observedAt`. These
+ * two cases pin its health state and the observation state of its instant.
+ */
+test("production command publishes checkpoint resource counts and their observation time", async () => {
+  const sessionId = "checkpoint-resources";
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  await writeFile(sessionFile, trackedSessionSource(sessionId));
+  const observedAt = "2026-09-11T09:00:00.000Z";
+  await writeCheckpointFixture(directory, sessionId, {
+    schemaVersion: 1,
+    cursors: {
+      pi: { lineCount: 2, revision: "0".repeat(64) },
+      wal: { "writer-a": 0 },
+    },
+    aggregates: {
+      totalTokens: 0,
+      totalCost: 0,
+      generations: 0,
+      tools: 0,
+      compactions: 0,
+      resourceCounts: {
+        commands: 3,
+        skills: 2,
+        resources: 1,
+        toolSources: 4,
+        observedAt,
+      },
+    },
+    evidence: { checkpointedAt: "2026-09-11T09:30:00.000Z" },
+  });
+
+  // No readable inventory: the checkpoint's persisted counts are the only
+  // inventory evidence, so no inventory-observation diagnostic is emitted.
+  const report = await exportCurrentReport({
+    directory,
+    sessionFile,
+    sessionId,
+  });
+
+  assert.equal(report.evidenceHealth.aggregates.resources, "supported");
+  assert.deepEqual(report.retainedAggregates?.resources, {
+    counts: { commands: 3, skills: 2, resources: 1, toolSources: 4 },
+    state: "aggregate-only",
+    observedAt: {
+      state: "known",
+      at: observedAt,
+      basis: "inventory-observer",
+    },
+  });
+  assert.equal(
+    report.evidenceHealth.diagnostics.some(
+      (diagnostic) => diagnostic.code === "inventory-observation-time-missing",
+    ),
+    false,
+  );
+  // No synthetic activity rows or timestamps accompany the counts.
+  assert.equal(report.resources.state, "unavailable");
+});
+
+test("a checkpoint resource observation without observedAt stays unavailable and is diagnosed", async () => {
+  const sessionId = "checkpoint-resources-no-time";
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  await writeFile(sessionFile, trackedSessionSource(sessionId));
+  await writeCheckpointFixture(directory, sessionId, {
+    schemaVersion: 1,
+    cursors: {
+      pi: { lineCount: 2, revision: "0".repeat(64) },
+      wal: { "writer-a": 0 },
+    },
+    aggregates: {
+      totalTokens: 0,
+      totalCost: 0,
+      generations: 0,
+      tools: 0,
+      compactions: 0,
+      // Legacy shape: counts without an observation instant.
+      resourceCounts: { commands: 1, skills: 1 },
+    },
+  });
+
+  const report = await exportCurrentReport({
+    directory,
+    sessionFile,
+    sessionId,
+    api: {
+      getCommands: () => [
+        {
+          name: "ponytail",
+          source: "extension",
+          sourceInfo: { source: "local", scope: "user", origin: "top-level" },
+        },
+      ],
+      getAllTools: () => [],
+    },
+  });
+
+  // The counts survive as labelled aggregates, but never gain a fabricated
+  // observation instant.
+  assert.equal(report.evidenceHealth.aggregates.resources, "supported");
+  assert.deepEqual(report.retainedAggregates?.resources?.observedAt, {
+    state: "unavailable",
+  });
+  assert.deepEqual(report.retainedAggregates?.resources?.counts, {
+    commands: 1,
+    skills: 1,
+  });
+  // The production path's in-memory inventory observation is payload-only, so
+  // the missing observation instant is diagnosed (never silently zeroed).
+  assert.deepEqual(
+    report.evidenceHealth.diagnostics
+      .filter(
+        (diagnostic) =>
+          diagnostic.code === "inventory-observation-time-missing",
+      )
+      .map((diagnostic) => [diagnostic.source, diagnostic.severity]),
+    [["inventory", "warning"]],
+  );
 });
 
 test("reports read effective counters without mutating the checkpoint", async () => {

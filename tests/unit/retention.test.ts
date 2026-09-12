@@ -1906,6 +1906,68 @@ test("re-running retention with no new pruning never rewrites the checkpoint", a
   }
 });
 
+/**
+ * Task 17 carry: the "skip the rewrite" guard. The pass recomputes the same
+ * seal, cursor and boundary for a still-present, already-sealed segment, so it
+ * must publish nothing. A rewrite would replace `checkpoint.json` with a new
+ * temp file (new inode) even when the bytes are unchanged.
+ */
+test("a still-present already-sealed segment never rewrites the checkpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    const segment = join(shard, "2026-09-01.jsonl");
+    await writeFile(segment, record(1, "2026-09-01T12:00:00.000Z"));
+    await writeFile(`${segment}.closed`, "1\n");
+    const lease = await acquireLease(directory);
+    // Sealed at the same sequence AND already carrying the exact boundary this
+    // pass recomputes: only the unlink is outstanding (for example because an
+    // earlier `remove` failed after the seal was published).
+    const alreadySealed: Checkpoint = {
+      ...sealedCheckpoint(1),
+      evidence: {
+        detailCoverage: { walDetailExpiredBefore: "2026-09-01T12:00:00.000Z" },
+      },
+    };
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: alreadySealed, lease }),
+      true,
+    );
+    const checkpointPath = join(directory, "checkpoint.json");
+    const bytesBefore = await readFile(checkpointPath, "utf8");
+    const inodeBefore = (await stat(checkpointPath)).ino;
+
+    // The unlink keeps failing, so the segment stays present and every pass
+    // revisits it with nothing new to seal.
+    const failingRemove = async () => {
+      throw new Error("simulated unlink failure");
+    };
+    const prune = () =>
+      pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+        remove: failingRemove,
+      });
+    assert.equal(await prune(), 0);
+    assert.equal(await prune(), 0);
+
+    assert.equal(await readFile(checkpointPath, "utf8"), bytesBefore);
+    assert.equal((await stat(checkpointPath)).ino, inodeBefore);
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.detailCoverage
+        ?.walDetailExpiredBefore,
+      "2026-09-01T12:00:00.000Z",
+    );
+    assert.equal((await readdir(shard)).includes("2026-09-01.jsonl"), true);
+    await lease.release();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a retention cutoff between two observations keeps the snapshot", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
   try {

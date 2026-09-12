@@ -6,8 +6,14 @@ import { readPiEntryEvidence } from "../../src/integrations/pi-entries.ts";
 import { readSubagentEvidence as readSubagentEvidenceWithSession } from "../../src/integrations/subagents.ts";
 import { MAX_COUNTER_KEYS } from "../../src/core/live-counter-fold.ts";
 import { isAllowedIntegrationCounter } from "../../src/core/integration-counter-allowlists.ts";
-import { toSessionReport } from "../../src/core/reports.ts";
-import { buildEvidenceHealth } from "../../src/core/evidence-health.ts";
+import {
+  MAX_HEALTH_DIAGNOSTICS,
+  toSessionReport,
+} from "../../src/core/reports.ts";
+import {
+  buildEvidenceHealth,
+  MAX_EVIDENCE_COUNT,
+} from "../../src/core/evidence-health.ts";
 import type { CanonicalRetainedAggregates } from "../../src/core/retained-aggregates.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
@@ -778,13 +784,64 @@ function sampleAggregates(): CanonicalRetainedAggregates {
 }
 
 test("report exposes bounded health and labels aggregate-only counts", () => {
+  // Seeded sentinel: a `req-`-prefixed producer string is offered where only a
+  // canonical key/instant may survive. Without it, the absence assertion below
+  // is vacuous (nothing in the input could ever have carried the substring).
+  const seededSentinel = "req-private sentinel";
+  const seeded = {
+    ...sampleAggregates(),
+    boundary: {
+      ...sampleAggregates().boundary,
+      checkpointedAt: {
+        state: "known",
+        at: seededSentinel,
+        basis: "checkpoint-observer",
+      },
+    },
+    integration: {
+      permission: {
+        value: { decisions: 2, [seededSentinel]: 9 },
+        state: "aggregate-only",
+        boundary: aggregateBoundary,
+      },
+    },
+    skillInvocations: {
+      named: {
+        value: { demo: 3, [seededSentinel]: 9 },
+        state: "aggregate-only",
+        boundary: aggregateBoundary,
+      },
+    },
+  } as unknown as CanonicalRetainedAggregates;
   const report = toSessionReport(parent, {
     evidenceHealth: sampleHealth(),
-    retainedAggregates: sampleAggregates(),
+    retainedAggregates: seeded,
   });
 
+  assert.equal(JSON.stringify(seeded).includes("req-"), true);
   assert.equal(report.evidenceHealth.aggregates.detail, "aggregate-only");
   assert.equal(JSON.stringify(report).includes("req-"), false);
+  // Both seeded carriers were dropped, and the valid values survived.
+  assert.equal(
+    report.retainedAggregates?.integration?.permission?.value.decisions,
+    2,
+  );
+  assert.deepEqual(
+    Object.keys(
+      report.retainedAggregates?.integration?.permission?.value ?? {},
+    ),
+    ["decisions"],
+  );
+  assert.deepEqual(
+    Object.keys(
+      report.retainedAggregates?.skillInvocations?.named?.value ?? {},
+    ),
+    ["demo"],
+  );
+  assert.equal(
+    report.retainedAggregates?.boundary.checkpointedAt.state,
+    "unavailable",
+  );
   // Fixed source order, regardless of input order.
   assert.equal(
     report.evidenceHealth.sources.map((source) => source.source).join(),
@@ -798,6 +855,166 @@ test("report exposes bounded health and labels aggregate-only counts", () => {
   assert.equal(
     report.retainedAggregates?.skillInvocations?.named?.value.demo,
     3,
+  );
+});
+
+test("T14: forged projection counts are clamped to the bounded health range", () => {
+  const forged = {
+    ...sampleHealth(),
+    joins: {
+      ...sampleHealth().joins,
+      // A safe integer beyond the projection bound, at the bound, and below it.
+      toolCalls: MAX_EVIDENCE_COUNT + 1,
+      matchedToolResults: MAX_EVIDENCE_COUNT,
+      agentRuns: -1,
+    },
+    usage: { ...sampleHealth().usage, nativeLines: MAX_EVIDENCE_COUNT + 1 },
+    aggregates: {
+      ...sampleHealth().aggregates,
+      integrationCounters: MAX_EVIDENCE_COUNT + 1,
+    },
+    diagnostics: [
+      {
+        code: "unknown-entry",
+        severity: "info",
+        count: MAX_EVIDENCE_COUNT + 1,
+        source: "pi-jsonl",
+      },
+      {
+        code: "usage-invalid",
+        severity: "warning",
+        count: 0,
+        source: "inspector-wal",
+      },
+    ],
+  } as never;
+
+  const report = toSessionReport(parent, { evidenceHealth: forged });
+
+  assert.equal(report.evidenceHealth.joins.toolCalls, 0);
+  assert.equal(
+    report.evidenceHealth.joins.matchedToolResults,
+    MAX_EVIDENCE_COUNT,
+  );
+  assert.equal(report.evidenceHealth.joins.agentRuns, 0);
+  assert.equal(report.evidenceHealth.usage.nativeLines, 0);
+  assert.equal(report.evidenceHealth.aggregates.integrationCounters, 0);
+  // A diagnostic count is a positive bounded count: out-of-range floors to 1.
+  assert.deepEqual(
+    report.evidenceHealth.diagnostics.map((row) => row.count),
+    [1, 1],
+  );
+});
+
+test("T14: the projection caps diagnostics at the bounded row budget", () => {
+  // `MAX_HEALTH_DIAGNOSTICS` is the projection's row budget: it bounds the
+  // forged rows the projection reads, before the rebuilt health merges them by
+  // source+code (`MAX_HEALTH_DIAGNOSTICS + 4` duplicates merge to one row with
+  // a count of exactly the budget, so a raised/removed bound changes the count).
+  const diagnostics = Array.from(
+    { length: MAX_HEALTH_DIAGNOSTICS + 4 },
+    () => ({
+      code: "unknown-entry",
+      severity: "info",
+      count: 1,
+      source: "pi-jsonl" as const,
+    }),
+  );
+  const forged = { ...sampleHealth(), diagnostics } as never;
+
+  const report = toSessionReport(parent, { evidenceHealth: forged });
+
+  assert.equal(report.evidenceHealth.diagnostics.length, 1);
+  assert.deepEqual(report.evidenceHealth.diagnostics, [
+    {
+      code: "unknown-entry",
+      severity: "info",
+      count: MAX_HEALTH_DIAGNOSTICS,
+      source: "pi-jsonl",
+    },
+  ]);
+});
+
+test("T14: an aggregate value in any state other than aggregate-only is dropped", () => {
+  const forged = {
+    ...sampleAggregates(),
+    integration: {
+      permission: {
+        value: { decisions: 2 },
+        state: "retained",
+        boundary: aggregateBoundary,
+      },
+    },
+    skillInvocations: {
+      named: {
+        value: { demo: 3 },
+        state: "full",
+        boundary: aggregateBoundary,
+      },
+      overflow: {
+        value: 4,
+        state: "aggregate-only",
+        boundary: aggregateBoundary,
+      },
+    },
+    permissionPresence: {
+      value: true,
+      state: "expired",
+      boundary: aggregateBoundary,
+    },
+    resources: {
+      counts: { commands: 1, skills: 1 },
+      state: "expired",
+      observedAt: { state: "unavailable" },
+    },
+  } as never;
+
+  const report = toSessionReport(parent, { retainedAggregates: forged });
+
+  assert.equal(report.retainedAggregates?.integration, undefined);
+  assert.equal(report.retainedAggregates?.skillInvocations?.named, undefined);
+  assert.equal(report.retainedAggregates?.permissionPresence, undefined);
+  assert.equal(report.retainedAggregates?.resources, undefined);
+  // The one well-formed value is still published.
+  assert.equal(report.retainedAggregates?.skillInvocations?.overflow?.value, 4);
+  assert.equal(report.retainedAggregates?.boundary.detail, "aggregate-only");
+});
+
+test("T14: a forged diagnostic severity falls back to the code's default", () => {
+  const forged = {
+    ...sampleHealth(),
+    diagnostics: [
+      {
+        code: "unknown-entry",
+        severity: "fatal",
+        count: 1,
+        source: "pi-jsonl",
+      },
+      {
+        code: "usage-invalid",
+        severity: 7,
+        count: 1,
+        source: "inspector-wal",
+      },
+      {
+        code: "tracking-marker-missing",
+        severity: "critical",
+        count: 1,
+        source: "pi-jsonl",
+      },
+    ],
+  } as never;
+
+  const report = toSessionReport(parent, { evidenceHealth: forged });
+
+  assert.deepEqual(
+    report.evidenceHealth.diagnostics.map((row) => [row.code, row.severity]),
+    // Sorted by source then code, exactly as the canonical health sorts.
+    [
+      ["tracking-marker-missing", "warning"],
+      ["unknown-entry", "info"],
+      ["usage-invalid", "warning"],
+    ],
   );
 });
 

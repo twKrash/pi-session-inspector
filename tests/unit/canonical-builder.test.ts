@@ -375,6 +375,42 @@ test("boundary inconsistency becomes a bounded diagnostic, not a throw", () => {
   assert.equal(session?.retainedAggregates.boundary.detail, "expired");
 });
 
+test("R45: a prototype-named writer id still arms the retained boundary check", () => {
+  const folded: FoldedAggregateEvidence[] = [
+    {
+      kind: "checkpoint-wal-aggregates",
+      sessionId: "s1",
+      foldedThrough: { ["__proto__"]: 5 },
+      sealedThrough: {},
+      skillInvocations: { demo: 2 },
+      checkpointedAt: { state: "unavailable" },
+      provenance: {
+        source: "checkpoint",
+        authority: "derived",
+        schemaVersion: 1,
+      },
+    },
+  ];
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded },
+    // `__proto__` is a legal writer id (underscore-leading token). The retained
+    // sequence (3) is behind the cursor (5) with no matching seal, so the
+    // boundary is inconsistent and must be rejected, never silently disarmed.
+    walRecords: [{ ...skillRecord("evt-3", 3, "demo"), writerId: "__proto__" }],
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(
+    session?.health.diagnostics.some(
+      (diagnostic) => diagnostic.code === "checkpoint-aggregate-invalid",
+    ),
+  );
+  assert.equal(session?.retainedAggregates.boundary.detail, "expired");
+});
+
 test("parent resolution failure forwards a bounded diagnostic", () => {
   const result = buildCanonicalSession({
     parsed: parsed([MARKER, ASSISTANT]),

@@ -225,7 +225,7 @@ const ISO_INSTANT_OR_DATE =
   /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/;
 const MAX_TIMESTAMP_LENGTH = 35;
 const MAX_HEALTH_SOURCES = EVIDENCE_SOURCE_ORDER.length;
-const MAX_HEALTH_DIAGNOSTICS = 256;
+export const MAX_HEALTH_DIAGNOSTICS = 256;
 
 export type ModelSummary = {
   provider: string;

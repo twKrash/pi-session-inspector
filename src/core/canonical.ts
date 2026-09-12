@@ -1265,7 +1265,11 @@ function checkpointEvidence(
 function lastSequence(
   input: CanonicalSessionInput,
 ): Record<string, number> | undefined {
-  const sequences: Record<string, number> = {};
+  // Null prototype: `__proto__`/`constructor` are legal writer ids. A plain
+  // object would let the inherited `__proto__` setter swallow the assignment
+  // (leaving the boundary check disarmed) and would answer a prototype member
+  // name with a function instead of the observed sequence.
+  const sequences: Record<string, number> = Object.create(null);
   for (const record of input.walRecords ?? []) {
     if (!isBoundedId(record.writerId) || !isSequence(record.writerSequence)) {
       continue;
