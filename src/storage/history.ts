@@ -25,9 +25,18 @@ export type HistoryDiagnostic =
   | "manifest-unavailable"
   | "marker-unavailable";
 
+/** Bounded cause of an unavailable session row; never a producer string. */
+export type CoverageReason =
+  | "no-manifest" // neither metadata nor a pending manifest was readable
+  | "manifest-unavailable" // source missing/unresolvable/rejected, lease unavailable, promotion threw
+  | "marker-unavailable" // source readable but marker/header/id evidence failed
+  | "session-unreadable" // parse failure, malformed JSON, no header, id mismatch
+  | "replay-failed"; // provider, canonical builder or report projection failed
+
 export type HistorySession = {
   sessionId: string;
   availability: "available" | "unavailable";
+  reason?: CoverageReason;
   /** Internal manifest locator; deliberately non-enumerable on returned rows. */
   sourceFile?: string;
 };
@@ -36,6 +45,7 @@ export type HistoryDiscoveryResult = {
   availability: "available" | "unavailable";
   sessions: HistorySession[];
   diagnostics: HistoryDiagnostic[];
+  discoveryLimited: boolean;
 };
 
 type MaintenanceOptions = {
@@ -87,6 +97,7 @@ export async function discoverHistory({
   maintenance: MaintenanceOptions;
 }): Promise<HistoryDiscoveryResult> {
   const diagnostics = new Set<HistoryDiagnostic>();
+  let discoveryLimited = false;
   const sessionsDirectory = join(root, "sessions");
   const sessionIds = await readSessionIds(sessionsDirectory);
   if (sessionIds === undefined) {
@@ -94,9 +105,11 @@ export async function discoverHistory({
       availability: "unavailable",
       sessions: [],
       diagnostics: ["history-unavailable"],
+      discoveryLimited: false,
     };
   }
   if (sessionIds.length > MAX_HISTORY_SESSIONS) {
+    discoveryLimited = true;
     diagnostics.add("history-limit-reached");
     sessionIds.length = MAX_HISTORY_SESSIONS;
   }
@@ -114,6 +127,7 @@ export async function discoverHistory({
     const row: HistorySession = {
       sessionId,
       availability: inspected.availability,
+      ...(inspected.reason === undefined ? {} : { reason: inspected.reason }),
     };
     if (inspected.sourceFile !== undefined) {
       Object.defineProperty(row, "sourceFile", {
@@ -127,6 +141,7 @@ export async function discoverHistory({
     availability: "available",
     sessions,
     diagnostics: [...diagnostics].sort(),
+    discoveryLimited,
   };
 }
 
@@ -144,7 +159,7 @@ async function inspectManifest({
   markerEvidence(sessionId: string, sourceFile: string): Promise<boolean>;
   maintenance: MaintenanceOptions;
   diagnostics: Set<HistoryDiagnostic>;
-}): Promise<Pick<HistorySession, "availability" | "sourceFile">> {
+}): Promise<Pick<HistorySession, "availability" | "sourceFile" | "reason">> {
   const paths = trackingMetadataPaths(root, sessionId);
   const metadata = await readMetadata(paths.metadataPath, sessionId);
   if (metadata !== undefined) {
@@ -160,7 +175,7 @@ async function inspectManifest({
   const pending = await readMetadata(paths.pendingPath, sessionId);
   if (pending === undefined) {
     diagnostics.add("manifest-unavailable");
-    return { availability: "unavailable" };
+    return { availability: "unavailable", reason: "no-manifest" };
   }
   const pendingSource = await availableManifest(
     pending,
@@ -175,7 +190,8 @@ async function inspectManifest({
     directory: paths.sessionDirectory,
     ...maintenance,
   });
-  if (lease === undefined) return { availability: "unavailable" };
+  if (lease === undefined)
+    return { availability: "unavailable", reason: "manifest-unavailable" };
   try {
     const promoted = await readMetadata(paths.metadataPath, sessionId);
     if (promoted !== undefined) {
@@ -190,7 +206,7 @@ async function inspectManifest({
     const currentPending = await readMetadata(paths.pendingPath, sessionId);
     if (currentPending === undefined) {
       diagnostics.add("manifest-unavailable");
-      return { availability: "unavailable" };
+      return { availability: "unavailable", reason: "no-manifest" };
     }
     const current = await availableManifest(
       currentPending,
@@ -203,7 +219,7 @@ async function inspectManifest({
     await rename(paths.pendingPath, paths.metadataPath);
     return current;
   } catch {
-    return { availability: "unavailable" };
+    return { availability: "unavailable", reason: "manifest-unavailable" };
   } finally {
     await lease.release();
   }
@@ -215,9 +231,9 @@ async function availableManifest(
   sessionId: string,
   markerEvidence: (sessionId: string, sourceFile: string) => Promise<boolean>,
   diagnostics: Set<HistoryDiagnostic>,
-): Promise<Pick<HistorySession, "availability" | "sourceFile">> {
+): Promise<Pick<HistorySession, "availability" | "sourceFile" | "reason">> {
   if (!(await hasAvailableSource(metadata, sessionDirectory, diagnostics))) {
-    return { availability: "unavailable" };
+    return { availability: "unavailable", reason: "manifest-unavailable" };
   }
   if (
     !(await hasMarkerEvidence(
@@ -227,7 +243,7 @@ async function availableManifest(
       diagnostics,
     ))
   ) {
-    return { availability: "unavailable" };
+    return { availability: "unavailable", reason: "marker-unavailable" };
   }
   return { availability: "available", sourceFile: metadata.sourceFile };
 }

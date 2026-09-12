@@ -80,6 +80,7 @@ test("promotes pending tracking metadata only when native marker evidence is ava
       availability: "available",
       sessions: [{ sessionId: "pending-session", availability: "available" }],
       diagnostics: [],
+      discoveryLimited: false,
     });
     assert.equal(
       await readFile(
@@ -118,7 +119,7 @@ test("rechecks marker evidence when another maintainer promotes metadata during 
 
     assert.equal(evidenceChecks, 2);
     assert.deepEqual(result.sessions, [
-      { sessionId, availability: "unavailable" },
+      { sessionId, availability: "unavailable", reason: "marker-unavailable" },
     ]);
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -141,7 +142,11 @@ test("does not promote pending metadata when marker evidence is removed after le
     });
 
     assert.deepEqual(result.sessions, [
-      { sessionId: "rewritten-session", availability: "unavailable" },
+      {
+        sessionId: "rewritten-session",
+        availability: "unavailable",
+        reason: "marker-unavailable",
+      },
     ]);
     assert.equal(evidenceChecks, 2);
     await assert.rejects(
@@ -179,8 +184,16 @@ test("keeps pending metadata unavailable when marker evidence is absent or canno
     });
 
     assert.deepEqual(result.sessions, [
-      { sessionId: "marker-error", availability: "unavailable" },
-      { sessionId: "without-marker", availability: "unavailable" },
+      {
+        sessionId: "marker-error",
+        availability: "unavailable",
+        reason: "marker-unavailable",
+      },
+      {
+        sessionId: "without-marker",
+        availability: "unavailable",
+        reason: "marker-unavailable",
+      },
     ]);
     assert.deepEqual(result.diagnostics, ["marker-unavailable"]);
     await assert.rejects(
@@ -242,7 +255,7 @@ test("rejects oversized manifests before parsing them", async () => {
     });
 
     assert.deepEqual(result.sessions, [
-      { sessionId, availability: "unavailable" },
+      { sessionId, availability: "unavailable", reason: "no-manifest" },
     ]);
     assert.deepEqual(result.diagnostics, ["manifest-unavailable"]);
   } finally {
@@ -262,6 +275,7 @@ test("reports missing or unknown Inspector manifests as unavailable without gues
       availability: "unavailable",
       sessions: [],
       diagnostics: ["history-unavailable"],
+      discoveryLimited: false,
     });
 
     await mkdir(join(root, "sessions", "unknown-format"), { recursive: true });
@@ -275,7 +289,11 @@ test("reports missing or unknown Inspector manifests as unavailable without gues
       maintenance,
     });
     assert.deepEqual(unknown.sessions, [
-      { sessionId: "unknown-format", availability: "unavailable" },
+      {
+        sessionId: "unknown-format",
+        availability: "unavailable",
+        reason: "no-manifest",
+      },
     ]);
     assert.deepEqual(unknown.diagnostics, ["manifest-unavailable"]);
   } finally {
@@ -329,6 +347,7 @@ test("resolves only a direct regular JSONL source file without exposing its path
       availability: "available",
       sessions: [{ sessionId: "private-source", availability: "available" }],
       diagnostics: [],
+      discoveryLimited: false,
     });
     assert.equal(JSON.stringify(result).includes("session.jsonl"), false);
   } finally {
@@ -366,8 +385,16 @@ test("makes invalid or unavailable manifest sources unavailable without source d
       maintenance,
     });
     assert.deepEqual(result.sessions, [
-      { sessionId: "missing-source", availability: "unavailable" },
-      { sessionId: "traversal-source", availability: "unavailable" },
+      {
+        sessionId: "missing-source",
+        availability: "unavailable",
+        reason: "no-manifest",
+      },
+      {
+        sessionId: "traversal-source",
+        availability: "unavailable",
+        reason: "no-manifest",
+      },
     ]);
     assert.deepEqual(result.diagnostics, ["manifest-unavailable"]);
     assert.equal(JSON.stringify(result).includes("sourceFile"), false);
