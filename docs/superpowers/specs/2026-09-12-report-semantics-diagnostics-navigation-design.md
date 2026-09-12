@@ -60,12 +60,15 @@ the affected sections carry an inline pointer.
    equality criterion stands, but the design must not claim a shared scan that
    does not exist.
 6. **`scanHistory`'s failure paths are richer than §3.2 assumed.** A session
-   becomes `unavailable` when (a) the source cannot be resolved or parsed,
-   (b) the header/id/marker re-check fails, (c) the injected evidence provider
-   returns nothing or throws, (d) `buildCanonicalSession` is not `ready`, or
-   (e) the report projection throws. §3.1's reason set covers all five without a
-   new filesystem probe: (a)+(b) split into `session-unreadable` /
-   `marker-unavailable`, and (c)-(e) are `replay-failed`.
+   becomes `unavailable` at seven return sites that group into five causes:
+   (a) the source cannot be resolved or parsed, (b) the header/id/marker re-check
+   fails, (c) the injected evidence provider returns nothing or throws,
+   (d) `buildCanonicalSession` is not `ready`, or (e) the report projection
+   throws. §3.1's reason set covers all five without a new filesystem probe:
+   (a)+(b) split into `session-unreadable` / `marker-unavailable`, and (c)-(e) are
+   `replay-failed`. Discovery additionally loses the cause for `no-manifest` and
+   for promotion failure, which §3.1.1 maps onto `no-manifest` /
+   `manifest-unavailable`.
 7. **Verified client facts** (they define the P1-F diff): the sidebar sets
    `aria-pressed` once at creation and never re-syncs; tab buttons re-sync only
    inside their own click handler; `periods` is keyed by section alone; a custom
@@ -419,7 +422,7 @@ introduced and a hostile or unbounded value cannot appear:
 | `CoverageReason` | Emitted when | Existing bounded code |
 | --- | --- | --- |
 | `no-manifest` | Discovery found neither metadata nor a readable pending manifest | `HistoryDiagnostic` `manifest-unavailable` |
-| `manifest-unavailable` | Manifest exists; its source is missing, unresolvable, or rejected | `EvidenceDiagnosticCode` `source-not-found` |
+| `manifest-unavailable` | Manifest exists but the session cannot be promoted: its source is missing, unresolvable or rejected, the maintenance lease is unavailable, or promotion threw | `EvidenceDiagnosticCode` `source-not-found` |
 | `marker-unavailable` | Source is readable but header/id/marker re-verification fails | `EvidenceDiagnosticCode` `tracking-marker-missing` |
 | `session-unreadable` | JSONL does not parse, has no session header, or its id mismatches | `EvidenceDiagnosticCode` `source-malformed` / `source-format-unsupported` |
 | `replay-failed` | Evidence provider absent/threw, canonical builder not `ready`, or the report projection threw | The session's own `evidenceHealth.diagnostics` (`source-format-unsupported`, `cooperative-evidence-conflict`, …) |
@@ -755,6 +758,13 @@ export function sessionDatedUsage(session: CanonicalSession): {
 - **Tools, Agents and Errors** are still filtered from their canonical rows in the
   client (`Tool.timestamp`, `AgentRun.observedAt`, `ErrorRecord.timestamp`); no
   dated copies exist for them.
+- **One documented exception.** The legacy single-section adapter
+  `renderHtml(HtmlReport)` (no production caller; `src/index.ts` renders the
+  production document through `renderInspectorBundle`) has no canonical session,
+  so its *current-view* `daily` rows keep the pre-attribution bucketing
+  (`src/ui/html.ts:499`, `:1222`). Its history/global branch is production and
+  **does** fold the dated rows (`:1241`). Removing the legacy adapter is deferred
+  (§15) and is not part of this milestone.
 - Aggregation only ever **sums** these rows: `buildDailyRows(contributions)`
   (`{ sessionId, rows, truncated }[]`, in `src/ui/daily.ts`) folds `usageByDate`
   rows by date and `sessions` counts the distinct sessions that contributed to
@@ -1383,8 +1393,12 @@ that joins tokens re-serializes the argument text. `--output "/tmp/my report.jso
 would come back as `--output /tmp/my report.json` — the quotes are gone, and for a
 value containing a space the parsed meaning changes as well. Span replacement
 copies preceding characters instead of re-serializing them, so corruption is
-impossible by construction. Text after the cursor is Pi's own
-`adjustedAfterCursor` region and is not part of `value` (§10.3).
+impossible by construction. Both quote characters the parser currently accepts
+(`"` and `'`, `src/commands/grammar.ts:82-105`) keep their existing meaning: the
+scan records the raw span including its quotes and reports whether the token was
+quoted, and the stripped tokenizer strips exactly one layer, as today. Text after
+the cursor is Pi's own `adjustedAfterCursor` region and is not part of `value`
+(§10.3).
 
 The span-aware scanner and the existing parser tokenizer share one scanning core
 so grammar decisions cannot drift; the parser keeps its current quote-stripping
@@ -1706,6 +1720,7 @@ aggregate or expose it; nothing about it is fabricated in the meantime.
 | Integration version when the producer publishes none | **Unsupported** | Rendered `Unavailable`, never `0`. |
 | Exact aggregate-row/detail reconciliation for ranges older than a session's retained dated window | **Unsupported (bounded projection)** | The per-session `usageByDate` window holds 366 dates; the omitted portion is reported as partial/`Known` with a truncation diagnostic, never reconstructed. |
 | Child usage completeness when some runs report none | **Known-only** | Shown as `Known … (n of m runs)`; never extrapolated. |
+| Removing the legacy `renderHtml(HtmlReport)` adapter and its pre-attribution current-view daily bucketing | **Deferred (out of scope)** | It has no production caller (`src/index.ts` renders via `renderInspectorBundle`), but deleting a module with its own test suite is its own change; §5.4 records the exception and the fold already covers the production path. |
 
 ---
 

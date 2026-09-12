@@ -65,8 +65,8 @@ must run in order.
 
 - `loadHistoryReports` and `loadGlobalReport` **each** call `scanHistory`; there is
   no shared scan object (spec §0.2 item 5).
-- `scanHistory` returns `unavailable` at five distinct points; the current code
-  discards every cause in one `catch` (spec §0.2 item 6).
+- `scanHistory` returns `unavailable` at seven return sites that group into five
+  causes; the current code discards every cause in one `catch` (spec §0.2 item 6).
 - `toSessionReport`/`projectAgent` already validate `agent`, `artifacts`,
   `observedAt`, `evidenceToolId`, `model`, `thinking` and `failure`; `readSubagentEvidence`
   already publishes them. `SubagentEvidence` has **no** `runsWithUsage`.
@@ -80,6 +80,17 @@ must run in order.
   `toolRows` drops `timestamp`, and the error rows carry no tool join.
 - `tests/unit/helpers/` **does not exist**; the bundle fixture is read directly in
   `tests/unit/html-bundle.test.ts` from `tests/fixtures/bundles/inspector-bundle.json`.
+- **No test helper named in this plan exists yet** unless it is already imported by
+  the target test file: `modelFor` exists (`tests/unit/bundle.test.ts`),
+  `modelForMany` does not; `longSessionOptions`, `optionsWithSource`,
+  `optionsWithUnmarkedSource`, `headerFor`, `validSource`, `dailyRow`, `usageRow`,
+  `datedModel`, `toolRow`, `bundleWithTruncatedHistory`, `embedOf`,
+  `embedCapabilitiesOf` are all new. Each task that uses one defines it in its own
+  test file (or in a helper file it creates) as part of its first step.
+- `renderHtml(HtmlReport)`/`projectReport` is the **legacy single-section adapter**
+  with no production caller; `src/index.ts` renders through
+  `renderInspectorBundle`. Its current-view daily rows stay report-derived
+  (spec §5.4, §15); its history/global branch is production and moves to the fold.
 - `@earendil-works/pi-tui@0.85.1` is installed under `node_modules` (peerDependency),
   with `CombinedAutocompleteProvider(commands, basePath, fdPath?)`,
   `getSuggestions(lines, cursorLine, cursorCol, { signal, force })` and
@@ -192,9 +203,13 @@ function shiftUtcDay(date: string, offset: number): string;
 function latestObservedDate(dates: readonly string[]): string | undefined;
 function parseRangeQuery(query: string): RangeIntent | undefined;
 function serializeRangeQuery(intent: RangeIntent): [string, string][];
+
+// Task 9: src/ui/range.ts — the one range filter every tab uses, plus the
+// aggregate membership verdict (both inlined into the document by Task 17).
+function filterView<V extends ViewRows>(view: V, range: RangeState): V;
+function historyRowRange(entry: { usageByDate: readonly DateUsageRow[]; usageByDateTruncated?: boolean }, range: RangeState): HistoryRowRange;
 /** Membership + truncation verdict for one aggregate session row (§5.6). */
 type HistoryRowRange = { member: boolean; totalTokens: number | null; cost: number | null; partial: boolean };
-function historyRowRange(entry: { usageByDate: readonly DateUsageRow[]; usageByDateTruncated?: boolean }, range: RangeState): HistoryRowRange;
 
 // Task 16: src/ui/route.ts (pure, inlined into the document)
 type EntityRef = { kind: "model" | "tool" | "agent" | "error" | "integration" | "command" | "skill" | "resource"; id: string };
@@ -312,7 +327,10 @@ export type HistoryDiscoveryResult = {
 };
 ```
 
-Change the three cause-discarding sites (keep every existing check and diagnostic exactly as it is, only stop throwing the cause away):
+Change the three cause-discarding sites (keep every existing check and diagnostic exactly as it is, only stop throwing the cause away). The two remaining
+returns — the maintenance-lease failure and the outer promotion `catch` — are
+also cause-discarding; label both `manifest-unavailable` (spec §3.1.1 wording
+covers promotion failure) so no row escapes without a reason:
 
 ```ts
 // in inspectManifest, when neither metadata nor pending metadata is readable
@@ -334,7 +352,20 @@ Change the three cause-discarding sites (keep every existing check and diagnosti
   }
 ```
 
-`hasMarkerEvidence` records `marker-unavailable` when the probe throws; keep that behaviour and keep returning the same reason. Then propagate the flag and the reason:
+`hasMarkerEvidence` records `marker-unavailable` when the probe throws; keep that behaviour and keep returning the same reason. The two promotion sites stay
+reason-labelled:
+
+```ts
+  if (lease === undefined) return { availability: "unavailable", reason: "manifest-unavailable" };
+  // ... and the outer catch of the promotion attempt:
+  } catch {
+    return { availability: "unavailable", reason: "manifest-unavailable" };
+  } finally {
+```
+
+`inspectManifest`'s return type must carry the reason:
+`Pick<HistorySession, "availability" | "sourceFile" | "reason">`. Then propagate the flag and the reason (declare `let discoveryLimited = false;` beside the
+`diagnostics` set at the top of `discoverHistory`):
 
 ```ts
   if (sessionIds.length > MAX_HISTORY_SESSIONS) {
@@ -438,23 +469,17 @@ test("a fully replayed uncapped set is complete", () => {
   assert.equal(coverage?.sessionRatio, 1);
 });
 
-// Spec §3.1.1 / R20: a reason cannot exist without naming the bounded code it
-// projects, so no third vocabulary can appear.
-test("every reason maps onto an existing bounded code", () => {
-  const reasons = [
-    "no-manifest", "manifest-unavailable", "marker-unavailable", "session-unreadable", "replay-failed",
-  ] as const satisfies readonly CoverageReason[];
-  for (const reason of reasons) {
-    const codes = COVERAGE_REASON_CODES[reason];
-    assert.ok(codes.length > 0, reason);
-    for (const code of codes) {
-      assert.ok(
-        [...HISTORY_DIAGNOSTICS, ...EVIDENCE_DIAGNOSTIC_CODES].includes(code),
-        `${reason} -> ${code}`,
-      );
-    }
+// Spec §3.1.1 / R20: the mapping is TOTAL, so it is enforced by the type above —
+// a missing reason or an unknown code fails `npm run typecheck`. The runtime test
+// only asserts that every declared reason has an entry.
+test("every reason has a bounded-code mapping", () => {
+  assert.deepEqual(
+    Object.keys(COVERAGE_REASON_CODES).sort(),
+    ["manifest-unavailable", "marker-unavailable", "no-manifest", "replay-failed", "session-unreadable"],
+  );
+  for (const codes of Object.values(COVERAGE_REASON_CODES)) {
+    assert.ok(codes.length > 0);
   }
-  assert.deepEqual(Object.keys(COVERAGE_REASON_CODES).sort(), [...reasons].sort());
 });
 ```
 
@@ -467,10 +492,8 @@ Expected: FAIL — cannot resolve `../../src/core/session-coverage.ts`.
 
 ```ts
 // src/core/session-coverage.ts
-import {
-  type EvidenceDiagnosticCode,
-} from "./evidence-health.ts";
-import type { CoverageReason } from "../storage/history.ts";
+import type { EvidenceDiagnosticCode } from "./evidence-health.ts";
+import type { CoverageReason, HistoryDiagnostic } from "../storage/history.ts";
 
 export type { CoverageReason };
 
@@ -540,8 +563,7 @@ signal and the coverage; both reports spread them from the same object:
 
 ```ts
 type SessionScan =
-  | { availability: "available"; sessionId: string; report: SessionReport;
-      usageByDate: readonly DateUsageRow[]; usageByDateTruncated: boolean }
+  | { availability: "available"; sessionId: string; report: SessionReport }
   | { availability: "unavailable"; sessionId: string; reason: CoverageReason };
 
 type HistoryScan = {
@@ -552,6 +574,10 @@ type HistoryScan = {
   coverage: SessionCoverage | undefined;
 };
 ```
+
+Task 5 extends the available variant with `usageByDate`/`usageByDateTruncated`;
+this task adds only the reason and the coverage assembly, so it never references a
+module Task 5 has not created yet.
 
 `scanHistory` is the single place that names a reason. Every existing check keeps
 its behaviour; only the discarded cause is now recorded. This is the whole diff
@@ -632,7 +658,7 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
         return { availability: "unavailable", sessionId, reason: "replay-failed" };
       }
       const dated = sessionDatedUsage(session);
-      return { availability: "available", sessionId, report, usageByDate: dated.rows, usageByDateTruncated: dated.truncated };
+      return { availability: "available", sessionId, report };
     }),
   );
   return {
@@ -730,7 +756,7 @@ export type GlobalReport = { /* existing */ coverage?: SessionCoverage };
 
 - [ ] **Step 4: Assert the wiring end to end**
 
-Append to `tests/unit/history-reports.test.ts` (existing helpers build a temp root with manifests):
+Append to `tests/unit/history-reports.test.ts` (existing helpers build a temp root with manifests). The helpers this step names — `optionsWithSource`, `optionsWithUnmarkedSource`, `headerFor`, `validSource` — **do not exist yet**: define them in that file as thin wrappers over the existing temp-root helpers (`discoverHistory` + `loadHistoryReports`), each writing one manifest plus one JSONL source into a fresh temp root.
 
 ```ts
 test("history and global report the same coverage from one scan input", async () => {
@@ -1221,6 +1247,10 @@ git commit -m "feat: attribute child runs by observation time and add the cross-
 // append to tests/unit/dated-usage.test.ts (new file)
 // (the fixture helper and `projectUsage` below live here; history-reports.test.ts
 //  imports `sessionDatedUsage` only for the wiring assertions)
+// `longSessionOptions` does NOT exist yet: define it in this file (or in a
+// `tests/unit/helpers/session-fixture.ts` you create) as a helper that writes ONE
+// manifest plus a JSONL source with records on N distinct UTC days into a fresh
+// temp root and returns `LoadHistoryOptions`.
 function canonicalOf(file: string, sessionId: string): CanonicalSession {
   const source = readFileSync(`tests/fixtures/pi/0.85.1/${file}`, "utf8");
   const built = buildCanonicalSession({
@@ -1455,14 +1485,42 @@ export function sessionDatedUsage(session: CanonicalSession): {
 }
 ```
 
-Attach it in both loaders (Task 2 already returns `usageByDate` on the available
-history variant; the current model gains the same projection in Task 6):
+Attach it in both loaders:
 
 ```ts
 // src/ui/load-history.ts — inside scanHistory, before returning the available row
       const dated = sessionDatedUsage(session);
       return { availability: "available", sessionId, report, usageByDate: dated.dates, usageByDateTruncated: dated.truncated };
 ```
+
+```ts
+// src/ui/load-history.ts — the available variant gains the two fields (this task,
+// not Task 2: the module must exist first)
+type SessionScan =
+  | { availability: "available"; sessionId: string; report: SessionReport;
+      usageByDate: readonly DateUsageRow[]; usageByDateTruncated: boolean }
+  | { availability: "unavailable"; sessionId: string; reason: CoverageReason };
+```
+
+`loadGlobalReport` folds the same rows instead of walking report timestamps, so
+the aggregate dates have one attribution source too — delete the local
+`usageEvents(report)` helper and build each session's contribution from
+`scan.sessions` (`availability === "available"` → its `usageByDate` rows), summing
+`totalTokens`/`cost`/`generations`/`tools` per date and counting distinct sessions.
+
+```ts
+// src/ui/load-current.ts + src/ui/current.ts — the same projection for current views
+type CurrentTuiModel = { /* existing */
+  /** Attached by the loader; absent only for a hand-built model (tests). */
+  datedUsage?: { dates: DateUsageRow[]; models: DatedModelRow[]; truncated: boolean; modelsTruncated: boolean } };
+
+/** `datedUsage` is optional so existing callers compile; the loader always passes it. */
+export function createCurrentTuiModel(report: SessionReport, scope: Scope, datedUsage?: CurrentTuiModel["datedUsage"]): CurrentTuiModel;
+```
+
+`loadCurrentSessionReport` computes `datedUsage: sessionDatedUsage(session)` on the
+already-built canonical session (no extra parse, no second build) and passes it as
+the third argument. Task 6 then only copies and folds it.
 
 ```ts
 function toHistoricalSession(session: SessionScan): HistoricalSession {
@@ -1477,6 +1535,7 @@ function toHistoricalSession(session: SessionScan): HistoricalSession {
 
 ```ts
 test("the newest retained date reconciles with the session detail", async () => {
+  // `longSessionOptions` is the helper defined in Step 1's test file.
   const options = await longSessionOptions({ days: 400 });
   const history = await loadHistoryReports(options);
   const session = history.sessions[0];
@@ -1602,10 +1661,15 @@ test("the capability table is data, not client prose", () => {
 });
 ```
 
-> `modelForMany`/`modelFor` already exist in `tests/unit/bundle.test.ts`.
-> `modelForMany` must let each model carry a distinct provider/model pair on one
-> date; the existing helper builds one generation per date, so extend it to emit
-> one generation per model name on the newest date.
+> `modelFor`/`modelForMany` do **not** both exist: `tests/unit/bundle.test.ts` has
+> `modelFor` (one generation per date) and **no** `modelForMany`. Create
+> `modelForMany(scope, models)` in that file so each name produces its own
+> provider/model pair on the newest date, and **extend `modelFor`** to pass a
+> `datedUsage` projection to `createCurrentTuiModel` (Task 5) — otherwise
+> `model.datedUsage` is `undefined`, `currentView()` has no dated rows, and the
+> existing 366-row cap test fails. The projection for a fixture is just
+> `sessionDatedUsage`-shaped data built from the report's own generations:
+> `{ dates: [...], models: [...], truncated: false, modelsTruncated: false }`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1643,16 +1707,21 @@ export function buildDailyRows(
 ): { rows: DailyRow[]; truncated: boolean } { /* sum by date; keep the newest MAX_DATED_DATES */ }
 ```
 
-`bundle.ts` replaces its private `dailyRows()` with
-`buildDailyRows([{ sessionId: model.report.sessionId, rows: view.usageByDate, truncated: view.usageByDateTruncated }])`;
-`html.ts` imports and re-exports `buildDailyRows` under its existing public name
-`buildDailyActivityRows` so `renderHtml`'s adapter and `tests/unit/html.test.ts`
-keep working (that test's expectations gain `composition`; lines ~492, 514, 520).
-**Delete** the old `dailyRows()`/`buildDailyActivityRows` bodies — leaving either
-is a second date implementation (spec R19).
+`bundle.ts` replaces its private `dailyRows()` with a fold over the projection the
+loader attached. `html.ts` keeps `buildDailyActivityRows` **only** for the legacy
+`renderHtml(HtmlReport)` adapter, which receives reports rather than canonical
+sessions; mark it `legacyDailyRows`-equivalent with a comment and a pointer to
+spec §15 — the production document (`renderInspectorBundle`) never calls it:
 
-The history/global daily fold passes every available session's rows; an
-unavailable session contributes nothing and is counted only in the coverage line.
+| Legacy call site | Why it stays |
+| --- | --- |
+| `src/ui/html.ts:499` (`bundlePayloadFromReport`, current view) | The adapter has a `SessionReport`, no canonical session, so it cannot produce attributed rows. Deferred removal (spec §15) |
+| `src/ui/html.ts:1222` (`projectReport`, current) | same |
+| `src/ui/html.ts:1241` (`projectReport`, history/global) | **Production**: `renderInspectorBundle` → `sectionProjection` → here. Change this branch to fold `input.report.sessions[].usageByDate` (available after Task 5) instead of `buildDailyActivityRows(reports)` |
+
+So in this task: history/global aggregates move to the fold, the legacy current
+branch keeps its report-based bucketing (documented), and `bundle.ts:dailyRows` is
+deleted outright. Do not delete `renderHtml` itself in this milestone.
 
 ```ts
 // src/ui/bundle.ts — the per-section capability table (spec R8, server-side truth)
@@ -1672,20 +1741,22 @@ const NO_CAPABILITIES: readonly Tab[] = [];
 ```ts
 // src/ui/bundle.ts — inside currentView()
   const projection = model.datedUsage;   // attached by load-current.ts: { dates, models, truncated, modelsTruncated }
-  const daily = buildDailyRows([
-    { sessionId: model.report.sessionId, rows: projection.dates, truncated: projection.truncated },
-  ]);
+  const daily = projection === undefined
+    ? undefined
+    : buildDailyRows([{ sessionId: model.report.sessionId, rows: projection.dates, truncated: projection.truncated }]);
   return {
     availability: "available",
     report: model.report,
-    usageByDate: projection.dates,
-    daily: daily.rows,
-    dailyTruncated: daily.truncated,
-    datedModels: projection.models,
-    modelsTruncated: projection.modelsTruncated,
+    ...(projection === undefined ? {} : { usageByDate: projection.dates, datedModels: projection.models, modelsTruncated: projection.modelsTruncated }),
+    ...(daily === undefined ? {} : { daily: daily.rows, dailyTruncated: daily.truncated }),
     capabilities: CAPABILITIES.current,
   };
 ```
+
+An absent projection is **absent data**, never zero: the keys stay out of the
+payload and the client renders its empty state. Production always passes it
+(`loadCurrentSessionReport`), so a missing projection means a hand-built test
+model — which is exactly why the fixture helpers must pass one.
 
 The 366-row cap test in `bundle.test.ts` must keep passing unchanged; this task
 only adds `composition` to each row and `datedModels`/`capabilities` to the view.
@@ -2052,6 +2123,10 @@ git commit -m "feat: add the pure range module with pair validation and UTC pres
 
 - [ ] **Step 1: Write the failing test**
 
+Define the row helpers this file needs (`dailyRow`, `usageRow`, `datedModel`,
+`toolRow`, and a `bundleWithTruncatedHistory()` that mutates the fixture bundle)
+inside `tests/unit/report-range.test.ts` — none of them exist yet.
+
 ```ts
 // append to tests/unit/report-range.test.ts
 test("7D and 14D differ on every range-aware widget", () => {
@@ -2403,6 +2478,9 @@ git commit -m "feat: project validated agent model, thinking level and bounded f
 
 ```ts
 // append to tests/unit/html-bundle.test.ts
+// `embedOf(html, section)` does not exist yet: add a small local helper that
+// decodes the embedded payload and returns it, exactly like `embeddedJson()`
+// (you may reuse that helper instead — it returns the whole payload object).
 test("the browser projection keeps identity, time and role fields", async () => {
   const html = renderInspectorBundle(await loadInspectorBundle({ ...input, loadCurrent: async () => currentModelWithAgents() }));
   const projection = embedOf(html, "current") as { views: { active: { tools: unknown[]; agents: unknown[] } } };
@@ -2726,7 +2804,8 @@ Expected: FAIL — the errors table's first column is the raw id.
 - [ ] **Step 3: Join by id and project the friendly fields**
 
 ```ts
-// src/ui/bundle.ts — error rows are built next to the agent rows so the join happens once
+// src/ui/html.ts — the error map lives next to `toolRows`/`agentRows` so the join
+// happens once, in the same file (there is no error mapping in bundle.ts)
 function errorRows(report: SessionReport): ErrorRow[] {
   const toolById = new Map(report.tools.map((tool) => [tool.id, tool]));
   const childIds = new Map<string, string[]>();
@@ -2786,7 +2865,7 @@ Run: `node --import tsx --test tests/unit/html-bundle.test.ts tests/unit/error-l
 Expected: PASS.
 
 ```bash
-git add src/ui/html.ts src/ui/bundle.ts tests/unit/html-bundle.test.ts tests/unit/error-ledger.test.ts
+git add src/ui/html.ts tests/unit/html-bundle.test.ts tests/unit/error-ledger.test.ts
 git commit -m "feat: present tool errors by identity with deterministic one-to-many child links"
 ```
 
@@ -2873,6 +2952,9 @@ function integrationsTable(view){
 - [ ] **Step 4: Assert the capability table drops the old tabs**
 
 ```ts
+// append to tests/unit/html-bundle.test.ts
+// `embedCapabilitiesOf(html)` does not exist yet: decode the payload with the
+// existing `embeddedJson()` helper and read `data.capabilities`.
 test("capabilities expose environment instead of three inventory tabs", async () => {
   const html = renderInspectorBundle(await loadInspectorBundle({ ...input, loadCurrent: async () => modelWithInventory() }));
   const capabilities = embedCapabilitiesOf(html);
@@ -3158,8 +3240,9 @@ import { test } from "node:test";
 import { renderInspectorBundle } from "../../src/ui/html.ts";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 
-// `tests/unit/helpers/` does not exist yet: create this file in this task.
-// Same fixture and same decoding pattern as `tests/unit/html-bundle.test.ts`.
+// `tests/unit/helpers/` does not exist yet, but this file does not need it: it
+// reads the same fixture every other browser test reads, with the same decoding
+// pattern as `tests/unit/html-bundle.test.ts`.
 function bundleFixture(): InspectorBundle {
   return JSON.parse(
     readFileSync(new URL("../fixtures/bundles/inspector-bundle.json", import.meta.url), "utf8"),
@@ -3476,15 +3559,19 @@ export type RawToken = { raw: string; start: number; end: number; quoted: boolea
 
 /**
  * One scanner serves both the parser and the completer: completions need the
- * original character spans, and a second scanner would let the two drift.
- * Returns undefined for an unterminated quote.
+ * original character spans, and a second scanner would let the two drift. It keeps
+ * the parser's current quote rules EXACTLY — both `"` and `'` open a quoted token
+ * (verified in `src/commands/grammar.ts:82-105`), the quotes are part of the raw
+ * span, and there is no escape processing. Returns undefined for an unterminated
+ * quote.
  */
 export function scanInspectorArgs(prefix: string): { tokens: RawToken[]; trailingWhitespace: boolean } | undefined {
   const tokens: RawToken[] = [];
   let index = 0;
   let trailingWhitespace = false;
   while (index < prefix.length) {
-    if (/\s/.test(prefix[index] as string)) {
+    const character = prefix[index] as string;
+    if (/\s/.test(character)) {
       trailingWhitespace = true;
       index += 1;
       continue;
@@ -3492,8 +3579,8 @@ export function scanInspectorArgs(prefix: string): { tokens: RawToken[]; trailin
     trailingWhitespace = false;
     const start = index;
     let raw = "";
-    if (prefix[index] === '"') {
-      const end = prefix.indexOf('"', index + 1);
+    if (character === '"' || character === "'") {
+      const end = prefix.indexOf(character, index + 1);
       if (end < 0) return undefined;
       raw = prefix.slice(index, end + 1);
       index = end + 1;
@@ -3501,19 +3588,31 @@ export function scanInspectorArgs(prefix: string): { tokens: RawToken[]; trailin
       while (index < prefix.length && !/\s/.test(prefix[index] as string)) index += 1;
       raw = prefix.slice(start, index);
     }
-    tokens.push({ raw, start, end: index, quoted: raw.startsWith('"') });
+    tokens.push({ raw, start, end: index, quoted: raw.length >= 2 && (raw.startsWith('"') || raw.startsWith("'")) });
   }
-  return { tokens, trailingWhitespace };
+  return { tokens, trailingWhitespace: prefix.length > 0 && trailingWhitespace };
 }
 
 export function tokenizeInspectorArgs(prefix: string): { tokens: string[]; trailingWhitespace: boolean } | undefined {
   const scanned = scanInspectorArgs(prefix);
   if (scanned === undefined) return undefined;
   return {
-    tokens: scanned.tokens.map((token) => (token.quoted ? token.raw.slice(1, -1).replace(/""/g, '"') : token.raw)),
+    tokens: scanned.tokens.map((token) => (token.quoted ? token.raw.slice(1, -1) : token.raw)),
     trailingWhitespace: scanned.trailingWhitespace,
   };
 }
+```
+
+Add both quote characters to the grammar test so the scanner cannot silently drop
+single-quote support:
+
+```ts
+test("single-quoted arguments keep the parser's current behaviour", () => {
+  const scanned = scanInspectorArgs("json history --output '/tmp/a b.json'");
+  assert.equal(scanned?.tokens.at(-1)?.raw, "'/tmp/a b.json'");
+  assert.equal(scanned?.tokens.at(-1)?.quoted, true);
+  assert.deepEqual(tokenizeInspectorArgs("json history --output '/tmp/a b.json'")?.tokens, ["json", "history", "--output", "/tmp/a b.json"]);
+});
 ```
 
 ```ts
@@ -3523,10 +3622,20 @@ function withReplacement(prefix: string, span: { start: number; end: number }, r
   return prefix.slice(0, span.start) + replacement + prefix.slice(span.end);
 }
 
-function items(values: readonly string[], prefix: string, span: { start: number; end: number }, label: (value: string) => string = (value) => value): AutocompleteItem[] | null {
-  const matches = values.filter((value) => value.startsWith(replacementTarget(prefix, span)));
+/**
+ * `current` is the already-stripped text of the token under the cursor (empty for
+ * the trailing span), so matching keeps the parser's view of the token; the value
+ * is the rewritten raw prefix.
+ */
+function items(
+  values: readonly string[],
+  current: string,
+  prefix: string,
+  span: { start: number; end: number },
+): AutocompleteItem[] | null {
+  const matches = values.filter((value) => value.startsWith(current));
   if (matches.length === 0) return null;
-  return matches.map((value) => ({ value: withReplacement(prefix, span, value), label: label(value) }));
+  return matches.map((value) => ({ value: withReplacement(prefix, span, value), label: value }));
 }
 ```
 
@@ -3923,6 +4032,8 @@ git commit -m "test: extend the privacy corpus, add coverage and long-session fi
 **Type consistency.** `CoverageReason` (Task 1) and `SessionCoverage`/`buildSessionCoverage` (Task 2) are used verbatim in Tasks 3, 23 — the older names `CoverageSummary`/`buildCoverage` are gone (spec R18). `AgentRun.observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` already exist on `main` (Task 4 retired) and are consumed by Tasks 11, 12, 14, 18 and the fixtures. `RangeState` (Task 8) is the only range type in Tasks 9, 16, 17. `InspectorRoute`/`deriveView` (Task 16) are consumed by Tasks 17-18 and asserted in `tests/unit/html-navigation.test.ts`. `scanInspectorArgs` (Task 19) is the only span source used by completions in Tasks 19-20. `capabilities` is produced by Task 6 (`CAPABILITIES`) and consumed by Tasks 15-18. `sessionDatedUsage` (Task 5, in `src/ui/dated-usage.ts`) is the only function that turns timestamps into dates; `buildDailyRows` (Task 6, in `src/ui/daily.ts`) only folds its output, and `DateUsageRow`/`DatedModelRow`/`SafeUsage` are defined once there.
 
 **Re-baseline amendments (v2).** Applied on top of the six review amendments below: (a) Tasks 4 and 10 are retired — `main` already derives agent `observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` and validates them (`910a665`), and Task 10 is reduced to the child-usage fraction; (b) the coverage aggregate is `SessionCoverage` in `src/core/session-coverage.ts` with a total reason→code mapping (spec R18/R20); (c) Task 2's reason plumbing now names all five real `scanHistory` failure paths instead of the two the pre-merge plan assumed; (d) Task 5 groups dates from `CanonicalUsageLine.attributedAt` and the truncation flag also covers `usage.dated === "partial"`, so `SessionReport` is an assertion target rather than a second attribution source (spec R19); (e) Task 6 adds `src/ui/daily.ts` as the single date-bucketing builder and the server-side capability table; (f) the file anchors were re-pointed at the real v0.8.0 code (`sessionView`/`toolRows`/`agentRows` in `html.ts`, error rows in `sessionView`, no `tests/unit/helpers/` directory, `pi-tui` already installed); (g) version is 0.9.0 and the ADR is 0017.
+
+**Review pass on the re-baselined docs (13 findings, all fixed).** A fresh read-only reviewer compared the amended docs against `main` and found: (1) Task 2 read `dated.rows` before Task 5 defined `dates` and (2) referenced a module Task 5 had not created → the dated fields now move entirely into Task 5 (`SessionScan`/`HistoricalSession`); (3) `model.datedUsage` had no producer and no fixture → Task 5 extends `createCurrentTuiModel` with an optional projection, and Task 6 states that the fixture helpers must pass one (absent projection = absent keys, never zero); (4) `modelForMany` did not exist → Task 6 now says to create it; (5) Task 14 contradicted itself about `errorRows` living in `bundle.ts` → kept in `html.ts`; (6) Task 6's "no timestamp walk left" ignored three `buildDailyActivityRows` call sites → the legacy current-view sites are named and documented as spec §5.4's one exception with a new §15 deferral, while the production history/global branch moves to the fold; (7) Task 19's scanner dropped single-quote support and invented `""` unescaping → both quote characters are scanned with the parser's exact current semantics and a grammar test covers it, and the undefined `replacementTarget` helper was replaced by an explicit `current` parameter; (8)/(9)/(12) undefined test helpers and a missing `discoveryLimited` declaration/promotion reasons → each task now declares its helpers, `COVERAGE_REASON_CODES` totality is enforced by its type plus one key test (no non-existent runtime code lists), and the two promotion sites are labelled; (10) "five distinct points" was not a literal count → "seven return sites, five causes" in both docs; (11) `filterView`/`historyRowRange` were assigned to the wrong task in the shared interfaces → both now belong to Task 9; (13) a mislabelled helper comment in Task 17.
 
 **Amendments after plan review (all six applied).** (1) Task 5 now implements the full logical-call attribution — generation, tool-result (on the CALL date), compaction and branch-summary usage — with composition-complete rows plus observation-only `tools`/`errors` counters, a mixed-usage fixture, and `sum(usageByDate) === the same range projection of SessionReport.usage`. (2) Task 9 decides truncation BEFORE returning: member-true rows whose range reaches into omitted history carry the exact known subtotal with `partial: true` (labels say `Known`), fully retained ranges stay exact, and ranges entirely inside the omitted period return unavailable rather than zero — all three cases tested. (3) The 1970 sentinel is gone: a preset is an unresolved `RangeIntent` resolved against the active view's observed dates (`resolveRange` returns `undefined` when nothing was observed), custom ranges parse to exact resolved pairs, and Task 16 adds the preset deep-link/reload regression plus a no-`1970` assertion. (4) Task 2 produces every declared `CoverageReason` on a real path — `session-unreadable` for malformed JSON, missing/invalid header, id mismatch, and `replay-failed` from an injectable replay seam — with focused tests and reason-count assertions. (5) Task 4's join is an explicit `Map<callId, { message, observedAt }>`; a result that cannot be deterministically joined publishes no run, and the contradictory test was replaced by skipped-behaviour tests. (6) Task 3 separates value availability from coverage availability: a legacy aggregate shows its usage with a completeness-unknown qualifier, while `Unavailable` is reserved for a genuinely unavailable value (or an empty inspection set), with a regression distinguishing the two.
 
