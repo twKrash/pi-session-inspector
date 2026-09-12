@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import type { IntegrationObservation } from "../../src/core/events.ts";
+import type { FoldedAggregateEvidence } from "../../src/core/evidence.ts";
 import type { SessionReport } from "../../src/core/reports.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { readIntegrationPresence } from "../../src/integrations/presence.ts";
@@ -125,14 +126,33 @@ function uatObservation(): SessionObservation {
   };
 }
 
+/**
+ * The checkpoint's folded L0 evidence, exactly as the composition root builds
+ * it: the seal marks pruned live detail, so the report keeps the cold-state
+ * notice without any L2 module reading storage.
+ */
+function uatFoldedEvidence(): FoldedAggregateEvidence {
+  return {
+    kind: "checkpoint-wal-aggregates",
+    sessionId: UAT_SESSION_ID,
+    foldedThrough: { "uat-writer": 2 },
+    sealedThrough: { "uat-writer": 1 },
+    checkpointedAt: { state: "unavailable" },
+    provenance: {
+      source: "checkpoint",
+      authority: "derived",
+      schemaVersion: 1,
+    },
+  };
+}
+
 async function readUatReport(
-  root: string,
   observation: SessionObservation,
 ): Promise<SessionReport> {
   const model = await loadCurrentSessionReport(UAT_FILE, "tree", {
     leafId: UAT_LEAF_ID,
     observation,
-    inspectorRoot: root,
+    evidence: { atomic: [], folded: [uatFoldedEvidence()] },
   });
   assert.ok(model);
   return model.report;
@@ -158,10 +178,11 @@ async function withUatRoot<T>(run: (root: string) => Promise<T>): Promise<T> {
 }
 
 test("reports Caveman, inventory, agent activity, and absent-vs-unavailable integrations", async () => {
-  await withUatRoot(async (root) => {
-    const report = await readUatReport(root, uatObservation());
+  await withUatRoot(async () => {
+    const report = await readUatReport(uatObservation());
 
-    // The checkpoint is consumed for the cold-WAL notice, never rewritten.
+    // The pruned-detail seal in the folded evidence keeps the cold-state
+    // notice: L2 no longer reads the checkpoint itself.
     assert.equal(report.walDetail, "expired");
 
     const caveman = integrationRow(report, "caveman");
@@ -212,8 +233,8 @@ test("repeated reads are byte-identical and leave the checkpoint untouched", asy
     const before = await readFile(checkpointPath, "utf8");
 
     const observation = uatObservation();
-    const first = await readUatReport(root, observation);
-    const second = await readUatReport(root, observation);
+    const first = await readUatReport(observation);
+    const second = await readUatReport(observation);
 
     assert.equal(renderJson(first), renderJson(second));
     assert.equal(JSON.stringify(first), JSON.stringify(second));
@@ -249,6 +270,9 @@ test("bundle render is deterministic across repeated loads of the same inputs", 
         isPidAlive: () => true,
       },
       observation: uatObservation(),
+      currentEvidence: {
+        evidence: { atomic: [], folded: [uatFoldedEvidence()] },
+      },
       current: { sessionFile: UAT_FILE, leafId: UAT_LEAF_ID },
       loadHistory: async () => history,
       loadGlobal: async () => global,

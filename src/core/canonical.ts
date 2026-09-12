@@ -219,6 +219,13 @@ export type CanonicalSession = {
   parentSession: CanonicalRelationship;
   graph: CanonicalEntryGraph;
   markerEntryId: string;
+  /**
+   * R49: the scope decision L2 consumes, in resolution order (active ancestry
+   * after the marker, or every entry after it). L2 maps these ids back to
+   * parsed entries and never re-derives scope; an id without a parsed entry
+   * (an unknown-semantic node) is skipped downstream.
+   */
+  scopedEntryIds: string[];
   generations: Generation[];
   tools: Tool[];
   compactions: Compaction[];
@@ -484,6 +491,7 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
     parentSession,
     graph,
     markerEntryId: resolution.markerEntryId,
+    scopedEntryIds: [...resolution.entryIds],
     generations: reduced.generations,
     tools,
     compactions: reduced.compactions,

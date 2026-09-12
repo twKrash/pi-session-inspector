@@ -6,6 +6,7 @@ import {
   buildCanonicalSession,
   projectEvidenceHealth,
 } from "../../src/core/canonical.ts";
+import { reduceEntries } from "../../src/core/reduce.ts";
 import type {
   FoldedAggregateEvidence,
   LiveTimingObservation,
@@ -64,6 +65,63 @@ function parsed(records: object[]) {
       "\n",
   );
 }
+
+test("R49: a ready session publishes the builder's resolved scoped entry ids", () => {
+  // The full native graph is not the scoped set: the branching fixture keeps a
+  // pre-marker entry, a sibling branch, and an unknown-semantic node.
+  const source = readFileSync(
+    "tests/fixtures/pi/0.85.1/branching.jsonl",
+    "utf8",
+  );
+  const branching = parseSessionJsonl(source);
+  const active = buildCanonicalSession({
+    parsed: branching,
+    scope: "active",
+    leafId: "e6",
+    evidence: { atomic: [], folded: [] },
+  });
+  const tree = buildCanonicalSession({
+    parsed: branching,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(active.state, "ready");
+  assert.equal(tree.state, "ready");
+  const activeSession = active.state === "ready" ? active.session : undefined;
+  const treeSession = tree.state === "ready" ? tree.session : undefined;
+  assert.ok(activeSession && treeSession);
+
+  // L2 consumes these ids instead of re-deriving scope; reducing every graph
+  // node would report the sibling branch (72 tokens) for an active read (42).
+  const byId = new Map(branching.entries.map((entry) => [entry.id, entry]));
+  const scoped = (ids: readonly string[]) =>
+    ids.flatMap((id) => {
+      const entry = byId.get(id);
+      return entry === undefined ? [] : [entry];
+    });
+  assert.equal(
+    reduceEntries(branching.id, scoped(activeSession.scopedEntryIds)).usage
+      .totalTokens,
+    42,
+  );
+  assert.equal(
+    reduceEntries(branching.id, scoped(treeSession.scopedEntryIds)).usage
+      .totalTokens,
+    72,
+  );
+  assert.notDeepEqual(activeSession.scopedEntryIds, treeSession.scopedEntryIds);
+  // Scoped, never the whole graph: the marker itself and the pre-marker entry
+  // stay out, and the unknown-semantic node stays in (L2 skips it by parse).
+  assert.equal(activeSession.scopedEntryIds.includes("tracking-marker"), false);
+  assert.equal(treeSession.scopedEntryIds.includes("tracking-marker"), false);
+  assert.equal(activeSession.scopedEntryIds.includes("e7"), false);
+  assert.equal(treeSession.scopedEntryIds.includes("e7"), true);
+  assert.equal(
+    activeSession.graph.nodes.length > activeSession.scopedEntryIds.length,
+    true,
+  );
+});
 
 function skillFact(): SkillInvocationObservation {
   return {

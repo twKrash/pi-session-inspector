@@ -19,6 +19,7 @@ import {
   writeCheckpoint,
   type Checkpoint,
 } from "../../src/storage/checkpoint.ts";
+import type { FoldedAggregateEvidence } from "../../src/core/evidence.ts";
 import { acquireMaintenanceLease } from "../../src/storage/lease.ts";
 import { pruneExpiredWalSegments } from "../../src/storage/retention.ts";
 import { recoverSession } from "../../src/storage/recovery.ts";
@@ -75,6 +76,77 @@ function recordFor(
 
 function record(sequence: number, timestamp: string): string {
   return recordFor("writer-1", sequence, timestamp);
+}
+
+/**
+ * The checkpoint's folded L0 evidence as the composition root builds it: the
+ * aggregates plus their exact cursor/seal boundary and observation times.
+ */
+function foldedEvidence(
+  sessionId: string,
+  checkpoint: Checkpoint,
+): FoldedAggregateEvidence[] {
+  const checkpointedAt = checkpoint.evidence?.checkpointedAt;
+  const expiredBefore =
+    checkpoint.evidence?.detailCoverage?.walDetailExpiredBefore;
+  const time: FoldedAggregateEvidence["checkpointedAt"] =
+    checkpointedAt === undefined
+      ? { state: "unavailable" }
+      : { state: "known", at: checkpointedAt, basis: "checkpoint-observer" };
+  const provenance = {
+    source: "checkpoint",
+    authority: "derived",
+    schemaVersion: 1,
+  } as const;
+  const evidence: FoldedAggregateEvidence[] = [
+    {
+      kind: "checkpoint-wal-aggregates",
+      sessionId,
+      foldedThrough: { ...checkpoint.cursors.wal },
+      sealedThrough:
+        checkpoint.sealingVersion === 1
+          ? { ...(checkpoint.sealedWal ?? {}) }
+          : {},
+      ...(checkpoint.aggregates.integrationCounters === undefined
+        ? {}
+        : { integrationCounters: checkpoint.aggregates.integrationCounters }),
+      ...(checkpoint.aggregates.skillInvocations === undefined
+        ? {}
+        : { skillInvocations: checkpoint.aggregates.skillInvocations }),
+      ...(checkpoint.aggregates.presence?.permission === true
+        ? { presence: { permission: true } }
+        : {}),
+      ...(expiredBefore === undefined
+        ? {}
+        : { detailExpiredBefore: expiredBefore }),
+      checkpointedAt: time,
+      provenance,
+    },
+  ];
+  const counts = checkpoint.aggregates.resourceCounts;
+  if (counts === undefined) return evidence;
+  const observedAt = counts.observedAt;
+  evidence.push({
+    kind: "checkpoint-resource-aggregates",
+    sessionId,
+    resourceCounts: {
+      commands: counts.commands,
+      skills: counts.skills,
+      ...(counts.resources === undefined
+        ? {}
+        : { resources: counts.resources }),
+      ...(counts.toolSources === undefined
+        ? {}
+        : { toolSources: counts.toolSources }),
+    },
+    observedAt:
+      observedAt === undefined
+        ? { state: "unavailable" }
+        : { state: "known", at: observedAt, basis: "inventory-observer" },
+    checkpointedAt: time,
+    provenance,
+  });
+  return evidence;
 }
 
 async function setModifiedTime(path: string, iso: string): Promise<void> {
@@ -480,13 +552,17 @@ test("above replay-record budget maintenance incrementally prunes and carries co
           (await readdir(shard)).some((name) => name.endsWith(".jsonl")),
         );
     }
-    assert.equal(
-      (await readCheckpoint({ directory }))?.sealedWal?.["writer-1"],
-      306000,
-    );
+    const checkpoint = await readCheckpoint({ directory });
+    assert.equal(checkpoint?.sealedWal?.["writer-1"], 306000);
+    assert.ok(checkpoint);
     const model = await loadCurrentSessionReport(source, "tree", {
       leafId: null,
-      inspectorRoot: root,
+      // The folded evidence a converged caller builds from the checkpoint; the
+      // loader itself never reads storage.
+      evidence: {
+        atomic: [],
+        folded: foldedEvidence("session-1", checkpoint),
+      },
     });
     assert.equal(model?.report.walDetail, "expired");
   } finally {
@@ -1306,9 +1382,14 @@ test("cold-detail notice reaches JSON and HTML while native data stays available
       false,
     );
 
+    const checkpoint = await readCheckpoint({ directory });
+    assert.ok(checkpoint);
     const model = await loadCurrentSessionReport(source, "tree", {
       leafId: null,
-      inspectorRoot: root,
+      evidence: {
+        atomic: [],
+        folded: foldedEvidence("session-1", checkpoint),
+      },
     });
     assert.ok(model);
     const report = model.report;

@@ -45,9 +45,18 @@ export type RecoveryResult = {
   diagnostics: RecoveryDiagnostic[];
   /** Telemetry folded strictly after each writer's checkpoint WAL cursor. */
   deltaCounters: FoldedCounters;
+  /**
+   * R46: the bounded, already-validated retained records this replay parsed,
+   * capped by the existing replay budget and exposed in the `RetainedWalRecord`
+   * shape L1 consumes. Nothing is parsed twice and no raw producer content is
+   * carried: `telemetry` is a validated envelope and `timing` a validated
+   * lifecycle payload. A partial replay exposes no records, exactly like its
+   * `deltaCounters`, so an incomplete suffix can never be folded downstream.
+   */
+  records: RecoveredWalRecord[];
 };
 
-type WalRecord = {
+export type RecoveredWalRecord = {
   eventId: string;
   timestamp: string;
   writerId: string;
@@ -64,6 +73,8 @@ type WalRecord = {
   };
   telemetry?: Record<string, unknown>;
 };
+
+type WalRecord = RecoveredWalRecord;
 
 type ReplayBudget = { segments: number; bytes: number; records: number };
 
@@ -124,6 +135,7 @@ export async function recoverSession({
     },
     running: recoverRunning(replay.records),
     diagnostics: [...diagnostics].sort(),
+    records: replay.unavailable ? [] : replay.records,
     deltaCounters: replay.unavailable
       ? emptyFoldedCounters()
       : counterDeltaAfterCursors(
@@ -513,6 +525,7 @@ function unavailableResult(
     },
     running: [],
     diagnostics: [...diagnostics].sort(),
+    records: [],
     deltaCounters: emptyFoldedCounters(),
   };
 }

@@ -7,6 +7,11 @@ import {
 import { completeInspectorCommand } from "./commands/completions.ts";
 import { parseInspectorCommand } from "./commands/grammar.ts";
 import { createInspectorHelpComponent } from "./commands/help.ts";
+import type {
+  FoldedAggregateEvidence,
+  L0Evidence,
+  LiveTimingObservation,
+} from "./core/evidence.ts";
 import {
   foldedFromCheckpointAggregates,
   mergeFoldedCounters,
@@ -18,8 +23,13 @@ import {
   registerLiveCounters as registerLiveCounterProducers,
 } from "./integrations/live-counters.ts";
 import { readIntegrationPresence } from "./integrations/presence.ts";
+import { readSkillInvocations } from "./integrations/skill-invocations.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
-import { type LiveWalWriter, registerLiveWal } from "./pi/live-wal.ts";
+import {
+  type LiveWalRegistration,
+  type LiveWalWriter,
+  registerLiveWal,
+} from "./pi/live-wal.ts";
 import {
   readSessionInventory,
   refreshSessionInventory,
@@ -27,10 +37,13 @@ import {
 } from "./pi/session-start.ts";
 import { setupSessionWal } from "./pi/session-wal.ts";
 import { trackPiSession } from "./pi/tracking-pi.ts";
-import { readCheckpoint } from "./storage/checkpoint.ts";
-import { refreshInventorySnapshot } from "./storage/inventory-snapshot.ts";
+import { readCheckpoint, type Checkpoint } from "./storage/checkpoint.ts";
+import {
+  boundInventorySnapshot,
+  refreshInventorySnapshot,
+} from "./storage/inventory-snapshot.ts";
 import { scheduleMaintenance } from "./storage/maintenance.ts";
-import { recoverSession } from "./storage/recovery.ts";
+import { recoverSession, type RecoveredWalRecord } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
 import { loadInspectorBundle } from "./ui/bundle.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
@@ -62,6 +75,8 @@ const description = "Open Pi Session Inspector reports";
  */
 type LiveSessionState = {
   writer?: LiveWalWriter;
+  /** Bounded live-producer state (R29); its overflow count reaches L1. */
+  live?: LiveWalRegistration;
   ready: boolean;
   inventory?: InventorySnapshot;
   inventoryNames: ReadonlySet<string>;
@@ -83,9 +98,13 @@ function rememberInventory(
   inventory: InventorySnapshot,
   scope: { root: string; sessionId: string },
 ): void {
+  // The persisted bound is applied once, at capture: every consumer of the
+  // in-memory snapshot (reports, presence, counter allowlists) then sees the
+  // same bounded rows the writer publishes, never the unbounded producer read.
+  const bounded = boundInventorySnapshot(inventory);
   const state = liveSession(scope.sessionId);
-  state.inventory = inventory;
-  state.inventoryNames = new Set(inventory.skills.map((skill) => skill.name));
+  state.inventory = bounded;
+  state.inventoryNames = new Set(bounded.skills.map((skill) => skill.name));
   liveInventoryScope = scope;
 }
 
@@ -142,9 +161,12 @@ export function registerTracking(
           liveSession(input.sessionId).inventoryNames = new Set<string>();
         } else {
           rememberInventory(snapshot, scope);
+          // R37: the session-start capture is a successful observation, so it
+          // carries the observation time the retention/§14.2 contract needs.
           void refreshInventorySnapshot({
             directory: join(input.root, "sessions", input.sessionId),
             snapshot,
+            observedAt: new Date().toISOString(),
           }).catch(() => undefined);
         }
         // Promotions are idempotent per session: a second `session_start` for
@@ -219,11 +241,17 @@ function setupProductionSessionWal(input: {
       return writer;
     },
     registerLive: (api, writer) => {
-      registerLiveWal(api as LiveObserverApi, writer as LiveWalWriter, {
-        sessionId: input.sessionId,
-        now: () => new Date(),
-        randomId: randomUUID,
-      });
+      // Keep the bounded registration: its saturating overflow count is the
+      // live-source partiality signal L0 threads into L1 (R29).
+      liveSession(input.sessionId).live = registerLiveWal(
+        api as LiveObserverApi,
+        writer as LiveWalWriter,
+        {
+          sessionId: input.sessionId,
+          now: () => new Date(),
+          randomId: randomUUID,
+        },
+      );
     },
     registerLiveCounters: (api, writer, context) => {
       registerLiveCounterProducers(
@@ -294,19 +322,32 @@ async function refreshReportInventory(
 }
 
 /**
- * Builds the process-local observation the report loader consumes. Counters are
- * the effective `merge(on-disk checkpoint aggregates, post-cursor WAL delta)`;
- * the checkpoint read here is never written back. Presence is durable because
- * `counters.presence.permission` ORs every folded `permissions:ready` from
- * earlier processes, and derives from the current in-memory inventory; without
- * a readable inventory every non-permission key stays `unknown`, never a
- * guessed `absent`. The inventory snapshot is refreshed here before use.
+ * One session read's evidence: the unreconciled L0 bundle the canonical
+ * builder consumes, the process-local observation older call sites still use,
+ * and the live signals L1 needs (R29/R41).
  */
-async function readSessionObservation(input: {
+type SessionEvidenceRead = {
+  evidence: L0Evidence;
+  observation: SessionObservation;
+  walRecords: RecoveredWalRecord[];
+  liveOverflow: number;
+};
+
+/**
+ * Reads one session's Inspector-owned evidence exactly once: the sanitized
+ * inventory is refreshed, the checkpoint and WAL are read through their
+ * validated readers, and the result is the *unreconciled* L0 bundle (atomic
+ * skill invocations + live timings, folded checkpoint aggregates/resources)
+ * plus the process-local observation and the retained WAL records. L1 owns
+ * every merge, join and fold; nothing here reconciles, and no prompt, response,
+ * tool payload, path, or secret can enter a fact. The checkpoint read is never
+ * written back.
+ */
+async function readSessionEvidence(input: {
   api: ReportInventoryApi;
   root: string;
   sessionId: string | undefined;
-}): Promise<SessionObservation | undefined> {
+}): Promise<SessionEvidenceRead | undefined> {
   if (input.sessionId === undefined) return undefined;
   try {
     // Report-load refresh before any snapshot is read or projected.
@@ -322,35 +363,181 @@ async function readSessionObservation(input: {
       // Pi-source baseline and `recovered.aggregates` is deliberately ignored.
       piCursor: checkpoint?.cursors.pi ?? NO_PI_SOURCE_CURSOR,
     });
+    const state = liveSessions.get(input.sessionId);
+    const inventory = state?.inventory;
+    // The observation keeps its documented contract (`counters` is always the
+    // effective folded bucket, so durable permission presence survives a
+    // previous process); the report DTO's counters come from L1's retained
+    // aggregates instead, and only the L0 evidence below is unreconciled.
     const counters = mergeFoldedCounters(
       foldedFromCheckpointAggregates(checkpoint?.aggregates),
       recovered.deltaCounters,
     );
-    const inventory = liveSessions.get(input.sessionId)?.inventory;
-    const session = liveSessions.get(input.sessionId);
     return {
-      presence: readIntegrationPresence({
-        // Only `source === "extension"` rows may signal extension presence; a
-        // skill sharing the name must never be reported as the extension.
-        extensionCommands:
-          inventory === undefined
-            ? []
-            : inventory.commands
-                .filter((row) => row.source === "extension")
-                .map((row) => row.name),
-        tools:
-          inventory === undefined ? [] : Object.keys(inventory.toolSources),
-        // Durable presence: the bus may have been observed in a previous process.
-        permissionsReady:
-          (session?.ready ?? false) || counters.presence.permission,
-        inventoryAvailable: inventory !== undefined,
-      }),
-      counters,
-      ...(inventory === undefined ? {} : { inventory }),
+      evidence: {
+        atomic: [
+          ...readSkillInvocations({
+            sessionId: input.sessionId,
+            records: recovered.records,
+          }),
+          ...readLiveTimings({
+            sessionId: input.sessionId,
+            records: recovered.records,
+          }),
+        ],
+        folded: foldedCheckpointEvidence(input.sessionId, checkpoint),
+      },
+      observation: {
+        presence: readIntegrationPresence({
+          // Only `source === "extension"` rows may signal extension presence; a
+          // skill sharing the name must never be reported as the extension.
+          extensionCommands:
+            inventory === undefined
+              ? []
+              : inventory.commands
+                  .filter((row) => row.source === "extension")
+                  .map((row) => row.name),
+          tools:
+            inventory === undefined ? [] : Object.keys(inventory.toolSources),
+          // Durable presence: the bus may have been observed in a previous
+          // process, so the folded permission flag is ORed in.
+          permissionsReady:
+            (state?.ready ?? false) || counters.presence.permission,
+          inventoryAvailable: inventory !== undefined,
+        }),
+        counters,
+        ...(inventory === undefined ? {} : { inventory }),
+      },
+      walRecords: recovered.records,
+      liveOverflow: state?.live?.liveOverflow() ?? 0,
     };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Derives the L0 live-timing family from recovery's validated retained records
+ * (R48) at the composition root, so no L2 module reads storage for it. Each
+ * validated record yields at most one fact: the WAL's paired `unknown` status
+ * is the completed state, `unsupported` categories stay unsupported, and any
+ * record without a validated timing yields nothing — never a fabricated fact.
+ */
+function readLiveTimings(input: {
+  sessionId: string;
+  records: readonly RecoveredWalRecord[];
+}): LiveTimingObservation[] {
+  const facts: LiveTimingObservation[] = [];
+  for (const record of input.records) {
+    const timing = record.kind === "live_timing" ? record.timing : undefined;
+    if (timing === undefined) continue;
+    facts.push({
+      factId: `live-timing:${record.eventId}`,
+      sessionId: input.sessionId,
+      kind: "live-timing",
+      category: timing.category,
+      status: timing.status === "unknown" ? "complete" : timing.status,
+      ...(timing.subjectId === undefined
+        ? {}
+        : { subjectId: timing.subjectId }),
+      ...(timing.startedAt === undefined
+        ? {}
+        : { startedAt: timing.startedAt }),
+      ...(timing.endedAt === undefined ? {} : { endedAt: timing.endedAt }),
+      ...(timing.durationMs === undefined
+        ? {}
+        : { durationMs: timing.durationMs }),
+      provenance: {
+        source: "inspector-wal",
+        authority: "live",
+        recordId: record.eventId,
+        schemaVersion: 1,
+      },
+      time: { state: "known", at: record.timestamp, basis: "wal-observer" },
+    });
+  }
+  return facts;
+}
+
+/**
+ * Translates a validated checkpoint into folded L0 evidence: the aggregates
+ * plus their exact cursor/seal boundary and observation times. A checkpoint is
+ * its own Pi-source baseline, so the read never advances or rewrites it, and a
+ * session without one carries no folded evidence (absence is never zero).
+ */
+function foldedCheckpointEvidence(
+  sessionId: string,
+  checkpoint: Checkpoint | undefined,
+): FoldedAggregateEvidence[] {
+  if (checkpoint === undefined) return [];
+  const at = checkpoint.evidence?.checkpointedAt;
+  const sealedThrough =
+    checkpoint.sealingVersion === 1 ? { ...(checkpoint.sealedWal ?? {}) } : {};
+  const detailExpiredBefore =
+    checkpoint.evidence?.detailCoverage?.walDetailExpiredBefore;
+  const time: FoldedAggregateEvidence["checkpointedAt"] =
+    at === undefined
+      ? { state: "unavailable" }
+      : { state: "known", at, basis: "checkpoint-observer" };
+  const evidence: FoldedAggregateEvidence[] = [
+    {
+      kind: "checkpoint-wal-aggregates",
+      sessionId,
+      foldedThrough: { ...checkpoint.cursors.wal },
+      sealedThrough,
+      ...(checkpoint.aggregates.integrationCounters === undefined
+        ? {}
+        : { integrationCounters: checkpoint.aggregates.integrationCounters }),
+      ...(checkpoint.aggregates.skillInvocations === undefined
+        ? {}
+        : { skillInvocations: checkpoint.aggregates.skillInvocations }),
+      ...(checkpoint.aggregates.skillOverflowInvocations === undefined
+        ? {}
+        : {
+            skillOverflowInvocations:
+              checkpoint.aggregates.skillOverflowInvocations,
+          }),
+      ...(checkpoint.aggregates.presence?.permission === true
+        ? { presence: { permission: true } }
+        : {}),
+      ...(detailExpiredBefore === undefined ? {} : { detailExpiredBefore }),
+      checkpointedAt: time,
+      provenance: {
+        source: "checkpoint",
+        authority: "derived",
+        schemaVersion: 1,
+      },
+    },
+  ];
+  const counts = checkpoint.aggregates.resourceCounts;
+  if (counts !== undefined) {
+    const observedAt = counts.observedAt;
+    evidence.push({
+      kind: "checkpoint-resource-aggregates",
+      sessionId,
+      resourceCounts: {
+        commands: counts.commands,
+        skills: counts.skills,
+        ...(counts.resources === undefined
+          ? {}
+          : { resources: counts.resources }),
+        ...(counts.toolSources === undefined
+          ? {}
+          : { toolSources: counts.toolSources }),
+      },
+      observedAt:
+        observedAt === undefined
+          ? { state: "unavailable" }
+          : { state: "known", at: observedAt, basis: "inventory-observer" },
+      checkpointedAt: time,
+      provenance: {
+        source: "checkpoint",
+        authority: "derived",
+        schemaVersion: 1,
+      },
+    });
+  }
+  return evidence;
 }
 
 function notifyCurrentUnavailable(ctx: {
@@ -496,14 +683,26 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           const sessionFile = sessionManager.getSessionFile();
           const leafId = sessionManager.getLeafId();
           const target = command.mode === "ui" ? "current" : command.target;
-          const observation =
+          const evidenceRead =
             command.mode === "ui" || target === "current" || target === "ledger"
-              ? await readSessionObservation({
+              ? await readSessionEvidence({
                   api: pi,
                   root,
                   sessionId: readSessionId(sessionManager),
                 })
               : undefined;
+          // One read serves both the L0 evidence bundle and the existing
+          // observation, so every current-session call site stays consistent.
+          const currentSession = {
+            observation: evidenceRead?.observation,
+            ...(evidenceRead === undefined
+              ? {}
+              : {
+                  evidence: evidenceRead.evidence,
+                  walRecords: evidenceRead.walRecords,
+                  liveOverflow: evidenceRead.liveOverflow,
+                }),
+          };
           if (command.mode === "tui") {
             if (target !== "current" && target !== "ledger") {
               notifyInfo(
@@ -516,7 +715,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             const model = await loadCurrentSessionReport(
               sessionFile,
               command.scope,
-              { leafId, observation, inspectorRoot: root },
+              { leafId, ...currentSession },
             );
             if (!model) return notifyCurrentUnavailable(ctx);
             await ctx.ui.custom((tui, theme, _keybindings, done) =>
@@ -525,8 +724,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                 load: (scope) =>
                   loadCurrentSessionReport(sessionFile, scope, {
                     leafId,
-                    observation,
-                    inspectorRoot: root,
+                    ...currentSession,
                   }),
                 theme,
                 requestRender: () => tui.requestRender(),
@@ -544,7 +742,16 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
               root,
               sessionDirectory: () => sessionManager.getSessionDir(),
               current: { sessionFile, leafId },
-              ...(observation === undefined ? {} : { observation }),
+              ...(evidenceRead === undefined
+                ? {}
+                : {
+                    observation: evidenceRead.observation,
+                    currentEvidence: {
+                      evidence: evidenceRead.evidence,
+                      walRecords: evidenceRead.walRecords,
+                      liveOverflow: evidenceRead.liveOverflow,
+                    },
+                  }),
               maintenance,
             });
             const generated = generatedReportPath(
@@ -589,7 +796,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             const model = await loadCurrentSessionReport(
               sessionFile,
               command.scope,
-              { leafId, observation, inspectorRoot: root },
+              { leafId, ...currentSession },
             );
             if (!model) return notifyCurrentUnavailable(ctx);
             dto = model.report;
