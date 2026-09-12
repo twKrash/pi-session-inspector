@@ -601,6 +601,25 @@ test("replays manifest-discovered history through the shared session report pipe
             },
           ],
           usageByDateTruncated: false,
+          datedModels: [
+            {
+              date: "2026-02-01",
+              provider: "acme",
+              model: "alpha",
+              generations: 1,
+              totalTokens: 10,
+              cost: 0.1,
+            },
+            {
+              date: "2026-02-02",
+              provider: "acme",
+              model: "alpha",
+              generations: 1,
+              totalTokens: 20,
+              cost: 0.2,
+            },
+          ],
+          modelsTruncated: false,
           report: {
             sessionId: "history-session",
             usage: { totalTokens: 30, cost: 0.3 },
@@ -831,6 +850,8 @@ test("preserves branch-summary usage once through history and global reports", a
         },
       ],
       usageByDateTruncated: false,
+      datedModels: [],
+      modelsTruncated: false,
       report: {
         sessionId: "history-session",
         usage: { totalTokens: 17, cost: 0.17 },

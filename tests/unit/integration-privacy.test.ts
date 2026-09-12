@@ -19,6 +19,7 @@ import { createCurrentTuiComponent } from "../../src/ui/current-tui.ts";
 import { renderInspectorBundle } from "../../src/ui/html.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { emptyObservation } from "../../src/ui/observation.ts";
+import { embedOf } from "../helpers/bundle-scenarios.ts";
 
 const SUBAGENT_SESSION_ID = "session-privacy-test";
 const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
@@ -365,7 +366,34 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
       inventory: { commands: null, skills: null, resources: null },
     },
   };
-  assertNoSentinels(sentinels, renderInspectorBundle(bundle), "bundle HTML");
+  const bundleHtml = renderInspectorBundle(bundle);
+  assertNoSentinels(sentinels, bundleHtml, "bundle HTML");
+
+  // The projected agent and tool rows carry their bounded role/label fields and
+  // the canonical ids only: no producer text, no content, no path field.
+  const projected = embedOf(bundleHtml).current.tree.report;
+  assert.deepEqual(
+    [
+      projected.agents[0].agent,
+      projected.agents[0].observedAt,
+      projected.agents[0].evidenceToolId,
+    ],
+    ["worker", "2026-09-11T09:00:04.000Z", "tool:call-1"],
+  );
+  assertNoSentinels(sentinels, projected.agents, "projected agent rows");
+  assertNoSentinels(sentinels, projected.tools, "projected tool rows");
+  for (const row of [...projected.agents, ...projected.tools]) {
+    for (const forbidden of [
+      "task",
+      "finalOutput",
+      "progressSummary",
+      "transcriptPath",
+      "artifactPaths",
+      "sessionFile",
+    ]) {
+      assert.equal(forbidden in row, false, forbidden);
+    }
+  }
 
   const theme = { fg: (_color: string, text: string) => text };
   for (const tab of CURRENT_TABS) {

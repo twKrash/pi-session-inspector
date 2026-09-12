@@ -293,6 +293,8 @@ function historyReport(session: SessionReport = richReport): HtmlReport {
           sessionId: session.sessionId,
           usageByDate: richUsageByDate,
           usageByDateTruncated: false,
+          datedModels: [],
+          modelsTruncated: false,
           report: session,
         },
         { availability: "unavailable", sessionId: "session-missing" },
@@ -599,6 +601,8 @@ test("a partial session keeps the history and global aggregates partial", () => 
           sessionId: "session-rich",
           usageByDate: richUsageByDate,
           usageByDateTruncated: false,
+          datedModels: [],
+          modelsTruncated: false,
           report: richReport,
         },
         {
@@ -606,6 +610,8 @@ test("a partial session keeps the history and global aggregates partial", () => 
           sessionId: "session-partial",
           usageByDate: [],
           usageByDateTruncated: true,
+          datedModels: [],
+          modelsTruncated: false,
           report: richReport,
         },
       ],
@@ -707,6 +713,7 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
       id: "tool:call-a",
       name: "read",
       status: "succeeded",
+      timestamp: "2026-09-07T00:00:01.000Z",
       usage: { totalTokens: 10, cost: 0 },
       durationMs: 42,
       durationLabel: "42 ms",
@@ -715,6 +722,7 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
       id: "tool:call-b",
       name: "bash",
       status: "failed",
+      timestamp: "2026-09-06T23:59:57.000Z",
       usage: null,
       durationMs: null,
       durationLabel: null,
@@ -724,14 +732,34 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
     { label: "bash", value: "1 calls", percent: 50 },
     { label: "read", value: "1 calls", percent: 50 },
   ]);
-  assert.deepEqual(view.errors, richReport.errors);
+  // The error row is the join (design §7.5): its own bounded fields plus the
+  // joined tool's name/source and the publishing result's child runs (none).
+  assert.deepEqual(view.errors, [
+    {
+      id: "tool:call-b",
+      timestamp: "2026-09-06T23:59:57.000Z",
+      kind: "tool-error",
+      confidence: "native",
+      toolName: "bash",
+      toolSource: null,
+      relatedChildIds: [],
+    },
+  ]);
   assert.deepEqual(view.ledger, buildLedger(richReport));
+  // Every AgentRun field is projected; an absent one is null, never "".
   assert.deepEqual(view.agents, [
     {
       id: "subagent-0123456789abcdef",
       parentId: null,
+      agent: null,
       status: "succeeded",
       confidence: "cooperative",
+      artifacts: null,
+      observedAt: null,
+      evidenceToolId: null,
+      model: null,
+      thinking: null,
+      failure: null,
       usage: { totalTokens: 7, cost: 0.02 },
     },
   ]);
@@ -804,6 +832,7 @@ test("renders a tool result without usage as Unavailable instead of zero", () =>
       id: "tool:call-a",
       name: "read",
       status: "succeeded",
+      timestamp: "2026-09-07T00:00:00.000Z",
       usage: null,
       durationMs: null,
       durationLabel: null,

@@ -358,6 +358,11 @@ type ToolRow = {
   /** Sanitized inventory source label; absent when no source was attributed. */
   source?: string;
   status: SessionReport["tools"][number]["status"];
+  /**
+   * The persisted call timestamp (spec §5.7). The UTC day it names is the only
+   * time attribution for a tool row, so usage stays on the call day.
+   */
+  timestamp: string;
   usage: SafeUsage | null;
   durationMs: number | null;
   durationLabel: string | null;
@@ -365,8 +370,16 @@ type ToolRow = {
 type AgentRow = {
   id: string;
   parentId: string | null;
+  agent: SessionReport["agents"][number]["agent"] | null;
   status: SessionReport["agents"][number]["status"];
   confidence: SessionReport["agents"][number]["confidence"];
+  artifacts: SessionReport["agents"][number]["artifacts"] | null;
+  /** Observation time only; never a run start, end, or duration. */
+  observedAt: string | null;
+  evidenceToolId: string | null;
+  model: SessionReport["agents"][number]["model"] | null;
+  thinking: SessionReport["agents"][number]["thinking"] | null;
+  failure: SessionReport["agents"][number]["failure"] | null;
   usage: SafeUsage | null;
 };
 type IntegrationRow = {
@@ -388,6 +401,15 @@ type ErrorRow = {
   confidence: string;
   /** Bounded redacted persisted message; absent means Unavailable. */
   message?: string;
+  /** The joined tool's name; null when no tool carries this error's id. */
+  toolName: string | null;
+  /** The joined tool's bounded source label; null when absent or unmatched. */
+  toolSource: string | null;
+  /**
+   * Every child run the publishing result observed, in run order. The relation
+   * is one-to-many and names no run as the cause (design §7.5).
+   */
+  relatedChildIds: string[];
 };
 type StatusView = {
   key: "status.errors" | "status.interrupted" | "status.clean";
@@ -437,6 +459,13 @@ type HistoryEntry = {
    */
   usageByDate?: NonNullable<CurrentView["usageByDate"]>;
   usageByDateTruncated?: boolean;
+  /**
+   * The same session's per-date model rows, so its detail filters the Models
+   * tab exactly like the current section. Absent for a payload that carries no
+   * dated projection (the legacy adapter), which labels the aggregate table.
+   */
+  datedModels?: NonNullable<CurrentView["datedModels"]>;
+  modelsTruncated?: boolean;
   view?: SessionView;
 };
 
@@ -1094,6 +1123,7 @@ function toolRows(report: SessionReport): ToolRow[] {
     name: tool.name,
     ...(tool.source === undefined ? {} : { source: tool.source }),
     status: tool.status,
+    timestamp: tool.timestamp,
     usage: tool.usage === undefined ? null : safeUsage(tool.usage),
     durationMs: tool.durationMs === undefined ? null : tool.durationMs,
     durationLabel:
@@ -1101,14 +1131,56 @@ function toolRows(report: SessionReport): ToolRow[] {
   }));
 }
 
+/**
+ * Every `AgentRun` field reaches the browser row, and an absent optional field
+ * is `null`: never `""` and never a placeholder entity (spec §6.2).
+ */
 function agentRows(report: SessionReport): AgentRow[] {
   return report.agents.map((agent) => ({
     id: agent.id,
     parentId: agent.parentId ?? null,
+    agent: agent.agent ?? null,
     status: agent.status,
     confidence: agent.confidence,
+    artifacts: agent.artifacts ?? null,
+    observedAt: agent.observedAt ?? null,
+    evidenceToolId: agent.evidenceToolId ?? null,
+    model: agent.model ?? null,
+    thinking: agent.thinking ?? null,
+    failure: agent.failure ?? null,
     usage: agent.usage === undefined ? null : safeUsage(agent.usage),
   }));
+}
+
+/**
+ * The one error → tool → child joint projection (design §7.5). A tool error and
+ * its call share the reducer's canonical id, so the join is `error.id ===
+ * tool.id`; every run whose `evidenceToolId` is that same id was observed by
+ * the publishing result and is a candidate child, never a named cause. One
+ * result may publish many runs, so the relation is one-to-many.
+ */
+function errorRows(report: SessionReport): ErrorRow[] {
+  const toolsById = new Map(report.tools.map((tool) => [tool.id, tool]));
+  const childrenById = new Map<string, string[]>();
+  for (const run of report.agents) {
+    if (run.evidenceToolId === undefined) continue;
+    const children = childrenById.get(run.evidenceToolId) ?? [];
+    children.push(run.id);
+    childrenById.set(run.evidenceToolId, children);
+  }
+  return report.errors.map((error) => {
+    const tool = toolsById.get(error.id);
+    return {
+      id: error.id,
+      timestamp: error.timestamp,
+      kind: error.kind,
+      confidence: error.confidence,
+      ...(error.message === undefined ? {} : { message: error.message }),
+      toolName: tool?.name ?? null,
+      toolSource: tool?.source ?? null,
+      relatedChildIds: childrenById.get(error.id) ?? [],
+    };
+  });
 }
 
 function integrationRows(report: SessionReport): IntegrationRow[] {
@@ -1157,13 +1229,7 @@ function sessionView(report: SessionReport): SessionView {
     toolBars: toolBars(report),
     agents: agentRows(report),
     integrations: integrationRows(report),
-    errors: report.errors.map((error) => ({
-      id: error.id,
-      timestamp: error.timestamp,
-      kind: error.kind,
-      confidence: error.confidence,
-      ...(error.message === undefined ? {} : { message: error.message }),
-    })),
+    errors: errorRows(report),
     commands: report.commands,
     skills: report.skills,
     resources: report.resources,
@@ -1403,6 +1469,12 @@ function historyEntry(
     // rows the aggregate fold consumed, never from a span comparison.
     usageByDate: session.usageByDate,
     usageByDateTruncated: session.usageByDateTruncated,
+    ...(session.datedModels === undefined
+      ? {}
+      : {
+          datedModels: session.datedModels,
+          modelsTruncated: session.modelsTruncated ?? false,
+        }),
     view,
   };
 }
@@ -1560,16 +1632,21 @@ const COMPOSITION_PARTS=["generations","toolResults","compactions","branchSummar
 // The period label every widget that is not range-filtered has to carry.
 const ALL_DATES=" · "+tr("panel.allDates");
 // The one range filter every range-aware widget reads (design §5.2/§5.4). The
-// dated row sets come from the caller's source argument, never from the view: a
-// SessionView carries no dated rows. Sets without a usable date are not passed
-// in, so tools and agents keep their projected rows and say All report dates
-// until their time fields land.
-function filteredView(view,source){const range=activeRange();if(!range)return null;return filterView({rows:[],models:(source&&source.datedModels)||[],tools:[],agents:[],errors:(view&&view.errors)||[]},range);}
+// dated model rows come from the caller's source argument, never from the view:
+// a SessionView carries no dated rows. Tools, agents and errors filter their own
+// canonical rows by their own time field (§5.7), so a row without a usable date
+// is never in range. A view with no resolved range returns null.
+function filteredView(view,source){const range=activeRange();if(!range)return null;return filterView({rows:[],models:(source&&source.datedModels)||[],tools:(view&&view.tools)||[],agents:(view&&view.agents)||[],errors:(view&&view.errors)||[]},range);}
+// The one dated-source shape the Models tab reads: a payload's own dated model
+// rows, or undefined when it carries none (the legacy adapter).
+function datedSource(view){return view.datedModels===undefined?undefined:{datedModels:view.datedModels,modelsTruncated:view.modelsTruncated===true};}
 // The in-range sums of a view's own dated rows (design §5.2).
 function periodTotals(rows,range){const t={totalTokens:0,cost:0,generations:0,tools:0,days:0,parts:{}};COMPOSITION_PARTS.forEach(key=>{t.parts[key]={totalTokens:0,cost:0}});rows.forEach(row=>{if(!isInRange(row.date,range))return;t.days+=1;t.totalTokens+=row.totalTokens||0;t.cost+=row.cost||0;t.generations+=row.generations||0;t.tools+=row.tools||0;COMPOSITION_PARTS.forEach(key=>{const part=row.composition&&row.composition[key];if(!part)return;t.parts[key].totalTokens+=part.totalTokens;t.parts[key].cost+=part.cost})});t.cost=Math.round(t.cost*1e12)/1e12;return t;}
 function periodComposition(t){const parts=COMPOSITION_PARTS.map(key=>({key:key,totalTokens:t.parts[key].totalTokens,cost:t.parts[key].cost,confidence:"native"})),tokens=parts.reduce((sum,part)=>sum+part.totalTokens,0),cost=Math.round(parts.reduce((sum,part)=>sum+part.cost,0)*1e12)/1e12;return {available:true,parts:parts,total:{totalTokens:t.totalTokens,cost:t.cost},reconciles:tokens===t.totalTokens&&cost===t.cost};}
-// A range that reaches before a retained window it cannot restore is flagged.
-function rangeTruncated(){const range=activeRange();if(!range)return false;if(state.section==="current"){const view=currentView();return !!view&&view.dailyTruncated===true&&historyRowRange({usageByDate:view.daily||[],usageByDateTruncated:true},range).partial===true;}if(state.section==="global")return data.global.dailyTruncated===true;const session=selectedSession();if(session)return session.availability==="available"&&!!(session.usageByDate||[]).length&&historyRowRange(session,range).partial===true;return partialContribution(range);}
+// A range reaching before a retained window the view cannot restore is flagged.
+// Every section's notice reads this one comparison (design §5.1).
+function reachesBeforeRetained(rows,range){return historyRowRange({usageByDate:rows||[],usageByDateTruncated:true},range).partial===true;}
+function rangeTruncated(){const range=activeRange();if(!range)return false;if(state.section==="current"){const view=currentView();return !!view&&view.dailyTruncated===true&&reachesBeforeRetained(view.daily,range);}if(state.section==="global")return data.global.dailyTruncated===true&&reachesBeforeRetained(data.global.daily,range);const session=selectedSession();if(session)return session.availability==="available"&&!!(session.usageByDate||[]).length&&historyRowRange(session,range).partial===true;return partialContribution(range);}
 // A restore claim needs a view with observed dates: with none, no range — and no default — exists.
 function syncRangeNotice(){const text=activeIntent()!==undefined&&!activeRange()&&latestObservedDate(activeDaily().map(row=>row.date))!==undefined?tr("range.restored"):(rangeTruncated()?tr(state.section==="current"?"range.truncated":"history.dailyTruncated"):"");let notice=q("range-truncated");if(!text){if(notice)notice.hidden=true;return;}if(!notice){notice=el("p","range-note",text);notice.id="range-truncated";q("time-range").append(notice);}notice.textContent=text;notice.hidden=false;}
 // An aggregate row's range verdict (design §5.6): membership needs an in-range
@@ -1600,18 +1677,20 @@ function overview(view){if(view.usage===undefined)return unavailableSection(tr("
 // The one range-qualified empty state: a selected range with no in-range observation.
 function rangeEmpty(){return unavailableSection(tr("usage.title"),tr("chart.empty"));}
 function emptyOverview(){const node=el("div","");node.append(rangeEmpty(),evidencePanel(activeEvidence()));return node;}
-function agentsPanel(view,title){const wrap=el("div",""),activity=view.agentActivity;let has=false;if(activity&&activity.state==="supported"){has=true;const section=card(tr("panel.activity"),tr("agents.activity.note")+ALL_DATES,badge(tr("evidence."+activity.state),confidenceTone(activity.state))),metrics=el("div","metrics");metrics.append(metric(tr("metric.agentCalls"),number(activity.calls),tr("metric.tools.note"),[[tr("agents.succeeded"),number(activity.succeeded)],[tr("agents.failed"),number(activity.failed)],[tr("agents.interrupted"),number(activity.interrupted)] ]));section.append(metrics);if(activity.tools&&activity.tools.length>0)simpleTable(section,[tr("table.tool"),tr("table.calls")],activity.tools.map(row=>[row.name,number(row.calls)]));wrap.append(section);}if(view.agentEvidence==="supported"){has=true;wrap.append(table(title,tr("agents.note")+ALL_DATES,[tr("table.run"),tr("table.parent"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.evidence")],view.agents.map(row=>[row.id,row.parentId===null?tr("evidence.unavailable"):row.parentId,row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))])));}if(!has)wrap.append(unavailableSection(title,tr("unavailable.agents")));return wrap;}
+function agentsPanel(view,title){const wrap=el("div",""),activity=view.agentActivity;let has=false;if(activity&&activity.state==="supported"){has=true;const section=card(tr("panel.activity"),tr("agents.activity.note")+ALL_DATES,badge(tr("evidence."+activity.state),confidenceTone(activity.state))),metrics=el("div","metrics");metrics.append(metric(tr("metric.agentCalls"),number(activity.calls),tr("metric.tools.note"),[[tr("agents.succeeded"),number(activity.succeeded)],[tr("agents.failed"),number(activity.failed)],[tr("agents.interrupted"),number(activity.interrupted)] ]));section.append(metrics);if(activity.tools&&activity.tools.length>0)simpleTable(section,[tr("table.tool"),tr("table.calls")],activity.tools.map(row=>[row.name,number(row.calls)]));wrap.append(section);}if(view.agentEvidence==="supported"){has=true;const filtered=filteredView(view),agents=filtered?filtered.agents:view.agents;if(agents.length===0&&filtered)wrap.append(emptyCard(title,tr("chart.empty"),"evidence.unavailable"));else wrap.append(table(title,tr("agents.note")+(filtered?"":ALL_DATES),[tr("table.run"),tr("table.parent"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.evidence")],agents.map(row=>[row.id,row.parentId===null?tr("evidence.unavailable"):row.parentId,row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))])));}if(!has)wrap.append(unavailableSection(title,tr("unavailable.agents")));return wrap;}
 function skillsPanel(view,title){const skills=view.skills;if(!skills)return unavailableSection(title,tr("unavailable.skills"));const section=skills.items.length===0?emptyCard(title,tr("skills.empty"),"evidence.unavailable"):table(title,tr("skills.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.invocations")],skills.items.map(row=>[row.name,orUnavailable(row.sourceLabel),orUnavailable(row.scope),orUnavailable(row.origin),row.explicitInvocations===undefined?tr("evidence.unavailable"):number(row.explicitInvocations)]));if(skills.otherInvocations!==null&&skills.otherInvocations!==undefined&&skills.otherInvocations>0)section.append(el("div","footnote",tr("skills.otherInvocations",{count:number(skills.otherInvocations)})));return section;}
 function resourcesCard(resources){if(!resources||resources.state!=="supported"||resources.items.length===0)return unavailableSection(tr("panel.resources"),tr("resources.unavailable"));return simpleTable(card(tr("panel.resources"),tr("resources.note")),[tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.commands"),tr("table.skills"),tr("table.prompts"),tr("table.tools")],resources.items.map(row=>[row.sourceLabel,row.scope,row.origin,number(row.commands),number(row.skills),number(row.prompts),number(row.tools)]));}
 function integrationsPanel(view,title){const wrap=el("div",""),integrations=view.integrations||[];if(integrations.length===0)wrap.append(unavailableSection(title,tr("unavailable.integrations")));else wrap.append(table(title,tr("integrations.note"),[tr("table.integration"),tr("table.presence"),tr("table.evidence"),tr("table.version"),tr("table.counters")],integrations.map(row=>[row.integration,presenceBadge(row.presence),badge(tr("evidence."+row.state),confidenceTone(row.state)),row.version===null?tr("evidence.unavailable"):String(row.version),row.counters.join(" · ")])));wrap.append(resourcesCard(view.resources));return wrap;}
-// The Models tab reads the view's own per-date model rows (the source threaded
-// from the current view's projection) through the one filter, so a range change
-// genuinely changes model figures (design §5.2). Without a dated projection — a
-// history session detail, or the legacy adapter — it renders the aggregate rows
-// unfiltered and states that they are all report dates.
+// The Models tab reads the view's own per-date model rows through the one
+// filter, so a range change genuinely changes model figures (design §5.2). A
+// current view and a history session detail both thread their projection's dated
+// rows in; a payload without them (the legacy adapter) renders the aggregate
+// rows unfiltered and states that they are all report dates. A dated source with
+// no rows at all cannot be attributed to any date — Unavailable — while dated
+// rows outside the range are a range statement.
 function modelRangeRows(rows){const groups={},order=[];rows.forEach(row=>{const key=row.provider+"\u0000"+row.model,g=groups[key]||{provider:row.provider,model:row.model,generations:0,totalTokens:0,cost:0};if(!groups[key])order.push(key);groups[key]=g;g.generations+=row.generations||0;g.totalTokens+=row.totalTokens||0;g.cost+=row.cost||0});return order.sort().map(key=>{const g=groups[key];g.cost=Math.round(g.cost*1e12)/1e12;return g});}
-function modelsPanel(view,title,source){if(source===undefined)return view.models.length===0?emptyCard(title,tr("models.none"),"evidence.native"):table(title,tr("models.note")+ALL_DATES,[tr("table.provider"),tr("table.model"),tr("table.generations"),tr("table.input"),tr("table.output"),tr("table.cacheRead"),tr("table.cacheWrite"),tr("table.tokens"),tr("table.cost")],view.models.map(row=>[row.provider,row.model,number(row.generations),numberOrUnavailable(row.inputTokens),numberOrUnavailable(row.outputTokens),numberOrUnavailable(row.cacheReadTokens),numberOrUnavailable(row.cacheWriteTokens),number(row.totalTokens),money(row.cost)]));const filtered=filteredView(view,source),rows=filtered?modelRangeRows(filtered.models):[],section=rows.length===0?emptyCard(title,tr("chart.empty"),"evidence.unavailable"):table(title,tr("models.note"),[tr("table.provider"),tr("table.model"),tr("table.generations"),tr("table.tokens"),tr("table.cost")],rows.map(row=>[row.provider,row.model,number(row.generations),number(row.totalTokens),money(row.cost)]));if(source.modelsTruncated)section.append(el("div","footnote",tr("models.truncated")));return section;}
-function detail(view,title,source){if(state.tab==="models")return modelsPanel(view,title,source);if(state.tab==="tools")return view.tools.length===0?emptyCard(title,tr("tools.none"),"evidence.native"):table(title,tr("tools.note")+ALL_DATES,[tr("table.tool"),tr("table.source"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.duration")],view.tools.map(row=>[row.name,orUnavailable(row.source),row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),row.durationLabel===null?tr("evidence.unavailable"):row.durationLabel+" · "+tr("evidence.live")]));if(state.tab==="commands"){const commands=view.commands;if(!commands||commands.items.length===0)return emptyCard(title,commands&&commands.count!==null?tr("commands.count",{count:number(commands.count)}):tr("unavailable.commands"),"evidence.unavailable");return table(title,tr("commands.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.description")],commands.items.map(row=>[row.name,orUnavailable(row.sourceLabel||row.source||null),row.scope,row.origin,orUnavailable(row.description)]));}if(state.tab==="agents")return agentsPanel(view,title);if(state.tab==="skills")return skillsPanel(view,title);if(state.tab==="integrations")return integrationsPanel(view,title);if(state.tab==="errors"){const filtered=filteredView(view),errors=filtered?filtered.errors:view.errors;if(errors.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("errors.none"),"evidence.native");return table(title,tr("errors.note")+(filtered?"":ALL_DATES),[tr("table.id"),tr("table.kind"),tr("table.timestamp"),tr("table.message"),tr("table.confidence")],errors.map(row=>[row.id,row.kind,row.timestamp,orUnavailable(row.message),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}return unavailableSection(title,tr("unavailable.copy"));}
+function modelsPanel(view,title,source){if(source===undefined)return view.models.length===0?emptyCard(title,tr("models.none"),"evidence.native"):table(title,tr("models.note")+ALL_DATES,[tr("table.provider"),tr("table.model"),tr("table.generations"),tr("table.input"),tr("table.output"),tr("table.cacheRead"),tr("table.cacheWrite"),tr("table.tokens"),tr("table.cost")],view.models.map(row=>[row.provider,row.model,number(row.generations),numberOrUnavailable(row.inputTokens),numberOrUnavailable(row.outputTokens),numberOrUnavailable(row.cacheReadTokens),numberOrUnavailable(row.cacheWriteTokens),number(row.totalTokens),money(row.cost)]));const filtered=filteredView(view,source),rows=filtered?modelRangeRows(filtered.models):[],section=rows.length===0?(source.datedModels.length===0?unavailableSection(title,tr("models.none")):emptyCard(title,tr("chart.empty"),"evidence.unavailable")):table(title,tr("models.note"),[tr("table.provider"),tr("table.model"),tr("table.generations"),tr("table.tokens"),tr("table.cost")],rows.map(row=>[row.provider,row.model,number(row.generations),number(row.totalTokens),money(row.cost)]));if(source.modelsTruncated)section.append(el("div","footnote",tr("models.truncated")));return section;}
+function detail(view,title,source){if(state.tab==="models")return modelsPanel(view,title,source);if(state.tab==="tools"){const filtered=filteredView(view),tools=filtered?filtered.tools:view.tools;if(tools.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("tools.none"),"evidence.native");return table(title,tr("tools.note")+(filtered?"":ALL_DATES),[tr("table.tool"),tr("table.source"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.duration")],tools.map(row=>[row.name,orUnavailable(row.source),row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),row.durationLabel===null?tr("evidence.unavailable"):row.durationLabel+" · "+tr("evidence.live")]));}if(state.tab==="commands"){const commands=view.commands;if(!commands||commands.items.length===0)return emptyCard(title,commands&&commands.count!==null?tr("commands.count",{count:number(commands.count)}):tr("unavailable.commands"),"evidence.unavailable");return table(title,tr("commands.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.description")],commands.items.map(row=>[row.name,orUnavailable(row.sourceLabel||row.source||null),row.scope,row.origin,orUnavailable(row.description)]));}if(state.tab==="agents")return agentsPanel(view,title);if(state.tab==="skills")return skillsPanel(view,title);if(state.tab==="integrations")return integrationsPanel(view,title);if(state.tab==="errors"){const filtered=filteredView(view),errors=filtered?filtered.errors:view.errors;if(errors.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("errors.none"),"evidence.native");return table(title,tr("errors.note")+(filtered?"":ALL_DATES),[tr("table.id"),tr("table.kind"),tr("table.timestamp"),tr("table.message"),tr("table.confidence")],errors.map(row=>[row.id,row.kind,row.timestamp,orUnavailable(row.message),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}return unavailableSection(title,tr("unavailable.copy"));}
 function sessionCell(entry){const cell=document.createElement("div");cell.append(el("span","mono",entry.sessionId));cell.append(el("small","",entry.firstDate?(entry.firstDate+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")):tr("evidence.unavailable")));return cell;}
 function openButton(index){const button=el("button","",tr("table.open"));button.dataset.session=String(index);button.setAttribute("aria-label",tr("table.open")+" "+historySessions()[index].sessionId);return button;}
 function historyRowCells(item,group){const entry=item.entry,verdict=item.verdict,partial=group==="member"&&verdict.partial,member=group==="member";return [sessionCell(entry),orUnavailable(entry.durationLabel),member?(partial?knownValue(number(verdict.totalTokens),"metric.knownTokens"):number(verdict.totalTokens)):tr("evidence.unavailable"),entry.generationCount===null?tr("evidence.unavailable"):number(entry.generationCount),entry.agentCount===null?tr("evidence.unavailable"):number(entry.agentCount),entry.status?badge(tr(entry.status.key),entry.status.tone):tr("evidence.unavailable"),member?(partial?knownValue(money(verdict.cost),"metric.knownCost"):money(verdict.cost)):tr("evidence.unavailable"),entry.view?openButton(item.index):""];}
@@ -1619,8 +1698,8 @@ function historyTable(classified){const section=card(tr("panel.history"),tr("his
 function historyOverview(){const range=activeRange(),classified=historyRows(),members=historyMetrics(classified.members),partial=members.partial||!!range&&partialContribution(range),totals=range?periodTotals(activeDaily(),range):null,empty=!!totals&&totals.days===0,labels=data.history.usageLabels,costLabel=partial&&labels.cost==="metric.cost"?"metric.knownCost":labels.cost,tokensLabel=partial&&labels.tokens==="metric.tokens"?"metric.knownTokens":labels.tokens,attributable=members.sessions>0||classified.unknown.length===0,costValue=labels.usageUnavailable?tr("metric.costUnavailable"):(totals&&attributable?money(totals.cost):tr("evidence.unavailable")),tokensValue=labels.usageUnavailable?tr("metric.costUnavailable"):(totals&&attributable?number(totals.totalTokens):tr("evidence.unavailable")),blocks=empty?rangeEmpty():el("div","metrics");if(!empty)blocks.append(metric(tr(costLabel),costValue,tr("metric.native"),[[tr("table.date"),rangeText()]]),metric(tr(tokensLabel),tokensValue,tr("metric.tokens.note"),[[tr("table.date"),rangeText()]]),metric(tr("metric.generations"),totals?number(totals.generations):tr("evidence.unavailable"),tr("metric.generations.note"),[[tr("table.date"),rangeText()]]),metric(tr("metric.sessions"),number(members.sessions),tr("history.sessions.note"),[[tr("evidence.native"),number(historySessions().length)+" tracked"]]));const all=el("div","");all.append(blocks,coveragePanel(data.history),historyTable(classified),evidencePanel(activeEvidence()));return all;}
 function backBar(){const bar=el("div","toolbar"),button=el("button","",tr("nav.back"));button.dataset.back="true";bar.append(button);return bar;}
 function globalOverview(){const days=selectedDays(),empty=!!activeRange()&&days.length===0,tokens=days.reduce((sum,row)=>sum+row.totalTokens,0),cost=days.reduce((sum,row)=>sum+row.cost,0),labels=data.global.usageLabels,costValue=labels.usageUnavailable?tr("metric.costUnavailable"):money(cost),tokensValue=labels.usageUnavailable?tr("metric.costUnavailable"):number(tokens),metrics=empty?rangeEmpty():el("div","metrics");if(!empty)metrics.append(metric(tr(labels.cost),costValue,tr("metric.native"),[[tr("table.date"),rangeText()]]),metric(tr(labels.tokens),tokensValue,tr("metric.tokens.note"),[[tr("table.date"),rangeText()]]),metric(tr("metric.days"),number(days.length),tr("metric.days.note"),[[tr("range.label"),rangeText()]]));const all=el("div","");all.append(metrics,coveragePanel(data.global),compositionCard(data.global.composition),evidencePanel(activeEvidence()));return all;}
-function sessionPanel(entry){if(!entry||!entry.view)return unavailableSection(tr("tab."+state.tab),tr("unavailable.session"));return state.tab==="overview"?overview(entry.view):detail(entry.view,tr("tab."+state.tab));}
-function renderView(){const nodes=[];if(state.section==="global"){if(state.tab==="overview"){nodes.push(globalOverview());nodes.push(chart());}else nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.global")));return nodes;}if(state.section==="history"){if(state.session===null){nodes.push(historyOverview());if(state.tab==="overview")nodes.push(chart());else nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.session")));return nodes;}nodes.push(sessionPanel(historySessions()[state.session]));if(state.tab==="overview")nodes.push(chart());nodes.push(backBar());return nodes;}const view=currentView();if(!view||view.availability!=="available"){nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.current")+(view&&view.diagnostic?" · "+view.diagnostic:"")));return nodes;}if(state.tab==="overview"){nodes.push(overview(view.report));nodes.push(chart());}else nodes.push(detail(view.report,tr("tab."+state.tab),view.datedModels===undefined?undefined:{datedModels:view.datedModels,modelsTruncated:view.modelsTruncated===true}));return nodes;}
+function sessionPanel(entry){if(!entry||!entry.view)return unavailableSection(tr("tab."+state.tab),tr("unavailable.session"));return state.tab==="overview"?overview(entry.view):detail(entry.view,tr("tab."+state.tab),datedSource(entry));}
+function renderView(){const nodes=[];if(state.section==="global"){if(state.tab==="overview"){nodes.push(globalOverview());nodes.push(chart());}else nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.global")));return nodes;}if(state.section==="history"){if(state.session===null){nodes.push(historyOverview());if(state.tab==="overview")nodes.push(chart());else nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.session")));return nodes;}nodes.push(sessionPanel(historySessions()[state.session]));if(state.tab==="overview")nodes.push(chart());nodes.push(backBar());return nodes;}const view=currentView();if(!view||view.availability!=="available"){nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.current")+(view&&view.diagnostic?" · "+view.diagnostic:"")));return nodes;}if(state.tab==="overview"){nodes.push(overview(view.report));nodes.push(chart());}else nodes.push(detail(view.report,tr("tab."+state.tab),datedSource(view)));return nodes;}
 function sessionScopeNote(){const entry=historySessions()[state.session];return (entry.firstDate||tr("evidence.unavailable"))+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")+" · "+tr("scope.tree")+" · after tracking marker";}
 const scopeButtons=[].slice.call(q("scope").querySelectorAll("button"));
 function syncScope(){scopeButtons.forEach(button=>{const scope=button.dataset.scope,view=data.current[scope],unavailable=state.section!=="current"||view.availability!=="available";button.disabled=unavailable;button.setAttribute("aria-pressed",String(state.section==="current"&&scope===state.scope));if(view.diagnostic)button.title=view.diagnostic;else button.removeAttribute("title");});// The fixed note renders once, in its own element beside the disabled control.

@@ -27,7 +27,11 @@ import {
   type CoverageReason,
   type HistoryDiagnostic,
 } from "../storage/history.ts";
-import { sessionDatedUsage, type DateUsageRow } from "./dated-usage.ts";
+import {
+  sessionDatedUsage,
+  type DatedModelRow,
+  type DateUsageRow,
+} from "./dated-usage.ts";
 import type { SessionObservation } from "./observation.ts";
 import {
   countersFrom,
@@ -91,6 +95,14 @@ export type HistoricalSession =
       usageByDate: readonly DateUsageRow[];
       /** True when `usageByDate` cannot represent the session's whole native usage. */
       usageByDateTruncated: boolean;
+      /**
+       * The same projection's per-date model rows, so a history session detail
+       * ranges its Models tab exactly like the current section (one projection,
+       * no second timestamp walk).
+       */
+      datedModels: readonly DatedModelRow[];
+      /** True when the model cap dropped a row from `datedModels`. */
+      modelsTruncated: boolean;
       report: SessionReport;
     }
   | {
@@ -174,6 +186,8 @@ type SessionScan =
       sessionId: string;
       usageByDate: readonly DateUsageRow[];
       usageByDateTruncated: boolean;
+      datedModels: readonly DatedModelRow[];
+      modelsTruncated: boolean;
       report: SessionReport;
     }
   | { availability: "unavailable"; sessionId: string; reason: CoverageReason };
@@ -472,6 +486,8 @@ function toHistoricalSession(session: SessionScan): HistoricalSession {
         sessionId: session.sessionId,
         usageByDate: session.usageByDate,
         usageByDateTruncated: session.usageByDateTruncated,
+        datedModels: session.datedModels,
+        modelsTruncated: session.modelsTruncated,
         report: session.report,
       }
     : {
@@ -561,11 +577,15 @@ function globalInventory(
 function datedFields(session: CanonicalSession): {
   usageByDate: readonly DateUsageRow[];
   usageByDateTruncated: boolean;
+  datedModels: readonly DatedModelRow[];
+  modelsTruncated: boolean;
 } {
   const dated = sessionDatedUsage(session);
   return {
     usageByDate: dated.dates,
     usageByDateTruncated: dated.truncated,
+    datedModels: dated.models,
+    modelsTruncated: dated.modelsTruncated,
   };
 }
 

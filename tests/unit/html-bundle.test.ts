@@ -3,20 +3,21 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import type { SessionCoverage } from "../../src/core/session-coverage.ts";
-import type { InspectorBundle } from "../../src/ui/bundle.ts";
+import {
+  loadInspectorBundle,
+  type InspectorBundle,
+} from "../../src/ui/bundle.ts";
 import {
   aggregateUsageLabels,
   renderInspectorBundle,
 } from "../../src/ui/html.ts";
-
-// biome-ignore lint/suspicious/noExplicitAny: decoding the report's embedded JSON in tests
-function embeddedJson(html: string): Record<string, any> {
-  const match =
-    /<script type="application\/json" id="report-data">([\s\S]*?)<\/script>/.exec(
-      html,
-    );
-  return JSON.parse(match?.[1] ?? "{}");
-}
+import {
+  bundleInput,
+  currentModelWithAgents,
+  embedOf,
+  modelWithToolError,
+  modelWithToolErrorAndTwoChildren,
+} from "../helpers/bundle-scenarios.ts";
 
 function bundleFixture(): InspectorBundle {
   return JSON.parse(
@@ -29,7 +30,7 @@ function bundleFixture(): InspectorBundle {
 
 test("renders one offline document with both current views and initial theme", () => {
   const html = renderInspectorBundle(bundleFixture());
-  const data = embeddedJson(html);
+  const data = embedOf(html);
 
   assert.match(html, /class="[^"]*theme-dark/);
   assert.equal(data.initialScope, "tree");
@@ -53,7 +54,7 @@ test("renders one offline document with both current views and initial theme", (
 
 test("renders inventory, resources, agent activity, integration presence, and error messages", () => {
   const html = renderInspectorBundle(bundleFixture());
-  const data = embeddedJson(html);
+  const data = embedOf(html);
 
   assert.equal(data.current.tree.report.commands.items.length, 1);
   assert.equal(data.current.tree.report.resources.items.length, 2);
@@ -96,7 +97,7 @@ test("disables an unavailable current view with its bounded diagnostic", () => {
     diagnostic: "current-unavailable",
   };
   const html = renderInspectorBundle(bundle);
-  const data = embeddedJson(html);
+  const data = embedOf(html);
 
   assert.equal(data.current.active.availability, "unavailable");
   assert.equal(data.current.active.report, undefined);
@@ -136,7 +137,7 @@ test("renders a bounded truncation notice only when the active view was capped",
   const bundle = bundleFixture();
   bundle.current.tree.dailyTruncated = true;
   const html = renderInspectorBundle(bundle);
-  const data = embeddedJson(html);
+  const data = embedOf(html);
 
   assert.equal(data.current.tree.dailyTruncated, true);
   assert.match(
@@ -146,7 +147,7 @@ test("renders a bounded truncation notice only when the active view was capped",
   // The notice is the only change: no rows are fabricated to fill the window.
   assert.deepEqual(
     data.current.tree.daily,
-    embeddedJson(untruncated).current.tree.daily,
+    embedOf(untruncated).current.tree.daily,
   );
   assert.equal(
     /id="range-truncated"[^>]*\shidden/.test(html),
@@ -176,7 +177,7 @@ test("escapes hostile session ids and command names in the bundle payload", () =
   const payload = match?.[1] ?? "";
 
   // The payload is valid JSON (it parsed) and every hostile value round-trips.
-  const data = embeddedJson(html);
+  const data = embedOf(html);
   assert.equal(data.current.active.report.sessionId, hostileSessionId);
   assert.equal(data.current.tree.report.sessionId, hostileSessionId);
   assert.equal(data.current.tree.report.commands.items[0].name, hostileCommand);
@@ -287,7 +288,7 @@ test("a document with no tracked sessions carries no period sentinel", () => {
   bundle.global.sessions = [];
   bundle.global.dates = [];
   const html = renderInspectorBundle(bundle);
-  const data = embeddedJson(html);
+  const data = embedOf(html);
 
   for (const section of [data.history, data.global]) {
     assert.equal("period" in section, false);
@@ -340,4 +341,171 @@ test("the label resolver separates value availability from coverage availability
     [empty.usageUnavailable, empty.sessions],
     [true, "coverage.none"],
   );
+});
+
+test("tool and agent rows keep time, role and identity", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithAgents(),
+    }),
+  );
+  const report = (
+    embedOf(html).current.active as {
+      report: {
+        tools: Record<string, unknown>[];
+        agents: Record<string, unknown>[];
+      };
+    }
+  ).report;
+  assert.ok("timestamp" in report.tools[0]);
+  assert.equal(report.tools[0].timestamp, "2026-02-01T09:00:00.000Z");
+  const keys = [
+    "agent",
+    "artifacts",
+    "observedAt",
+    "model",
+    "thinking",
+    "failure",
+    "evidenceToolId",
+  ];
+  const agent = report.agents[0];
+  for (const key of keys) assert.ok(key in agent, key);
+  assert.deepEqual(
+    [
+      agent.agent,
+      agent.artifacts,
+      agent.observedAt,
+      agent.model,
+      agent.thinking,
+      agent.failure,
+      agent.evidenceToolId,
+    ],
+    [
+      "reviewer",
+      "available",
+      "2026-02-02T00:01:00.000Z",
+      "alpha",
+      "high",
+      { reason: "exit-nonzero", detail: 1 },
+      "tool:call_subagent",
+    ],
+  );
+  // An absent optional field is null: never "", never a placeholder entity.
+  const bare = report.agents[1];
+  for (const key of keys) assert.equal(bare[key], null, key);
+});
+
+test("an error row is joined to its tool and to every child run that published through it", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithToolErrorAndTwoChildren(),
+    }),
+  );
+  const report = (
+    embedOf(html).current.active as {
+      report: {
+        errors: Record<string, unknown>[];
+        agents: Record<string, unknown>[];
+      };
+    }
+  ).report;
+  const error = report.errors[0];
+  assert.deepEqual(
+    [
+      error.toolName,
+      error.toolSource,
+      (error.relatedChildIds as unknown[]).length,
+    ],
+    ["bash", null, 2],
+  );
+  // One publishing result may observe many runs: the join is one-to-many and
+  // names none of them as the cause.
+  assert.deepEqual(
+    error.relatedChildIds,
+    report.agents.map((run) => run.id),
+  );
+});
+
+test("an error with no publishing result joins no child run", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithToolError(),
+    }),
+  );
+  const error = (
+    embedOf(html).current.active as {
+      report: { errors: Record<string, unknown>[] };
+    }
+  ).report.errors[0];
+  assert.deepEqual(
+    [error.toolName, error.toolSource, error.relatedChildIds],
+    ["bash", null, []],
+  );
+  // A generation error carries no tool id at all, so it joins nothing either.
+  const unmatched = (
+    embedOf(renderInspectorBundle(bundleFixture())).current.tree as {
+      report: { errors: Record<string, unknown>[] };
+    }
+  ).report.errors[0];
+  assert.deepEqual(
+    [unmatched.toolName, unmatched.toolSource, unmatched.relatedChildIds],
+    [null, null, []],
+  );
+});
+
+test("the browser payload never carries producer text or paths", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  for (const forbidden of [
+    "task",
+    "finalOutput",
+    "progressSummary",
+    "transcriptPath",
+    "artifactPaths",
+    "sessionFile",
+  ]) {
+    assert.equal(html.includes(`"${forbidden}"`), false, forbidden);
+  }
+});
+
+test("tables render the projected rows only, never a report array", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  const script =
+    /<script>\n([\s\S]*)\n<\/script><\/body>/.exec(html)?.[1] ?? "";
+  assert.equal(script.length > 0, true);
+  assert.equal(
+    /report\.(tools|agents|errors|models|generations|compactions)/.test(script),
+    false,
+  );
+});
+
+test("the history projection carries each session's dated model rows", () => {
+  const bundle = bundleFixture();
+  const session = bundle.history.sessions[0];
+  if (session?.availability !== "available") {
+    throw new Error("the fixture's first history session must be available");
+  }
+  session.datedModels = [
+    {
+      date: "2026-02-02",
+      provider: "acme",
+      model: "alpha",
+      generations: 1,
+      totalTokens: 800,
+      cost: 0.16,
+    },
+  ];
+  session.modelsTruncated = true;
+  const projected = embedOf(renderInspectorBundle(bundle)).history.sessions[0];
+
+  assert.deepEqual(projected.datedModels, session.datedModels);
+  assert.equal(projected.modelsTruncated, true);
+  // A payload without the dated projection keeps the keys absent, so the
+  // legacy adapter still renders its labelled aggregate model table.
+  const legacy = embedOf(renderInspectorBundle(bundleFixture())).history
+    .sessions[0];
+  assert.equal("datedModels" in legacy, false);
+  assert.equal("modelsTruncated" in legacy, false);
 });

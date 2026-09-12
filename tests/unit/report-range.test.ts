@@ -953,7 +953,8 @@ test("a history session detail keeps the aggregate model table labelled for all 
   client.state.session = 0;
   client.state.tab = "models";
 
-  // A session detail carries no dated model rows, so its table is the aggregate
+  // This payload carries no dated model rows for its history sessions (the
+  // pre-Task-8 shape and the legacy adapter), so its table is the aggregate
   // one, labelled, and it is never emptied by the range.
   client.rangeIntents["history:session-a"] = {
     kind: "custom",
@@ -1026,5 +1027,241 @@ test("range-scoped empty tabs carry the range-qualified line", () => {
   assert.equal(
     errors.includes("No persisted error records. An observed zero stays zero."),
     false,
+  );
+});
+
+test("the Tools and Agents tabs filter their canonical rows and drop the label in range", () => {
+  const bundle = bundleFixture();
+  const report = bundle.current.tree.report;
+  if (report === undefined) throw new Error("the fixture tree report");
+  report.agents[0].observedAt = "2026-02-02T11:00:00.000Z";
+  const harness = runClient(bundle);
+  const { client, element, texts } = harness;
+  client.state.section = "current";
+
+  // The default range is the whole observed span, so both calls and the observed
+  // run are in range: the tables are range rows, not "all report dates" rows.
+  client.state.tab = "tools";
+  client.render();
+  const whole = texts(element("view"));
+  assert.equal(whole.includes("read"), true);
+  assert.equal(whole.includes("bash"), true);
+  assert.equal(has(whole, "All report dates"), false);
+
+  // Only the call made on the selected day survives the filter.
+  client.rangeIntents.current = {
+    kind: "custom",
+    from: "2026-02-02",
+    to: "2026-02-02",
+  };
+  client.render();
+  const day = texts(element("view"));
+  assert.equal(day.includes("read"), true);
+  assert.equal(day.includes("bash"), false);
+
+  // A range with no in-range call is a range statement, never the session-wide
+  // "no native calls" card and never the labelled aggregate rows.
+  client.rangeIntents.current = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  const outside = texts(element("view"));
+  assert.equal(
+    outside.includes("No daily observations match the selected range."),
+    true,
+  );
+  assert.equal(outside.includes("No native tool calls recorded."), false);
+  assert.equal(has(outside, "All report dates"), false);
+
+  // The Agents tab filters AgentRow.observedAt through the same one filter.
+  client.state.tab = "agents";
+  client.rangeIntents.current = {
+    kind: "custom",
+    from: "2026-02-02",
+    to: "2026-02-02",
+  };
+  client.render();
+  const observed = texts(element("view"));
+  assert.equal(
+    observed.some((value) => value.startsWith("subagent-0")),
+    true,
+  );
+  client.rangeIntents.current = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  const unknown = texts(element("view"));
+  assert.equal(
+    unknown.some((value) => value.startsWith("subagent-0")),
+    false,
+  );
+  assert.equal(
+    unknown.includes("No daily observations match the selected range."),
+    true,
+  );
+});
+
+test("a history session detail filters its dated model rows like the current section", () => {
+  const bundle = bundleFixture();
+  const session = bundle.history.sessions[0];
+  if (session?.availability !== "available") {
+    throw new Error("the fixture's first history session");
+  }
+  session.datedModels = [
+    {
+      date: "2026-01-20",
+      provider: "acme",
+      model: "legacy",
+      generations: 1,
+      totalTokens: 100,
+      cost: 0.01,
+    },
+    {
+      date: "2026-01-27",
+      provider: "acme",
+      model: "alpha",
+      generations: 1,
+      totalTokens: 200,
+      cost: 0.02,
+    },
+    {
+      date: "2026-02-02",
+      provider: "acme",
+      model: "beta",
+      generations: 1,
+      totalTokens: 800,
+      cost: 0.16,
+    },
+  ];
+  session.modelsTruncated = false;
+  const harness = runClient(bundle);
+  const { client, element, texts } = harness;
+  client.state.section = "history";
+  client.state.session = 0;
+  client.state.tab = "models";
+
+  // 7D anchors on this session's own latest observed day, so the older row drops.
+  client.rangeIntents["history:session-a"] = { kind: "preset", preset: 7 };
+  client.render();
+  assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
+  const seven = texts(element("view"));
+  assert.deepEqual(modelCells(seven, "alpha"), ["1", "200", "$0.02"]);
+  assert.deepEqual(modelCells(seven, "beta"), ["1", "800", "$0.16"]);
+  assert.deepEqual(modelCells(seven, "legacy"), []);
+  assert.equal(has(seven, "All report dates"), false);
+
+  // 14D reaches the older day, so the same detail shows one more model row.
+  client.rangeIntents["history:session-a"] = { kind: "preset", preset: 14 };
+  client.render();
+  assert.equal(element("range-dates").textContent, "2026-01-20 → 2026-02-02");
+  assert.deepEqual(modelCells(texts(element("view")), "legacy"), [
+    "1",
+    "100",
+    "$0.01",
+  ]);
+
+  // The range never falls back to the aggregate rows of the same session detail.
+  client.rangeIntents["history:session-a"] = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  const outside = texts(element("view"));
+  assert.equal(
+    has(outside, "No daily observations match the selected range."),
+    true,
+  );
+  assert.equal(has(outside, "All report dates"), false);
+  assert.equal(has(outside, "acme"), false);
+});
+
+test("a dated model source with no rows is Unavailable, never a range statement", () => {
+  // An unattributable dated window: daily observations exist, no model row can
+  // be attributed to a date. That is the honest Unavailable state.
+  const bundle = datedTreeBundle();
+  bundle.current.tree.datedModels = [];
+  const harness = runClient(bundle);
+  const { client, element, texts } = harness;
+  client.state.section = "current";
+  client.state.tab = "models";
+  client.render();
+  const current = texts(element("view"));
+  assert.equal(has(current, "No native generations recorded."), true);
+  assert.equal(has(current, "Unavailable"), true);
+  assert.equal(
+    has(current, "No daily observations match the selected range."),
+    false,
+  );
+  assert.equal(has(current, "All report dates"), false);
+  assert.equal(has(current, "acme"), false);
+
+  // The same rule holds for a history session detail's dated source.
+  const history = bundleFixture();
+  const session = history.history.sessions[0];
+  if (session?.availability !== "available") {
+    throw new Error("the fixture's first history session");
+  }
+  session.datedModels = [];
+  session.modelsTruncated = false;
+  const detail = runClient(history);
+  detail.client.state.section = "history";
+  detail.client.state.session = 0;
+  detail.client.state.tab = "models";
+  detail.client.render();
+  const values = detail.texts(detail.element("view"));
+  assert.equal(has(values, "No native generations recorded."), true);
+  assert.equal(
+    has(values, "No daily observations match the selected range."),
+    false,
+  );
+  assert.equal(has(values, "All report dates"), false);
+});
+
+test("the global truncation notice fires only for a range before the retained window", () => {
+  const bundle = bundleFixture();
+  const partial = bundle.global.sessions[0];
+  if (partial?.availability !== "available") {
+    throw new Error("the fixture's first global session");
+  }
+  partial.usageByDateTruncated = true;
+  // The server renders the notice for a capped initial view; the client owns it
+  // from then on, exactly as for the current and history sections.
+  bundle.current.tree.dailyTruncated = true;
+  const harness = runClient(bundle);
+  const { client, element } = harness;
+  client.state.section = "global";
+  client.state.tab = "overview";
+
+  // The default 14-day range starts before the oldest retained day, so the
+  // aggregate is flagged as partial.
+  client.render();
+  assert.equal(element("range-dates").textContent, "2026-01-20 → 2026-02-02");
+  assert.equal(element("range-truncated").hidden, false);
+
+  // A range inside the retained window is not reaching before it: no notice.
+  client.rangeIntents.global = {
+    kind: "custom",
+    from: "2026-02-01",
+    to: "2026-02-02",
+  };
+  client.render();
+  assert.equal(element("range-truncated").hidden, true);
+
+  // A range reaching before it is flagged again, with the one bounded sentence.
+  client.rangeIntents.global = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  assert.equal(element("range-truncated").hidden, false);
+  assert.equal(
+    element("range-truncated").textContent,
+    "Older days beyond the retained window are not shown.",
   );
 });
