@@ -316,6 +316,14 @@ export type SessionReport = {
   generations: ReducedSession["generations"];
   errors: ReducedSession["errors"];
   agents: AgentRun[];
+  /**
+   * Child-usage completeness, derived from the projected run set above: how
+   * many runs reported usage out of how many runs exist. A breakdown fraction
+   * only — never a cost, and never added to a native total. Always present;
+   * an empty run set is `0/0`, which every renderer shows as `Unavailable` and
+   * never as `$0.00`.
+   */
+  agentUsage: { runsTotal: number; runsWithUsage: number };
   agentEvidence: EvidenceState;
   /** Native subagent tool activity; distinct from rich cooperative runs. */
   agentActivity: AgentToolActivity;
@@ -381,6 +389,16 @@ export function toSessionReport(
     if (typeof source === "string") projected.source = source;
     return projected;
   });
+  // The fraction is derived from the run set that was just projected, never
+  // from the adapter's input and never carried as evidence. Both counts are
+  // taken from the same validated rows, so each is a non-negative safe integer
+  // and `runsWithUsage <= runsTotal` holds by construction: no clamp is needed
+  // and none may be invented.
+  const runsTotal = projectedEvidence.agents.length;
+  const runsWithUsage = projectedEvidence.agents.filter(
+    (run) => run.usage !== undefined,
+  ).length;
+  const agentUsage = { runsTotal, runsWithUsage };
   return {
     sessionId,
     // L1 rejected this aggregate (for example overflow). Omit both fields
@@ -394,6 +412,7 @@ export function toSessionReport(
       ? { walDetail: "expired" as const }
       : {}),
     agents: projectedEvidence.agents,
+    agentUsage: agentUsage,
     agentEvidence: projectedEvidence.agentEvidence,
     agentActivity: projectedEvidence.agentActivity,
     integrations: projectedEvidence.integrations,

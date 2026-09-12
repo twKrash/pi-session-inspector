@@ -81,6 +81,7 @@ function reportFor(dates: readonly string[]): SessionReport {
     })),
     errors: [],
     agents: [],
+    agentUsage: { runsTotal: 0, runsWithUsage: 0 },
     agentEvidence: "unavailable",
     agentActivity: emptyActivity,
     integrations: [],

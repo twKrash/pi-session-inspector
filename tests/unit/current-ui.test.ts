@@ -26,6 +26,7 @@ const report: SessionReport = {
   compactions: [],
   generations: [],
   agents: [],
+  agentUsage: { runsTotal: 0, runsWithUsage: 0 },
   agentEvidence: "unavailable",
   agentActivity: {
     state: "unavailable",

@@ -5,7 +5,10 @@ import { test } from "node:test";
 import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
-import type { InspectorBundle } from "../../src/ui/bundle.ts";
+import {
+  loadInspectorBundle,
+  type InspectorBundle,
+} from "../../src/ui/bundle.ts";
 import {
   inlineModuleSource,
   renderInspectorBundle,
@@ -17,6 +20,11 @@ import {
   resolveRange,
   type RangeState,
 } from "../../src/ui/range.ts";
+import {
+  bundleInput,
+  modelWithOrphanChild,
+  modelWithOrphanChildAndParent,
+} from "../helpers/bundle-scenarios.ts";
 
 function bundleFixture(): InspectorBundle {
   return JSON.parse(
@@ -1075,7 +1083,9 @@ test("the Tools and Agents tabs filter their canonical rows and drop the label i
   assert.equal(outside.includes("No native tool calls recorded."), false);
   assert.equal(has(outside, "All report dates"), false);
 
-  // The Agents tab filters AgentRow.observedAt through the same one filter.
+  // The Agents tab filters AgentRow.observedAt through the same one filter: the
+  // fixture's run is observed on the selected day, so its summary and its row
+  // render for that day and neither renders for a range it cannot be placed in.
   client.state.tab = "agents";
   client.rangeIntents.current = {
     kind: "custom",
@@ -1084,10 +1094,8 @@ test("the Tools and Agents tabs filter their canonical rows and drop the label i
   };
   client.render();
   const observed = texts(element("view"));
-  assert.equal(
-    observed.some((value) => value.startsWith("subagent-0")),
-    true,
-  );
+  assert.equal(observed.includes("Child runs"), true);
+  assert.equal(observed.includes("1 of 1 runs reported usage"), true);
   client.rangeIntents.current = {
     kind: "custom",
     from: "2020-01-01",
@@ -1095,13 +1103,16 @@ test("the Tools and Agents tabs filter their canonical rows and drop the label i
   };
   client.render();
   const unknown = texts(element("view"));
+  assert.equal(unknown.includes("Child runs"), false);
+  assert.equal(unknown.includes("1 of 1 runs reported usage"), false);
+  // The undated/out-of-range cause is stated, never blamed on a daily data gap.
   assert.equal(
-    unknown.some((value) => value.startsWith("subagent-0")),
-    false,
+    unknown.includes("No child run falls inside the selected range."),
+    true,
   );
   assert.equal(
     unknown.includes("No daily observations match the selected range."),
-    true,
+    false,
   );
 });
 
@@ -1264,4 +1275,52 @@ test("the global truncation notice fires only for a range before the retained wi
     element("range-truncated").textContent,
     "Older days beyond the retained window are not shown.",
   );
+});
+
+test("an agent row resolves its parent to one of the three verdicts", async () => {
+  const orphan = await loadInspectorBundle({
+    ...bundleInput,
+    initialScope: "active",
+    loadCurrent: async (scope) =>
+      scope === "active"
+        ? modelWithOrphanChild()
+        : modelWithOrphanChildAndParent(),
+  });
+  const orphanHarness = runClient(orphan);
+  orphanHarness.client.state.tab = "agents";
+  orphanHarness.client.render();
+  const outsider = orphanHarness.texts(orphanHarness.element("view"));
+  // The parent is known to the session but excluded from this projection: it is
+  // labelled, and no id is shown for it.
+  assert.equal(outsider.includes("Parent: outside selected scope"), true);
+  assert.equal(outsider.includes("reviewer"), false);
+
+  // The same projection without the parent anywhere is the unknown verdict.
+  const unknown = await loadInspectorBundle({
+    ...bundleInput,
+    loadCurrent: async () => modelWithOrphanChild(),
+  });
+  const unknownHarness = runClient(unknown);
+  unknownHarness.client.state.tab = "agents";
+  unknownHarness.client.render();
+  assert.equal(
+    unknownHarness
+      .texts(unknownHarness.element("view"))
+      .includes("Parent: Unavailable"),
+    true,
+  );
+
+  // Both runs in the same projection: the parent is in scope, so the parent cell
+  // names its role instead of a verdict.
+  const both = await loadInspectorBundle({
+    ...bundleInput,
+    loadCurrent: async () => modelWithOrphanChildAndParent(),
+  });
+  const bothHarness = runClient(both);
+  bothHarness.client.state.tab = "agents";
+  bothHarness.client.render();
+  const inScope = bothHarness.texts(bothHarness.element("view"));
+  assert.equal(inScope.includes("reviewer"), true);
+  assert.equal(inScope.includes("Parent: outside selected scope"), false);
+  assert.equal(inScope.includes("Parent: Unavailable"), false);
 });

@@ -63,6 +63,7 @@ const report: SessionReport = {
   compactions: [],
   generations: [],
   agents: [],
+  agentUsage: { runsTotal: 0, runsWithUsage: 0 },
   agentEvidence: "unavailable",
   agentActivity: {
     state: "unavailable",
@@ -195,6 +196,7 @@ const richReport: SessionReport = {
       usage: { totalTokens: 7, cost: 0.02 },
     },
   ],
+  agentUsage: { runsTotal: 1, runsWithUsage: 1 },
   agentEvidence: "supported",
   agentActivity: {
     state: "unavailable",

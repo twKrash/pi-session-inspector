@@ -1,5 +1,9 @@
 import { reduceEntries } from "../../src/core/reduce.ts";
-import { toSessionReport, type SessionReport } from "../../src/core/reports.ts";
+import {
+  toSessionReport,
+  type AgentToolActivity,
+  type SessionReport,
+} from "../../src/core/reports.ts";
 import type { AgentRun, SessionEntry } from "../../src/core/events.ts";
 import type { InspectorBundleInput } from "../../src/ui/bundle.ts";
 import {
@@ -127,12 +131,30 @@ function agentRun(run: Partial<AgentRun> & { id: string }): AgentRun {
 function reportWith(
   calls: readonly Call[],
   runs: readonly AgentRun[],
+  activity?: AgentToolActivity,
 ): SessionReport {
   return toSessionReport(reduceEntries(SESSION_ID, callEntries(calls)), {
+    ...(activity === undefined ? {} : { agentActivity: activity }),
     ...(runs.length === 0
       ? {}
       : { agents: { state: "supported" as const, runs } }),
   });
+}
+
+/**
+ * One dated native child-launching call, so every scenario's session has an
+ * observed span and its tool side is never empty.
+ */
+const CHILD_CALL: Call = {
+  callId: "call_subagent",
+  name: "subagent",
+  calledAt: CALLED_AT,
+  resultAt: OBSERVED_AT,
+};
+
+/** The bounded producer-shaped run id grammar, one id per ordinal. */
+function runId(ordinal: number): string {
+  return `subagent-${ordinal.toString(16).padStart(64, "0")}`;
 }
 
 function modelOf(
@@ -199,6 +221,104 @@ export function currentModelWithAgents(): CurrentTuiModel {
           usage: { totalTokens: 50, cost: 0.01 },
         }),
         agentRun({ id: `subagent-${"b".repeat(64)}`, status: "unknown" }),
+      ],
+    ),
+    "tree",
+  );
+}
+
+/**
+ * The design's acceptance fixture (§7.7-1): `calls` native child-launching
+ * calls beside `runs` projected child runs, `runsWithUsage` of which reported
+ * usage. The activity counts enter as validated evidence exactly as the
+ * adapter's do, and the session carries one dated native call.
+ */
+export function modelWithActivityAndRuns(input: {
+  calls: number;
+  runs: number;
+  runsWithUsage: number;
+}): CurrentTuiModel {
+  const runs: AgentRun[] = [];
+  for (let ordinal = 0; ordinal < input.runs; ordinal++) {
+    runs.push(
+      agentRun({
+        id: runId(ordinal),
+        observedAt: OBSERVED_AT,
+        ...(ordinal < input.runsWithUsage
+          ? { usage: { totalTokens: 5, cost: 0.05 } }
+          : {}),
+      }),
+    );
+  }
+  return modelOf(
+    reportWith([CHILD_CALL], runs, {
+      state: "supported",
+      calls: input.calls,
+      succeeded: input.calls,
+      failed: 0,
+      interrupted: 0,
+      tools: [{ name: "subagent", calls: input.calls }],
+    }),
+    "tree",
+  );
+}
+
+/** One child run per given status, so every bucket is non-zero and distinct. */
+export function modelWithStatuses(
+  statuses: readonly AgentRun["status"][],
+): CurrentTuiModel {
+  return modelOf(
+    reportWith(
+      [CHILD_CALL],
+      statuses.map((status, ordinal) =>
+        agentRun({ id: runId(ordinal), status, observedAt: OBSERVED_AT }),
+      ),
+    ),
+    "tree",
+  );
+}
+
+/** The parent the active projection excludes, and the child that names it. */
+const OUT_OF_SCOPE_PARENT = runId(1);
+const ORPHAN_CHILD = runId(2);
+
+/**
+ * The active projection of a session whose child run named a parent the active
+ * path excludes: the parent is known to the session, but only in the tree
+ * projection (§7.4's middle verdict).
+ */
+export function modelWithOrphanChild(): CurrentTuiModel {
+  return modelOf(
+    reportWith(
+      [CHILD_CALL],
+      [
+        agentRun({
+          id: ORPHAN_CHILD,
+          parentId: OUT_OF_SCOPE_PARENT,
+          observedAt: OBSERVED_AT,
+        }),
+      ],
+    ),
+    "active",
+  );
+}
+
+/** The same session's tree projection, which carries the parent too. */
+export function modelWithOrphanChildAndParent(): CurrentTuiModel {
+  return modelOf(
+    reportWith(
+      [CHILD_CALL],
+      [
+        agentRun({
+          id: OUT_OF_SCOPE_PARENT,
+          agent: "reviewer",
+          observedAt: OBSERVED_AT,
+        }),
+        agentRun({
+          id: ORPHAN_CHILD,
+          parentId: OUT_OF_SCOPE_PARENT,
+          observedAt: OBSERVED_AT,
+        }),
       ],
     ),
     "tree",

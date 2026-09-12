@@ -65,6 +65,7 @@
         ],
         "errors": [],
         "agents": [],
+        "agentUsage": { "runsTotal": 0, "runsWithUsage": 0 },
         "agentEvidence": "unavailable",
         "agentActivity": {
           "state": "unavailable",
@@ -249,6 +250,7 @@
             "usage": { "totalTokens": 50, "cost": 0.01 }
           }
         ],
+        "agentUsage": { "runsTotal": 1, "runsWithUsage": 1 },
         "agentEvidence": "supported",
         "agentActivity": {
           "state": "supported",
@@ -453,6 +455,7 @@
           ],
           "errors": [],
           "agents": [],
+          "agentUsage": { "runsTotal": 0, "runsWithUsage": 0 },
           "agentEvidence": "unavailable",
           "agentActivity": {
             "state": "unavailable",

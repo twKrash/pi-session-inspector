@@ -109,6 +109,7 @@ export const ENGLISH_CATALOG = {
   "panel.daily": "Daily activity",
   "panel.history": "Tracked sessions",
   "panel.agents": "Agent breakdown",
+  "panel.agentActivity": "Agent tool activity",
   "panel.integrations": "Integrations",
   "panel.ledger": "Chronological ledger",
   "evidence.native": "Native",
@@ -163,9 +164,27 @@ export const ENGLISH_CATALOG = {
     "Child usage is a breakdown only. It is never added to native totals.",
   "agents.activity.note":
     "Calls recorded from persisted tool results. Usage is a breakdown only.",
+  "agents.childRuns": "Child runs",
+  "agents.none":
+    "Child-run evidence is unavailable for this session, so no run count is inferred.",
   "agents.succeeded": "Succeeded",
   "agents.failed": "Failed",
   "agents.interrupted": "Interrupted",
+  "agents.running": "Running",
+  "agents.unknown": "Unknown",
+  "agents.knownTokens": "Known child tokens",
+  "agents.knownCost": "Known child cost",
+  "agents.knownFailedCost": "Known failed-run cost",
+  "agents.usageFraction": "{withUsage} of {total} runs reported usage",
+  "agents.parentOutsideScope": "Parent: outside selected scope",
+  "agents.parentUnknown": "Parent: Unavailable",
+  // A run without an observed time cannot be placed in any range, so an empty
+  // range view states the cause instead of blaming the range for the gap.
+  "agents.undated":
+    "Child runs carry no observed time, so none can be placed in the selected range.",
+  "agents.undatedAndOutOfRange":
+    "No child run falls inside the selected range, and runs without an observed time cannot be placed in one.",
+  "agents.outOfRange": "No child run falls inside the selected range.",
   "commands.note":
     "Loaded or available commands: inventory ≠ invocations. Counts are availability, never activity.",
   "commands.count":
@@ -257,6 +276,8 @@ export const ENGLISH_CATALOG = {
   "table.cacheWrite": "Cache write",
   "table.tool": "Tool",
   "table.run": "Run",
+  "table.role": "Role",
+  "table.artifacts": "Artifacts",
   "table.parent": "Parent",
   "table.evidence": "Evidence",
   "table.integration": "Integration",
@@ -1283,11 +1304,19 @@ function sessionEvidenceRows(
     },
     {
       source: ENGLISH_CATALOG["evidence.child"],
+      // The completeness fraction is the report's own derived `agentUsage`:
+      // this row describes the whole session, so it states how many of the
+      // projected runs reported usage instead of publishing a partial sum as a
+      // total. The Agents tab recomputes the same fraction from the rows it
+      // renders, so a range filter never reuses this figure.
       observation:
         report.agentEvidence === "supported"
-          ? fill(ENGLISH_CATALOG["evidence.child.detail"], {
+          ? `${fill(ENGLISH_CATALOG["evidence.child.detail"], {
               count: report.agents.length,
-            })
+            })} · ${fill(ENGLISH_CATALOG["agents.usageFraction"], {
+              withUsage: report.agentUsage.runsWithUsage,
+              total: report.agentUsage.runsTotal,
+            })}`
           : ENGLISH_CATALOG["evidence.child.missing"],
       confidence:
         report.agentEvidence === "supported"
@@ -1660,7 +1689,7 @@ function knownValue(value,key){const node=el("span","",value+" ");node.append(ba
 const cellText=cell=>cell instanceof Node?text(cell.textContent):text(cell);
 function card(title,subtitle,right){const node=el("section","card"),head=el("div","panel-head"),copy=document.createElement("div");copy.append(el("h2","",title),el("p","",subtitle));head.append(copy);if(right)head.append(right);node.append(head);return node;}
 function simpleTable(section,headers,rows){const wrap=el("div","table-wrap"),node=document.createElement("table"),head=document.createElement("thead"),headRow=document.createElement("tr"),body=document.createElement("tbody");headers.forEach(value=>headRow.append(el("th","",value)));head.append(headRow);rows.forEach(row=>{const rowNode=document.createElement("tr");row.forEach(value=>{const cell=document.createElement("td");if(value instanceof Node)cell.append(value);else cell.textContent=text(value);rowNode.append(cell);});body.append(rowNode);});node.append(head,body);wrap.append(node);section.append(wrap);return section;}
-function table(title,subtitle,headers,rows){const section=card(title,subtitle),toolbar=el("div","toolbar"),searchLabel=el("label","",tr("search")),search=document.createElement("input"),sortLabel=el("label","",tr("sort")),sort=document.createElement("select");search.id="search";search.type="search";search.value=state.query;search.placeholder=tr("search.placeholder");sort.id="sort";[["default","sort.default"],["name","sort.name"],["reverse","sort.reverse"]].forEach(item=>{const option=el("option","",tr(item[1]));option.value=item[0];option.selected=state.sort===item[0];sort.append(option);});searchLabel.append(search);sortLabel.append(sort);toolbar.append(searchLabel,sortLabel);section.append(toolbar);let shown=rows.filter(row=>row.map(cellText).join(" ").toLowerCase().includes(state.query.toLowerCase()));if(state.sort==="name")shown=shown.slice().sort((left,right)=>cellText(left[0]).localeCompare(cellText(right[0]),"en"));if(state.sort==="reverse")shown=shown.slice().reverse();return simpleTable(section,headers,shown);}
+function table(title,subtitle,headers,rows,before){const section=card(title,subtitle);if(before)section.append(before);const toolbar=el("div","toolbar"),searchLabel=el("label","",tr("search")),search=document.createElement("input"),sortLabel=el("label","",tr("sort")),sort=document.createElement("select");search.id="search";search.type="search";search.value=state.query;search.placeholder=tr("search.placeholder");sort.id="sort";[["default","sort.default"],["name","sort.name"],["reverse","sort.reverse"]].forEach(item=>{const option=el("option","",tr(item[1]));option.value=item[0];option.selected=state.sort===item[0];sort.append(option);});searchLabel.append(search);sortLabel.append(sort);toolbar.append(searchLabel,sortLabel);section.append(toolbar);let shown=rows.filter(row=>row.map(cellText).join(" ").toLowerCase().includes(state.query.toLowerCase()));if(state.sort==="name")shown=shown.slice().sort((left,right)=>cellText(left[0]).localeCompare(cellText(right[0]),"en"));if(state.sort==="reverse")shown=shown.slice().reverse();return simpleTable(section,headers,shown);}
 function metric(title,value,note,details){const node=el("section","card metric");node.append(el("div","muted",title),el("div","value mono",value),el("small","",note));const block=el("div","breakdown");(details||[]).forEach(item=>{const row=el("div","breakdown-row");row.append(el("span","",item[0]),el("span","mono",text(item[1])));block.append(row);});node.append(block);return node;}
 function bars(title,subtitle,rows){const section=card(title,subtitle,badge(tr("evidence.native"),"")),body=el("div","bars");if(rows.length===0)body.append(el("p","muted",tr("bars.empty")));rows.forEach(item=>{const row=el("div","bar"),label=el("div","bar-label");label.append(el("span","mono",item.label),el("span","mono",item.value));const track=el("div","track"),fill=el("div","fill");fill.style.width=item.percent+"%";track.append(fill);row.append(label,track);body.append(row);});section.append(body);return section;}
 function emptyCard(title,note,eyebrowKey){const section=el("section","card empty");section.append(el("p","eyebrow",tr(eyebrowKey)),el("h2","",title),el("p","",note));return section;}
@@ -1677,7 +1706,33 @@ function overview(view){if(view.usage===undefined)return unavailableSection(tr("
 // The one range-qualified empty state: a selected range with no in-range observation.
 function rangeEmpty(){return unavailableSection(tr("usage.title"),tr("chart.empty"));}
 function emptyOverview(){const node=el("div","");node.append(rangeEmpty(),evidencePanel(activeEvidence()));return node;}
-function agentsPanel(view,title){const wrap=el("div",""),activity=view.agentActivity;let has=false;if(activity&&activity.state==="supported"){has=true;const section=card(tr("panel.activity"),tr("agents.activity.note")+ALL_DATES,badge(tr("evidence."+activity.state),confidenceTone(activity.state))),metrics=el("div","metrics");metrics.append(metric(tr("metric.agentCalls"),number(activity.calls),tr("metric.tools.note"),[[tr("agents.succeeded"),number(activity.succeeded)],[tr("agents.failed"),number(activity.failed)],[tr("agents.interrupted"),number(activity.interrupted)] ]));section.append(metrics);if(activity.tools&&activity.tools.length>0)simpleTable(section,[tr("table.tool"),tr("table.calls")],activity.tools.map(row=>[row.name,number(row.calls)]));wrap.append(section);}if(view.agentEvidence==="supported"){has=true;const filtered=filteredView(view),agents=filtered?filtered.agents:view.agents;if(agents.length===0&&filtered)wrap.append(emptyCard(title,tr("chart.empty"),"evidence.unavailable"));else wrap.append(table(title,tr("agents.note")+(filtered?"":ALL_DATES),[tr("table.run"),tr("table.parent"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.evidence")],agents.map(row=>[row.id,row.parentId===null?tr("evidence.unavailable"):row.parentId,row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))])));}if(!has)wrap.append(unavailableSection(title,tr("unavailable.agents")));return wrap;}
+// Child-run metrics: the closed status enum's buckets in one fixed order, so
+// every run is counted in exactly one bucket and none is dropped or folded.
+const AGENT_STATUS_BUCKETS=["succeeded","failed","interrupted","running","unknown"];
+// The run ids a parent may resolve to: every projection of this same session the
+// document carries (both current scopes, or the selected history session's own
+// tree projection), never another session's runs.
+function sameSessionAgentIds(view){const ids=new Set(),add=candidate=>{const projection=candidate&&candidate.availability==="available"?candidate.report:null;if(!projection||projection.sessionId!==view.sessionId)return;(projection.agents||[]).forEach(run=>{ids.add(run.id)});};if(state.section==="current"){add(data.current.active);add(data.current.tree);}else{add(selectedSession()&&selectedSession().view);}(view.agents||[]).forEach(run=>{ids.add(run.id)});return ids;}
+// Parent resolution (spec §7.4): the rendered parent is named by its role label
+// (its own bounded id is the fallback), a parent the selected projection
+// excludes is labelled and never linked, and an id nothing knows stays
+// Unavailable. A bare hash is never shown without one of these verdicts.
+function parentCell(row,rendered,known){if(row.parentId===null)return tr("evidence.unavailable");const parent=rendered[row.parentId];if(parent)return parent.agent===null?row.parentId:parent.agent;return known.has(row.parentId)?tr("agents.parentOutsideScope"):tr("agents.parentUnknown");}
+// Why a range-filtered run set can be empty: a run with no observed time cannot
+// be placed in any range, and a dated run outside the range is not a data gap.
+function agentRangeNote(view){const undated=view.agents.filter(run=>!run.observedAt).length;if(undated===0)return tr("agents.outOfRange");if(undated===view.agents.length)return tr("agents.undated");return tr("agents.undatedAndOutOfRange");}
+// Role, status, model, tokens, cost, artifacts and parent verdict, in the fixed
+// column order. Child model and thinking stay metadata: there is no Agent ->
+// Models link, and thinking is shown by the row's own detail, never as a link.
+function agentRunCells(rows,known){const rendered={};rows.forEach(run=>{rendered[run.id]=run;});return rows.map(row=>[orUnavailable(row.agent),badge(tr("agents."+row.status),row.status==="failed"||row.status==="interrupted"?"warn":"neutral"),orUnavailable(row.model),row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),orUnavailable(row.artifacts),parentCell(row,rendered,known)]);}
+// The child-run summary is drawn from the rows being rendered, so a range filter
+// narrows the counts and the fraction instead of reusing a full-session figure.
+// Usage stays a breakdown: no rendered run reporting usage makes tokens and cost
+// read Unavailable, never a fabricated zero.
+function agentSummary(rows){const total=rows.length,withUsage=rows.filter(run=>!!run.usage).length,fraction=tr("agents.usageFraction",{withUsage:withUsage,total:total}),failed=rows.filter(run=>run.status==="failed"),failedWithUsage=failed.filter(run=>!!run.usage).length,tokens=rows.reduce((sum,run)=>sum+(run.usage?run.usage.totalTokens:0),0),cost=rows.reduce((sum,run)=>sum+(run.usage?run.usage.cost:0),0),failedCost=failed.reduce((sum,run)=>sum+(run.usage?run.usage.cost:0),0),metrics=el("div","metrics");metrics.append(metric(tr("agents.childRuns"),number(total),tr("metric.child.note")));AGENT_STATUS_BUCKETS.forEach(status=>{const count=rows.filter(run=>run.status===status).length;if(count>0)metrics.append(metric(tr("agents."+status),number(count),tr("metric.child.note")));});metrics.append(metric(tr("agents.knownTokens"),withUsage===0?tr("evidence.unavailable"):number(tokens),fraction),metric(tr("agents.knownCost"),withUsage===0?tr("evidence.unavailable"):money(cost),fraction));if(failedWithUsage>0)metrics.append(metric(tr("agents.knownFailedCost"),money(failedCost),tr("agents.usageFraction",{withUsage:failedWithUsage,total:failed.length})));return metrics;}
+// Child runs first (summary then table), then the separate native agent tool
+// activity card: how often the launching tool ran is never a child-run count.
+function agentsPanel(view,title){const wrap=el("div",""),activity=view.agentActivity;if(view.agentEvidence==="supported"){const filtered=filteredView(view),rows=filtered?filtered.agents:view.agents;if(rows.length===0&&filtered&&view.agents.length>0)wrap.append(emptyCard(title,agentRangeNote(view),"evidence.unavailable"));else{const section=table(title,tr("agents.note")+(filtered?"":ALL_DATES),[tr("table.role"),tr("table.status"),tr("table.model"),tr("table.tokens"),tr("table.cost"),tr("table.artifacts"),tr("table.parent")],agentRunCells(rows,sameSessionAgentIds(view)),agentSummary(rows));wrap.append(section);}}else wrap.append(unavailableSection(title,tr("agents.none")));if(activity&&activity.state==="supported"){const section=card(tr("panel.agentActivity"),tr("agents.activity.note")+ALL_DATES,badge(tr("evidence."+activity.state),confidenceTone(activity.state))),metrics=el("div","metrics");metrics.append(metric(tr("table.calls"),number(activity.calls),tr("metric.tools.note"),[[tr("agents.succeeded"),number(activity.succeeded)],[tr("agents.failed"),number(activity.failed)],[tr("agents.interrupted"),number(activity.interrupted)]]));section.append(metrics);if(activity.tools&&activity.tools.length>0)simpleTable(section,[tr("table.tool"),tr("table.calls")],activity.tools.map(row=>[row.name,number(row.calls)]));wrap.append(section);}return wrap;}
 function skillsPanel(view,title){const skills=view.skills;if(!skills)return unavailableSection(title,tr("unavailable.skills"));const section=skills.items.length===0?emptyCard(title,tr("skills.empty"),"evidence.unavailable"):table(title,tr("skills.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.invocations")],skills.items.map(row=>[row.name,orUnavailable(row.sourceLabel),orUnavailable(row.scope),orUnavailable(row.origin),row.explicitInvocations===undefined?tr("evidence.unavailable"):number(row.explicitInvocations)]));if(skills.otherInvocations!==null&&skills.otherInvocations!==undefined&&skills.otherInvocations>0)section.append(el("div","footnote",tr("skills.otherInvocations",{count:number(skills.otherInvocations)})));return section;}
 function resourcesCard(resources){if(!resources||resources.state!=="supported"||resources.items.length===0)return unavailableSection(tr("panel.resources"),tr("resources.unavailable"));return simpleTable(card(tr("panel.resources"),tr("resources.note")),[tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.commands"),tr("table.skills"),tr("table.prompts"),tr("table.tools")],resources.items.map(row=>[row.sourceLabel,row.scope,row.origin,number(row.commands),number(row.skills),number(row.prompts),number(row.tools)]));}
 function integrationsPanel(view,title){const wrap=el("div",""),integrations=view.integrations||[];if(integrations.length===0)wrap.append(unavailableSection(title,tr("unavailable.integrations")));else wrap.append(table(title,tr("integrations.note"),[tr("table.integration"),tr("table.presence"),tr("table.evidence"),tr("table.version"),tr("table.counters")],integrations.map(row=>[row.integration,presenceBadge(row.presence),badge(tr("evidence."+row.state),confidenceTone(row.state)),row.version===null?tr("evidence.unavailable"):String(row.version),row.counters.join(" · ")])));wrap.append(resourcesCard(view.resources));return wrap;}

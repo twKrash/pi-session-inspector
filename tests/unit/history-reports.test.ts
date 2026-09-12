@@ -657,6 +657,7 @@ test("replays manifest-discovered history through the shared session report pipe
               },
             ],
             agents: [],
+            agentUsage: { runsTotal: 0, runsWithUsage: 0 },
             agentEvidence: "unavailable",
             agentActivity: {
               state: "unavailable",
@@ -874,6 +875,7 @@ test("preserves branch-summary usage once through history and global reports", a
         generations: [],
         errors: [],
         agents: [],
+        agentUsage: { runsTotal: 0, runsWithUsage: 0 },
         agentEvidence: "unavailable",
         agentActivity: {
           state: "unavailable",

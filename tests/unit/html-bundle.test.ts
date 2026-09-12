@@ -15,6 +15,10 @@ import {
   bundleInput,
   currentModelWithAgents,
   embedOf,
+  modelWithActivityAndRuns,
+  modelWithOrphanChild,
+  modelWithOrphanChildAndParent,
+  modelWithStatuses,
   modelWithToolError,
   modelWithToolErrorAndTwoChildren,
 } from "../helpers/bundle-scenarios.ts";
@@ -508,4 +512,81 @@ test("the history projection carries each session's dated model rows", () => {
     .sessions[0];
   assert.equal("datedModels" in legacy, false);
   assert.equal("modelsTruncated" in legacy, false);
+});
+
+test("the agents panel separates child runs from native agent tool activity", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () =>
+        modelWithActivityAndRuns({ calls: 174, runs: 23, runsWithUsage: 18 }),
+    }),
+  );
+  assert.match(html, /Child runs/);
+  assert.match(html, /Agent tool activity/);
+  assert.match(html, /18 of 23 runs reported usage/);
+  assert.equal(/"label":"Agent calls"/.test(html), false);
+});
+
+test("child run statuses each keep their own bucket", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () =>
+        modelWithStatuses([
+          "succeeded",
+          "failed",
+          "interrupted",
+          "running",
+          "unknown",
+        ]),
+    }),
+  );
+  for (const label of [
+    "Child runs",
+    "Succeeded",
+    "Failed",
+    "Interrupted",
+    "Running",
+    "Unknown",
+  ]) {
+    assert.match(html, new RegExp(label));
+  }
+});
+
+test("a parent outside the selected projection is labelled, not linked", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async (scope) =>
+        scope === "active"
+          ? modelWithOrphanChild()
+          : modelWithOrphanChildAndParent(),
+    }),
+  );
+  assert.match(
+    html,
+    /Parent: outside selected scope|agents\.parentOutsideScope/,
+  );
+});
+
+test("the agents panel reads the rows it renders, never a stored fraction", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  for (const fragment of [
+    'tr("panel.agentActivity")',
+    'tr("agents.childRuns")',
+    'tr("agents.knownTokens")',
+    'tr("agents.knownCost")',
+    'tr("agents.knownFailedCost")',
+    'tr("agents.usageFraction"',
+    'tr("agents.parentOutsideScope")',
+    'tr("agents.parentUnknown")',
+    'tr("agents.undated")',
+  ]) {
+    assert.equal(html.includes(fragment), true, fragment);
+  }
+  // The fraction is recomputed from the rendered rows, so a range filter can
+  // never reuse a full-session count: no derived fraction travels in the
+  // payload at all.
+  assert.equal(/"agentUsage"/.test(html), false);
 });
