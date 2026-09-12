@@ -83,32 +83,54 @@ import {
   OPAQUE_ID_DOMAINS,
 } from "../../src/core/opaque-id.ts";
 
-const SESSION = "01a0950b-60f3-72b7-9d18-4b9836d6845f";
+const SESSION = "fixture-session";
 
-test("digest is deterministic 64 lowercase hex", () => {
+// Pinned reference vector for the spec §8.1.1 preimage: fields NUL-separated,
+// no trailing NUL. Changing the preimage must fail this assertion.
+const GOLDEN = "301ec87b2b3d5de5f8ceed12db1019649b0ca95ed93f7d70b6e245d838015420";
+
+test("digest is deterministic 64 lowercase hex and pins the golden vector", () => {
   const a = canonicalOpaqueDigest("live-tool", SESSION, "call_abc");
   const b = canonicalOpaqueDigest("live-tool", SESSION, "call_abc");
   assert.equal(a, b);
   assert.match(a, /^[a-f0-9]{64}$/);
+  assert.equal(a, GOLDEN);
 });
 
 test("domains and sessions are collision-isolated", () => {
   const base = canonicalOpaqueDigest("live-tool", SESSION, "id");
   assert.notEqual(base, canonicalOpaqueDigest("permission-request", SESSION, "id"));
   assert.notEqual(base, canonicalOpaqueDigest("live-tool", `${SESSION}-2`, "id"));
-  assert.notEqual(base, canonicalOpaqueDigest("live-tool", SESSION, "id "));
-  assert.equal(OPAQUE_ID_DOMAINS.length, 3);
+  // Field-boundary test: a `+` concatenation would make these two equal.
+  assert.notEqual(
+    canonicalOpaqueDigest("live-tool", SESSION, "ab"),
+    canonicalOpaqueDigest("live-tool", `${SESSION}b`, "a"),
+  );
+  assert.deepEqual([...OPAQUE_ID_DOMAINS], [
+    "live-tool",
+    "permission-request",
+    "subagent-run",
+  ]);
 });
 
 test("invalid input is rejected, never hashed leniently", () => {
-  assert.throws(() => canonicalOpaqueDigest("live-tool", SESSION, ""));
-  assert.throws(() => canonicalOpaqueDigest("live-tool", "", "id"));
-  assert.throws(() => canonicalOpaqueDigest("live-tool", SESSION, "a\u0000b"));
-  assert.throws(() =>
-    canonicalOpaqueDigest("live-tool", SESSION, "x".repeat(513)),
+  assert.throws(() => canonicalOpaqueDigest("live-tool", SESSION, ""), TypeError);
+  assert.throws(() => canonicalOpaqueDigest("live-tool", "", "id"), TypeError);
+  assert.throws(
+    () => canonicalOpaqueDigest("live-tool", SESSION, "a\u0000b"),
+    TypeError,
   );
-  assert.throws(() =>
-    canonicalOpaqueDigest("nope" as never, SESSION, "id"),
+  assert.throws(
+    () => canonicalOpaqueDigest("live-tool", SESSION, "a\u0001b"),
+    TypeError,
+  );
+  assert.throws(
+    () => canonicalOpaqueDigest("live-tool", SESSION, "x".repeat(513)),
+    TypeError,
+  );
+  assert.throws(
+    () => canonicalOpaqueDigest("nope" as never, SESSION, "id"),
+    TypeError,
   );
 });
 
@@ -157,22 +179,25 @@ export function canonicalOpaqueDigest(
     throw new TypeError("sessionId must be a non-empty string");
   if (typeof rawId !== "string" || rawId.length === 0)
     throw new TypeError("rawId must be a non-empty string");
-  if (rawId.includes("\u0000")) throw new TypeError("rawId must not contain NUL");
+  if (/[\u0000-\u001f\u007f]/.test(rawId))
+    throw new TypeError("rawId must not contain control characters");
   if (encoder.encode(rawId).byteLength > MAX_RAW_BYTES)
     throw new TypeError("rawId exceeds the byte bound");
 
   const hash = createHash("sha256");
-  for (const part of [
+  const parts = [
     "pi-session-inspector",
     "opaque-id",
     "v1",
     domain,
     sessionId,
     rawId,
-  ]) {
+  ];
+  // NUL separators sit between fields only; the preimage has no trailing NUL.
+  parts.forEach((part, index) => {
     hash.update(encoder.encode(part));
-    hash.update(NUL);
-  }
+    if (index < parts.length - 1) hash.update(NUL);
+  });
   return hash.digest("hex");
 }
 ```
