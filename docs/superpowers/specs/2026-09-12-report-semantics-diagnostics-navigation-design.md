@@ -52,7 +52,7 @@ the affected sections carry an inline pointer.
 4. **Already implemented on `main` — absorbed.** §6.3's rows for agent role,
    artifacts, `observedAt`, `evidenceToolId`, tool timestamp, model, thinking and
    failure class are **done** (the DTO validates all of them). Still missing:
-   §7.2's `runsWithUsage` fraction, and every browser projection of those fields
+   §7.2's derived child-usage fraction, and every browser projection of those fields
    (§0.2 item 8 below is the only remaining renderer work for them).
 5. **§3.2 rule 7 is corrected.** `loadHistoryReports` and `loadGlobalReport` each
    call `scanHistory`; they do **not** share one scan object. Coverage is a
@@ -951,7 +951,7 @@ Rules:
 | `AgentRun` has no model/thinking | `model?`, `thinking?` validated from `results[]` (derivation, producer-version dependent) | P1-C | derivation **done**; projection must pass them through |
 | `AgentRun` has no bounded failure class | `failure?: AgentFailure` from validated enums (derivation) | P1-C | derivation **done**; projection must pass it through |
 | Errors cannot link to a child run | `AgentRun.evidenceToolId = "tool:" + message.toolCallId` (derivation; one-to-many) | P1-D | field **done**; the join and its rendering are open |
-| Child usage completeness unknown | `runsWithUsage` / `runsTotal` counts in the report and the agent projection (derivation) | P1-D | open |
+| Child usage completeness unknown | **Derived, never carried as evidence**: `toSessionReport` derives `agentUsage = { runsTotal: runs.length, runsWithUsage: runs.filter((run) => run.usage !== undefined).length }` from the already-projected run set, and the browser derives the same fraction from the rows it is rendering (so a range filter narrows it instead of reusing a full-session count) | P1-D | open |
 
 Three rows that the pre-merge design listed as derivations — agent model, thinking
 and failure class, plus `observedAt`/`evidenceToolId` and the tool timestamp — are
@@ -1021,7 +1021,9 @@ Rules:
   scope, at any time (ADR 0007 preserved).
 - When some runs lack usage, the cost/token labels carry `Known` and the
   fractions are shown. When `runsWithUsage === 0`, show `Unavailable` — never
-  `$0.00`.
+  `$0.00`. The fraction is computed from the rows being rendered, so a range
+  filter reports the filtered runs' fraction, never a stale full-session one
+  (R21).
 - `agentEvidence !== "supported"` ⇒ the summary shows `Unavailable` with the
   evidence state; no counts are invented.
 
@@ -1576,7 +1578,7 @@ the v0.8.0 baseline is 588 passing tests at `81f65b7`.
 ### P1-D — Agents, errors, tools semantics
 
 - **Files:** `src/ui/html.ts` (client tabs + detail panels),
-  `src/core/reports.ts` (child-usage counts), tests.
+  `src/core/reports.ts` (`agentUsage`, derived from the projected runs), tests.
 - **Contract delta:** §7.1-7.6 rendering; one-to-many `Related child run(s)`.
 - **Acceptance:** §7.7 (1-9).
 
@@ -1627,7 +1629,7 @@ Semantic assertions over snapshots; every new behavior gets a failing-first test
 | Coverage | `tests/unit/history-reports.test.ts`, `tests/unit/index-report-command.test.ts` | 5 of 27 inspected (uncapped) partial; all available; none available; **empty inspection set ⇒ `complete === false`, `sessionRatio === null`, `No tracked sessions`, usage `Unavailable`**; sessions dir unreadable; **discovery cap ⇒ `sessionRatio === null`, `complete === false`, `206 sessions inspected · additional sessions not inspected`, no percentage and no `206 / 206`**; `coverage`-absent report; unavailable sessions contribute no usage; Known vs Total wording; **reason→code mapping totality (§3.1.1)**; every reason produced by a real path (`session-unreadable`, `replay-failed` via the injectable replay/provider seams); history and global coverage equal; **selected history session detail has no coverage qualifier** |
 | Range | `tests/unit/html-bundle.test.ts`, `tests/unit/bundle.test.ts` (+ new `tests/unit/report-range.test.ts`) | 7D vs 14D differ on every range-aware widget (models, tools, agents, errors, composition, chart) by filtering canonical rows; inclusive UTC boundaries; custom validation failure keeps state; range outside data → empty state; scope change preserves range; truncation notice; **aggregate session membership by in-range records (§5.6)**; **custom-range hash round-trip and lone/inverted-pair fallback**; **cross-midnight attribution regression (§5.7)**: call day carries the tool usage, next day carries the error, totals and composition stay consistent; **>366-day session fixture**: `usageByDateTruncated`, an old Custom range renders `Known` + `history-daily-truncated` (never zero), a recent range reconciles exactly with the detail view |
 | Scope | `tests/unit/current-ui.test.ts`, `tests/unit/index-current-ui.test.ts` | linear session with `sameReportProjection === true` and the exact note wording; branched Active≠Tree; sibling exclusion; child usage never added; labels contain no descendant claim |
-| Agents | `tests/unit/subagents.test.ts`, `tests/unit/html-bundle.test.ts` | activity calls ≠ run count; failed-run cost; partial child usage; parent resolution (in-scope / tree-only / unknown); role/model/thinking present only when validated and shown as metadata only (no Models link); **one result publishing several runs ⇒ one-to-many `Related child run(s)`**; `evidenceToolId` only from `message.toolCallId`; `observedAt` from the publishing entry; no raw task/output text |
+| Agents | `tests/unit/subagents.test.ts`, `tests/unit/reports-integrations.test.ts`, `tests/unit/html-bundle.test.ts` | activity calls ≠ run count; the derived `agentUsage` fraction (and its recomputation over range-filtered rows); failed-run cost; parent resolution (in-scope / tree-only / unknown); role/model/thinking present only when validated and shown as metadata only (no Models link); **one result publishing several runs ⇒ one-to-many `Related child run(s)`**; `evidenceToolId` only from `message.toolCallId`; `observedAt` from the publishing entry; no raw task/output text |
 | Errors | `tests/unit/error-ledger.test.ts`, `tests/unit/reduce.test.ts` | generation message preserved; tool error joined to tool (name/source/status); tool error without message → Unavailable; no tool-result leak |
 | Tools | `tests/unit/html-bundle.test.ts` (+ new call rows) | summary aggregation; success/failure/interrupted; known vs unavailable usage; timeline timestamps; duration only with live evidence |
 | Navigation | `tests/unit/route.test.ts` (new, pure) + document-structure assertions in `tests/unit/html-bundle.test.ts` | route parse/serialize round-trip incl. custom `from`/`to` pair; canonical parameter order; half-pair fallback; derived view model: active section, active tab, capable tabs, scope, range, entity, notice; **one render when both `hashchange` and `popstate` fire; no focus effect on range-only change**; capability filtering; hash carries no hostile text; per-table state isolation; unsupported tab coercion; **no Agent → Models navigation target (different usage domains)** |
@@ -1768,6 +1770,7 @@ start before §3-§10 are settled, and it changes no contract.)
 | R18 | The aggregate coverage type is `SessionCoverage` (not `CoverageSummary`), in `src/core/session-coverage.ts` | The canonical model already owns `UsageCoverage`; two types named "coverage" with different meanings invite exactly the confusion this milestone exists to remove | One rename now; §3.1's field names are unchanged |
 | R19 | Per-date rows come from **one** module (`src/ui/dated-usage.ts`), computed over the canonical session from `CanonicalUsageLine.attributedAt`/`domain`/`bucket` and joined to the canonical generation rows by `ownerId`. Every consumer (current views, history/global, the chart) folds those rows; nothing re-walks `SessionReport` timestamps to build a second dated projection | The builder is the single attribution authority (R15/§5.7) and the bundle only sees the report, so a second date-bucketing walk there would drift at the first producer change | A per-date figure can only differ from the report if the builder is wrong, which is then a single place to fix; the cost is one small module and a fold instead of a walk |
 | R20 | Every `CoverageReason` maps onto an existing `EvidenceDiagnosticCode` or `HistoryDiagnostic`, asserted by a totality test | Invariant 8 (degrade, never guess) plus the ban on a second vocabulary: a runnability reason must be traceable to a bounded code | Adding a reason requires naming the code it projects |
+| R21 | The child-usage fraction is **derived** state: it is computed in `toSessionReport` from the projected run set and recomputed in the browser from the rows being rendered. It is never added to `SubagentEvidence` or any integration evidence type | Integration evidence describes what the producer published; a completeness fraction over the projected rows is a report concern, and a range-filtered view must not reuse a full-session count | One derived field on `SessionReport`; a filtered view states its own fraction |
 
 ---
 
