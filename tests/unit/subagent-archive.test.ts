@@ -388,11 +388,24 @@ test("production report path consumes archive enrichment", async () => {
   const model = await loadCurrentSessionReport(sessionFile, "active", {
     leafId: "r1",
   });
-  assert.equal(model?.report.agents.length, 1);
-  assert.equal(model?.report.agents[0]?.artifacts, "available");
-  assert.equal(model?.report.agentEvidence, "supported");
-  assert.equal(model?.report.agentActivity.calls, 1);
-  assert.equal(JSON.stringify(model?.report).includes(archivePath), false);
+  assert.ok(model);
+  assert.equal(model.report.agents.length, 1);
+  assert.equal(model.report.agents[0]?.artifacts, "available");
+  assert.equal(model.report.agentEvidence, "supported");
+  assert.equal(model.report.agentActivity.calls, 1);
+  assert.equal(JSON.stringify(model.report).includes(archivePath), false);
+  // P1.2: the health the same DTO publishes must see the cooperative evidence
+  // class the body reports, not an empty L1 agent list.
+  assert.equal(
+    model.report.evidenceHealth.joins.agentRuns,
+    model.report.agents.length,
+  );
+  assert.equal(
+    model.report.evidenceHealth.sources.some(
+      (row) => row.source === "subagent-result",
+    ),
+    true,
+  );
 
   await rm(archivePath, { force: true });
   const missing = await loadCurrentSessionReport(sessionFile, "active", {

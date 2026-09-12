@@ -292,11 +292,11 @@ test("keeps the live registration so a dropped tool start marks live evidence pa
       (row) => row.source === "inspector-wal",
     );
     // The live producer's own WAL records reach L0 through the composition
-    // root: 64 paired tool boundaries, exactly as the retention contract
-    // requires. (The dropped start is reported by the registration's overflow
-    // counter, which the dedicated loader test isolates, because a retained
-    // running boundary already marks the live source partial.)
-    assert.equal(wal?.factsAccepted, 128);
+    // root: 64 paired tool boundaries are 64 completed facts over 128 records.
+    // The 65th start was dropped, so the registration's overflow counter is
+    // what makes this source partial — the paired starts no longer do (P1.3),
+    // which makes this assertion the end-to-end R29 discriminator.
+    assert.equal(wal?.factsAccepted, 64);
     assert.equal(wal?.recordsSeen, 128);
     assert.equal(wal?.state, "partial");
     assert.equal(report.durationEvidence, "unavailable");
@@ -1020,6 +1020,313 @@ const permissionDecision = (result: "allow" | "deny", resolution: string) => ({
   kind: "counter",
   value: 1,
   dimensions: { result, resolution },
+});
+
+const skillInvocation = (skill: string) => ({
+  schemaVersion: 1,
+  source: "pi-input",
+  metric: "skill.invocation",
+  kind: "counter",
+  value: 1,
+  dimensions: { skill },
+});
+
+const telemetryRecord = (
+  writerId: string,
+  writerSequence: number,
+  telemetry: Record<string, unknown>,
+) => ({
+  eventId: `event-${writerSequence}`,
+  timestamp: `2026-09-11T10:00:0${writerSequence}Z`,
+  writerId,
+  writerSequence,
+  kind: "telemetry",
+  telemetry,
+});
+
+/**
+ * A tracked fixture session. Each of these tests uses its own session id so the
+ * process-wide live registration one test installs can never leak into another
+ * test's health (LiveSessionState is keyed by session id).
+ */
+function trackedSessionSource(sessionId: string): string {
+  return [
+    JSON.stringify({ type: "session", version: 3, id: sessionId }),
+    JSON.stringify({
+      type: "custom",
+      id: "tracking-marker",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      customType: "session-inspector:tracking-start",
+      data: { schemaVersion: 1 },
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "entry-1",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: {
+        role: "assistant",
+        provider: "acme",
+        model: "alpha",
+        usage: { totalTokens: 7, cost: { total: 0.01 } },
+      },
+    }),
+  ].join("\n");
+}
+
+/** A writer shard holding the given retained records. */
+async function writeShard(
+  directory: string,
+  sessionId: string,
+  writerId: string,
+  records: readonly Record<string, unknown>[],
+): Promise<void> {
+  const shard = join(
+    directory,
+    "session-inspector",
+    "v1",
+    "sessions",
+    sessionId,
+    "wal",
+    writerId,
+  );
+  await mkdir(shard, { recursive: true });
+  await writeFile(
+    join(shard, "2026-09-11.jsonl"),
+    `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+  );
+}
+
+/** Writes a derived checkpoint for one fixture session. */
+async function writeCheckpointFixture(
+  directory: string,
+  sessionId: string,
+  checkpoint: Record<string, unknown>,
+): Promise<void> {
+  const sessionDirectory = join(
+    directory,
+    "session-inspector",
+    "v1",
+    "sessions",
+    sessionId,
+  );
+  await mkdir(sessionDirectory, { recursive: true });
+  await writeFile(
+    join(sessionDirectory, "checkpoint.json"),
+    `${JSON.stringify(checkpoint)}\n`,
+  );
+}
+
+type ExportedReport = {
+  agents: readonly unknown[];
+  skills: {
+    invocationState: string;
+    invocationCount: number | null;
+    otherInvocations: number | null;
+    items: readonly { name: string; explicitInvocations?: number }[];
+  };
+  integrations: readonly {
+    integration: string;
+    presence: string;
+    state: string;
+    counters?: Readonly<Record<string, number | boolean>>;
+  }[];
+  evidenceHealth: {
+    sources: readonly {
+      source: string;
+      state: string;
+      recordsSeen: number;
+      factsAccepted: number;
+    }[];
+    joins: { agentRuns: number };
+    aggregates: { skillInvocations: { retainedInvocations: number } };
+  };
+};
+
+const walSource = (report: ExportedReport) =>
+  report.evidenceHealth.sources.find((row) => row.source === "inspector-wal");
+
+const integrationRow = (report: ExportedReport, integration: string) =>
+  report.integrations.find((row) => row.integration === integration);
+
+/** Runs the production `json` export for one fixture session. */
+async function exportCurrentReport(input: {
+  directory: string;
+  sessionFile: string;
+  sessionId: string;
+}): Promise<ExportedReport> {
+  const output = join(input.directory, "report.json");
+  const handlerRef: { current?: CommandHandler } = {};
+  registerCommand(handlerRef);
+  assert.ok(handlerRef.current);
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = input.directory;
+  try {
+    await handlerRef.current(`json --output "${output}"`, {
+      mode: "interactive",
+      sessionManager: {
+        getSessionId: () => input.sessionId,
+        getLeafId: () => "entry-1",
+        getSessionFile: () => input.sessionFile,
+        getSessionDir: () => input.directory,
+      },
+      ui: {
+        notify: () => assert.fail("must export the current session report"),
+        custom: async () => assert.fail("must export the current report"),
+      },
+    } as unknown as ExtensionCommandContext);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  }
+  return JSON.parse(await readFile(output, "utf8")) as ExportedReport;
+}
+
+test("publishes the retained counter total when the checkpoint folded nothing", async () => {
+  const sessionId = "retained-total";
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  await writeFile(sessionFile, trackedSessionSource(sessionId));
+  // A boundary that folded nothing: a zero cursor, empty aggregates, no seal
+  // and no resource counts, with every retained record after its cursor.
+  await writeCheckpointFixture(directory, sessionId, {
+    schemaVersion: 1,
+    cursors: {
+      pi: { lineCount: 2, revision: "0".repeat(64) },
+      wal: { "writer-a": 0 },
+    },
+    aggregates: {
+      totalTokens: 0,
+      totalCost: 0,
+      generations: 0,
+      tools: 0,
+      compactions: 0,
+    },
+  });
+  await writeShard(directory, sessionId, "writer-a", [
+    telemetryRecord("writer-a", 1, permissionDecision("deny", "user_denied")),
+    telemetryRecord("writer-a", 2, skillInvocation("council-mode")),
+  ]);
+
+  const report = await exportCurrentReport({
+    directory,
+    sessionFile,
+    sessionId,
+  });
+
+  // The retained counter total is published even though the folded prefix
+  // contributed nothing (P1.1: the DTO used to drop it entirely).
+  assert.deepEqual(integrationRow(report, "permission")?.counters, {
+    decisions: 1,
+    denied: 1,
+  });
+  assert.equal(report.skills.invocationState, "supported");
+  assert.equal(report.skills.invocationCount, 1);
+  assert.equal(
+    report.skills.items.find((row) => row.name === "council-mode")
+      ?.explicitInvocations,
+    1,
+  );
+  // The body and the health that describes it agree.
+  assert.equal(
+    report.evidenceHealth.aggregates.skillInvocations.retainedInvocations,
+    1,
+  );
+});
+
+test("keeps retained skill detail while integration totals stay unavailable without a boundary", async () => {
+  const sessionId = "no-boundary";
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  await writeFile(sessionFile, trackedSessionSource(sessionId));
+  // No checkpoint boundary at all: pruning cannot be ruled out, so L1 must
+  // publish no counter total — but the retained skill detail still survives.
+  await writeShard(directory, sessionId, "writer-a", [
+    telemetryRecord("writer-a", 1, skillInvocation("council-mode")),
+    telemetryRecord("writer-a", 2, permissionDecision("deny", "user_denied")),
+  ]);
+
+  const report = await exportCurrentReport({
+    directory,
+    sessionFile,
+    sessionId,
+  });
+
+  assert.equal(report.skills.invocationState, "supported");
+  assert.equal(report.skills.invocationCount, 1);
+  assert.equal(
+    report.skills.items.find((row) => row.name === "council-mode")
+      ?.explicitInvocations,
+    1,
+  );
+  // A WAL-observed permission counter is *not* a trustworthy total here, and
+  // the DTO must not present one.
+  assert.equal(integrationRow(report, "permission")?.counters, undefined);
+  assert.equal(integrationRow(report, "permission")?.state, "unavailable");
+  assert.equal(
+    report.evidenceHealth.aggregates.skillInvocations.retainedInvocations,
+    1,
+  );
+});
+
+test("reports a fully paired live boundary as supported and an unpaired start as partial", async () => {
+  const sessionId = "paired-boundary";
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "session.jsonl");
+  await writeFile(sessionFile, trackedSessionSource(sessionId));
+  const subjectId = `live-tool-${canonicalOpaqueDigest("live-tool", sessionId, "call-1")}`;
+  const start = {
+    eventId: "live-start",
+    timestamp: "2026-09-11T10:00:00Z",
+    writerId: "writer-live",
+    writerSequence: 1,
+    kind: "live_timing",
+    timing: {
+      category: "tool",
+      status: "running",
+      confidence: "live",
+      subjectId,
+      startedAt: "2026-09-11T10:00:00Z",
+    },
+  };
+  const end = {
+    eventId: "live-end",
+    timestamp: "2026-09-11T10:00:05Z",
+    writerId: "writer-live",
+    writerSequence: 2,
+    kind: "live_timing",
+    timing: {
+      category: "tool",
+      status: "unknown",
+      confidence: "live",
+      subjectId,
+      startedAt: "2026-09-11T10:00:00Z",
+      endedAt: "2026-09-11T10:00:05Z",
+      durationMs: 5000,
+    },
+  };
+
+  await writeShard(directory, sessionId, "writer-live", [start, end]);
+  const paired = await exportCurrentReport({
+    directory,
+    sessionFile,
+    sessionId,
+  });
+  // The paired start is not an open boundary, so the live source is complete.
+  assert.equal(walSource(paired)?.state, "supported");
+  assert.equal(walSource(paired)?.factsAccepted, 1);
+  assert.equal(walSource(paired)?.recordsSeen, 2);
+
+  await writeShard(directory, sessionId, "writer-live", [start]);
+  const unpaired = await exportCurrentReport({
+    directory,
+    sessionFile,
+    sessionId,
+  });
+  // A start without a complete partner stays incomplete live evidence.
+  assert.equal(walSource(unpaired)?.state, "partial");
+  assert.equal(walSource(unpaired)?.factsAccepted, 1);
 });
 
 test("current report projects L1 retained aggregates and presence from supplied evidence", async () => {

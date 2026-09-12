@@ -383,6 +383,7 @@ async function readSessionEvidence(input: {
           ...readLiveTimings({
             sessionId: input.sessionId,
             records: recovered.records,
+            running: recovered.running,
           }),
         ],
         folded: foldedCheckpointEvidence(input.sessionId, checkpoint),
@@ -422,15 +423,23 @@ async function readSessionEvidence(input: {
  * validated record yields at most one fact: the WAL's paired `unknown` status
  * is the completed state, `unsupported` categories stay unsupported, and any
  * record without a validated timing yields nothing — never a fabricated fact.
+ *
+ * P1.3/design §15.1 rule 6: a start boundary is `running` evidence only while it
+ * has no complete partner, which is exactly what `recovery.running` reports; a
+ * paired start's boundary is already carried by its complete record, so
+ * re-emitting it as `running` would mark a fully paired WAL incomplete forever.
  */
 function readLiveTimings(input: {
   sessionId: string;
   records: readonly RecoveredWalRecord[];
+  running: readonly { eventId: string }[];
 }): LiveTimingObservation[] {
+  const open = new Set(input.running.map((record) => record.eventId));
   const facts: LiveTimingObservation[] = [];
   for (const record of input.records) {
     const timing = record.kind === "live_timing" ? record.timing : undefined;
     if (timing === undefined) continue;
+    if (timing.status === "running" && !open.has(record.eventId)) continue;
     facts.push({
       factId: `live-timing:${record.eventId}`,
       sessionId: input.sessionId,

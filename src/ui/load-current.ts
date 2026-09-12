@@ -1,17 +1,18 @@
 import { readFile } from "node:fs/promises";
 import {
   buildCanonicalSession,
+  type CanonicalSession,
   type RetainedWalRecord,
 } from "../core/canonical.ts";
 import type { L0Evidence } from "../core/evidence.ts";
 import type { IntegrationKey, Scope } from "../core/events.ts";
-import type { FoldedCounters } from "../core/live-counter-fold.ts";
+import {
+  MAX_SKILL_KEYS,
+  type FoldedCounters,
+} from "../core/live-counter-fold.ts";
 import { reduceEntries } from "../core/reduce.ts";
 import { toSessionReport, type DurationEvidence } from "../core/reports.ts";
-import {
-  isIntegrationKey,
-  type CanonicalRetainedAggregates,
-} from "../core/retained-aggregates.ts";
+import { isIntegrationKey } from "../core/retained-aggregates.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
 import { readSubagentEvidenceWithArchives } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
@@ -59,7 +60,7 @@ export async function loadCurrentSessionReport(
 
   try {
     const parsed = parseSessionJsonl(await readFile(sessionFile, "utf8"));
-    const built = buildCanonicalSession({
+    const buildInput = {
       parsed,
       scope,
       leafId,
@@ -73,15 +74,18 @@ export async function loadCurrentSessionReport(
       ...(observation?.inventory === undefined
         ? {}
         : { inventory: observation.inventory }),
-    });
-    if (built.state !== "ready") return undefined;
-    const session = built.session;
-
+    };
+    // The builder is the single scope authority, so its resolution is what the
+    // subagent adapter reads. The second (pure, in-memory) build then supplies
+    // L1 with the same cooperative evidence class the DTO publishes, so the
+    // health and the body cannot contradict each other (P1.2).
+    const resolved = buildCanonicalSession(buildInput);
+    if (resolved.state !== "ready") return undefined;
     // R49: the entry set is the builder's resolution in order, mapped back to
     // parsed entries; an id without a parsed entry (an unknown-semantic node)
     // is skipped instead of fabricating a node. Scope is never re-derived here.
     const byId = new Map(parsed.entries.map((entry) => [entry.id, entry]));
-    const entries = session.scopedEntryIds.flatMap((id) => {
+    const entries = resolved.session.scopedEntryIds.flatMap((id) => {
       const entry = byId.get(id);
       return entry === undefined ? [] : [entry];
     });
@@ -90,8 +94,14 @@ export async function loadCurrentSessionReport(
     // Only validated published archive references add presence evidence.
     const subagentEvidence = await readSubagentEvidenceWithArchives(
       entries,
-      session.sessionId,
+      resolved.session.sessionId,
     );
+    const built = buildCanonicalSession({
+      ...buildInput,
+      subagents: subagentEvidence,
+    });
+    if (built.state !== "ready") return undefined;
+    const session = built.session;
     // R47: `expired` keeps its existing meaning — some prune seal exists — so a
     // checkpoint with no pruned detail is never labelled as cold.
     const sealed = Object.values(
@@ -106,7 +116,7 @@ export async function loadCurrentSessionReport(
         },
         agentActivity: subagentEvidence.activity,
         presence: observation?.presence,
-        ...countersFrom(session.retainedAggregates),
+        ...countersFrom(session),
         inventory: observation?.inventory,
         integrations: readPiEntryEvidence(entries),
         // Task 14 fields: the canonical health and checkpoint-surviving
@@ -124,27 +134,47 @@ export async function loadCurrentSessionReport(
 }
 
 /**
- * Projects L1's retained aggregates into the legacy folded-counter DTO field
- * (spec §11 compatibility). This is a projection, not a fold: the builder
- * already unioned the checkpoint prefix with the post-cursor retained suffix.
- * Absent aggregate content stays absent, so a report never claims counters it
- * did not observe.
+ * Projects L1's effective counters into the legacy folded-counter DTO field
+ * (spec §11 compatibility). This is a projection, not a fold: L1 already
+ * unioned the folded prefix with the post-cursor retained suffix, and L2 never
+ * adds a fact on top of a published total (R50c). Absent content stays absent,
+ * so a report never claims counters it did not observe.
  */
-function countersFrom(retained: CanonicalRetainedAggregates): {
+function countersFrom(session: CanonicalSession): {
   counters?: FoldedCounters;
 } {
-  const counters: Partial<Record<IntegrationKey, Record<string, number>>> = {};
-  for (const key of Object.keys(retained.integration ?? {}).sort()) {
-    if (!isIntegrationKey(key)) continue;
-    const value = retained.integration?.[key];
-    if (value === undefined) continue;
-    counters[key] = { ...value.value };
+  const effective = session.effectiveCounters;
+  if (effective.state === "unavailable") {
+    // R50(b): with no boundary L1 states no total, so per-key integration
+    // counts stay unavailable — but the retained explicit skill-invocation
+    // detail still reaches the body from the canonical facts (invariant 29),
+    // so `skills` agrees with the health that counts those same facts.
+    const skills = retainedSkillCounters(session.skillInvocations);
+    if (
+      Object.keys(skills.skillInvocations).length === 0 &&
+      skills.otherInvocations === 0
+    ) {
+      return {};
+    }
+    return {
+      counters: {
+        counters: {},
+        skillInvocations: skills.skillInvocations,
+        otherInvocations: skills.otherInvocations,
+        presence: { permission: false },
+      },
+    };
   }
-  const skillInvocations = {
-    ...(retained.skillInvocations?.named?.value ?? {}),
-  };
-  const otherInvocations = retained.skillInvocations?.overflow?.value ?? 0;
-  const permission = retained.permissionPresence?.value === true;
+  const counters: Partial<Record<IntegrationKey, Record<string, number>>> = {};
+  for (const key of Object.keys(effective.integration ?? {}).sort()) {
+    if (!isIntegrationKey(key)) continue;
+    const value = effective.integration?.[key];
+    if (value === undefined) continue;
+    counters[key] = { ...value };
+  }
+  const skillInvocations = { ...(effective.skillInvocations?.named ?? {}) };
+  const otherInvocations = effective.skillInvocations?.overflow ?? 0;
+  const permission = effective.permissionPresence === true;
   if (
     Object.keys(counters).length === 0 &&
     Object.keys(skillInvocations).length === 0 &&
@@ -161,6 +191,32 @@ function countersFrom(retained: CanonicalRetainedAggregates): {
       presence: { permission },
     },
   };
+}
+
+/**
+ * Exact named counts of the canonical retained skill facts. Names beyond the
+ * shared key cap are still counted exactly as `otherInvocations`, mirroring the
+ * live fold's contract; the map is prototype-free like every counter map.
+ */
+function retainedSkillCounters(facts: readonly { skill: string }[]): {
+  skillInvocations: Record<string, number>;
+  otherInvocations: number;
+} {
+  const named = Object.create(null) as Record<string, number>;
+  let otherInvocations = 0;
+  for (const fact of facts) {
+    const current = named[fact.skill];
+    if (current !== undefined) {
+      named[fact.skill] = current + 1;
+      continue;
+    }
+    if (Object.keys(named).length >= MAX_SKILL_KEYS) {
+      otherInvocations += 1;
+      continue;
+    }
+    named[fact.skill] = 1;
+  }
+  return { skillInvocations: named, otherInvocations };
 }
 
 /** Only correlated tool rows carry a duration; the projection re-validates. */

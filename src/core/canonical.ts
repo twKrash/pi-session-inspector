@@ -238,7 +238,39 @@ export type CanonicalSession = {
   inventory?: CanonicalInventoryObservation;
   usage: CanonicalUsageSummary;
   retainedAggregates: CanonicalRetainedAggregates;
+  /**
+   * R50: the effective producer counters L2's legacy folded-counter DTO field
+   * projects, computed once here from the folded prefix plus the retained
+   * atomic suffix (design §14.1.1 rule 4). `retained` means the total is exactly
+   * the retained atomic records (the boundary folded nothing and pruned
+   * nothing); `aggregate-only` means a folded or pruned contribution is
+   * included; `unavailable` means no trustworthy total can be stated (no
+   * checkpoint boundary exists, so pruning cannot be ruled out) and no values
+   * are published. L2 never adds facts on top of a published total.
+   */
+  effectiveCounters: CanonicalEffectiveCounters;
   health: SessionEvidenceHealth;
+};
+
+/**
+ * The effective producer counters with their trust state (R50). Values are
+ * published only for `retained` and `aggregate-only`; absent values mean "not
+ * observed", never zero.
+ */
+export type CanonicalEffectiveCounters =
+  | { state: "unavailable" }
+  | ({
+      state: "retained" | "aggregate-only";
+    } & CanonicalEffectiveCounterValues);
+
+/** The published counter values of a trustworthy effective total. */
+export type CanonicalEffectiveCounterValues = {
+  integration?: Partial<Record<IntegrationKey, Record<string, number>>>;
+  skillInvocations?: {
+    named?: Record<string, number>;
+    overflow?: number;
+  };
+  permissionPresence?: true;
 };
 
 export type CanonicalSessionBuildResult =
@@ -504,6 +536,7 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
     ...(inventory === undefined ? {} : { inventory }),
     usage,
     retainedAggregates: retained.aggregates,
+    effectiveCounters: retained.counters,
     health,
   };
   return { state: "ready", session };
@@ -1006,6 +1039,7 @@ function isSafeCost(value: number): boolean {
 
 type RetainedBuild = {
   aggregates: CanonicalRetainedAggregates;
+  counters: CanonicalEffectiveCounters;
   invalid: boolean;
 };
 
@@ -1025,7 +1059,13 @@ function buildRetainedAggregatesSafely(
   const wal = input.evidence.folded.find(isWalFold);
   const resources = input.evidence.folded.find(isResourceFold);
   if (wal === undefined && resources === undefined) {
-    return { aggregates: expiredRetained(), invalid: false };
+    // No boundary at all: pruning cannot be ruled out, so no counter total can
+    // be stated (R50). The retained atomic detail still reaches L2 as facts.
+    return {
+      aggregates: expiredRetained(),
+      counters: { state: "unavailable" },
+      invalid: false,
+    };
   }
 
   const foldedThrough = { ...(wal?.foldedThrough ?? {}) };
@@ -1062,11 +1102,103 @@ function buildRetainedAggregatesSafely(
       },
     });
     const suffix = mergeRetainedSuffix(wal, input.walRecords ?? []);
-    return { aggregates: supplement(foldedOnly, suffix), invalid: false };
+    const aggregates = supplement(foldedOnly, suffix);
+    return {
+      aggregates,
+      counters: effectiveCounters(
+        foldedOnly.boundary.detail,
+        suffix,
+        aggregates,
+      ),
+      invalid: false,
+    };
   } catch {
     diagnostics.add("checkpoint", "checkpoint-aggregate-invalid", 1, "error");
-    return { aggregates: expiredRetained(), invalid: true };
+    return {
+      aggregates: expiredRetained(),
+      counters: { state: "unavailable" },
+      invalid: true,
+    };
   }
+}
+
+/**
+ * R50: the effective counter total and its trust state, derived once from the
+ * same two inputs the aggregate view uses — the folded prefix and the retained
+ * suffix. `mergeRetainedSuffix` already unions them, so a `full` boundary's
+ * suffix is exactly the retained atomic records; an `aggregate-only` boundary
+ * publishes the supplemented aggregate view (folded prefix + suffix) unchanged;
+ * an `expired` boundary has no boundary to subtract and publishes nothing.
+ */
+function effectiveCounters(
+  detail: CanonicalRetainedAggregates["boundary"]["detail"],
+  suffix: FoldedCounters,
+  aggregates: CanonicalRetainedAggregates,
+): CanonicalEffectiveCounters {
+  if (detail === "expired") return { state: "unavailable" };
+  if (detail === "full") {
+    return {
+      state: "retained",
+      ...publishedCounters({
+        integration: suffix.counters,
+        skillInvocations: suffix.skillInvocations,
+        overflow: suffix.otherInvocations,
+        permission: suffix.presence.permission,
+      }),
+    };
+  }
+  return {
+    state: "aggregate-only",
+    ...publishedCounters({
+      integration: Object.fromEntries(
+        Object.entries(aggregates.integration ?? {}).flatMap(([key, value]) =>
+          value === undefined ? [] : [[key, { ...value.value }]],
+        ),
+      ),
+      skillInvocations: {
+        ...(aggregates.skillInvocations?.named?.value ?? {}),
+      },
+      overflow: aggregates.skillInvocations?.overflow?.value ?? 0,
+      permission: aggregates.permissionPresence?.value === true,
+    }),
+  };
+}
+
+/** Canonical, bounded values only: a non-canonical key or an empty map is dropped. */
+function publishedCounters(input: {
+  integration: Record<string, Record<string, number>>;
+  skillInvocations: Record<string, number>;
+  overflow: number;
+  permission: boolean;
+}): CanonicalEffectiveCounterValues {
+  const integration: Partial<Record<IntegrationKey, Record<string, number>>> =
+    {};
+  for (const key of Object.keys(input.integration).sort()) {
+    if (!isIntegrationKey(key)) continue;
+    const value = input.integration[key];
+    if (value === undefined || Object.keys(value).length === 0) continue;
+    integration[key] = { ...value };
+  }
+  const named: Record<string, number> = {};
+  for (const key of Object.keys(input.skillInvocations).sort()) {
+    const count = input.skillInvocations[key];
+    // A non-numeric count can never be published (the proto-hazard class R45
+    // tracks); the report projection re-validates every value as well.
+    if (typeof count !== "number" || count <= 0) continue;
+    named[key] = count;
+  }
+  return {
+    ...(Object.keys(integration).length === 0 ? {} : { integration }),
+    ...(Object.keys(named).length === 0 && input.overflow === 0
+      ? {}
+      : {
+          skillInvocations: {
+            ...(Object.keys(named).length === 0 ? {} : { named }),
+            ...(input.overflow === 0 ? {} : { overflow: input.overflow }),
+          },
+        }),
+    ...(input.permission ? { permissionPresence: true as const } : {}),
+  };
 }
 
 function isWalFold(folded: FoldedAggregateEvidence): folded is WalFold {
