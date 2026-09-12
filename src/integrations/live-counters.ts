@@ -1,6 +1,10 @@
 import { SKILL_NAME_PATTERN } from "../core/live-counter-fold.ts";
+import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 
 const SKILL_PREFIX = "/skill:";
+/** Byte bound shared with `canonicalOpaqueDigest` for raw opaque identities. */
+const MAX_REQUEST_ID_BYTES = 512;
+const encoder = new TextEncoder();
 
 /**
  * Permission resolution classes are a closed vocabulary. Any producer value
@@ -26,6 +30,35 @@ function readResolution(value: unknown): string {
   return typeof value === "string" && PERMISSION_RESOLUTIONS.has(value)
     ? value
     : "other";
+}
+
+/**
+ * Session-scoped, domain-separated hash of a validated permission request ID.
+ * Returns `undefined` for an absent, non-string, empty, control-character, or
+ * oversized `requestId`; a malformed ID yields no attribution rather than a
+ * hash of a fallback. The raw producer ID never leaves this function.
+ */
+export function readRequestAttribution(
+  payload: unknown,
+  sessionId: string,
+): { request: string } | undefined {
+  try {
+    const requestId = asRecord(payload)?.requestId;
+    if (typeof requestId !== "string" || requestId.length === 0) {
+      return undefined;
+    }
+    if (encoder.encode(requestId).byteLength > MAX_REQUEST_ID_BYTES) {
+      return undefined;
+    }
+    const digest = canonicalOpaqueDigest(
+      "permission-request",
+      sessionId,
+      requestId,
+    );
+    return { request: `permission-request-${digest}` };
+  } catch {
+    return undefined;
+  }
 }
 
 /** Extracts only a bounded skill identity; the remainder is never retained. */
@@ -87,6 +120,7 @@ export function registerLiveCounters(
       const row = asRecord(data);
       const result = row?.result;
       if (result !== "allow" && result !== "deny") return;
+      const attribution = readRequestAttribution(data, options.sessionId);
       append({
         schemaVersion: 1,
         source: "permission-system",
@@ -94,6 +128,7 @@ export function registerLiveCounters(
         kind: "counter",
         value: 1,
         dimensions: { result, resolution: readResolution(row?.resolution) },
+        ...(attribution === undefined ? {} : { attribution }),
         timestamp: options.now().getTime(),
       });
     } catch {}
@@ -107,6 +142,7 @@ export function registerLiveCounters(
         source !== "skill_read"
       )
         return;
+      const attribution = readRequestAttribution(data, options.sessionId);
       append({
         schemaVersion: 1,
         source: "permission-system",
@@ -114,6 +150,7 @@ export function registerLiveCounters(
         kind: "counter",
         value: 1,
         dimensions: { promptSource: source },
+        ...(attribution === undefined ? {} : { attribution }),
         timestamp: options.now().getTime(),
       });
     } catch {}

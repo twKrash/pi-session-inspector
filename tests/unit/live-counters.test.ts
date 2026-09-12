@@ -4,6 +4,12 @@ import { test } from "node:test";
 import { registerLiveCounters } from "../../src/integrations/live-counters.ts";
 import { foldTelemetryCounters } from "../../src/core/live-counter-fold.ts";
 
+function attributionOf(
+  envelope: Record<string, unknown> | undefined,
+): Record<string, string> {
+  return (envelope?.attribution ?? {}) as Record<string, string>;
+}
+
 test("translates public permission bus events into bounded envelopes only", async () => {
   const rows = JSON.parse(
     await readFile(
@@ -158,6 +164,95 @@ test("translates public permission bus events into bounded envelopes only", asyn
   const readyFolded = foldTelemetryCounters(readyEnvelopes);
   assert.deepEqual(readyFolded.counters, {});
   assert.equal(readyFolded.presence.permission, true);
+});
+
+test("prompt and decision share a hashed request attribution", () => {
+  const handlers = new Map<string, (payload: unknown) => void>();
+  const envelopes: Record<string, unknown>[] = [];
+  registerLiveCounters(
+    {
+      events: {
+        on: (channel, handler) => {
+          handlers.set(channel, handler);
+          return () => {};
+        },
+      },
+      on: () => () => {},
+    },
+    {
+      appendTelemetry: (envelope) => {
+        envelopes.push(envelope as Record<string, unknown>);
+      },
+      flush: async () => {},
+    },
+    {
+      sessionId: "permission-attribution-session",
+      inventoryNames: () => new Set<string>(),
+      now: () => new Date("2026-09-12T10:00:00.000Z"),
+    },
+  );
+
+  handlers.get("permissions:ui_prompt")?.({
+    requestId: "req-1",
+    source: "tool_call",
+    request: {},
+  });
+  handlers.get("permissions:decision")?.({
+    requestId: "req-1",
+    result: "allow",
+    resolution: "user_approved",
+  });
+
+  const [prompt, decision] = envelopes;
+  assert.equal(attributionOf(prompt).request, attributionOf(decision).request);
+  assert.match(
+    String(attributionOf(prompt).request),
+    /^permission-request-[a-f0-9]{64}$/,
+  );
+  assert.equal(JSON.stringify(envelopes).includes("req-1"), false);
+});
+
+test("absent or invalid request ids produce no attribution at all", () => {
+  const handlers = new Map<string, (payload: unknown) => void>();
+  const envelopes: Record<string, unknown>[] = [];
+  registerLiveCounters(
+    {
+      events: {
+        on: (channel, handler) => {
+          handlers.set(channel, handler);
+          return () => {};
+        },
+      },
+      on: () => () => {},
+    },
+    {
+      appendTelemetry: (envelope) => {
+        envelopes.push(envelope as Record<string, unknown>);
+      },
+      flush: async () => {},
+    },
+    {
+      sessionId: "permission-attribution-invalid-session",
+      inventoryNames: () => new Set<string>(),
+      now: () => new Date("2026-09-12T10:00:00.000Z"),
+    },
+  );
+
+  const prompt = handlers.get("permissions:ui_prompt");
+  const decision = handlers.get("permissions:decision");
+  prompt?.({ source: "tool_call" });
+  prompt?.({ source: "tool_call", requestId: 42 });
+  prompt?.({ source: "tool_call", requestId: "" });
+  prompt?.({ source: "tool_call", requestId: "bad\u0000id" });
+  prompt?.({ source: "tool_call", requestId: "x".repeat(513) });
+  decision?.({ result: "allow", resolution: "user_approved" });
+  decision?.({ result: "allow", resolution: "user_approved", requestId: 42 });
+
+  assert.equal(envelopes.length, 7);
+  assert.equal(
+    envelopes.every((envelope) => envelope.attribution === undefined),
+    true,
+  );
 });
 
 test("repeated registration for one session keeps exactly one listener set", () => {
