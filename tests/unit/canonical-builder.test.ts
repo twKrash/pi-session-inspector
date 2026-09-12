@@ -705,6 +705,78 @@ test("P1.2d: serialized session and health carry no path, secret, or unbounded s
   }
 });
 
+test("R57: the inventory diagnostic fires only when no observation instant exists", () => {
+  const rows = {
+    commands: [
+      {
+        name: "cmd",
+        source: "extension",
+        sourceLabel: "local",
+        scope: "user",
+        origin: "top-level",
+      },
+    ],
+    skills: [],
+    resources: [],
+    toolSources: {},
+  };
+  const build = (
+    inventory: Parameters<typeof buildCanonicalSession>[0]["inventory"],
+  ) => {
+    const result = buildCanonicalSession({
+      parsed: parsed([MARKER]),
+      scope: "tree",
+      leafId: null,
+      evidence: { atomic: [], folded: [] },
+      ...(inventory === undefined ? {} : { inventory }),
+    });
+    assert.equal(result.state, "ready");
+    return result.state === "ready" ? result.session : undefined;
+  };
+  const missingTime = (
+    diagnostics: readonly {
+      code: string;
+      source: string;
+      severity: string;
+    }[],
+  ) =>
+    diagnostics.filter(
+      (diagnostic) => diagnostic.code === "inventory-observation-time-missing",
+    );
+
+  // A genuinely instant-less observation input is the legacy-snapshot signal
+  // (design §14.2/§14.3): it is diagnosed, and the source stays partial with
+  // no fabricated observation time.
+  const timeless = build(rows);
+  assert.ok(timeless);
+  assert.deepEqual(
+    missingTime(timeless.health.diagnostics).map((diagnostic) => [
+      diagnostic.source,
+      diagnostic.severity,
+    ]),
+    [["inventory", "warning"]],
+  );
+  const timelessSource = timeless.health.sources.find(
+    (row) => row.source === "inventory",
+  );
+  assert.equal(timelessSource?.state, "partial");
+  assert.equal(timelessSource?.observedAt, undefined);
+
+  // The same rows carrying their capture instant publish a supported
+  // observation and no missing-time diagnostic.
+  const observed = build({
+    ...rows,
+    observedAt: "2026-09-12T10:02:00.000Z",
+  });
+  assert.ok(observed);
+  assert.deepEqual(missingTime(observed.health.diagnostics), []);
+  const observedSource = observed.health.sources.find(
+    (row) => row.source === "inventory",
+  );
+  assert.equal(observedSource?.state, "supported");
+  assert.equal(observedSource?.observedAt, "2026-09-12T10:02:00.000Z");
+});
+
 test("P2.3: a pattern-valid but non-canonical integration key is never republished", () => {
   const folded: FoldedAggregateEvidence[] = [
     {

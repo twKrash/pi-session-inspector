@@ -67,8 +67,13 @@ export function mergeFoldedCounters(
     merged.counters[integration] = target;
     for (const key of Object.keys(deltaCounters).sort()) {
       const count = deltaCounters[key] ?? 0;
-      // Same own-key rule for counter keys: a prototype member name must be
-      // created as an ordinary data key, never read from `Object.prototype`.
+      // Own-key read for counter keys, defensive for a caller-supplied delta
+      // map: a plain read would concatenate onto an inherited prototype member
+      // (`constructor`) instead of adding an integer. No current caller
+      // demonstrates that route — a foreign checkpoint's `Object.fromEntries`
+      // already produces own keys, and `bump()` writes only hardcoded counter
+      // names (P2-4) — so this guards the exported merge API, not an observed
+      // production path.
       if (Object.hasOwn(target, key)) {
         target[key] = (target[key] ?? 0) + count;
         continue;

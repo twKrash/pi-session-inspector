@@ -116,7 +116,12 @@ function rememberInventory(
   // same bounded rows the writer publishes, never the unbounded producer read.
   const bounded = boundInventorySnapshot(inventory);
   const state = liveSession(scope.sessionId);
-  state.inventory = bounded;
+  // R57: the in-memory snapshot carries the same observation instant its
+  // persisted sibling is stamped with, so the report's inventory observation
+  // time is the instant these rows were observed rather than absent. The
+  // producer read stays payload-only (`readSessionInventory` never infers a
+  // time); only a capture that genuinely observed the inventory stamps one.
+  state.inventory = { ...bounded, observedAt };
   // The counts and their observation time stay paired in one state update, so
   // maintenance can never stamp the counts with another observation's clock.
   state.inventoryObservedAt = observedAt;

@@ -1659,7 +1659,7 @@ test("production command publishes checkpoint resource counts and their observat
   assert.equal(report.resources.state, "unavailable");
 });
 
-test("a checkpoint resource observation without observedAt stays unavailable and is diagnosed", async () => {
+test("a checkpoint resource observation without observedAt keeps its counts but gains no instant", async () => {
   const sessionId = "checkpoint-resources-no-time";
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const sessionFile = join(directory, "session.jsonl");
@@ -1707,17 +1707,19 @@ test("a checkpoint resource observation without observedAt stays unavailable and
     commands: 1,
     skills: 1,
   });
-  // The production path's in-memory inventory observation is payload-only, so
-  // the missing observation instant is diagnosed (never silently zeroed).
+  // R57: a readable inventory carries the instant it was observed with, so a
+  // fresh snapshot is never diagnosed with a missing observation time (the
+  // checkpoint's legacy counts remain time-less on their own row).
   assert.deepEqual(
-    report.evidenceHealth.diagnostics
-      .filter(
-        (diagnostic) =>
-          diagnostic.code === "inventory-observation-time-missing",
-      )
-      .map((diagnostic) => [diagnostic.source, diagnostic.severity]),
-    [["inventory", "warning"]],
+    report.evidenceHealth.diagnostics.filter(
+      (diagnostic) => diagnostic.code === "inventory-observation-time-missing",
+    ),
+    [],
   );
+  const inventorySource = report.evidenceHealth.sources.find(
+    (source) => source.source === "inventory",
+  );
+  assert.equal(inventorySource?.state, "supported");
 });
 
 test("reports read effective counters without mutating the checkpoint", async () => {

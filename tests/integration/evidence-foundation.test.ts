@@ -209,6 +209,32 @@ type LiveEnvelopes = {
 };
 
 /**
+ * A fixed observation clock: the report now publishes the instant the in-memory
+ * inventory was observed, so a deterministic two-build comparison must supply
+ * a fixed clock as an input rather than letting wall time differ between runs.
+ */
+const FROZEN_NOW_ISO = "2026-09-12T07:00:09.000Z";
+
+/** Runs `run` with `new Date()`/`Date.now()` frozen, then restores `Date`. */
+async function withFrozenClock<T>(run: () => Promise<T>): Promise<T> {
+  const RealDate = Date;
+  class FrozenDate extends RealDate {
+    constructor(value?: number | string | Date) {
+      super(value === undefined ? FROZEN_NOW_ISO : value);
+    }
+    static now(): number {
+      return new RealDate(FROZEN_NOW_ISO).getTime();
+    }
+  }
+  globalThis.Date = FrozenDate as unknown as DateConstructor;
+  try {
+    return await run();
+  } finally {
+    globalThis.Date = RealDate;
+  }
+}
+
+/**
  * Runs the production permission/input adapters over a hostile producer event
  * set, so the telemetry that reaches the WAL is adapter output rather than a
  * hand-written approximation. Each hostile field must be dropped by the
@@ -528,21 +554,25 @@ async function buildFixtureSession(): Promise<BuiltFixture> {
     assert.ok(handlerRef.current);
 
     const output = join(directory, "report.json");
+    const handler = handlerRef.current;
+    assert.ok(handler);
     process.env.PI_CODING_AGENT_DIR = directory;
     try {
-      await handlerRef.current(`json --output "${output}"`, {
-        mode: "interactive",
-        sessionManager: {
-          getSessionId: () => SESSION_ID,
-          getLeafId: () => "gen-2",
-          getSessionFile: () => sessionFile,
-          getSessionDir: () => directory,
-        },
-        ui: {
-          notify: () => assert.fail("must export the current session report"),
-          custom: async () => assert.fail("must export the current report"),
-        },
-      } as unknown as ExtensionCommandContext);
+      await withFrozenClock(() =>
+        handler(`json --output "${output}"`, {
+          mode: "interactive",
+          sessionManager: {
+            getSessionId: () => SESSION_ID,
+            getLeafId: () => "gen-2",
+            getSessionFile: () => sessionFile,
+            getSessionDir: () => directory,
+          },
+          ui: {
+            notify: () => assert.fail("must export the current session report"),
+            custom: async () => assert.fail("must export the current report"),
+          },
+        } as unknown as ExtensionCommandContext),
+      );
     } finally {
       if (previousAgentDir === undefined)
         delete process.env.PI_CODING_AGENT_DIR;
@@ -691,18 +721,27 @@ test("aggregate-only and unavailable never serialize as zero", async () => {
     report.evidenceHealth.aggregates.skillInvocations.retainedInvocations,
     2,
   );
+  // R57: the readable inventory's own observation instant reaches the report,
+  // so a fresh observation is `supported` and never diagnosed as time-less.
+  const inventorySource = report.evidenceHealth.sources.find(
+    (source) => source.source === "inventory",
+  );
+  assert.equal(inventorySource?.state, "supported");
+  assert.equal(
+    report.evidenceHealth.diagnostics.some(
+      (diagnostic) => diagnostic.code === "inventory-observation-time-missing",
+    ),
+    false,
+  );
 });
 
 test("an unknown-semantic node between known nodes keeps Active ancestry resolvable", async () => {
-  const parsed = parseSessionJsonl(
-    await readFile(
-      new URL(
-        "../fixtures/pi/0.85.1/unknown-entry-ancestry.jsonl",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
+  const fixtureUrl = new URL(
+    "../fixtures/pi/0.85.1/unknown-entry-ancestry.jsonl",
+    import.meta.url,
   );
+  const sourceText = await readFile(fixtureUrl, "utf8");
+  const parsed = parseSessionJsonl(sourceText);
   // The fixture is valid JSONL and understood as a supported v3 session.
   assert.equal(parsed.hasMalformedJson, false);
   assert.equal(parsed.id, "unknown-entry-ancestry-session");
@@ -733,6 +772,19 @@ test("an unknown-semantic node between known nodes keeps Active ancestry resolva
     return entry === undefined ? [] : [entry];
   });
   assert.equal(reduceEntries(parsed.id, scoped).usage.totalTokens, 42);
+  // The builder's own usage summary agrees with the locally recomputed entry
+  // map: a known native total of exactly the fixture's 42 tokens, never a
+  // child breakdown added on top.
+  assert.equal(session.usage.state, "known");
+  if (session.usage.state !== "known") return;
+  assert.equal(session.usage.known.totalTokens, 42);
+  assert.equal(
+    session.usage.lines.some((line) => line.domain === "child-breakdown"),
+    false,
+  );
+  // Reading the session through the builder never writes Pi session data: the
+  // source JSONL is byte-identical after the read.
+  assert.equal(await readFile(fixtureUrl, "utf8"), sourceText);
   // The unknown node keeps its node state and never emits a payload fact.
   assert.deepEqual(
     session.graph.nodes
