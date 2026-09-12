@@ -1394,14 +1394,14 @@ git commit -m "feat: harden parent-session resolution to approved roots"
 
 ```ts
 test("missing marker yields unavailable with health, not a session", () => {
-  const result = buildCanonicalSession({ sessionId: "s1", parsed, scope: "tree", leafId: null, evidence: { atomic: [], folded: [] } });
+  const result = buildCanonicalSession({ parsed, scope: "tree", leafId: null, evidence: { atomic: [], folded: [] } });
   assert.equal(result.state, "unavailable");
   assert.equal(result.state === "available", false);
   assert.ok(result.health.diagnostics.some((d) => d.code === "tracking-marker-missing"));
 });
 
 test("ready session exposes skill detail, aggregates and reconciled usage", () => {
-  const result = buildCanonicalSession({ sessionId: "s1", parsed: withMarker, scope: "tree", leafId: null, evidence });
+  const result = buildCanonicalSession({ parsed: withMarker, scope: "tree", leafId: null, evidence });
   assert.equal(result.state, "ready");
   const session = result.state === "ready" ? result.session : undefined;
   assert.equal(session?.skillInvocations.length, 1);
@@ -1413,7 +1413,7 @@ test("ready session exposes skill detail, aggregates and reconciled usage", () =
 });
 
 test("unknown semantic node never emits a payload fact", () => {
-  const result = buildCanonicalSession({ sessionId: "s1", parsed: withUnknownNode, scope: "tree", leafId: null, evidence: { atomic: [], folded: [] } });
+  const result = buildCanonicalSession({ parsed: withUnknownNode, scope: "tree", leafId: null, evidence: { atomic: [], folded: [] } });
   const session = result.state === "ready" ? result.session : undefined;
   assert.equal(session?.graph.nodes.length, 3);
   assert.equal(session?.generations.length, 1);
@@ -1497,7 +1497,7 @@ git commit -m "feat: project canonical evidence health into the report DTO"
 **Interfaces:**
 
 - Consumes: `buildCanonicalSession` (Task 13).
-- Produces: `loadCurrentSessionReport` takes `evidence: L0Evidence` built by `src/index.ts`; no direct `readCheckpoint`/`recoverSession`/`readInventorySnapshot` import remains in `src/ui/`.
+- Produces: `loadCurrentSessionReport` takes `evidence: L0Evidence` **plus the validated `walRecords` from recovery and the live registration's `liveOverflow` count** (controller ruling R41 — the builder needs the post-cursor suffix channel and the bounded overflow signal), both built by `src/index.ts`; no direct `readCheckpoint`/`recoverSession`/`readInventorySnapshot` import remains in `src/ui/`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1550,7 +1550,7 @@ git commit -m "refactor: route current reports through the canonical builder"
 **Interfaces:**
 
 - Consumes: `buildCanonicalSession` (Task 13).
-- Produces: `scanHistory` builds each session report from the builder; `globalInventory` reads aggregate values only from the same reports.
+- Produces: `scanHistory` builds each session report from the builder **with the same `walRecords` + `liveOverflow` inputs as Task 15** (empty/absent where a history session has no live evidence); `globalInventory` reads aggregate values only from the same reports.
 
 - [ ] **Step 1: Write the failing test**
 
