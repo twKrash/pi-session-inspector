@@ -10,13 +10,13 @@
 
 ## 1. Decision
 
-Adopt **Approach B: a privacy-safe atomic evidence layer (L0), an in-memory reconciled canonical session model (L1), and existing report/navigation DTOs as projections (L2)**.
+Adopt **Approach B: a privacy-safe evidence layer with distinct atomic and folded-aggregate inputs (L0), an in-memory reconciled canonical session model (L1), and existing report/navigation DTOs as projections (L2)**.
 
 Pi session JSONL remains authoritative for native session facts. Inspector WAL remains authoritative only for bounded live observations that Pi does not persist. Cooperative integration evidence remains explicitly cooperative. Checkpoints remain rebuildable aggregate caches, not event or session authority.
 
 Do **not** add a canonical-session database or duplicate Pi event store. Add only:
 
-1. an in-memory L0/L1 boundary;
+1. an in-memory L0/L1 boundary that distinguishes atomic detail from checkpoint-surviving folded aggregates;
 2. additive correlation metadata on existing `live_timing` WAL records;
 3. additive observation/retention metadata on existing inventory and checkpoint formats;
 4. bounded provenance and evidence-health DTOs.
@@ -30,7 +30,7 @@ This is the smallest design that fixes the current semantic losses without creat
 This milestone defines:
 
 - every accepted evidence source and its authority;
-- privacy-safe L0 atomic facts;
+- privacy-safe L0 atomic facts and separately typed folded aggregate evidence;
 - deterministic L1 identity, relationship, timestamp, usage, and reconciliation rules;
 - L2 projection boundaries for current/history/global reports and the approved report/navigation work;
 - WAL correlation, checkpoint completeness, inventory observation time, retention, and recovery semantics;
@@ -106,11 +106,11 @@ The real corpus audit parsed only structure and bounded enums. It emitted aggreg
 | Source | Authority | Durable | Exact after restart | Permitted role |
 | --- | --- | --- | --- | --- |
 | Pi JSONL v3 | `native` | yes | yes | session header, entry graph, state transitions, generations, tools/results, native errors, native usage, compaction/branch summaries, persisted integration evidence |
-| Inspector WAL | `live` | hot/bounded | yes while retained | lifecycle duration and bounded telemetry unavailable from Pi JSONL |
+| Inspector WAL | `live` | hot/bounded | yes while retained | lifecycle duration, first-class explicit skill invocation, and bounded telemetry unavailable from Pi JSONL |
 | pi-subagents details/archive | `cooperative` | through Pi result and validated archive | yes when source remains | child run metadata and non-additive child usage |
-| Inventory snapshot | `observed` | bounded | yes while retained | observed commands/skills/resources/tool-source labels |
+| Inventory snapshot | `observed` | bounded | yes while retained | observed commands/skills/resources/tool-source labels; availability, not activity |
 | Current environment observation | `observed` | no | no | current installation/presence only |
-| Checkpoint | `derived` | yes | aggregate only | replay acceleration, counters, cursors, retention/completeness metadata |
+| Checkpoint | `derived` | yes | aggregate only | exact cursor-bounded folded integration/skill/presence counts, resource-count fallback, replay acceleration, and retention/completeness metadata |
 | Session/history/global report | `derived` | output only | rebuildable | renderer/API projection; never authority |
 
 An authoritative source can still be malformed, unsupported, partial, or unavailable. Authority never converts missing evidence into zero.
@@ -140,7 +140,7 @@ Current loss:
 
 Required rule: Pi entry wrapper timestamp is the native occurrence timestamp. Nested message timestamps are ignored for report attribution.
 
-Header `cwd` and raw `parentSession` paths never enter L0/L1/L2. A parent session ID may be resolved only by bounded, within-root dereference of the referenced parent file and validation of its native header. Basename parsing is not a relationship. Failure leaves parentage unavailable.
+Header `cwd` and raw `parentSession` paths never enter L0/L1/L2. Parent resolution is a source-adapter-only operation with bounded input/read, approved-root containment, regular-file and symlink checks, and a validated v3 parent header (§8.7). Basename/path parsing is never identity. Failure leaves parentage unavailable and emits only `parent-session-unavailable`.
 
 ### 4.3 Tracking marker and metadata
 
@@ -166,6 +166,7 @@ Current durable records:
 
 - anonymous `live_timing` rows for agent/turn/tool timing;
 - validated `pi.telemetry.v1` event/counter/gauge envelopes;
+- explicit `skill.invocation` telemetry with bounded skill name;
 - immutable writer ID, writer-local sequence, event ID, and timestamp.
 
 Current loss:
@@ -175,6 +176,7 @@ Current loss:
 - FIFO category queues are unsafe for concurrent/out-of-order tool completions;
 - provider/model `unsupported` rows are persisted once per session/writer registration although unsupported capability is static;
 - permission prompt/decision records discard their exact request relationship;
+- explicit skill invocations are folded but omitted from the proposed first-class canonical fact union;
 - folded counters retain totals but lose temporal detail after WAL retention.
 
 ### 4.5 Checkpoint
@@ -182,18 +184,23 @@ Current loss:
 Current schema v1 retains:
 
 - Pi line/revision cursor;
-- per-writer WAL seals;
+- per-writer WAL fold cursors and prune seals;
 - total tokens/cost and generation/tool/compaction counters;
-- telemetry counters and selected inventory counts.
+- `integrationCounters`;
+- named `skillInvocations` plus `skillOverflowInvocations`;
+- permission presence;
+- selected `resourceCounts`.
 
 Current loss:
 
+- checkpoint values are not represented as a distinct L0 input or L1 canonical aggregate;
+- current/history loaders can read checkpoint aggregates directly while constructing L2 reports;
 - no `checkpointedAt`;
 - no explicit known/partial/unavailable usage completeness;
 - no temporal bound for pruned detail;
 - no inventory observation time;
 - resource-count preservation is incomplete;
-- a checkpoint can prove aggregate survival but not the event timestamps behind it.
+- a checkpoint can prove aggregate survival but not fabricate event rows or event timestamps.
 
 ### 4.6 Inventory snapshot
 
@@ -215,7 +222,7 @@ Current loss:
 | Ponytail | `ponytail-mode` custom entry | closed transition with Pi entry time | no real-corpus sample in the audited direct sessions |
 | Caveman | `caveman-level` custom entry | closed transition with Pi entry time | current report drops transition time |
 | Permission | WAL telemetry | per-event fact with observer time | request relationship discarded; detail expires to counters |
-| Explicit skills | WAL telemetry derived from `/skill:<name>` input | invocation event with bounded skill token and observer time | detail expires to counters |
+| Explicit skills | WAL telemetry derived from `/skill:<name>` input; named/overflow checkpoint counts | first-class invocation fact with bounded skill token, WAL identity/provenance, and observer time | inventory remains separate availability evidence; expired detail survives only as aggregate-only named/overflow counts |
 | pi-subagents | persisted result details plus validated archive | agent observations with publication time and tool relationship | model/thinking/failure/publication relation currently dropped; no run start/end timestamp in pinned result rows |
 | Lens | native Lens tool calls; volatile v1 bus events | version-pinned native tool call facts | current adapter recognizes only exact tool name `lens`; audited calls use names such as `module_report`, `read_symbol`, and `lens_diagnostics` |
 | Presence | current settings/package inspection | current-environment observation | not historical; no time is persisted |
@@ -267,7 +274,7 @@ Snapshot taken during design; the active session continued to append afterward.
 - No writer-sequence gap, duplicate event ID, or malformed JSON record appeared.
 - Permission telemetry included 431 decisions, 7 prompts, and 2 readiness events; none retained request attribution.
 
-These findings justify correlation and health metadata. They do not justify a second event store.
+These findings justify correlation and health metadata. They do not justify a second event store. No `skill.invocation` envelope appeared in the audited local WAL, so explicit skill invocation is a pinned producer contract rather than a locally observed sample; the metric/dimension shape is unchanged and already exercised by the counter fold.
 
 ---
 
@@ -340,9 +347,11 @@ Persist normalized facts in SQLite or another indexed store and query it for eve
 Pi JSONL ──────────────┐
 Inspector WAL ─────────┤
 Checkpoint ────────────┤
-Inventory snapshot ────┼─> L0 Safe Atomic Evidence
-Subagent details/archive┤          │
-Current environment ───┘          v
+Inventory snapshot ────┼─> L0 Safe Evidence
+Subagent details/archive┤      AtomicEvidence
+Current environment ───┤  FoldedAggregateEvidence
+Checkpoint ─────────────┘          │
+                                  v
                               L1 Canonical Session
                                /        |        \
                               v         v         v
@@ -352,9 +361,14 @@ Current environment ───┘          v
                                   TUI / HTML / JSON
 ```
 
-### 6.1 L0 — safe atomic evidence
+### 6.1 L0 — safe atomic and folded evidence
 
-L0 is an in-memory ledger of one source observation per fact. It performs:
+L0 exposes two disjoint input classes:
+
+- `AtomicEvidence`: one validated source observation per fact, including every structurally valid Pi graph node, retained WAL events, explicit skill invocations, cooperative publications, and retained inventory detail;
+- `FoldedAggregateEvidence`: already-folded checkpoint counters/counts plus their exact cursor/seal boundary and aggregate-only provenance.
+
+Atomic adapters perform:
 
 - structural validation;
 - string bounds and redaction;
@@ -364,7 +378,9 @@ L0 is an in-memory ledger of one source observation per fact. It performs:
 - prohibited-field removal before the fact enters shared code;
 - record acceptance/rejection accounting.
 
-L0 does not merge calls/results, deduplicate producer snapshots, select scope, compute totals, or infer relationships.
+Folded adapters validate the checkpoint, cursor/seal maps, aggregate bounds, and provenance. They do not manufacture fact IDs, event rows, timestamps, or relationships from counts.
+
+L0 does not merge calls/results, deduplicate producer snapshots, select scope, combine atomic and folded values, compute totals, or infer relationships.
 
 ### 6.2 L1 — reconciled canonical session
 
@@ -374,6 +390,8 @@ L1:
 - owns the full native entry graph for relationship resolution;
 - reconciles exact call/result and live timing identities;
 - reconciles repeated cooperative child observations;
+- exposes explicit skill invocation detail while retained;
+- reconciles retained atomic telemetry against checkpoint fold boundaries and keeps only the non-overlapping aggregate supplement;
 - builds native and child usage ledgers;
 - classifies timestamp attribution;
 - exposes source/relationship/retention health;
@@ -390,7 +408,10 @@ L2 contains bounded DTOs consumed verbatim by TUI, HTML, and JSON. It:
 - creates bounded `usageByDate` history evidence;
 - hides internal IDs when the approved UI contract says to hide them;
 - maps provenance to existing confidence/source fields and evidence-health summaries;
-- never re-reads raw source evidence or recomputes joins.
+- never reads WAL, checkpoint, inventory, or producer archives directly;
+- never re-reads raw source evidence, folds checkpoint counters, subtracts cursor overlap, or recomputes joins.
+
+Only the L0 source coordinator may call storage/source readers for semantic evidence. Maintenance/retention may still read storage for storage ownership, but no L2 loader or projection may bypass L1.
 
 ---
 
@@ -440,6 +461,11 @@ type L0FactBase = {
   provenance: FactProvenance;
   time: TimeEvidence;
 };
+
+type L0Evidence = {
+  atomic: AtomicEvidence[];
+  folded: FoldedAggregateEvidence[];
+};
 ```
 
 All IDs and labels have explicit byte bounds. Producer-controlled labels pass the existing secret/path/URL redaction policy. Unknown fields never flow through generic object spreads.
@@ -447,7 +473,7 @@ All IDs and labels have explicit byte bounds. Producer-controlled labels pass th
 ### 7.1 Required fact families
 
 ```ts
-type L0Fact =
+type AtomicEvidence =
   | SessionHeaderFact
   | TrackingBoundaryFact
   | EntryNodeFact
@@ -458,10 +484,58 @@ type L0Fact =
   | StateTransitionObservation
   | CompactionObservation
   | IntegrationEventObservation
+  | SkillInvocationObservation
   | AgentRunObservation
   | ChildUsageObservation
   | LiveTimingObservation
   | InventoryObservation;
+
+type SkillInvocationObservation = L0FactBase & {
+  kind: "skill-invocation";
+  skill: string; // SKILL_NAME_PATTERN, max 64 characters
+  wal: { eventId: string; writerId: string; writerSequence: number };
+  provenance: FactProvenance & {
+    source: "integration-telemetry";
+    authority: "live";
+    schemaVersion: 1;
+  };
+  time: { state: "known"; at: string; basis: "wal-observer" };
+};
+
+type FoldedAggregateEvidence =
+  | {
+      kind: "checkpoint-wal-aggregates";
+      sessionId: string;
+      foldedThrough: Record<string, number>; // writerId -> cursor
+      sealedThrough: Record<string, number>; // writerId -> safe prune cursor
+      integrationCounters?: Record<string, Record<string, number>>;
+      skillInvocations?: Record<string, number>;
+      skillOverflowInvocations?: number;
+      presence?: { permission?: true };
+      checkpointedAt: TimeEvidence;
+      provenance: {
+        source: "checkpoint";
+        authority: "derived";
+        schemaVersion: 1;
+      };
+    }
+  | {
+      kind: "checkpoint-resource-aggregates";
+      sessionId: string;
+      resourceCounts: {
+        commands?: number;
+        skills?: number;
+        resources?: number;
+        toolSources?: number;
+      };
+      observedAt: TimeEvidence;
+      checkpointedAt: TimeEvidence;
+      provenance: {
+        source: "checkpoint";
+        authority: "derived";
+        schemaVersion: 1;
+      };
+    };
 ```
 
 Minimum source-specific fields:
@@ -470,7 +544,7 @@ Minimum source-specific fields:
 | --- | --- |
 | `SessionHeaderFact` | session ID, v3 format, created time, safe parent-session resolution state |
 | `TrackingBoundaryFact` | marker entry ID and Pi entry time |
-| `EntryNodeFact` | entry ID, parent ID/null, ordinal, known entry type, Pi entry time state |
+| `EntryNodeFact` | entry ID, parent ID/null, append ordinal, Pi entry time state, and `known | unknown` semantic type state; unknown raw type/payload is dropped |
 | `GenerationObservation` | entry ID, provider/model labels, stop/error class, bounded redacted error message |
 | `ToolCallObservation` | entry ID, native call ID, tool name |
 | `ToolResultObservation` | entry ID, native call ID, tool name, error boolean |
@@ -478,6 +552,8 @@ Minimum source-specific fields:
 | `StateTransitionObservation` | model or thinking kind and bounded value |
 | `CompactionObservation` | entry ID and compaction/branch-summary kind |
 | `IntegrationEventObservation` | integration, version, event kind, closed dimensions, exact related fact when published by a tool result |
+| `SkillInvocationObservation` | bounded validated skill name, session ID, WAL event/writer/sequence identity, observer timestamp, and `live` provenance |
+| `FoldedAggregateEvidence` | checkpoint-only aggregate values plus fold cursors, seals, materialization/observation time state, and `derived` aggregate-only provenance; never an event fact |
 | `AgentRunObservation` | hashed run ID, optional hashed parent ID, closed status, role/model/thinking, artifact state, bounded failure, publishing tool ID |
 | `ChildUsageObservation` | hashed run ID and validated usage; explicitly non-additive |
 | `LiveTimingObservation` | category, running/complete/unsupported boundary state, observer times, optional safe subject ID; persisted `unknown` plus a valid end maps to canonical `complete` while outcome remains unknown |
@@ -488,12 +564,14 @@ Minimum source-specific fields:
 1. Session header missing: Pi source unavailable; no L1 session.
 2. Header version not `3`: Pi source unsupported; no best-effort semantic parse.
 3. Header ID invalid or metadata ID mismatch: identity conflict; no L1 session.
-4. Unknown entry type in v3: skip that entry, increment bounded diagnostic, source becomes partial.
-5. Malformed line: skip line, source becomes partial; never echo the line.
-6. Missing/invalid event timestamp: retain only identity/relationship metadata needed for graph validation; date attribution is unavailable.
-7. Invalid usage: reject usage only; preserve its owner fact and mark usage partial.
-8. Invalid cooperative field: omit that field; do not reject unrelated valid fields.
-9. Invalid archive/reference: no path leaves the adapter; artifact/evidence state becomes unavailable or missing according to the existing validated contract.
+4. Every structurally valid v3 entry emits `EntryNodeFact`, whether or not its semantic type is known.
+5. Unknown semantic entry type: keep the node with `semanticType.state: "unknown"`, emit no semantic payload fact, increment `unknown-entry`, and mark semantic evidence partial.
+6. Malformed or structurally invalid line: emit no node/fact, source becomes partial, and never echo the line.
+7. Missing/invalid event timestamp: retain the structurally valid node and identity/relationship metadata; date attribution is unavailable.
+8. Invalid usage: reject usage only; preserve its owner fact and mark usage partial.
+9. Invalid cooperative field: omit that field; do not reject unrelated valid fields.
+10. Invalid archive/reference: no path leaves the adapter; artifact/evidence state becomes unavailable or missing according to the existing validated contract.
+11. Invalid checkpoint cursor/seal or aggregate: reject the affected `FoldedAggregateEvidence`; never coerce or repair it.
 
 ---
 
@@ -510,21 +588,73 @@ Minimum source-specific fields:
 | tool result observation | result entry ID; related to tool by exact `toolCallId` |
 | compaction/branch summary | `compaction:<entryId>` |
 | mode/state transition | source entry ID plus transition kind |
-| agent run | existing `subagent-<sha256>` derivation; raw producer run ID never leaves adapter |
-| permission request | session-scoped SHA-256 attribution, never raw request ID |
-| live tool subject | session-scoped SHA-256 of native tool call ID |
+| agent run | `subagent-<canonicalOpaqueDigest("subagent-run", ...)>`; raw producer run ID never leaves adapter |
+| permission request | `permission-request-<canonicalOpaqueDigest("permission-request", ...)>`; never raw request ID |
+| live tool subject | `live-tool-<canonicalOpaqueDigest("live-tool", ...)>` |
 | live agent/turn subject | Inspector-generated writer-local opaque ID |
 
 No timestamp, array position, label, task text, model, tool name, or filename creates identity.
 
-Existing public generation/tool/compaction/agent IDs remain byte-stable. L0/L1 may carry additional internal fact IDs but L2 does not rewrite existing IDs.
+#### 8.1.1 Canonical opaque identity algorithm
+
+Every raw producer identity that must correlate across adapters without Inspector persistence uses one helper and contract:
+
+```ts
+type OpaqueIdentityDomain =
+  | "live-tool"
+  | "permission-request"
+  | "subagent-run";
+
+canonicalOpaqueDigest(
+  domain: OpaqueIdentityDomain,
+  sessionId: string,
+  rawId: string,
+): string; // exactly 64 lowercase hexadecimal characters
+```
+
+Validation and encoding are binding:
+
+1. `domain` is one registered ASCII enum above.
+2. `sessionId` is the validated canonical Pi session ID.
+3. `rawId` is a source-adapter-only string of at most 512 UTF-8 bytes; empty/control-containing input is rejected.
+4. No Unicode normalization occurs; accepted JavaScript string values encode as exact UTF-8 bytes.
+5. Preimage byte order is exactly:
+   `UTF8("pi-session-inspector") || NUL || UTF8("opaque-id") || NUL || UTF8("v1") || NUL || UTF8(domain) || NUL || UTF8(sessionId) || NUL || UTF8(rawId)`.
+6. Digest is SHA-256 of that preimage.
+7. Helper output is the 32 digest bytes encoded as 64 lowercase hexadecimal characters. Entity fields add only the fixed prefixes shown in §8.1.
+
+Hook adapters, WAL recovery/correlation code, and L1 reconcilers must import this helper; no caller rebuilds the preimage. A WAL reader with no raw source ID validates and carries the encoded opaque ID unchanged; any recovery path given raw source input computes it through the same helper. Tool hook and Pi replay calculations must therefore be byte-identical.
+
+Only the opaque form enters Inspector WAL/checkpoint/report evidence. The raw permission/subagent identity is dropped in the adapter call frame. Pi's own authoritative JSONL remains unchanged and already contains its native tool call ID; Inspector-owned durable records never persist that raw ID as correlation evidence beside the opaque form.
+
+Pi's native tool call ID remains the approved public `tool:<id>` identity because Pi persists it and Inspector does not own that field. The `live-tool` digest is L0/L1-internal correlation evidence and is never projected beside the native tool identity in L2.
+
+This session-scoped `subagent-run` digest intentionally supersedes the pre-`0.8.0` process-global digest. Public agent IDs keep the `subagent-<64hex>` shape but change value at the foundation version boundary; all links are regenerated from the same L1 report.
+
+Existing public generation/tool/compaction ID values remain byte-stable. L0/L1 may carry additional internal fact IDs but L2 does not rewrite those IDs.
 
 ### 8.2 Entry graph and scope
 
-The reconciler builds one entry graph from every structurally valid entry, including pre-marker nodes needed to follow ancestry. Semantic facts are admitted only after the earliest valid marker.
+The source adapter emits one graph node for every structurally valid v3 entry, including pre-marker and unknown-semantic nodes needed to follow ancestry:
 
-- **Tree:** every admitted post-marker fact in Pi append order.
-- **Active:** admitted facts whose entry is on the exact `parentId` ancestry of the selected Pi leaf.
+```ts
+type EntryNodeFact = L0FactBase & {
+  kind: "entry-node";
+  entryId: string;
+  parentId: string | null;
+  appendOrdinal: number;
+  semanticType:
+    | { state: "known"; type: KnownPiEntryType }
+    | { state: "unknown" };
+};
+```
+
+Structural validity requires bounded valid entry/parent IDs, a bounded type token, and the required scalar shapes. Timestamp parsing is represented by `time`; an invalid timestamp does not remove an otherwise valid node. Unknown raw type text and payload are discarded after setting `semanticType.state`.
+
+Semantic facts are admitted only after the earliest valid marker.
+
+- **Tree graph:** every structurally valid post-marker node in Pi append order; semantic collections contain only understood payload facts.
+- **Active graph:** every node on the exact `parentId` ancestry of the selected Pi leaf, including unknown-semantic nodes; semantic collections contain the understood facts on that path.
 - A null, missing, duplicated, or cyclic selected path makes active scope unavailable; it never falls back to tree.
 - Missing marker makes both tracked projections unavailable.
 - Later duplicate markers remain ordinary post-boundary custom entries but never reset the boundary.
@@ -606,6 +736,22 @@ type AgentFailure = {
 - Context tool/custom evidence remains separate because no producer identity links the two.
 - Lens attribution uses pinned tool names, not fuzzy prefixes or timing.
 
+### 8.7 Parent-session resolution
+
+Raw Pi `parentSession` path exists only inside the Pi source adapter. Resolution is all-or-unavailable:
+
+1. Reject non-string, empty, NUL-containing, or over-4,096-UTF-8-byte input.
+2. Require a configured/approved Pi session root; resolve its real path once for the adapter operation.
+3. Resolve the candidate without basename extraction. Require lexical containment using a platform-safe relative-path check, never string-prefix comparison.
+4. `lstat` every candidate component beneath the approved root and reject any symbolic link. Require the final target to be a regular file.
+5. Resolve the candidate real path and require containment inside the approved root again.
+6. Open read-only; `fstat` the opened handle as a regular file and, where platform identity fields are available, require it to match the checked target to reduce replacement races.
+7. Read only the first non-empty header line, bounded to 16 KiB including the newline; reject an over-bound/missing header without reading the session body.
+8. Require a supported Pi v3 session header and a validated canonical parent session ID different from the child ID.
+9. Close the handle in every outcome and drop the raw path before returning.
+
+Only `{ state: "known", id: <validated session id> }` may leave the adapter. Every failure returns `{ state: "unavailable" }` and increments `parent-session-unavailable`; diagnostics never include path text, filesystem errors, or candidate IDs. Parent identity is never inferred from basename, directory name, or path shape.
+
 ---
 
 ## 9. Timestamp model
@@ -635,7 +781,8 @@ Names are not interchangeable.
 | model/thinking/mode transition | its entry timestamp | same UTC date |
 | child run | publishing result entry timestamp as `observedAt` | observation UTC date only |
 | RTK event | publishing result entry timestamp | observation UTC date |
-| permission/skill telemetry | WAL observer timestamp | observer UTC date while retained |
+| explicit skill invocation | WAL observer timestamp as `observedAt` | observer UTC date while the atomic record is retained; no date is attributed to a pruned invocation |
+| permission prompt/decision telemetry | WAL observer timestamp | observer UTC date while retained |
 | live duration | WAL `startedAt`/`endedAt` | duration display only; never usage attribution |
 | inventory/presence | capture `observedAt` | environment freshness only |
 | checkpoint | `checkpointedAt` | no event attribution |
@@ -771,12 +918,79 @@ type CanonicalSession = {
   agents: CanonicalAgentRun[];
   stateTransitions: CanonicalStateTransition[];
   integrationEvents: CanonicalIntegrationEvent[];
+  skillInvocations: CanonicalSkillInvocation[];
   liveTimings: CanonicalLiveTiming[];
   inventory?: CanonicalInventoryObservation;
 
   usage: CanonicalUsageSummary;
 
+  /** Checkpoint-surviving counters/counts that outlive pruned detail. */
+  retainedAggregates: CanonicalRetainedAggregates;
+
   health: SessionEvidenceHealth;
+};
+
+type CanonicalSkillInvocation = {
+  id: string; // `skill-invocation:<walEventId>`; Inspector-generated, not producer identity
+  skill: string; // bounded validated name, SKILL_NAME_PATTERN
+  observedAt: TimeEvidence; // basis: wal-observer
+  provenance: {
+    source: "integration-telemetry";
+    authority: "live";
+    recordId: string; // WAL event ID
+    wal: { writerId: string; writerSequence: number };
+    schemaVersion: 1;
+  };
+};
+
+/**
+ * One aggregate value that may be the only survivor of pruned detail.
+ * `state` is always explicit; an aggregate is never rendered as atomic detail
+ * and never gains a synthetic event time.
+ */
+type AggregateValue<T> = {
+  value: T;
+  state: "aggregate-only";
+  /** Exact disjointness boundary against retained atomic evidence. */
+  boundary: {
+    foldedThrough: Record<string, number>; // writerId -> fold cursor
+    sealedThrough: Record<string, number>; // writerId -> prune seal
+  };
+};
+
+type CanonicalRetainedAggregates = {
+  schemaVersion: 1;
+  /**
+   * Post-cursor atomic counters already folded here are never added again:
+   * `foldedThrough` is the inclusive fold boundary and L1 adds only retained
+   * atomic records strictly after it. `sealedThrough` marks pruned streams
+   * whose detail no longer exists. `detail` states what remains observable.
+   */
+  boundary: {
+    detail: "full" | "aggregate-only" | "expired";
+    foldedThrough: Record<string, number>;
+    sealedThrough: Record<string, number>;
+    checkpointedAt: TimeEvidence;
+    detailExpiredBefore?: string;
+  };
+  integration?: Partial<
+    Record<IntegrationKey, AggregateValue<Record<string, number>>>
+  >;
+  skillInvocations?: {
+    named?: AggregateValue<Record<string, number>>;
+    overflow?: AggregateValue<number>;
+  };
+  permissionPresence?: AggregateValue<true>;
+  resources?: {
+    counts: {
+      commands?: number;
+      skills?: number;
+      resources?: number;
+      toolSources?: number;
+    };
+    state: "observed" | "aggregate-only";
+    observedAt: TimeEvidence;
+  };
 };
 
 type CanonicalSessionBuildResult =
@@ -799,6 +1013,7 @@ read bounded source
   -> project safe L0 facts
   -> validate graph/marker
   -> reconcile exact identities
+  -> reconcile retained atomic evidence against folded aggregate boundaries
   -> construct usage ledger
   -> construct health
   -> freeze canonical session
@@ -843,6 +1058,10 @@ type EvidenceDiagnosticCode =
   | "wal-detail-expired"
   | "live-correlation-missing"
   | "inventory-observation-time-missing"
+  | "aggregate-supplement-applied"
+  | "aggregate-only-fallback"
+  | "checkpoint-aggregate-invalid"
+  | "parent-session-unavailable"
   | "integration-contract-unsupported"
   | "cooperative-evidence-conflict"
   | "archive-unavailable"
@@ -880,6 +1099,17 @@ type SessionEvidenceHealth = {
     compositionReconciled: boolean;
     dated: EvidenceHealthState;
   };
+  aggregates: {
+    detail: "full" | "aggregate-only" | "expired";
+    integrationCounters: number;
+    skillInvocations: {
+      names: number;
+      overflow: number;
+      retainedInvocations: number;
+    };
+    permissionPresence: EvidenceHealthState;
+    resources: EvidenceHealthState;
+  };
   diagnostics: {
     code: EvidenceDiagnosticCode;
     severity: "info" | "warning" | "error";
@@ -896,8 +1126,10 @@ Rules:
 - Counts saturate at the project safe-integer bound; saturation sets `truncated`.
 - Sources sort by fixed enum order; diagnostics sort by source then code.
 - `core` describes Pi/marker reportability only. Optional unavailable integrations do not make native session facts partial.
-- `expired` means aggregates may survive but event detail does not.
+- A source state of `expired` means its event detail is gone; any surviving counts come from `aggregates` and are labelled `aggregate-only`.
 - `unavailable`, `unsupported`, `partial`, and `expired` never serialize as zero evidence.
+- `aggregates.detail` is `full` only when retained atomic telemetry covers every recorded stream end, `aggregate-only` when counters survive with an exact fold/seal boundary but their events do not, and `expired` when even the fold is incomplete or absent so no aggregate value may be published.
+- `retainedInvocations` counts canonical skill invocation facts; a named skill count larger than its retained facts is aggregate-only and must be labelled so.
 - L2 may down-project health to the approved bounded diagnostics, but every renderer receives the same result.
 
 Example:
@@ -942,6 +1174,13 @@ Example:
     "compositionReconciled": true,
     "dated": "supported"
   },
+  "aggregates": {
+    "detail": "aggregate-only",
+    "integrationCounters": 1,
+    "skillInvocations": { "names": 2, "overflow": 0, "retainedInvocations": 3 },
+    "permissionPresence": "supported",
+    "resources": "supported"
+  },
   "diagnostics": [
     {
       "code": "wal-detail-expired",
@@ -973,8 +1212,8 @@ type LiveTiming = {
 };
 ```
 
-- Tool `subjectId` is a session-scoped hash of native `toolCallId`.
-- Agent/turn `subjectId` is Inspector-generated at the observed start and carried to its end.
+- Tool `subjectId` is `live-tool-` plus `canonicalOpaqueDigest("live-tool", sessionId, toolCallId)` from §8.1.1; the hook, WAL reader, and reconciler must compute byte-identical output through that helper.
+- Agent/turn `subjectId` is an Inspector-generated writer-local opaque ID created at the observed start and carried to its end.
 - Tool starts are stored in a map keyed by the safe subject, not a FIFO category queue.
 - Open subjects retain the existing bound of 64 per category/session. Overflow drops the new start, marks the current live source partial with a bounded count, and never evicts an older subject that may still receive an end.
 - Old rows without a subject remain valid anonymous timing but cannot populate per-tool duration.
@@ -998,10 +1237,17 @@ It must never pass `args`, `result`, messages, provider payload, prompts, or mod
 
 Keep `pi.telemetry.v1`. Add only bounded fields from pinned contracts:
 
-- permission prompt/decision: session-scoped hashed request attribution;
+- permission prompt/decision: `attribution.request` = `permission-request-` plus `canonicalOpaqueDigest("permission-request", sessionId, rawRequestId)`;
 - permission surface: closed allowlist or `other`;
 - existing resolution/result/prompt-source enums;
-- skill invocation: existing bounded skill token.
+- skill invocation: existing bounded skill token, unchanged metric/dimension shape.
+
+Skill handling is explicit:
+
+- a validated `skill.invocation` event becomes `SkillInvocationObservation` (L0) and `CanonicalSkillInvocation` (L1) while the WAL record is retained;
+- `skillInvocations`/`skillOverflowInvocations` survive as checkpoint aggregates after pruning;
+- skill **inventory** (available skills) remains inventory evidence only and is never merged with invocation activity;
+- an overflow invocation increments the aggregate overflow count only and creates no synthetic name or event row.
 
 Do not persist Lens path/message payloads. Do not add a new event kind for Context, RTK, modes, agents, or Lens tool activity because Pi JSONL already persists the needed evidence.
 
@@ -1026,12 +1272,42 @@ type CheckpointEvidenceMetadata = {
     compactions: "complete" | "partial" | "unavailable";
     branchSummaries: "complete" | "partial" | "unavailable";
   };
+  resourceCounts?: {
+    commands?: number;
+    skills?: number;
+    resources?: number;
+    toolSources?: number;
+    observedAt?: string;
+  };
 };
 ```
 
-Extend resource counts additively with all bounded count classes and `observedAt`.
+Extend resource counts additively with all bounded count classes and `observedAt`, keeping the existing `commands`/`skills` keys readable.
 
 Checkpoint stores no atomic events, per-tool rows, agent rows, raw IDs, or paths. It cannot recreate a timeline after detail expiration.
+
+#### 14.1.1 Normative aggregate supplementation
+
+Checkpoint aggregates enter L1 only through `FoldedAggregateEvidence` and only under this contract:
+
+1. Atomic detail wins while valid and retained. A retained WAL counter for a key is authoritative for the records it covers.
+2. The checkpoint supplies only the disjoint portion whose contributing records are at or before `foldedThrough[writerId]` or were pruned past `sealedThrough[writerId]`.
+3. Already-folded atomic records are never added again; the cursor/seal maps are the exact boundary, not an estimate.
+4. Total per key = folded prefix + retained atomic suffix, unioned once. L1 must reject a snapshot whose cursors exceed observed retained sequences without a matching seal rather than guess.
+5. Every aggregate-only value is labelled `aggregate-only` with its exact boundary. It never appears as an atomic row, timestamp, or `observedAt`.
+6. No synthetic skill, permission, integration, or resource event is created from counts.
+7. Checkpoint usage fields (`totalTokens`, `totalCost`, `generations`, `tools`, `compactions`) are **not** canonical usage input: Pi JSONL replay is authoritative and complete. They remain verification/health evidence only, so usage can never double count or survive as a stale total.
+8. Invalid, contradictory, or out-of-bound aggregate values are rejected as `checkpoint-aggregate-invalid`; they are never repaired.
+
+Per evidence class:
+
+| Class | Retained atomic | After pruning |
+| --- | --- | --- |
+| integration counters | events after fold cursor | checkpoint counts, aggregate-only |
+| skill invocations | `CanonicalSkillInvocation` facts | named/overflow counts, aggregate-only |
+| permission presence | readiness events; durable boolean OR | checkpoint presence boolean |
+| resource counts | inventory snapshot rows plus `observedAt` | checkpoint counts with last known `observedAt`, or unavailable |
+| native usage | Pi JSONL replay (always authoritative) | unchanged; checkpoint totals ignored |
 
 ### 14.2 Inventory remains schema v1, additive
 
@@ -1050,12 +1326,13 @@ type InventorySnapshotV1 = {
 
 New capture writes the actual completion time of that observation. Content identity excludes `observedAt`; freshness policy does not. Legacy snapshots without it remain readable but health reports `inventory-observation-time-missing`.
 
-Retention uses explicit observation metadata, not mtime, once available.
+Retention uses explicit observation metadata, not mtime, once available. While the snapshot is retained it is the atomic resource observation and takes precedence; once it is gone, checkpoint `resourceCounts` may stand in only as `aggregate-only` with the last known `observedAt`.
 
 ### 14.3 Downgrade behavior
 
 - Old WAL readers accept additive `subjectId` but ignore it; aggregate timing still works.
 - Old writers continue producing anonymous rows; new readers mark correlation unavailable.
+- Older WAL writers persist no skill-invocation detail; retained counts appear only after the fold boundary and health reports the aggregate-only state rather than inventing invocation rows.
 - Old checkpoint writers may drop new optional health fields when rewriting. Pi facts remain recoverable; affected health becomes unavailable, never fabricated.
 - Old inventory readers may ignore `observedAt`; unchanged files retain it because unknown JSON keys are not rewritten solely for content equality. If an old writer rewrites changed inventory content, it drops `observedAt`; a new reader then reports `inventory-observation-time-missing` and never fabricates freshness.
 - Metadata v1 remains unavailable for source location; no guessed migration.
@@ -1076,7 +1353,9 @@ Compatibility tests must exercise mixed old/new readers and writers before relea
 5. Reconcile timing only when a subject matches exactly.
 6. Treat running rows without a complete partner as incomplete live evidence.
 7. Prefer canonical Pi facts over checkpoint copies when Pi detail exists.
-8. On any storage failure, return the strongest still-valid source subset and corresponding health.
+8. Reconcile retained atomic counters against the checkpoint fold boundary: add only records strictly after each `foldedThrough` cursor, keep pruned streams as labelled aggregates, and reject boundary inconsistencies.
+9. Rebuild skill invocation detail only from retained atomic records; never synthesize a row for a pruned or overflow count.
+10. On any storage failure, return the strongest still-valid source subset and corresponding health.
 
 ### 15.2 Retention
 
@@ -1089,6 +1368,8 @@ Existing hot-retention policy remains:
 - record the UTC expiration boundary in checkpoint metadata;
 - report event detail as `expired`, never empty/zero.
 
+Pruning survives per evidence class exactly as tabulated in §14.1.1: integration counters, named/overflow skill counts, permission presence, and resource counts remain available as `aggregate-only`; skill invocation rows, per-event permission telemetry, live timing rows, and inventory rows do not. `aggregates.detail` in evidence health states which of the two the reader is holding.
+
 Inventory detail follows its own retention policy. Preserved checkpoint counts remain aggregate-only and carry the last valid inventory observation time when known.
 
 ### 15.3 Freshness
@@ -1096,6 +1377,7 @@ Inventory detail follows its own retention policy. Preserved checkpoint counts r
 - Pi source revision uses the existing internal line-count/SHA-256 cursor; revision hash is not exposed in report JSON.
 - WAL freshness uses writer sequences and latest observer time.
 - Inventory freshness uses `observedAt`.
+- Aggregate freshness is the fold boundary, never a derived timestamp: `checkpointedAt` describes materialization and no aggregate value may claim an event time it does not have.
 - Current environment presence is stamped in memory at collection and labeled current; it is never presented as historical session state.
 - Checkpoint time describes materialization only.
 
@@ -1116,7 +1398,8 @@ The following must not enter WAL, checkpoint, inventory diagnostics, L0/L1 share
 - environment values;
 - credentials, secrets, or secret-like strings;
 - unbounded producer strings;
-- raw subagent run/request identities where the contract requires hashing.
+- raw subagent run/request identities where the contract requires hashing;
+- any raw producer identity for a canonical opaque domain (`live-tool`, `permission-request`, `subagent-run`) persisted beside its opaque form: Inspector WAL/checkpoint records carry only `canonicalOpaqueDigest` output, never the pre-image. Pi's own native tool-call ID is exempt because Pi persists it and Inspector does not own that field; it stays the approved public `tool:<id>`.
 
 Allowed bounded producer text is limited to existing ADR-0015 command/skill descriptions and the bounded/redacted generation `errorMessage`. Both use explicit byte caps and path/URL/secret rejection; L0 may keep only those already-authorized sanitized forms. Generation `errorMessage` remains the sole bounded error-text exception.
 
@@ -1133,7 +1416,7 @@ Every canonical field is either:
 - computed from an explicitly listed set of fact IDs;
 - unavailable.
 
-Derived totals retain source line membership internally. Public JSON exposes bounded source class/confidence and health, not raw source locators.
+Derived totals retain source line membership internally. Public JSON exposes bounded source class/confidence and health, not raw source locators. A field sourced from `FoldedAggregateEvidence` carries `aggregate-only` provenance plus its fold/seal boundary and never inherits an event time.
 
 ### 16.4 Diagnostic rule
 
@@ -1173,6 +1456,13 @@ Implementation is accepted only if all invariants hold:
 26. Replaying unchanged sources yields byte-identical canonical JSON and reports.
 27. Adapter/storage failures never alter Pi execution.
 28. Inspector never mutates Pi JSONL except the tracking marker.
+29. Explicit skill invocation is a first-class fact while retained; pruned or overflow counts never fabricate invocation rows.
+30. Folded aggregate and retained atomic contributions are disjoint by cursor/seal boundary and are counted exactly once.
+31. Aggregate-only values are labelled, bounded, and never rendered as atomic detail or given a synthetic timestamp.
+32. No L2 loader or projection reads WAL, checkpoint, inventory, or producer archives directly; all semantic evidence reaches L2 through L1.
+33. Opaque IDs are deterministic, session-scoped, domain-separated, and computed only through the canonical helper; raw IDs never persist beside them.
+34. Parent-session resolution enforces approved-root containment, regular-file and symlink checks, bounded header read, and v3 header validation; every failure is `unavailable` with no path leakage.
+35. Skill inventory and skill invocation remain separate evidence classes and are never summed together.
 
 ---
 
@@ -1185,6 +1475,7 @@ Use existing Node test infrastructure and sanitized synthetic fixtures. Add no t
 - valid v3 header preserves ID/version/created time but drops `cwd` and raw `parentSession`;
 - unsupported version yields `unsupported` with no facts;
 - malformed/unknown lines produce partial health without raw text;
+- unknown semantic entry type keeps its graph node with `semanticType.state: "unknown"` and emits no payload fact;
 - invalid timestamps preserve safe identity but no date attribution;
 - all known entry types, including branch summary and session info;
 - bounded/redacted provider/model/error labels;
@@ -1198,7 +1489,9 @@ Use existing Node test infrastructure and sanitized synthetic fixtures. Add no t
 - active/tree branch fixture;
 - missing parent, duplicate ID, and cycle handling;
 - invalid leaf never falls back to tree;
-- safe parent-session dereference and outside-root rejection.
+- unknown-semantic node between a known node and the known selected leaf keeps Active ancestry resolvable;
+- safe parent-session dereference and outside-root rejection;
+- parent resolution rejects symlinked candidate/component, non-regular file, oversized or missing header, wrong format version, and basename-derived identity; every failure is `unavailable`.
 
 ### 18.3 Tools/errors/timing
 
@@ -1236,6 +1529,8 @@ Use existing Node test infrastructure and sanitized synthetic fixtures. Add no t
 - RTK relation to publishing result;
 - Ponytail/Caveman closed transitions;
 - permission request hash joins prompt/decision without exposing raw ID;
+- explicit skill invocation produces a bounded canonical fact with WAL writer/sequence provenance, and skill inventory never merges with it;
+- overflow skill invocations increment only the aggregate counter with no synthetic name or row;
 - pinned Lens tool-name census, including `module_report`, `read_symbol`, and `lens_diagnostics`;
 - unknown integration version is unsupported.
 
@@ -1247,6 +1542,11 @@ Use existing Node test infrastructure and sanitized synthetic fixtures. Add no t
 - writer gap/duplicate detection;
 - seal-before-prune enforcement;
 - aggregate-only state after WAL/inventory expiry;
+- folded aggregates reconcile with retained atomic counters exactly once across a cursor/seal boundary;
+- boundary inconsistency (cursor ahead of retained sequence with no seal) is rejected as `checkpoint-aggregate-invalid`;
+- pruned skill/integration/permission/resource counts survive as labelled `aggregate-only` values with no synthetic rows or timestamps;
+- checkpoint usage totals are never used as canonical usage;
+- official opaque-ID vectors: hook-computed, WAL-reader-validated, and reconciler-computed live-tool IDs are byte-identical; permission-request and subagent-run IDs stay collision-isolated across domains and sessions;
 - checkpoint revision mismatch forces replay;
 - crashes/partial final lines never escape observer boundary.
 
@@ -1257,6 +1557,8 @@ Use existing Node test infrastructure and sanitized synthetic fixtures. Add no t
 - evidence-health ordering and byte determinism;
 - `unavailable`, `unsupported`, `partial`, and `expired` never become zero;
 - JSON key/value scanner over WAL/checkpoint/inventory/health/report artifacts;
+- raw producer identities for canonical opaque domains never appear beside their opaque counterpart in Inspector WAL/checkpoint artifacts;
+- L2 boundary test: current/history/global loaders inject no WAL, checkpoint, inventory, or archive reader and still produce every required field from L1;
 - sanitized corpus fixture reproduces observed shapes, marker multiplicity, legacy WAL rows, subagent repeated publications, and integration tool names without copying real content or IDs.
 
 ### 18.8 Required release checks
@@ -1279,8 +1581,8 @@ The approved design and its 23-task plan remain unchanged files and are not exec
 | Downstream task | Foundation dependency / change in responsibility |
 | --- | --- |
 | 1. Per-session coverage reasons | Keep workspace discovery-cap logic; consume L1 source diagnostics for session evidence reasons instead of inventing parallel reasons. |
-| 2. Shared `CoverageSummary` | Assemble workspace coverage plus bounded `SessionEvidenceHealth`; no raw loader exceptions. |
-| 3. Coverage surfaces/copy | Presentation work remains; copy maps `partial/unavailable/unsupported/expired` honestly. |
+| 2. Shared `CoverageSummary` | Assemble workspace coverage plus bounded `SessionEvidenceHealth`, including `aggregates.detail`; no raw loader exceptions. |
+| 3. Coverage surfaces/copy | Presentation work remains; copy maps `partial/unavailable/unsupported/expired` and `aggregate-only` honestly. |
 | 4. `AgentRun.observedAt` / cross-midnight | `observedAt`, publication provenance, and attribution are produced by L1. Task becomes L2 wiring and regression coverage. |
 | 5. `usageByDate` | Build from canonical usage lines and health; truncation remains L2 bounded-history policy. |
 | 6. Dated model/composition rows | Project canonical generation/state/usage facts; do not reparse entries in bundle code. |
@@ -1292,7 +1594,7 @@ The approved design and its 23-task plan remain unchanged files and are not exec
 | 12. Agents tab semantics | Keep; consume canonical child runs and separate native subagent-tool activity. |
 | 13. Tools summary/calls | Keep; duration appears only from correlated live timing. |
 | 14. Errors | Keep; deterministic tool/error/agent joins come from L1. |
-| 15. Environment/integrations | Keep; use canonical native/cooperative/current observations and evidence health. |
+| 15. Environment/integrations | Keep; use canonical native/cooperative/current observations, canonical skill invocation facts, and `retainedAggregates` with `aggregate-only` labels for pruned counts. |
 | 16. Route module | Unchanged. |
 | 17. Client routing | Unchanged. |
 | 18. Cross-navigation | Unchanged; use stable L2 IDs. |
@@ -1313,7 +1615,9 @@ This foundation explicitly preserves:
 - `unavailable != 0`;
 - child usage as non-additive;
 - duration only from correlated live evidence;
-- one report DTO shared across renderers.
+- one report DTO shared across renderers;
+- explicit skill invocation detail while retained, with pruned counts shown as aggregate-only;
+- folded aggregates reaching L2 only through L1 with their exact boundary.
 
 ---
 
@@ -1321,13 +1625,14 @@ This foundation explicitly preserves:
 
 This is a design boundary, not an execution plan.
 
-1. **Canonical types and safe adapters:** introduce L0/L1 internal contracts without changing renderer output.
-2. **Native reconciler:** move graph, tool/error, state, timestamp, and usage semantics into one builder.
-3. **Cooperative/live reconciler:** preserve subagent publications and add exact live timing subjects.
-4. **Storage metadata:** add checkpoint/inventory observation and expiration metadata additively.
-5. **Health projection:** expose bounded deterministic evidence-health JSON.
-6. **Loader convergence:** current/history/global call the same builder.
-7. **Downstream rebase:** execute the approved 23-task report/navigation plan against L1, after its version/task assumptions are updated in a separate approved plan revision.
+1. **Canonical types and safe adapters:** introduce L0/L1 internal contracts and the `AtomicEvidence`/`FoldedAggregateEvidence` split without changing renderer output.
+2. **Native reconciler:** move graph (including unknown-semantic nodes), tool/error, state, timestamp, skill invocation, and usage semantics into one builder.
+3. **Cooperative/live reconciler:** preserve subagent publications, add exact live timing subjects, and compute opaque IDs only through the canonical helper.
+4. **Storage metadata:** add checkpoint/inventory observation, expiration, and resource-count metadata additively, plus the aggregate supplementation boundary.
+5. **Parent resolution hardening:** approved-root containment, symlink/regular-file checks, bounded header read, and v3 validation inside the Pi adapter only.
+6. **Health projection:** expose bounded deterministic evidence-health JSON including aggregate detail state.
+7. **Loader convergence:** current/history/global call the same builder and never read storage directly.
+8. **Downstream rebase:** execute the approved 23-task report/navigation plan against L1, after its version/task assumptions are updated in a separate approved plan revision.
 
 Architecture boundary changes require ADR 0016 during implementation. This design task commits only this specification, as requested.
 
