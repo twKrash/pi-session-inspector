@@ -28,22 +28,24 @@ export function canonicalOpaqueDigest(
     throw new TypeError("sessionId must be a non-empty string");
   if (typeof rawId !== "string" || rawId.length === 0)
     throw new TypeError("rawId must be a non-empty string");
-  if (rawId.includes("\u0000"))
-    throw new TypeError("rawId must not contain NUL");
+  if (/\p{Cc}/u.test(rawId))
+    throw new TypeError("rawId must not contain control characters");
   if (encoder.encode(rawId).byteLength > MAX_RAW_BYTES)
     throw new TypeError("rawId exceeds the byte bound");
 
   const hash = createHash("sha256");
-  for (const part of [
+  const parts = [
     "pi-session-inspector",
     "opaque-id",
     "v1",
     domain,
     sessionId,
     rawId,
-  ]) {
+  ];
+  // NUL separators sit between fields only; the preimage has no trailing NUL.
+  parts.forEach((part, index) => {
     hash.update(encoder.encode(part));
-    hash.update(NUL);
-  }
+    if (index < parts.length - 1) hash.update(NUL);
+  });
   return hash.digest("hex");
 }
