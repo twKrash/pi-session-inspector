@@ -10,6 +10,7 @@ import type {
   LiveTimingObservation,
   SkillInvocationObservation,
 } from "../../src/core/evidence.ts";
+import type { SubagentEvidence } from "../../src/integrations/subagents.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
@@ -84,6 +85,31 @@ function skillFact(): SkillInvocationObservation {
   };
 }
 
+function liveTiming(
+  category: LiveTimingObservation["category"],
+): LiveTimingObservation {
+  return {
+    factId: `live-timing:evt-${category}`,
+    sessionId: "s1",
+    kind: "live-timing",
+    category,
+    status: "complete",
+    startedAt: "2026-09-12T10:01:00.000Z",
+    endedAt: "2026-09-12T10:01:01.000Z",
+    provenance: {
+      source: "inspector-wal",
+      authority: "live",
+      recordId: `evt-${category}`,
+      schemaVersion: 1,
+    },
+    time: {
+      state: "known",
+      at: "2026-09-12T10:01:00.000Z",
+      basis: "wal-observer",
+    },
+  };
+}
+
 function skillRecord(eventId: string, sequence: number, skill: string) {
   return {
     eventId,
@@ -100,9 +126,23 @@ function skillRecord(eventId: string, sequence: number, skill: string) {
   };
 }
 
+/**
+ * Walks every string in a serialized value so a privacy test can assert no
+ * string exceeds a hard bound, independent of which field carried it.
+ */
+function collectStrings(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") {
+    out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectStrings(item, out);
+  } else if (value !== null && typeof value === "object") {
+    for (const item of Object.values(value)) collectStrings(item, out);
+  }
+  return out;
+}
+
 test("missing marker yields unavailable with health, not a session", () => {
   const result = buildCanonicalSession({
-    sessionId: "s1",
     parsed: parsed([ASSISTANT, TOOL_RESULT]),
     scope: "tree",
     leafId: null,
@@ -116,6 +156,11 @@ test("missing marker yields unavailable with health, not a session", () => {
     ),
   );
   assert.equal(JSON.stringify(result).includes("hasSessionHeader"), false);
+  // P2.7: the source row must not claim full detail when nothing was observed.
+  const piJsonl = result.health.sources.find(
+    (row) => row.source === "pi-jsonl",
+  );
+  assert.equal(piJsonl?.detail, "not-observed");
 });
 
 test("ready session exposes skill detail, aggregates and reconciled usage", () => {
@@ -139,7 +184,6 @@ test("ready session exposes skill detail, aggregates and reconciled usage", () =
     },
   ];
   const result = buildCanonicalSession({
-    sessionId: "s1",
     parsed: parsed([MARKER, ASSISTANT, TOOL_RESULT]),
     scope: "tree",
     leafId: null,
@@ -186,7 +230,6 @@ test("unknown semantic node never emits a payload fact", () => {
     payload: "producer secret payload",
   };
   const result = buildCanonicalSession({
-    sessionId: "s1",
     parsed: parsed([MARKER, unknown, ASSISTANT]),
     scope: "tree",
     leafId: null,
@@ -227,7 +270,6 @@ test("live timing correlates to a native tool call by exact opaque subject", () 
     },
   };
   const result = buildCanonicalSession({
-    sessionId: "s1",
     parsed: parsed([MARKER, ASSISTANT, TOOL_RESULT]),
     scope: "tree",
     leafId: null,
@@ -258,7 +300,6 @@ test("boundary inconsistency becomes a bounded diagnostic, not a throw", () => {
     },
   ];
   const result = buildCanonicalSession({
-    sessionId: "s1",
     parsed: parsed([MARKER, ASSISTANT]),
     scope: "tree",
     leafId: null,
@@ -277,7 +318,6 @@ test("boundary inconsistency becomes a bounded diagnostic, not a throw", () => {
 
 test("parent resolution failure forwards a bounded diagnostic", () => {
   const result = buildCanonicalSession({
-    sessionId: "s1",
     parsed: parsed([MARKER, ASSISTANT]),
     scope: "tree",
     leafId: null,
@@ -296,7 +336,6 @@ test("parent resolution failure forwards a bounded diagnostic", () => {
 
 test("an unsupported Pi format yields unsupported health, never facts", () => {
   const result = buildCanonicalSession({
-    sessionId: "s1",
     parsed: parseSessionJsonl(
       `${JSON.stringify({ ...HEADER, version: 2 })}\n${JSON.stringify(MARKER)}\n`,
     ),
@@ -309,5 +348,288 @@ test("an unsupported Pi format yields unsupported health, never facts", () => {
     result.health.diagnostics.some(
       (diagnostic) => diagnostic.code === "source-format-unsupported",
     ),
+  );
+  // P2.7: detail is `unsupported`, never a false `full`.
+  const piJsonl = result.health.sources.find(
+    (row) => row.source === "pi-jsonl",
+  );
+  assert.equal(piJsonl?.detail, "unsupported");
+});
+
+// ---------------------------------------------------------------------------
+// Round 1 fix tests
+// ---------------------------------------------------------------------------
+
+test("P1.1: a usage-less assistant never creates a zero-valued line", () => {
+  const noUsage = {
+    type: "message",
+    id: "gen-nousage",
+    parentId: "marker",
+    timestamp: "2026-09-12T10:01:00.000Z",
+    message: { role: "assistant", provider: "openai", model: "gpt" },
+  };
+  const noUsageCompaction = {
+    type: "compaction",
+    id: "comp-nousage",
+    parentId: "gen-nousage",
+    timestamp: "2026-09-12T10:01:30.000Z",
+    summary: "bounded",
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, noUsage, noUsageCompaction]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  assert.equal(session.generations.length, 1);
+  assert.equal(session.compactions.length, 1);
+  assert.equal(session.usage.state, "known");
+  assert.equal(session.usage.lines.length, 0);
+  assert.equal(
+    session.usage.state === "known" ? session.usage.known.totalTokens : -1,
+    0,
+  );
+  assert.equal(projectEvidenceHealth(session).usage.nativeLines, 0);
+});
+
+test("P1.2a: child run usage never changes the session/native totals", () => {
+  const subagents: SubagentEvidence = {
+    activity: {
+      state: "supported",
+      calls: 1,
+      succeeded: 1,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    },
+    state: "supported",
+    diagnostics: [],
+    runs: [
+      {
+        id: "child-run-1",
+        status: "succeeded",
+        confidence: "cooperative",
+        usage: { totalTokens: 999, cost: 9 },
+      },
+    ],
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT, TOOL_RESULT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    subagents,
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  assert.equal(session.usage.state, "known");
+  assert.equal(
+    session.usage.state === "known" ? session.usage.known.totalTokens : -1,
+    110,
+  );
+  assert.equal(
+    session.usage.state === "known"
+      ? session.usage.composition.generations.totalTokens
+      : -1,
+    100,
+  );
+  assert.equal(
+    session.usage.state === "known"
+      ? session.usage.composition.toolResults.totalTokens
+      : -1,
+    10,
+  );
+  const child = session.usage.lines.filter(
+    (line) => line.domain === "child-breakdown",
+  );
+  assert.equal(child.length, 1);
+  assert.equal(child[0]?.contributesToSession, false);
+  assert.equal(child[0]?.bucket, "child-run");
+  const health = projectEvidenceHealth(session);
+  assert.equal(health.usage.childLines, 1);
+  assert.equal(health.usage.nativeLines, 2);
+});
+
+test("P1.2b: aggregate overflow publishes unavailable usage and bounded lines", () => {
+  const big = (id: string) => ({
+    type: "message",
+    id,
+    parentId: "marker",
+    timestamp: "2026-09-12T10:01:00.000Z",
+    message: {
+      role: "assistant",
+      provider: "openai",
+      model: "gpt",
+      usage: { totalTokens: Number.MAX_SAFE_INTEGER, cost: { total: 0 } },
+    },
+  });
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, big("gen-big-1"), big("gen-big-2")]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  assert.equal(session.usage.state, "unavailable");
+  assert.equal(session.usage.state === "unavailable", true);
+  if (session.usage.state === "unavailable") {
+    assert.equal(session.usage.reason, "overflow");
+    // Bounded individual lines remain; no clamped aggregate is published.
+    assert.equal(session.usage.lines.length, 2);
+    assert.equal("known" in session.usage, false);
+    assert.equal("composition" in session.usage, false);
+  }
+  const overflow = session.health.diagnostics.find(
+    (diagnostic) => diagnostic.code === "usage-overflow",
+  );
+  assert.ok(overflow);
+  assert.equal(overflow.source, "pi-jsonl");
+  assert.equal(overflow.severity, "error");
+  assert.equal(projectEvidenceHealth(session).usage.nativeLines, 2);
+});
+
+test("P1.2c: an uncorrelated native tool call reports the live source partial", () => {
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT, TOOL_RESULT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    walRecords: [skillRecord("evt-1", 1, "demo")],
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  const live = session.health.sources.find(
+    (row) => row.source === "inspector-wal",
+  );
+  assert.equal(live?.state, "partial");
+});
+
+test("P1.2c: a non-zero liveOverflow reports the live source partial", () => {
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [liveTiming("turn")], folded: [] },
+    walRecords: [],
+    liveOverflow: 3,
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  const live = session.health.sources.find(
+    (row) => row.source === "inspector-wal",
+  );
+  assert.equal(live?.state, "partial");
+  // P2.7: recordsSeen stays honest when walRecords is empty but facts exist.
+  assert.ok(live && live.recordsSeen >= live.factsAccepted);
+  assert.equal(live?.factsAccepted, 1);
+});
+
+test("P1.2d: serialized session and health carry no path, secret, or unbounded string", () => {
+  const secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+  const path = "/home/dvory/.pi/secrets/credentials.jsonl";
+  const longPayload = `${secret} ${path} `.repeat(200);
+  const unknown = {
+    type: "mystery-node",
+    id: "unknown-1",
+    parentId: "marker",
+    timestamp: "2026-09-12T10:00:30.000Z",
+    payload: longPayload,
+  };
+  const modelChange = {
+    type: "model_change",
+    id: "mc-1",
+    parentId: "marker",
+    timestamp: "2026-09-12T10:00:40.000Z",
+    modelId: `Bearer ${secret}`,
+    provider: secret,
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, unknown, modelChange, ASSISTANT, TOOL_RESULT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    inventory: {
+      observedAt: "2026-09-12T10:03:00.000Z",
+      commands: [
+        {
+          name: "cmd",
+          source: "extension",
+          sourceLabel: "safe-label",
+          scope: "user",
+          origin: "package",
+          description: longPayload,
+        },
+      ],
+      skills: [],
+      resources: [],
+      toolSources: { bash: path },
+    },
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  const serialized = `${JSON.stringify(session)}\n${JSON.stringify(
+    projectEvidenceHealth(session),
+  )}`;
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(serialized.includes("sk-"), false);
+  assert.equal(serialized.includes(path), false);
+  assert.equal(serialized.includes("/home/"), false);
+  assert.equal(serialized.includes("Bearer "), false);
+  assert.equal(serialized.includes("password"), false);
+  for (const value of collectStrings([
+    session,
+    projectEvidenceHealth(session),
+  ])) {
+    assert.ok(
+      value.length <= 256,
+      `unbounded string of ${value.length} chars escaped`,
+    );
+  }
+});
+
+test("P2.3: a pattern-valid but non-canonical integration key is never republished", () => {
+  const folded: FoldedAggregateEvidence[] = [
+    {
+      kind: "checkpoint-wal-aggregates",
+      sessionId: "s1",
+      foldedThrough: { w1: 3 },
+      sealedThrough: {},
+      integrationCounters: {
+        context: { reads: 2 },
+        "evil-integration": { calls: 5 },
+      },
+      checkpointedAt: { state: "unavailable" },
+      provenance: {
+        source: "checkpoint",
+        authority: "derived",
+        schemaVersion: 1,
+      },
+    },
+  ];
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded },
+    walRecords: [skillRecord("evt-3", 3, "demo")],
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  assert.deepEqual(Object.keys(session.retainedAggregates.integration ?? {}), [
+    "context",
+  ]);
+  assert.equal(
+    JSON.stringify(session.retainedAggregates).includes("evil-integration"),
+    false,
   );
 });

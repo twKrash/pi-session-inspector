@@ -174,3 +174,42 @@ test("the schema and every bounded field are present", () => {
   assert.equal(defaultDiagnosticSeverity("unknown-entry"), "info");
   assert.equal(defaultDiagnosticSeverity("tracking-marker-missing"), "warning");
 });
+
+test("invalid observedAt/expiredBefore are dropped, bounded ones survive", () => {
+  const health = buildEvidenceHealth(
+    input({
+      sources: [
+        source({
+          source: "inventory",
+          authority: "observed",
+          observedAt: "not-a-timestamp token=secret",
+        }),
+        source({
+          source: "inspector-wal",
+          authority: "live",
+          expiredBefore: "2026-09-01T00:00:00.000Z",
+        }),
+      ],
+    }),
+  );
+  const inventory = health.sources.find((row) => row.source === "inventory");
+  const wal = health.sources.find((row) => row.source === "inspector-wal");
+  assert.equal(inventory?.observedAt, undefined);
+  assert.equal("observedAt" in (inventory ?? {}), false);
+  assert.equal(wal?.expiredBefore, "2026-09-01T00:00:00.000Z");
+});
+
+test("an oversized source time is dropped rather than republished", () => {
+  const health = buildEvidenceHealth(
+    input({
+      sources: [
+        source({
+          source: "inventory",
+          authority: "observed",
+          observedAt: `2026-09-01T00:00:00.000Z${" ".repeat(100)}`,
+        }),
+      ],
+    }),
+  );
+  assert.equal(health.sources[0]?.observedAt, undefined);
+});

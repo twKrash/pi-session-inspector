@@ -119,6 +119,26 @@ export const EVIDENCE_SOURCE_ORDER: readonly EvidenceSource[] = [
 /** Counts saturate at the project safe-integer bound and never wrap. */
 export const MAX_EVIDENCE_COUNT = Number.MAX_SAFE_INTEGER;
 
+/**
+ * Source time fields are re-validated at the health boundary (P2.6): a caller
+ * cannot republish a non-instant, oversized, or secret-like string through
+ * `observedAt`/`expiredBefore`. The spec labels `expiredBefore` an
+ * instant/date policy boundary, so a date-only form is also accepted.
+ */
+const ISO_INSTANT_OR_DATE =
+  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/;
+const MAX_TIMESTAMP_LENGTH = 35;
+
+function boundedSourceTime(value: unknown): string | undefined {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_TIMESTAMP_LENGTH &&
+    ISO_INSTANT_OR_DATE.test(value) &&
+    !Number.isNaN(Date.parse(value))
+    ? value
+    : undefined;
+}
+
 /** A diagnostic without a severity resolves to this closed, per-code default. */
 const ERROR_CODES: ReadonlySet<EvidenceDiagnosticCode> = new Set([
   "source-not-found",
@@ -219,6 +239,8 @@ function normalizeSources(
 ): SourceEvidenceHealth[] {
   const bySource = new Map<EvidenceSource, SourceEvidenceHealth>();
   for (const source of sources) {
+    const observedAt = boundedSourceTime(source.observedAt);
+    const expiredBefore = boundedSourceTime(source.expiredBefore);
     // A later row for one source replaces an earlier one; the fixed enum order
     // below is the only ordering that leaves this function.
     bySource.set(source.source, {
@@ -232,12 +254,8 @@ function normalizeSources(
       factsAccepted: saturate(source.factsAccepted, saturation),
       recordsRejected: saturate(source.recordsRejected, saturation),
       detail: source.detail,
-      ...(source.observedAt === undefined
-        ? {}
-        : { observedAt: source.observedAt }),
-      ...(source.expiredBefore === undefined
-        ? {}
-        : { expiredBefore: source.expiredBefore }),
+      ...(observedAt === undefined ? {} : { observedAt }),
+      ...(expiredBefore === undefined ? {} : { expiredBefore }),
     });
   }
   return EVIDENCE_SOURCE_ORDER.flatMap((source) => {

@@ -50,6 +50,7 @@ import { reduceEntries } from "./reduce.ts";
 import { boundedDescription, secretLikeValue } from "./redact.ts";
 import {
   buildRetainedAggregates,
+  isIntegrationKey,
   type CanonicalRetainedAggregates,
   type RetainedAggregateCheckpoint,
 } from "./retained-aggregates.ts";
@@ -251,6 +252,11 @@ export type CanonicalDiagnosticInput = {
  * Raw retained WAL record shape the builder folds a post-cursor suffix from.
  * It is the same bounded form `src/storage/recovery.ts` replays; no raw
  * producer content is carried.
+ *
+ * R41: `walRecords` must be WAL-validated records from recovery, not raw
+ * producer input. `eventId` and `timestamp` are accepted for shape fidelity
+ * with the recovery record but are unused by the builder; only `writerId`,
+ * `writerSequence`, and `telemetry` affect the fold.
  */
 export type RetainedWalRecord = {
   eventId: string;
@@ -273,12 +279,17 @@ export type InventoryObservationInput = {
 };
 
 export type CanonicalSessionInput = {
-  sessionId: string;
+  /**
+   * R40: identity comes from `parsed.id`; no separate session id is accepted.
+   */
   parsed: ParsedSession;
   scope: Scope;
   leafId: string | null;
   evidence: L0Evidence;
-  /** Retained raw WAL records: the post-cursor counter suffix and sequences. */
+  /**
+   * R41: retained, WAL-validated records carrying the post-cursor counter
+   * suffix and per-writer sequences. L1 owns folding; L2 does not.
+   */
   walRecords?: readonly RetainedWalRecord[];
   /** Saturating dropped-tool-start count from the live registration (R29). */
   liveOverflow?: number;
@@ -682,7 +693,8 @@ function buildUsage(
 
   for (const generation of reduced.generations) {
     const entryId = generation.id.replace(/^generation:/, "");
-    if (!presence.generations.has(entryId)) continue;
+    // Spec §10.2: missing usage never creates a zero-valued line.
+    if (!presence.generationsWithUsage.has(entryId)) continue;
     lines.push({
       id: `usage-line:generation:${entryId}`,
       ownerId: generation.id,
@@ -714,7 +726,8 @@ function buildUsage(
   }
   for (const compaction of reduced.compactions) {
     const entryId = compaction.id.replace(/^compaction:/, "");
-    if (!presence.compactions.has(entryId)) continue;
+    // Spec §10.2: a usage-less compaction contributes no fabricated zero.
+    if (!presence.compactionsWithUsage.has(entryId)) continue;
     lines.push({
       id: `usage-line:compaction:${entryId}`,
       ownerId: compaction.id,
@@ -1146,9 +1159,12 @@ function supplement(
     ...(foldedOnly.integration ?? {}),
   };
   for (const key of Object.keys(suffix.counters).sort()) {
-    const counters = suffix.counters[key as IntegrationKey];
+    // Re-apply the validated canonical key set: a pattern-valid but
+    // non-canonical key can never be republished through the cast.
+    if (!isIntegrationKey(key)) continue;
+    const counters = suffix.counters[key];
     if (counters === undefined || Object.keys(counters).length === 0) continue;
-    integration[key as IntegrationKey] = {
+    integration[key] = {
       value: counters,
       state: "aggregate-only",
       boundary,
@@ -1404,7 +1420,12 @@ function healthFor(context: HealthContext): SessionEvidenceHealth {
         context.parsed.entries.length + context.parsed.unknownEntryCount,
       factsAccepted: context.parsed.entries.length,
       recordsRejected: context.parsed.unknownEntryCount,
-      detail: "full",
+      detail:
+        context.core === "unsupported"
+          ? "unsupported"
+          : context.core === "unavailable"
+            ? "not-observed"
+            : "full",
     },
     {
       source: "inspector-wal",
@@ -1415,7 +1436,7 @@ function healthFor(context: HealthContext): SessionEvidenceHealth {
           : "supported"
         : "unavailable",
       ...(hasWalEvidence ? { schemaVersion: 1 } : {}),
-      recordsSeen: walRecords?.length ?? liveFacts.length,
+      recordsSeen: Math.max(walRecords?.length ?? 0, liveFacts.length),
       factsAccepted: liveFacts.length,
       recordsRejected: 0,
       detail: hasWalEvidence ? "full" : "not-observed",

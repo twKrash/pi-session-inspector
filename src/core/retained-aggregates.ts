@@ -18,7 +18,8 @@ const ISO_INSTANT =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const MAX_TIMESTAMP_LENGTH = 35;
 
-const INTEGRATION_KEYS: ReadonlySet<string> = new Set<IntegrationKey>([
+/** Canonical integration keys accepted by the report projection (spec §11). */
+export const INTEGRATION_KEYS: ReadonlySet<string> = new Set<IntegrationKey>([
   "context",
   "rtk",
   "ponytail",
@@ -27,6 +28,11 @@ const INTEGRATION_KEYS: ReadonlySet<string> = new Set<IntegrationKey>([
   "subagents",
   "lens",
 ]);
+
+/** Narrowing guard over the validated canonical integration key set. */
+export function isIntegrationKey(value: string): value is IntegrationKey {
+  return INTEGRATION_KEYS.has(value);
+}
 
 /**
  * One aggregate value that may be the only survivor of pruned detail. It is
