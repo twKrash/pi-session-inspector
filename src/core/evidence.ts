@@ -72,6 +72,8 @@ export type FoldedAggregateEvidence =
       skillInvocations?: Record<string, number>;
       skillOverflowInvocations?: number;
       presence?: { permission?: true };
+      /** UTC instant before which pruned live detail no longer exists. */
+      detailExpiredBefore?: string;
       checkpointedAt: TimeEvidence;
       provenance: {
         source: "checkpoint";
@@ -97,16 +99,32 @@ export type FoldedAggregateEvidence =
       };
     };
 
+export type LiveTimingObservation = L0FactBase & {
+  kind: "live-timing";
+  category: "agent" | "turn" | "tool" | "provider" | "model";
+  status: "running" | "complete" | "unsupported";
+  /** Safe Inspector subject id; `live-tool-<64hex>` for tool boundaries. */
+  subjectId?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  provenance: FactProvenance & {
+    source: "inspector-wal";
+    authority: "live";
+    schemaVersion: 1;
+  };
+};
+
 /**
  * Atomic facts carry exactly one source observation; graphs are built in L1.
  *
  * This union is deliberately narrow in this milestone: it carries only the
- * families whose producer sits outside the Pi adapter (starting with
- * `SkillInvocationObservation`). Native families (entry nodes, generations,
- * tools, results, transitions, compactions, agent runs) stay on the
- * Pi-adapter path and join this union only when a later task needs them.
+ * families whose producer sits outside the Pi adapter (Inspector WAL telemetry
+ * and live timing). Native families (entry nodes, generations, tools, results,
+ * transitions, compactions, agent runs) stay on the Pi-adapter path and join
+ * this union only when a later task needs them.
  */
-export type AtomicEvidence = SkillInvocationObservation;
+export type AtomicEvidence = SkillInvocationObservation | LiveTimingObservation;
 
 export type L0Evidence = {
   atomic: AtomicEvidence[];
