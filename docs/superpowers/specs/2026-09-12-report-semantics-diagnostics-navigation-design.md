@@ -13,7 +13,109 @@ no code change until approved.
 
 ---
 
+## 0. Re-baseline against `main` (v0.8.0) — amendment
+
+`main` advanced to v0.8.0 (`910a665`, PR #1 "evidence foundation") while this
+design was being written. Every contract below was re-read against the pipeline
+that exists now. **Where §1-§18 and this section disagree, this section wins**, and
+the affected sections carry an inline pointer.
+
+### 0.1 The pipeline the contracts must speak to
+
+| Stage | Module | What it is now |
+| --- | --- | --- |
+| L1 canonical builder | `src/core/canonical.ts` (`buildCanonicalSession`) | Single authority for scope (`resolveScope`, R16/R49), usage attribution, retained aggregates and evidence health. A session it does not resolve to `state === "ready"` is `unavailable` |
+| L1 attribution | `CanonicalUsageLine` | Every usage line carries `domain` (`native-session` / `child-breakdown`), `bucket` (`generation` / `tool-result` / `compaction` / `branch-summary` / `child-run`) and `attributedAt`. Tool lines are attributed to the **call** timestamp, child runs to `observedAt`, compactions to their own entry; `usage.dated` health is `supported` only when every native line has a known `attributedAt` |
+| L1 health | `src/core/evidence-health.ts` | `SessionEvidenceHealth`, closed `EvidenceDiagnosticCode` set (incl. `source-not-found`, `source-malformed`, `source-format-unsupported`, `tracking-marker-missing`), `EvidenceHealthState` |
+| L2 projection | `src/ui/l2-projection.ts` | Projects only L1's verdicts; unavailable usage stays unavailable and never republishes raw reduce totals |
+| L2 loaders | `src/ui/load-current.ts`, `src/ui/load-history.ts` | Build the canonical session twice (scope resolution, then with cooperative subagent evidence), then `toSessionReport` |
+| DTO | `src/core/reports.ts` (`toSessionReport`, `projectAgent`) | Already re-validates `observedAt`, `evidenceToolId`, `agent`, `artifacts`, `model`, `thinking`, `failure` per run |
+| browser | `src/ui/bundle.ts` → `src/ui/html.ts` | One `CurrentView` per scope with precomputed `daily` rows, one `currentViewProjection`/`sectionProjection`, one inlined client script |
+
+### 0.2 Consequences that change this design's text
+
+1. **Naming (R18).** The canonical model already owns `UsageCoverage`
+   (owners/ownersWithUsage per usage bucket). This design's aggregate is *session*
+   coverage: it is named `SessionCoverage`, built by `buildSessionCoverage`, and
+   lives in `src/core/session-coverage.ts`. §3.1's `CoverageSummary` /
+   `buildCoverage` names are superseded; every **field** stays as specified.
+2. **Attribution is not re-derived (R19).** §5.4/§5.7's per-date rows
+   (`usageByDate`, `DailyRow.composition`, `DatedModelRow`) come from the
+   canonical builder's own attribution (`CanonicalUsageLine.attributedAt`,
+   `domain`, `bucket`), never from re-walking `SessionReport` timestamps in a
+   second implementation. The report is used to **assert** the reconciliation
+   (`sum(usageByDate) === SessionReport.usage`), not to produce the dates.
+3. **Coverage reasons integrate with evidence health (R20).** `CoverageReason` is
+   a *discovery/runnability* vocabulary in which every member maps onto an
+   existing bounded code (`EvidenceDiagnosticCode` or `HistoryDiagnostic`). It
+   starts no third vocabulary. Mapping in §3.1.
+4. **Already implemented on `main` — absorbed.** §6.3's rows for agent role,
+   artifacts, `observedAt`, `evidenceToolId`, tool timestamp, model, thinking and
+   failure class are **done** (the DTO validates all of them). Still missing:
+   §7.2's `runsWithUsage` fraction, and every browser projection of those fields
+   (§0.2 item 8 below is the only remaining renderer work for them).
+5. **§3.2 rule 7 is corrected.** `loadHistoryReports` and `loadGlobalReport` each
+   call `scanHistory`; they do **not** share one scan object. Coverage is a
+   deterministic function of the same inputs, so the two agree exactly and §3.4's
+   equality criterion stands, but the design must not claim a shared scan that
+   does not exist.
+6. **`scanHistory`'s failure paths are richer than §3.2 assumed.** A session
+   becomes `unavailable` when (a) the source cannot be resolved or parsed,
+   (b) the header/id/marker re-check fails, (c) the injected evidence provider
+   returns nothing or throws, (d) `buildCanonicalSession` is not `ready`, or
+   (e) the report projection throws. §3.1's reason set covers all five without a
+   new filesystem probe: (a)+(b) split into `session-unreadable` /
+   `marker-unavailable`, and (c)-(e) are `replay-failed`.
+7. **Verified client facts** (they define the P1-F diff): the sidebar sets
+   `aria-pressed` once at creation and never re-syncs; tab buttons re-sync only
+   inside their own click handler; `periods` is keyed by section alone; a custom
+   range is silently clamped into the observed min/max; `defaultPeriod` returns a
+   `1970-01-01` sentinel for an empty row set; history membership is span overlap
+   (`entry.firstDate <= to && entry.lastDate >= from`); `TABS` lists `commands`
+   and `skills` as separate tabs.
+8. **`@earendil-works/pi-tui@0.85.1` is installed** (peerDependency; the type
+   import already resolves in `src/commands/completions.ts`), so P1-G needs no
+   `package.json` change. Its `CombinedAutocompleteProvider(commands, basePath,
+   fdPath?)`, `getSuggestions(lines, cursorLine, cursorCol, {signal, force})` and
+   `applyCompletion(lines, cursorLine, cursorCol, item, prefix)` are the boundary
+   the regression test must drive.
+9. **Duplicate daily-row builders.** `src/ui/bundle.ts` (`dailyRows`) and
+   `src/ui/html.ts` (`buildDailyActivityRows`) bucket dates independently. P0-B
+   collapses them into one builder so one attribution feeds one row set.
+10. **Version targets.** The release slice targets **0.8.0 → 0.9.0**; the new ADR
+    is **0017** (0016 is the evidence foundation).
+
+### 0.3 Absorbed work items (no longer plan tasks)
+
+| Removed item | Why |
+| --- | --- |
+| `AgentRun.observedAt` / `evidenceToolId`, the join shape, the "cannot join ⇒ publish no run" rule | Implemented in `src/integrations/subagents.ts` (`JoinedResult`, `publicationOf`, `mergeRunObservation`) and consumed by `load-current.ts`/`load-history.ts` |
+| `AgentRun.model` / `thinking` / `failure` derivation | Implemented in `src/integrations/subagents.ts` (`readAgentFailure`, model/signal grammars) and re-validated in `projectAgent` |
+| `@earendil-works/pi-tui` as a new devDependency for P1-G | Already a peerDependency, already installed |
+
+The cross-midnight **fixture and its regression test are kept**: they move into
+the range slice (§5.7 is exactly the contract they prove).
+
+### 0.4 Unchanged by the re-baseline
+
+Classification of every requested change (§2), the coverage wording rules (§3.3),
+the scope contract (§4), range semantics and validation (§5.1-§5.3, §5.5, §5.6),
+the one-projection rule (§6.2), the three-concept agent/tool/error model (§7.1,
+§7.4, §7.5), environment vs activity (§8.1), routing (§9), autocomplete (§10),
+privacy (§11.1), the unsupported/deferred verdicts (§15) and the rulings (§17)
+all remain in force; only the *derivation source* and the *file anchors* changed.
+
+---
+
 ## 1. Verified current state (facts this design builds on)
+
+> Statements in this section were read from `main` at `ddcbe36`, before the
+> v0.8.0 merge. **Line numbers below refer to that revision** and have since
+> drifted; the scope semantics (§1.1), the coverage gap (§1.2), the range
+> behaviour (§1.3), the browser projection losses (§1.4), the error/tool join
+> (§1.5), the autocomplete root cause (§1.8) and the command surface (§1.9) were
+> re-verified **by content** at `81f65b7`, and §0.2 item 7 records the current
+> anchors. Where the merged pipeline changed a claim, §0 supersedes it.
 
 Every statement below was read from current `main` (`ddcbe36`), the pinned Pi
 `0.85.1` install, or the real session corpus under
@@ -31,8 +133,9 @@ called out.
   Siblings and off-path descendants are excluded from active.
 - ADR 0006 already states: "Reports describe a branch as selected leaf/path,
   never manufacture a native branch ID."
-- Current UI labels are `Active` / `Tree`; the context note reads
-  `<label> after tracking marker` (`src/ui/html.ts:1358`).
+- Current UI labels are `Active ancestry` / `Full tree` (`scope.active`,
+  `scope.tree` in the catalog); the context note reads
+  `<label> after tracking marker` (`src/ui/html.ts:1366`).
 
 ### 1.2 Coverage (the P0 correctness gap)
 
@@ -250,6 +353,11 @@ testable against fixtures.
 
 ### 3.1 DTO
 
+> Superseded names (R18, §0.2 item 1): the aggregate type is `SessionCoverage`,
+> built by `buildSessionCoverage` in `src/core/session-coverage.ts`. Only the
+> identifier changed, to stay distinct from the canonical model's `UsageCoverage`;
+> the fields below are normative.
+
 Both `HistoryReport` and `GlobalReport` gain one optional field:
 
 ```ts
@@ -259,9 +367,9 @@ export type CoverageReason =
   | "manifest-unavailable" // manifest exists, source file is missing/unresolvable
   | "marker-unavailable"   // source exists but tracking-marker evidence failed
   | "session-unreadable"   // parse failure, malformed JSON, no header, id mismatch
-  | "replay-failed";       // reducer/adapters threw for this session
+  | "replay-failed";       // provider/builder/report failed for this session
 
-export type CoverageSummary = {
+export type SessionCoverage = {
   /** Sessions discovery inspected (the capped set; see §3.2). */
   inspected: number;
   available: number;
@@ -287,7 +395,7 @@ export type HistoryReport = {
   availability: "available" | "unavailable";
   sessions: HistoricalSession[];
   diagnostics: HistoryDiagnostic[];
-  coverage?: CoverageSummary; // absent = older report or discovery unavailable
+  coverage?: SessionCoverage; // absent = older report or discovery unavailable
 };
 
 export type HistoricalSession =
@@ -296,8 +404,25 @@ export type HistoricalSession =
 ```
 
 `GlobalReport` gains the same `coverage?`. `HistoricalSession.reason` is additive
-and optional; when absent (older data, or a reason class that does not exist
-yet) renderers must show "Unavailable", never a guessed reason.
+and optional; when absent (older data, or a reason class that does not exist yet)
+renderers must show "Unavailable", never a guessed reason.
+
+#### 3.1.1 Reason vocabulary maps onto existing bounded codes (R20)
+
+`CoverageReason` is a *runnability* vocabulary, not an evidence vocabulary. Every
+member is a projection of a code that already exists, so no third vocabulary is
+introduced and a hostile or unbounded value cannot appear:
+
+| `CoverageReason` | Emitted when | Existing bounded code |
+| --- | --- | --- |
+| `no-manifest` | Discovery found neither metadata nor a readable pending manifest | `HistoryDiagnostic` `manifest-unavailable` |
+| `manifest-unavailable` | Manifest exists; its source is missing, unresolvable, or rejected | `EvidenceDiagnosticCode` `source-not-found` |
+| `marker-unavailable` | Source is readable but header/id/marker re-verification fails | `EvidenceDiagnosticCode` `tracking-marker-missing` |
+| `session-unreadable` | JSONL does not parse, has no session header, or its id mismatches | `EvidenceDiagnosticCode` `source-malformed` / `source-format-unsupported` |
+| `replay-failed` | Evidence provider absent/threw, canonical builder not `ready`, or the report projection threw | The session's own `evidenceHealth.diagnostics` (`source-format-unsupported`, `cooperative-evidence-conflict`, …) |
+
+A table test asserts the mapping is total, so a new reason cannot be added
+without naming the code it projects (`§13`).
 
 ### 3.2 Derivation rules (all read-time, no persistence)
 
@@ -325,14 +450,18 @@ yet) renderers must show "Unavailable", never a guessed reason.
 5. When report `availability === "unavailable"` (the sessions directory itself is
    unreadable or scope forces it), `coverage` is **omitted** — the aggregate is
    unavailable, not zero.
-6. Reason mapping is deterministic and exhaustive. `load-history.ts` records the
+6. Reason mapping is deterministic and exhaustive, and each reason is the
+   projection of an existing bounded code (§3.1.1). `load-history.ts` records the
    reason at each existing early return; `discoverHistory` gains a bounded reason
    in place of the bare `availability: "unavailable"` it returns today. No new
    filesystem probe is added: each reason already corresponds to an existing
-   check that currently discards its cause.
-7. `scanHistory` already replays once and shares the result between history and
-   global; coverage is computed from that single scan, so history and global can
-   never disagree.
+   check that currently discards its cause. The five failure paths named in
+   §0.2 item 6 are the complete set the loader must cover.
+7. **Correction (§0.2 item 5).** `loadHistoryReports` and `loadGlobalReport` each
+   call `scanHistory`; they do not share a scan object. Coverage is a
+   deterministic function of the same discovery input and the same replay result,
+   so history and global coverage are equal by construction, and the acceptance
+   criterion is that equality — not a shared object.
 
 ### 3.3 Wording rules (the contract that makes the defect impossible to render)
 
@@ -424,8 +553,12 @@ Active is **not** "active and its children". Nothing in the UI may imply that.
 - `tree` → **Full session tree** — sub-label `All tracked branches in this session`.
 - Context note keeps the marker qualification:
   `Active path · after tracking marker` / `Full session tree · after tracking marker`.
-- ADR 0006 remains the normative scope definition; the design only renames the
-  labels and adds the identical-projection indication.
+- ADR 0006 remains the normative scope definition; the design renames the
+  labels and adds the identical-projection indication. Verified current copy at
+  `81f65b7`: `scope.active` = "Active ancestry", `scope.tree` = "Full tree",
+  `scope.fixed` = "History & Global use full tree.", and the context note
+  (`scope-note`) appends "after tracking marker" — so the change is a retitle of
+  existing keys plus the new sub-labels, not a new control.
 
 ### 4.3 Identical report projections
 
@@ -582,6 +715,14 @@ agents and errors (`Tool.timestamp`, `AgentRun.observedAt`, `ErrorRecord.timesta
 per call/run/error, no dated duplicate. Only the two values that exist solely as
 aggregates need a per-date form: model summaries and the usage composition.
 
+Both per-date forms are computed from the **canonical builder's own attribution**
+(R19, §0.2 item 2): a `CanonicalUsageLine` already states `attributedAt`,
+`domain` and `bucket`, so `usageByDate`, `DailyRow.composition` and
+`DatedModelRow` group those lines by `attributedAt` date — they never re-walk
+`SessionReport` timestamps in a second implementation. `SessionReport.usage` is
+the **assertion target** (`sum(usageByDate) === usage` for a fully retained
+window), not the source of the dates.
+
 ```ts
 // Models: ModelSummary is an aggregate, so it needs a dated form.
 type DatedModelRow = { date: string; provider: string; model: string; generations: number; totalTokens: number; cost: number };
@@ -651,8 +792,16 @@ Rules:
 - The history entry projection therefore carries bounded per-session evidence for
   this decision: `usageByDate: { date, totalTokens, cost, generations, tools }[]`
   plus `usageByDateTruncated?: boolean` (≤ 366 dates, newest window), derived from
-  the already-replayed report. The row's cost/tokens for a range are the sum over
-  its in-range dates.
+  the canonical builder's native usage lines (R19; §0.2 item 2) rather than from a
+  second walk of `SessionReport`. `usageByDateTruncated` is true whenever the
+  retained rows cannot represent the session's whole native usage — because the
+  window was capped (§17 R16) **or** because the builder reported
+  `evidenceHealth.usage.dated === "partial"` (at least one native usage line has
+  no known `attributedAt`). Either way the row is partial and must say so; both
+  causes share one flag, one `Known` qualifier and one render path, and no
+  unattributed usage is ever silently dropped. `dated === "unavailable"` with zero
+  native lines is *not* truncation — there is simply nothing to date. The row's
+  cost/tokens for a range are the sum over its in-range dates.
 - **Reconciliation contract** (what truncation must not break):
   - Within the retained dated window, a range-filtered aggregate session row
     reconciles **exactly** with the same session's detail view for that range.
@@ -677,7 +826,10 @@ Rules:
 
 Every range-filtered number must be attributable to exactly one UTC date, and the
 attribution is by **logical call**, never by result arrival and never by inferring
-a start or an end:
+a start or an end. This table is **already implemented in the canonical builder**
+(`CanonicalUsageLine.attributedAt`, `domain`, `bucket`, §0.1); the milestone
+projects that attribution rather than reimplementing it (R19), and the fixture in
+§13 is the regression that keeps the two in agreement:
 
 | Evidence | Date comes from | Consequence |
 | --- | --- | --- |
@@ -737,19 +889,24 @@ Rules:
 
 ### 6.3 Projection fixes required by this design
 
-| Loss | Fix (class) | Slice |
-| --- | --- | --- |
-| `AgentRow` drops `agent`, `artifacts` | pass through validated values (renderer) | P1-C |
-| `AgentRow` has no time field | `AgentRun.observedAt` derived from the publishing entry (§5.7) | P1-C |
-| `ToolRow` drops `timestamp` | pass through (renderer) | P1-C |
-| Models cannot be range-filtered | per-date model rows in the browser projection (derivation) | P0-B |
-| Composition cannot be range-filtered | per-date composition in `DailyRow` (derivation) | P0-B |
-| Agents cannot be range-filtered | `AgentRun.observedAt` (derivation, §5.7); the canonical agent row is filtered directly, no dated copy | P0-B |
-| Tools/errors cannot be range-filtered | `Tool.timestamp` and `ErrorRecord.timestamp` pass through (renderer) | P1-C |
-| `AgentRun` has no model/thinking | `model?`, `thinking?` validated from `results[]` (derivation, producer-version dependent) | P1-C |
-| `AgentRun` has no bounded failure class | `failure?: AgentFailure` from validated enums (derivation) | P1-C |
-| Errors cannot link to a child run | `AgentRun.evidenceToolId = "tool:" + message.toolCallId` (derivation; one-to-many) | P1-D |
-| Child usage completeness unknown | `childUsage` counts (`runsWithUsage` / `runsTotal`) in the agent projection (derivation) | P1-D |
+| Loss | Fix (class) | Slice | Status on `main` at v0.8.0 |
+| --- | --- | --- | --- |
+| `AgentRow` drops `agent`, `artifacts` | pass through validated values (renderer) | P1-C | DTO carries them; the browser row must be extended |
+| `AgentRow` has no time field | `AgentRun.observedAt` derived from the publishing entry (§5.7) | P1-C | derivation **done** (`projectAgent` validates `observedAt`); projection must pass it through |
+| `ToolRow` drops `timestamp` | pass through (renderer) | P1-C | DTO carries `Tool.timestamp`; the row must be extended |
+| Models cannot be range-filtered | per-date model rows in the browser projection (derivation) | P0-B | open |
+| Composition cannot be range-filtered | per-date composition in `DailyRow` (derivation) | P0-B | open |
+| Agents cannot be range-filtered | `AgentRun.observedAt` (derivation, §5.7); the canonical agent row is filtered directly, no dated copy | P0-B | `observedAt` **done**; filtering open |
+| Tools/errors cannot be range-filtered | `Tool.timestamp` and `ErrorRecord.timestamp` pass through (renderer) | P1-C | both fields **exist** in the DTO; the rows must carry them |
+| `AgentRun` has no model/thinking | `model?`, `thinking?` validated from `results[]` (derivation, producer-version dependent) | P1-C | derivation **done**; projection must pass them through |
+| `AgentRun` has no bounded failure class | `failure?: AgentFailure` from validated enums (derivation) | P1-C | derivation **done**; projection must pass it through |
+| Errors cannot link to a child run | `AgentRun.evidenceToolId = "tool:" + message.toolCallId` (derivation; one-to-many) | P1-D | field **done**; the join and its rendering are open |
+| Child usage completeness unknown | `runsWithUsage` / `runsTotal` counts in the report and the agent projection (derivation) | P1-D | open |
+
+Three rows that the pre-merge design listed as derivations — agent model, thinking
+and failure class, plus `observedAt`/`evidenceToolId` and the tool timestamp — are
+**already derived on `main`**; only their pass-through into the browser projection
+remains (§0.3).
 
 Every derivation above is computed from already-persisted producer payloads,
 validated with the existing bounded-validator style, and optional in the DTO.
@@ -1090,6 +1247,14 @@ The client renders only capable tabs, and route validation coerces an
 unsupported tab to the section default with the notice above. Tabs are never
 "present but guaranteed Unavailable".
 
+The capability table is the **browser** contract. The TUI keeps its own fixed
+`CURRENT_TABS` list (`overview, models, tools, commands, agents, skills,
+integrations, errors, ledger`) and is not re-taxonomized by this milestone:
+there is no route and no capability negotiation in the TUI, and §8's Environment
+grouping is a browser-surface change. Both surfaces still consume the same
+`SessionReport` (invariant 7); only the tab labels differ, and no TUI tab renders
+a figure the report cannot support.
+
 ### 9.4 Cross-navigation (links only where a destination exists)
 
 | From | To | Context preserved |
@@ -1300,16 +1465,19 @@ approach; no Inspector-specific string hack beyond it is acceptable.
 Each slice ends with: focused tests, `npm run format:check && npm run lint &&
 npm run typecheck`, `npm test`, and a spec-compliance + code-quality review.
 Version bumps follow the repository rule (one version per release, in the
-release slice).
+release slice): this milestone ships **0.8.0 → 0.9.0** and records ADR **0017**
+(§0.2 item 10). `main` already consumed 0.8.0 for the evidence foundation, and
+the v0.8.0 baseline is 588 passing tests at `81f65b7`.
 
 ### P0-A — Coverage correctness
 
 - **Files:** `src/storage/history.ts` (per-session reason + cap signal),
-  `src/ui/load-history.ts` (coverage assembly, shared by history and global),
-  `src/core/reports.ts` (validation of the new optional fields),
+  `src/core/session-coverage.ts` (new: `SessionCoverage`, `buildSessionCoverage`),
+  `src/ui/load-history.ts` (reason at every existing early return + coverage
+  assembly, shared by history and global),
   `src/ui/html.ts` (coverage panel + wording), tests + fixtures.
-- **Contract delta:** `CoverageSummary`, `CoverageReason`,
-  `HistoricalSession.reason`.
+- **Contract delta:** `SessionCoverage` (named per R18), `CoverageReason`,
+  `HistoricalSession.reason`, and the reason→code mapping of §3.1.1.
 - **Acceptance:** §3.4 (1-9), including the **empty inspection set** and the
   **capped discovery** cases, where `sessionRatio` must be `null` and no
   percentage or `N / N` fraction may render.
@@ -1319,12 +1487,15 @@ release slice).
 ### P0-B — Range correctness and scope labels
 
 - **Files:** `src/ui/bundle.ts` (per-date model rows, daily composition,
-  `sameReportProjection`), `src/ui/html.ts` (one server projection + one client
-  range filter over canonical rows), i18n catalog, tests.
+  `sameReportProjection`, capability table), `src/ui/daily.ts` (new: the single
+  date-bucketing builder that replaces `bundle.ts:dailyRows` and
+  `html.ts:buildDailyActivityRows`, §0.2 item 9), `src/ui/html.ts` (one server
+  projection + one client range filter over canonical rows), i18n catalog, tests.
 - **Contract delta:** `DatedModelRow`, composition in `DailyRow`,
-  `current.sameReportProjection`, history `usageByDate`/`usageByDateTruncated`;
-  range semantics per §5 (clamping removed), session membership per §5.6, and
-  logical-call attribution per §5.7.
+  `current.sameReportProjection`, per-section `capabilities`, history
+  `usageByDate`/`usageByDateTruncated`; range semantics per §5 (clamping removed),
+  session membership per §5.6, and logical-call attribution per §5.7 — all sourced
+  from `CanonicalUsageLine` attribution (R19).
 - **Acceptance:** §5.5 (1-10), §5.6, §5.7, §4.5 (1-5).
 - **Size gate:** **relative** regression gate measured on the reference fixture —
   document growth ≤ +15 % versus the baseline captured before the slice, with
@@ -1333,16 +1504,19 @@ release slice).
 
 ### P1-C — Projection integrity
 
-- **Files:** `src/integrations/subagents.ts` (`observedAt`, `model`, `thinking`,
-  `failure`, `evidenceToolId`), `src/ui/html.ts` (one projection, pass-through of
-  role/artifacts/observedAt), tests + fixtures.
-- **Contract delta:** §6.3 rows 1-5, 7-10.
+- **Files:** `src/ui/html.ts` (one projection, pass-through of
+  role/artifacts/observedAt/model/thinking/failure/evidenceToolId, plus
+  `Tool.timestamp` and the error/tool join), `src/core/reports.ts` (`agentUsage`
+  fraction), tests + fixtures. The `subagents.ts` derivations this slice used to
+  own are **already on `main`** (§0.3).
+- **Contract delta:** §6.3 rows 1-3 and 7-9 (pass-through) plus the
+  `agentUsage` fraction; the §6.3 derivations marked *done* need no code.
 - **Acceptance:** §6.4 (1-4).
 
 ### P1-D — Agents, errors, tools semantics
 
 - **Files:** `src/ui/html.ts` (client tabs + detail panels),
-  `src/integrations/subagents.ts` (child-usage counts), tests.
+  `src/core/reports.ts` (child-usage counts), tests.
 - **Contract delta:** §7.1-7.6 rendering; one-to-many `Related child run(s)`.
 - **Acceptance:** §7.7 (1-9).
 
@@ -1370,6 +1544,10 @@ release slice).
   `tests/unit/command-completion-application.test.ts` (boundary),
   `package.json` (devDependency, if required).
 - **Acceptance:** §10.4 (1-4).
+- **Note (v0.8.0):** `@earendil-works/pi-tui@0.85.1` is already installed as a
+  peerDependency and the type import already resolves, so no `package.json`
+  change is expected; the slice must still prove the boundary with the real
+  provider.
 
 ### P2-H — Presentation polish
 
@@ -1386,7 +1564,7 @@ Semantic assertions over snapshots; every new behavior gets a failing-first test
 
 | Area | File | Cases |
 | --- | --- | --- |
-| Coverage | `tests/unit/history-reports.test.ts`, `tests/unit/index-report-command.test.ts` | 5 of 27 inspected (uncapped) partial; all available; none available; **empty inspection set ⇒ `complete === false`, `sessionRatio === null`, `No tracked sessions`, usage `Unavailable`**; sessions dir unreadable; **discovery cap ⇒ `sessionRatio === null`, `complete === false`, `206 sessions inspected · additional sessions not inspected`, no percentage and no `206 / 206`**; `coverage`-absent report; unavailable sessions contribute no usage; Known vs Total wording; **selected history session detail has no coverage qualifier** |
+| Coverage | `tests/unit/history-reports.test.ts`, `tests/unit/index-report-command.test.ts` | 5 of 27 inspected (uncapped) partial; all available; none available; **empty inspection set ⇒ `complete === false`, `sessionRatio === null`, `No tracked sessions`, usage `Unavailable`**; sessions dir unreadable; **discovery cap ⇒ `sessionRatio === null`, `complete === false`, `206 sessions inspected · additional sessions not inspected`, no percentage and no `206 / 206`**; `coverage`-absent report; unavailable sessions contribute no usage; Known vs Total wording; **reason→code mapping totality (§3.1.1)**; every reason produced by a real path (`session-unreadable`, `replay-failed` via the injectable replay/provider seams); history and global coverage equal; **selected history session detail has no coverage qualifier** |
 | Range | `tests/unit/html-bundle.test.ts`, `tests/unit/bundle.test.ts` (+ new `tests/unit/report-range.test.ts`) | 7D vs 14D differ on every range-aware widget (models, tools, agents, errors, composition, chart) by filtering canonical rows; inclusive UTC boundaries; custom validation failure keeps state; range outside data → empty state; scope change preserves range; truncation notice; **aggregate session membership by in-range records (§5.6)**; **custom-range hash round-trip and lone/inverted-pair fallback**; **cross-midnight attribution regression (§5.7)**: call day carries the tool usage, next day carries the error, totals and composition stay consistent; **>366-day session fixture**: `usageByDateTruncated`, an old Custom range renders `Known` + `history-daily-truncated` (never zero), a recent range reconciles exactly with the detail view |
 | Scope | `tests/unit/current-ui.test.ts`, `tests/unit/index-current-ui.test.ts` | linear session with `sameReportProjection === true` and the exact note wording; branched Active≠Tree; sibling exclusion; child usage never added; labels contain no descendant claim |
 | Agents | `tests/unit/subagents.test.ts`, `tests/unit/html-bundle.test.ts` | activity calls ≠ run count; failed-run cost; partial child usage; parent resolution (in-scope / tree-only / unknown); role/model/thinking present only when validated and shown as metadata only (no Models link); **one result publishing several runs ⇒ one-to-many `Related child run(s)`**; `evidenceToolId` only from `message.toolCallId`; `observedAt` from the publishing entry; no raw task/output text |
@@ -1524,8 +1702,11 @@ start before §3-§10 are settled, and it changes no contract.)
 | R13 | Inactive view ranges and inactive table settings are ephemeral caches, not deep-link state | The route must be the single authority; two sources of truth recreate the original active-state bug | Reopening a deep link resets other views' ranges/table settings to defaults |
 | R14 | Aggregate range membership requires at least one in-range observed record, not span overlap | Span intersection is not usage in the period | A session that brackets a range without activity inside it is excluded from that range's rows |
 | R15 | Range attribution is by **logical call** (§5.7): tool usage/cost on `Tool.timestamp`, tool errors on `ErrorRecord.timestamp`, child runs on `AgentRun.observedAt` | The two-rule alternative (attributing everything to result arrival) would make tool cost move between days whenever a result crosses midnight | A cross-midnight call splits its usage and its error across two days, by design |
-| R16 | Per-session `usageByDate` is capped at 366 dates, with `usageByDateTruncated` and a `Known` qualifier for older ranges | Keeps the aggregate bounded without ever faking completeness or zero | Ranges older than the retained window show partial/`Known` per-session figures rather than exact ones |
+| R16 | Per-session `usageByDate` is capped at 366 dates, with a single `usageByDateTruncated` flag and a `Known` qualifier for older ranges. The flag is also set when the builder reports `evidenceHealth.usage.dated === "partial"`, because unattributed native usage cannot be dated | Keeps the aggregate bounded without ever faking completeness or zero, and gives the two partial causes one honest rendering | Ranges older than the retained window show partial/`Known` per-session figures rather than exact ones; an unattributable session is partial for every range |
 | R17 | No Agent → Models navigation target, even when `AgentRun.model` matches a parent-session model | Native parent generations and child-run usage are different domains; a name match is not evidence of identity | Child model/thinking stay agent-detail metadata; a future child-model breakdown can add a real target |
+| R18 | The aggregate coverage type is `SessionCoverage` (not `CoverageSummary`), in `src/core/session-coverage.ts` | The canonical model already owns `UsageCoverage`; two types named "coverage" with different meanings invite exactly the confusion this milestone exists to remove | One rename now; §3.1's field names are unchanged |
+| R19 | Per-date rows (`usageByDate`, `DailyRow.composition`, `DatedModelRow`) are grouped from `CanonicalUsageLine.attributedAt`/`domain`/`bucket`; `SessionReport` dates are never re-walked into a second attribution implementation | The builder is the single attribution authority (R15/§5.7); two implementations would drift at the first producer change | A per-date figure can only differ from the report if the builder is wrong, which is then a single place to fix |
+| R20 | Every `CoverageReason` maps onto an existing `EvidenceDiagnosticCode` or `HistoryDiagnostic`, asserted by a totality test | Invariant 8 (degrade, never guess) plus the ban on a second vocabulary: a runnability reason must be traceable to a bounded code | Adding a reason requires naming the code it projects |
 
 ---
 

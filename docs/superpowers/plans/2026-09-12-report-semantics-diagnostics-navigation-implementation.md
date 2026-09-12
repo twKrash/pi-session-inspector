@@ -19,8 +19,70 @@
 - Additive DTOs only: field names are append-only, `schemaVersion` stays `1`, older reports without the new optional fields must still render (with conservative wording).
 - Bounded everything: reuse existing caps; new caps are `≤366` daily rows per view, `≤64` model rows per date, `≤366` `usageByDate` dates per session, `≤256` agent rows, `≤8` integration rows, and the existing `206` history-session cap. Capped output is flagged, never silently short.
 - Attribution is by logical call (spec §5.7): tool identity/status/usage on `Tool.timestamp`; tool errors on `ErrorRecord.timestamp`; child runs on `AgentRun.observedAt`; compactions on their own entry timestamp. No start time, end time, or duration is ever inferred.
-- Version `0.7.0 → 0.8.0` in Task 22. Every task ends with `npm run format:check && npm run lint && npm run typecheck && npm test` clean.
+- Version `0.8.0 → 0.9.0` in Task 22. Every task ends with `npm run format:check && npm run lint && npm run typecheck && npm test` clean.
 - Every commit message matches the repository convention (`feat:`, `fix:`, `test:`, `docs:`).
+
+## Re-baseline (v2, against `main` @ `81f65b7`, v0.8.0)
+
+`main` merged PR #1 ("evidence foundation", `910a665`): +19,411/−727 lines over
+88 files, version 0.8.0. **Baseline: 588 tests pass, 0 failures.** The plan below
+is amended for that pipeline; Appendix A of the spec (`§0`) is the authority for
+the findings, and this section is the authority for task status.
+
+### Task map
+
+| Task | Status after re-baseline |
+| --- | --- |
+| 1 Bounded reasons + cap signal | **Execute** as written (anchors verified against current `src/storage/history.ts`) |
+| 2 Coverage assembly | **Execute, retargeted**: `src/core/session-coverage.ts`, `SessionCoverage`, `buildSessionCoverage`; the five real `scanHistory` failure paths replace the plan's assumed two |
+| 3 Coverage surfaces + wording | **Execute** as written (html.ts anchors updated) |
+| 4 `AgentRun.observedAt` / `evidenceToolId` | **RETIRED — already on `main`.** Its cross-midnight fixture/regression moves into Tasks 5/9 |
+| 5 Bounded `usageByDate` | **Execute, retargeted**: grouped from `CanonicalUsageLine.attributedAt`, not re-walked from `SessionReport`; the truncation flag also covers `evidenceHealth.usage.dated === "partial"` |
+| 6 Dated model rows + composition | **Execute, retargeted**: also collapse the two date-bucketing builders into one (`src/ui/daily.ts`) and add the capability table |
+| 7 `sameReportProjection` + scope copy | **Execute** as written |
+| 8 Pure range module | **Execute** as written |
+| 9 One range filter for every tab | **Execute, retargeted**: replaces the span-overlap `inPeriod` membership rule; gains the cross-midnight fixture |
+| 10 Agent model/thinking/failure | **RETIRED — already on `main`.** Replaced by a smaller task: the child-usage fraction (`runsWithUsage`/`runsTotal`) |
+| 11 Canonical browser projection | **Execute, retargeted**: `sessionView`/`toolRows`/`agentRows` already exist and are the anchors |
+| 12 Agents tab semantics | **Execute, retargeted**: `agentsPanel` anchor; the `metric.agentCalls` label is the defect |
+| 13 Tools summary + calls | **Execute** as written |
+| 14 Errors: joins + honest messages | **Execute, retargeted**: error rows are built in `src/ui/html.ts` (`sessionView`), not `src/ui/bundle.ts` |
+| 15 Environment + integrations | **Execute** as written |
+| 16 Pure route module | **Execute** as written |
+| 17 Client routing | **Execute, retargeted**: `tests/unit/helpers/bundle.ts` does not exist and must be created in this task |
+| 18 Cross-navigation links | **Execute** as written |
+| 19 Span-aware completion | **Execute** as written |
+| 20 Pi autocomplete boundary | **Execute, retargeted**: `@earendil-works/pi-tui@0.85.1` is already installed as a peerDependency — no `package.json` change, no dependency step |
+| 21 Presentation polish | **Execute** as written |
+| 22 ADR/spec/CHANGELOG/version | **Execute, retargeted**: ADR **0017**, version **0.9.0** |
+| 23 Privacy corpus + final verification | **Execute** as written, plus the attribution-partial fixture case |
+
+Execution order is numeric, skipping 4 and 10. Tasks 1-3, 5, 8, 16, 19 and 20 are
+independent of the client script; Tasks 6-18 edit `src/ui/html.ts` sequentially and
+must run in order.
+
+### Facts the amended tasks rely on (verified at `81f65b7`)
+
+- `loadHistoryReports` and `loadGlobalReport` **each** call `scanHistory`; there is
+  no shared scan object (spec §0.2 item 5).
+- `scanHistory` returns `unavailable` at five distinct points; the current code
+  discards every cause in one `catch` (spec §0.2 item 6).
+- `toSessionReport`/`projectAgent` already validate `agent`, `artifacts`,
+  `observedAt`, `evidenceToolId`, `model`, `thinking` and `failure`; `readSubagentEvidence`
+  already publishes them. `SubagentEvidence` has **no** `runsWithUsage`.
+- `src/ui/bundle.ts` already has `dailyRows()` (one report, no composition);
+  `src/ui/html.ts` already has `buildDailyActivityRows()` (many reports).
+- `src/ui/html.ts` already has `currentViewProjection`, `sectionProjection`,
+  `sessionView`, `toolRows`, `agentRows`, `buildDailyLedger`; `agentRows` drops
+  `agent`/`artifacts`/`observedAt`/`model`/`thinking`/`failure`/`evidenceToolId`,
+  `toolRows` drops `timestamp`, and the error rows carry no tool join.
+- `tests/unit/helpers/` **does not exist**; the bundle fixture is read directly in
+  `tests/unit/html-bundle.test.ts` from `tests/fixtures/bundles/inspector-bundle.json`.
+- `@earendil-works/pi-tui@0.85.1` is installed under `node_modules` (peerDependency),
+  with `CombinedAutocompleteProvider(commands, basePath, fdPath?)`,
+  `getSuggestions(lines, cursorLine, cursorCol, { signal, force })` and
+  `applyCompletion(lines, cursorLine, cursorCol, item, prefix)`.
+- The next free ADR number is **0017**; the current version is **0.8.0**.
 
 ### Shared interfaces (defined by the task that introduces them; later tasks must use these exact names)
 
@@ -31,12 +93,13 @@ type CoverageReason =
   | "manifest-unavailable" // manifest present, source file missing/unresolvable
   | "marker-unavailable"   // source present but tracking-marker evidence failed
   | "session-unreadable"   // parse failure / malformed JSON / no header / id mismatch
-  | "replay-failed";       // reducer or adapters threw for this session
+  | "replay-failed";       // provider, builder or report projection failed for this session
 type HistorySession = { sessionId: string; availability: "available" | "unavailable"; reason?: CoverageReason; sourceFile?: string };
 type HistoryDiscoveryResult = { availability: "available" | "unavailable"; sessions: HistorySession[]; diagnostics: HistoryDiagnostic[]; discoveryLimited: boolean };
 
-// Task 2: src/core/coverage.ts
-type CoverageSummary = {
+// Task 2: src/core/session-coverage.ts (named per spec R18 to stay distinct from
+// the canonical model's `UsageCoverage`); `CoverageReason` comes from Task 1.
+type SessionCoverage = {
   inspected: number;
   available: number;
   unavailable: number;
@@ -45,27 +108,30 @@ type CoverageSummary = {
   discoveryLimited: boolean;
   reasons: Readonly<Partial<Record<CoverageReason, number>>>;
 };
-function buildCoverage(input: {
+function buildSessionCoverage(input: {
   availability: "available" | "unavailable";
   discoveryLimited: boolean;
   sessions: readonly { availability: "available" | "unavailable"; reason?: CoverageReason }[];
-}): CoverageSummary | undefined;
+}): SessionCoverage | undefined;
+/** Total reason→bounded-code mapping (spec §3.1.1, R20); asserted by a table test. */
+const COVERAGE_REASON_CODES: Readonly<Record<CoverageReason, readonly string[]>>;
 
-// Task 2: src/ui/load-history.ts (HistoryReport/GlobalReport gain `coverage?: CoverageSummary`)
+// Task 2: src/ui/load-history.ts (HistoryReport/GlobalReport gain `coverage?: SessionCoverage`)
 
-// Task 4-5: src/core/events.ts
-type AgentRun = {
-  id: string; parentId?: string; agent?: string;
-  status: "running" | "succeeded" | "failed" | "interrupted" | "unknown";
-  confidence: Confidence; artifacts?: "available" | "missing"; usage?: Usage;
-  observedAt?: string;                 // publishing tool-result entry timestamp (§5.7)
-  evidenceToolId?: string;             // `tool:<message.toolCallId>` of the publishing result
-};
-type AgentFailure = { reason: "exit-nonzero" | "process-signal" | "completion-failed" | "output-absent"; detail?: number | string };
+// DONE ON MAIN (v0.8.0) — do not re-implement: `src/core/events.ts` already
+// exports this exact AgentRun (with observedAt, evidenceToolId, model, thinking,
+// failure), `src/integrations/subagents.ts` already fills every field from
+// validated producer payloads, and `projectAgent` re-validates them.
+type AgentRun = { id: string; parentId?: string; agent?: string; status: ...; confidence: Confidence;
+  artifacts?: "available" | "missing"; observedAt?: string; evidenceToolId?: string;
+  model?: string; thinking?: string; failure?: AgentFailure; usage?: Usage };
 
-// Task 4: src/integrations/subagents.ts
-type SubagentEvidence = { activity: AgentToolActivity; runs: readonly AgentRun[]; state: EvidenceState; runsWithUsage: number };
-// AgentRun.model? / thinking? / failure? are filled by Task 10.
+// Task 10 (retargeted): src/integrations/subagents.ts — only the usage fraction is new.
+type SubagentEvidence = { activity: AgentToolActivity; runs: readonly AgentRun[]; state: EvidenceState;
+  diagnostics: readonly SubagentEvidenceDiagnostic[];   // already on main
+  runsWithUsage: number };                              // NEW
+// and on the report DTO (src/core/reports.ts):
+//   agentUsage: { runsTotal: number; runsWithUsage: number };
 
 // Task 2/5: src/ui/load-history.ts
 /** Deterministic source-read classification; the reason a session could not replay. */
@@ -73,9 +139,11 @@ function sourceReadFailure(parsed: { id?: unknown; hasMalformedJson?: unknown; h
 /** Replay seam so a reducer/adapter failure is testable as `replay-failed`. */
 type LoadHistoryOptions = { /* existing */ replay?: (entries: readonly SessionEntry[], sessionId: string) => SessionReport };
 /**
- * Per-date evidence, composition-complete so it reconciles with SessionReport.usage,
- * plus observation-only counters (`tools`, `errors`) that create membership
- * evidence even when they contribute zero additional usage (§5.7).
+ * Per-date evidence, grouped from the canonical builder's own attribution
+ * (`CanonicalUsageLine.attributedAt`/`domain`/`bucket`) — never re-walked from
+ * `SessionReport` timestamps (spec R19). It stays composition-complete so it
+ * reconciles with `SessionReport.usage`, and `tools`/`errors` carry
+ * observation-only membership counters even when they contribute no usage (§5.7).
  */
 type DateUsageRow = {
   date: string; totalTokens: number; cost: number;
@@ -86,7 +154,7 @@ type HistoricalSession =
   | { availability: "available"; sessionId: string; report: SessionReport; usageByDate: readonly DateUsageRow[]; usageByDateTruncated: boolean }
   | { availability: "unavailable"; sessionId: string; reason?: CoverageReason };
 
-// Task 6: src/ui/bundle.ts
+// Task 6: src/ui/bundle.ts + src/ui/daily.ts (new: the single date-bucketing builder)
 type SafeUsage = { totalTokens: number; cost: number };
 type DatedModelRow = { date: string; provider: string; model: string; generations: number; totalTokens: number; cost: number };
 type DailyRow = { date: string; sessions: number; totalTokens: number; cost: number; generations: number; tools: number;
@@ -97,6 +165,8 @@ type CurrentView = { availability: "available" | "unavailable"; diagnostic?: str
 type InspectorBundle = { schemaVersion: 1; theme: "light" | "dark"; initialScope: Scope;
                          current: { active: CurrentView; tree: CurrentView; sameReportProjection: boolean };
                          history: HistoryReport; global: GlobalReport };
+// src/ui/bundle.ts also exports the per-section capability table:
+const CAPABILITIES: Readonly<Record<"current" | "history" | "global", readonly Tab[]>>;
 
 // Task 7: src/ui/html.ts (server projection only)
 function currentViewProjection(view: CurrentView, scope: Scope): Record<string, unknown>;
@@ -292,31 +362,37 @@ git commit -m "feat: report bounded per-session coverage reasons and the discove
 
 ---
 
-### Task 2: CoverageSummary assembly shared by history and global
+### Task 2: `SessionCoverage` assembly shared by history and global
 
 **Files:**
 
-- Create: `src/core/coverage.ts`
+- Create: `src/core/session-coverage.ts`
 - Modify: `src/ui/load-history.ts`
-- Test: `tests/unit/coverage.test.ts` (new), `tests/unit/history-reports.test.ts`
+- Test: `tests/unit/session-coverage.test.ts` (new), `tests/unit/history-reports.test.ts`
 
 **Interfaces:**
 
 - Consumes: `CoverageReason` (Task 1).
-- Produces: `CoverageSummary`, `buildCoverage`, `HistoryReport.coverage`, `GlobalReport.coverage`.
+- Produces: `SessionCoverage`, `buildSessionCoverage`, `COVERAGE_REASON_CODES`,
+  `HistoryReport.coverage`, `GlobalReport.coverage` (named per spec R18).
+
+> **Retargeted for v0.8.0.** This task touches `scanHistory`, which on `main`
+> already routes every session through `buildCanonicalSession` and an injected
+> evidence provider. The five failure paths the loader must label are listed in
+> the spec (§0.2 item 6). Nothing else in the task changed.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// tests/unit/coverage.test.ts
+// tests/unit/session-coverage.test.ts
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildCoverage } from "../../src/core/coverage.ts";
+import { COVERAGE_REASON_CODES, buildSessionCoverage } from "../../src/core/session-coverage.ts";
 
 const available = { availability: "available" as const };
 
 test("partial sets are not complete and expose a session ratio", () => {
-  const coverage = buildCoverage({
+  const coverage = buildSessionCoverage({
     availability: "available",
     discoveryLimited: false,
     sessions: [available, { availability: "unavailable", reason: "manifest-unavailable" }],
@@ -328,14 +404,14 @@ test("partial sets are not complete and expose a session ratio", () => {
 });
 
 test("a capped discovery hides the ratio and is never complete", () => {
-  const coverage = buildCoverage({ availability: "available", discoveryLimited: true, sessions: [available] });
+  const coverage = buildSessionCoverage({ availability: "available", discoveryLimited: true, sessions: [available] });
   assert.equal(coverage?.sessionRatio, null);
   assert.equal(coverage?.complete, false);
   assert.equal(coverage?.discoveryLimited, true);
 });
 
 test("an empty inspection set is not complete and has no ratio", () => {
-  const coverage = buildCoverage({ availability: "available", discoveryLimited: false, sessions: [] });
+  const coverage = buildSessionCoverage({ availability: "available", discoveryLimited: false, sessions: [] });
   assert.equal(coverage?.inspected, 0);
   assert.equal(coverage?.sessionRatio, null);
   assert.equal(coverage?.complete, false);
@@ -343,30 +419,67 @@ test("an empty inspection set is not complete and has no ratio", () => {
 });
 
 test("an unavailable aggregate has no coverage at all", () => {
-  assert.equal(buildCoverage({ availability: "unavailable", discoveryLimited: false, sessions: [] }), undefined);
+  assert.equal(buildSessionCoverage({ availability: "unavailable", discoveryLimited: false, sessions: [] }), undefined);
 });
 
 test("a fully replayed uncapped set is complete", () => {
-  const coverage = buildCoverage({ availability: "available", discoveryLimited: false, sessions: [available, available] });
+  const coverage = buildSessionCoverage({ availability: "available", discoveryLimited: false, sessions: [available, available] });
   assert.equal(coverage?.complete, true);
   assert.equal(coverage?.sessionRatio, 1);
+});
+
+// Spec §3.1.1 / R20: a reason cannot exist without naming the bounded code it
+// projects, so no third vocabulary can appear.
+test("every reason maps onto an existing bounded code", () => {
+  const reasons = [
+    "no-manifest", "manifest-unavailable", "marker-unavailable", "session-unreadable", "replay-failed",
+  ] as const satisfies readonly CoverageReason[];
+  for (const reason of reasons) {
+    const codes = COVERAGE_REASON_CODES[reason];
+    assert.ok(codes.length > 0, reason);
+    for (const code of codes) {
+      assert.ok(
+        [...HISTORY_DIAGNOSTICS, ...EVIDENCE_DIAGNOSTIC_CODES].includes(code),
+        `${reason} -> ${code}`,
+      );
+    }
+  }
+  assert.deepEqual(Object.keys(COVERAGE_REASON_CODES).sort(), [...reasons].sort());
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `node --import tsx --test tests/unit/coverage.test.ts`
-Expected: FAIL — cannot resolve `../../src/core/coverage.ts`.
+Run: `node --import tsx --test tests/unit/session-coverage.test.ts`
+Expected: FAIL — cannot resolve `../../src/core/session-coverage.ts`.
 
 - [ ] **Step 3: Implement the builder**
 
 ```ts
-// src/core/coverage.ts
+// src/core/session-coverage.ts
+import {
+  type EvidenceDiagnosticCode,
+} from "./evidence-health.ts";
 import type { CoverageReason } from "../storage/history.ts";
 
 export type { CoverageReason };
 
-export type CoverageSummary = {
+/**
+ * Total projection of the runnability vocabulary onto bounded codes that already
+ * exist (spec §3.1.1, R20): a reason is never a new string, only a view of a
+ * `HistoryDiagnostic` or an `EvidenceDiagnosticCode`.
+ */
+export const COVERAGE_REASON_CODES: Readonly<
+  Record<CoverageReason, readonly (HistoryDiagnostic | EvidenceDiagnosticCode)[]>
+> = {
+  "no-manifest": ["manifest-unavailable"],
+  "manifest-unavailable": ["manifest-unavailable", "source-not-found"],
+  "marker-unavailable": ["marker-unavailable", "tracking-marker-missing"],
+  "session-unreadable": ["source-malformed", "source-format-unsupported"],
+  "replay-failed": ["source-format-unsupported", "cooperative-evidence-conflict"],
+};
+
+export type SessionCoverage = {
   inspected: number;
   available: number;
   unavailable: number;
@@ -381,11 +494,11 @@ export type CoverageSummary = {
  * the denominator is unknown (empty inspection set) or unknowable (capped
  * discovery), and an empty inspection set is never complete.
  */
-export function buildCoverage(input: {
+export function buildSessionCoverage(input: {
   availability: "available" | "unavailable";
   discoveryLimited: boolean;
   sessions: readonly { availability: "available" | "unavailable"; reason?: CoverageReason }[];
-}): CoverageSummary | undefined {
+}): SessionCoverage | undefined {
   if (input.availability !== "available") return undefined;
   const inspected = input.sessions.length;
   const available = input.sessions.filter((session) => session.availability === "available").length;
@@ -412,30 +525,135 @@ export function buildCoverage(input: {
 }
 ```
 
-Wire it in `src/ui/load-history.ts` (`scanHistory` already computes everything once):
+Wire it in `src/ui/load-history.ts`. The scan result carries the reason, the cap
+signal and the coverage; both reports spread them from the same object:
 
 ```ts
 type SessionScan =
-  | { availability: "available"; sessionId: string; report: SessionReport; inventory: InventorySnapshot | undefined; resourceCounts: { commands: number; skills: number } | undefined; usageByDate: readonly DateUsageRow[]; usageByDateTruncated: boolean }
-  | { availability: "unavailable"; sessionId: string; reason?: CoverageReason };
+  | { availability: "available"; sessionId: string; report: SessionReport;
+      usageByDate: readonly DateUsageRow[]; usageByDateTruncated: boolean }
+  | { availability: "unavailable"; sessionId: string; reason: CoverageReason };
+
+type HistoryScan = {
+  availability: "available" | "unavailable";
+  sessions: SessionScan[];
+  diagnostics: HistoryDiagnostic[];
+  discoveryLimited: boolean;
+  coverage: SessionCoverage | undefined;
+};
 ```
 
-`usageByDate`/`usageByDateTruncated` are added in Task 5; for this task add only `reason` and the coverage assembly:
+`scanHistory` is the single place that names a reason. Every existing check keeps
+its behaviour; only the discarded cause is now recorded. This is the whole diff
+(comments mark the five spec paths):
 
 ```ts
 async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
   if (options.scope !== "tree") {
     return { availability: "unavailable", sessions: [], diagnostics: [], discoveryLimited: false, coverage: undefined };
   }
-  const discovery = await discoverHistory({ /* unchanged */ });
-  const sessions = await Promise.all(/* unchanged mapping, but carry `reason` */);
+  const discovery = await discoverHistory({
+    ...options,
+    markerEvidence: async (sessionId, sourceFile) => {
+      const source = await resolveManifestSourceFile({ sourceFile, sessionDirectory: options.sessionDirectory() });
+      if (source === undefined) return false;
+      const parsed = parseSessionJsonl(await readFile(source, "utf8"));
+      return parsed.id === sessionId && !parsed.hasMalformedJson && parsed.hasSessionHeader && hasTrackingStartMarker(parsed.entries);
+    },
+  });
+  const sessions = await Promise.all(
+    discovery.sessions.map(async ({ sessionId, availability, sourceFile, reason }): Promise<SessionScan> => {
+      // Discovery already named the cause for a manifest it could not promote.
+      if (availability !== "available" || sourceFile === undefined) {
+        return { availability: "unavailable", sessionId, reason: reason ?? "manifest-unavailable" };
+      }
+      let parsed: ReturnType<typeof parseSessionJsonl>;
+      let source: string | undefined;
+      try {
+        source = await resolveManifestSourceFile({ sourceFile, sessionDirectory: options.sessionDirectory() });
+        if (source === undefined) return { availability: "unavailable", sessionId, reason: "manifest-unavailable" };
+        parsed = parseSessionJsonl(await readFile(source, "utf8"));
+      } catch {
+        // Path (a): the source could not be resolved or parsed.
+        return { availability: "unavailable", sessionId, reason: "session-unreadable" };
+      }
+      const unreadable = sourceReadFailure(parsed, sessionId);
+      if (unreadable !== undefined) return { availability: "unavailable", sessionId, reason: unreadable };
+      if (!hasTrackingStartMarker(parsed.entries)) {
+        // Path (b): discovery proved the marker once; a re-check failure keeps its own reason.
+        return { availability: "unavailable", sessionId, reason: "marker-unavailable" };
+      }
+      // Path (c): the injected provider is the only durable-read path; a throw or
+      // an absent result makes this session unavailable, never zero-filled.
+      let supplied: HistorySessionEvidence | undefined;
+      try {
+        supplied = options.sessionEvidence === undefined
+          ? undefined
+          : await options.sessionEvidence({ sessionId, root: options.root, directory: join(options.root, "sessions", sessionId), entries: parsed.entries });
+      } catch {
+        return { availability: "unavailable", sessionId, reason: "replay-failed" };
+      }
+      if (options.sessionEvidence !== undefined && supplied === undefined) {
+        return { availability: "unavailable", sessionId, reason: "replay-failed" };
+      }
+      const observation = supplied?.observation;
+      const buildInput = { /* unchanged */ ... };
+      const resolved = buildCanonicalSession(buildInput);
+      // Path (d): the builder is the availability authority; a session it cannot
+      // resolve never becomes a report.
+      if (resolved.state !== "ready") return { availability: "unavailable", sessionId, reason: "replay-failed" };
+      const byId = new Map<string, SessionEntry>();
+      for (const entry of parsed.entries) if (!byId.has(entry.id)) byId.set(entry.id, entry);
+      const entries = resolved.session.scopedEntryIds.flatMap((id) => {
+        const entry = byId.get(id);
+        return entry === undefined ? [] : [entry];
+      });
+      const subagentEvidence = supplied?.subagents ?? readSubagentEvidence(entries, sessionId);
+      const built = buildCanonicalSession({ ...buildInput, subagents: subagentEvidence });
+      if (built.state !== "ready") return { availability: "unavailable", sessionId, reason: "replay-failed" };
+      const session = built.session;
+      const sealed = Object.values(session.retainedAggregates.boundary.sealedThrough).some((cursor) => cursor > 0);
+      // Path (e): the source and the canonical session are fine; a failure here is
+      // in replay/adapters and is reported as such. The seam is test-only.
+      let report: SessionReport;
+      try {
+        report = (options.replay ?? defaultReplay)({ session, entries, observation, subagentEvidence, sealed });
+      } catch {
+        return { availability: "unavailable", sessionId, reason: "replay-failed" };
+      }
+      const dated = sessionUsageByDate(session);
+      return { availability: "available", sessionId, report, usageByDate: dated.rows, usageByDateTruncated: dated.truncated };
+    }),
+  );
   return {
     availability: discovery.availability,
     sessions,
     diagnostics: discovery.diagnostics,
     discoveryLimited: discovery.discoveryLimited,
-    coverage: buildCoverage({ availability: discovery.availability, discoveryLimited: discovery.discoveryLimited, sessions }),
+    coverage: buildSessionCoverage({
+      availability: discovery.availability,
+      discoveryLimited: discovery.discoveryLimited,
+      sessions,
+    }),
   };
+}
+
+/** Production replay: exactly the projection this loader performed inline before. */
+function defaultReplay(input: HistoryReplayInput): SessionReport {
+  const { session, entries, observation, subagentEvidence, sealed } = input;
+  return toSessionReport(reduceEntries(session.sessionId, entries), {
+    ...(sealed ? { walDetail: "expired" as const } : {}),
+    agents: { state: subagentEvidence.state, runs: subagentEvidence.runs },
+    agentActivity: subagentEvidence.activity,
+    presence: observation?.presence,
+    ...countersFrom(session),
+    ...usageFrom(session),
+    ...resourceCountsFrom(session),
+    ...(observation?.inventory === undefined ? {} : { inventory: observation.inventory }),
+    integrations: readPiEntryEvidence(entries),
+    evidenceHealth: session.health,
+    retainedAggregates: session.retainedAggregates,
+  });
 }
 ```
 
@@ -454,17 +672,31 @@ export async function loadHistoryReports(options: LoadHistoryOptions): Promise<H
 // loadGlobalReport builds the same object from the same scan and adds the same `coverage` key.
 ```
 
-Produce **every** declared reason on a real path (discovery already produces `no-manifest`, `manifest-unavailable`, `marker-unavailable`; the scan produces the other two), and make the replay step injectable so a failure after readability is testable:
+Produce **every** declared reason on a real path. Discovery produces `no-manifest`,
+`manifest-unavailable` and `marker-unavailable`; the scan produces
+`session-unreadable` (parse/header/id), `marker-unavailable` (re-check) and
+`replay-failed` (paths c-e). The replay step is injectable so a failure after
+readability is testable; keep `LoadHistoryOptions` extensible rather than adding a
+second options type:
 
 ```ts
+type HistoryReplayInput = {
+  session: CanonicalSession;
+  entries: readonly SessionEntry[];
+  observation: SessionObservation | undefined;
+  subagentEvidence: SubagentEvidence;
+  sealed: boolean;
+};
+
 type LoadHistoryOptions = {
   root: string;
   sessionDirectory(): string;
   scope: Scope;
   activeLeafId?: (sessionId: string) => string | null;
   maintenance: MaintenanceOptions;
-  /** Test seam only; production uses the real reducer + adapters. */
-  replay?: (entries: readonly SessionEntry[], sessionId: string) => SessionReport;
+  sessionEvidence?: SessionEvidenceProvider;
+  /** Test seam only; production uses `defaultReplay`. */
+  replay?: (input: HistoryReplayInput) => SessionReport;
 };
 
 /** Deterministic source-read validation: every failure it can name maps to ONE reason. */
@@ -479,34 +711,11 @@ export function sourceReadFailure(
 }
 ```
 
-```ts
-// inside the per-session scan, replacing the previous single try/catch
-      let parsed: ReturnType<typeof parseSessionJsonl>;
-      try {
-        parsed = parseSessionJsonl(await readFile(source, "utf8"));
-      } catch {
-        return { availability: "unavailable", sessionId, reason: "session-unreadable" };
-      }
-      const unreadable = sourceReadFailure(parsed, sessionId);
-      if (unreadable !== undefined) return { availability: "unavailable", sessionId, reason: unreadable };
-      if (!hasTrackingStartMarker(parsed.entries)) {
-        // Discovery already proved the marker once; a re-verification failure keeps its own reason.
-        return { availability: "unavailable", sessionId, reason: "marker-unavailable" };
-      }
-      let report: SessionReport;
-      try {
-        report = (options.replay ?? replaySession)(parsed.entries, sessionId);
-      } catch {
-        // The source was readable; the failure is in replay/adapters.
-        return { availability: "unavailable", sessionId, reason: "replay-failed" };
-      }
-```
-
 Add the optional field to both DTOs:
 
 ```ts
-export type HistoryReport = { availability: "available" | "unavailable"; sessions: HistoricalSession[]; diagnostics: HistoryDiagnostic[]; coverage?: CoverageSummary };
-export type GlobalReport = { /* existing */ coverage?: CoverageSummary };
+export type HistoryReport = { availability: "available" | "unavailable"; sessions: HistoricalSession[]; diagnostics: HistoryDiagnostic[]; coverage?: SessionCoverage };
+export type GlobalReport = { /* existing */ coverage?: SessionCoverage };
 ```
 
 - [ ] **Step 4: Assert the wiring end to end**
@@ -514,7 +723,7 @@ export type GlobalReport = { /* existing */ coverage?: CoverageSummary };
 Append to `tests/unit/history-reports.test.ts` (existing helpers build a temp root with manifests):
 
 ```ts
-test("history and global report the same coverage from one scan", async () => {
+test("history and global report the same coverage from one scan input", async () => {
   // fixture: 2 manifests, one with a resolvable source + marker (available), one without source (unavailable)
   const history = await loadHistoryReports(options);
   const global = await loadGlobalReport(options);
@@ -536,6 +745,7 @@ test("every declared coverage reason is produced by a real path", async () => {
     assert.equal(history.coverage?.reasons[reason], 1, label);
     assert.equal(history.coverage?.unavailable, 1, label);
   }
+  // Path (e): the source and the canonical session are fine; the report projection throws.
   const failing = await loadHistoryReports({
     ...(await optionsWithSource(validSource())),
     replay: () => {
@@ -545,15 +755,23 @@ test("every declared coverage reason is produced by a real path", async () => {
   assert.equal(failing.coverage?.reasons["replay-failed"], 1);
   assert.equal(failing.coverage?.available, 0);
 });
+
+test("a marker re-check failure keeps its own reason, not replay-failed", async () => {
+  // The provider seam is present and succeeds, but the marker was removed after
+  // discovery: `hasTrackingStartMarker` already returned false, so the reason is
+  // `marker-unavailable` — never a generic failure.
+  const history = await loadHistoryReports(await optionsWithUnmarkedSource());
+  assert.equal(history.coverage?.reasons["marker-unavailable"], 1);
+});
 ```
 
 - [ ] **Step 5: Run the tests and commit**
 
-Run: `node --import tsx --test tests/unit/coverage.test.ts tests/unit/history-reports.test.ts && npm test`
+Run: `node --import tsx --test tests/unit/session-coverage.test.ts tests/unit/history-reports.test.ts && npm test`
 Expected: PASS (all suites).
 
 ```bash
-git add src/core/coverage.ts src/ui/load-history.ts tests/unit/coverage.test.ts tests/unit/history-reports.test.ts
+git add src/core/session-coverage.ts src/ui/load-history.ts tests/unit/session-coverage.test.ts tests/unit/history-reports.test.ts
 git commit -m "feat: assemble shared session coverage for history and global"
 ```
 
@@ -563,50 +781,71 @@ git commit -m "feat: assemble shared session coverage for history and global"
 
 **Files:**
 
-- Modify: `src/ui/html.ts` (i18n catalog, server projections, client panel), `src/ui/load-history.ts` (history entry projection keeps `coverage`)
+- Modify: `src/ui/html.ts` — `ENGLISH_CATALOG` (line ~7), the new
+  `aggregateUsageLabels` helper next to `sectionProjection` (~line 588), the
+  `historyEntry`/`projectReport` projections (~line 1186/1219), and the client's
+  `historyOverview`/`globalOverview` + a new `coveragePanel()` (~line 1347+)
+- Modify: `src/ui/load-history.ts` (the history entry projection keeps `coverage`
+  only on the aggregate views)
 - Test: `tests/unit/html-bundle.test.ts`, `tests/unit/html.test.ts`
 
 **Interfaces:**
 
-- Consumes: `CoverageSummary` (Task 2).
-- Produces: i18n keys `coverage.title`, `coverage.sessions`, `coverage.sessionsLimited`, `coverage.none`, `coverage.unknown`, `coverage.reasons`, `metric.knownCost`, `metric.knownTokens`, `metric.costUnavailable`; projection keys `coverage`, `usageLabels` on history/global sections.
+- Consumes: `SessionCoverage` (Task 2).
+- Produces: i18n keys `coverage.title`, `coverage.sessions`, `coverage.sessionsLimited`, `coverage.none`, `coverage.unknown`, `coverage.unknownCompletenessCost`, `coverage.unknownCompletenessTokens`, `coverage.reasons`, `metric.knownCost`, `metric.knownTokens`, `metric.costUnavailable`; projection keys `coverage`, `usageLabels` on history/global sections; exported `aggregateUsageLabels`.
+
+> **Retargeted for v0.8.0.** The tests below use the existing fixture helpers
+> (`bundleFixture()` + `embeddedJson()` in `tests/unit/html-bundle.test.ts`,
+> `renderHtml` + `embedded()` in `tests/unit/html.test.ts`). Do not invent new
+> fixture builders; mutate the fixture bundle's `history`/`global` objects. The
+> global section already renders `trackedSessions`/`unavailableSessions`
+> (`projectReport`, ~line 1262): those counts and the new coverage line must be
+> **one** statement — feed the coverage line from them and remove the duplicate
+> metric, never render two partial-count vocabularies on one page (spec §3.3).
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // append to tests/unit/html-bundle.test.ts
-test("aggregate sections render coverage wording and never a partial total", async () => {
-  const bundle = await loadInspectorBundle({
-    ...input,
-    loadHistory: async () => historyWithCoverage({ inspected: 27, available: 5, unavailable: 22, sessionRatio: 0.1852, complete: false, discoveryLimited: false, reasons: { "manifest-unavailable": 22 } }),
-    loadGlobal: async () => globalWithCoverage({ inspected: 27, available: 5, unavailable: 22, sessionRatio: 0.1852, complete: false, discoveryLimited: false, reasons: {} }),
-  });
-  const html = renderInspectorBundle(bundle);
+import type { SessionCoverage } from "../../src/core/session-coverage.ts";
+
+function withAggregateCoverage(coverage: SessionCoverage | undefined): InspectorBundle {
+  const bundle = bundleFixture();
+  for (const section of [bundle.history, bundle.global] as Record<string, unknown>[]) {
+    if (coverage === undefined) delete section.coverage;
+    else section.coverage = coverage;
+  }
+  return bundle;
+}
+
+test("aggregate sections render coverage wording and never a partial total", () => {
+  const html = renderInspectorBundle(
+    withAggregateCoverage({
+      inspected: 27, available: 5, unavailable: 22, sessionRatio: 0.1852,
+      complete: false, discoveryLimited: false, reasons: { "manifest-unavailable": 22 },
+    }),
+  );
   assert.match(html, /Known native cost/);
   assert.match(html, /Known tokens/);
   assert.match(html, /5 \/ 27 sessions · 22 unavailable/);
-  assert.doesNotMatch(html, /"usageLabels":\{[^}]*"cost":"metric\.cost"/);
+  assert.equal(/"cost":"metric\.cost"/.test(html), false);
 });
 
-test("known usage with unknown coverage shows the value; unavailable usage does not", async () => {
-  const legacy = await loadInspectorBundle({ ...input, loadHistory: async () => historyWithoutCoverage(), loadGlobal: async () => globalWithoutCoverage() });
-  const html = renderInspectorBundle(legacy);
+test("known usage with unknown coverage shows the value; unavailable usage does not", () => {
+  const html = renderInspectorBundle(withAggregateCoverage(undefined));
   assert.match(html, /Known native cost — completeness unknown/);
   assert.match(html, /"cost":"coverage\.unknownCompletenessCost"/);
-  assert.match(html, /"usageUnavailable":false/);
-  assert.doesNotMatch(html, /"cost":"metric\.costUnavailable"/);
+  assert.equal(/"cost":"metric\.costUnavailable"/.test(html), false);
 });
 
 test("the label resolver separates value availability from coverage availability", () => {
-  const known = aggregateUsageLabels({ availability: "available", coverage: undefined });
-  assert.deepEqual(known, {
+  assert.deepEqual(aggregateUsageLabels({ availability: "available", coverage: undefined }), {
     cost: "coverage.unknownCompletenessCost",
     tokens: "coverage.unknownCompletenessTokens",
     usageUnavailable: false,
     sessions: "coverage.unknown",
   });
-  const unavailable = aggregateUsageLabels({ availability: "unavailable", coverage: undefined });
-  assert.equal(unavailable.usageUnavailable, true);
+  assert.equal(aggregateUsageLabels({ availability: "unavailable", coverage: undefined }).usageUnavailable, true);
   const empty = aggregateUsageLabels({
     availability: "available",
     coverage: { inspected: 0, available: 0, unavailable: 0, sessionRatio: null, complete: false, discoveryLimited: false, reasons: {} },
@@ -615,35 +854,27 @@ test("the label resolver separates value availability from coverage availability
   assert.equal(empty.sessions, "coverage.none");
 });
 
-test("a capped discovery shows counts instead of a ratio", async () => {
-  const bundle = await loadInspectorBundle({
-    ...input,
-    loadHistory: async () => historyWithCoverage({ inspected: 206, available: 206, unavailable: 0, sessionRatio: null, complete: false, discoveryLimited: true, reasons: {} }),
-    loadGlobal: async () => globalWithCoverage({ inspected: 206, available: 206, unavailable: 0, sessionRatio: null, complete: false, discoveryLimited: true, reasons: {} }),
-  });
-  const html = renderInspectorBundle(bundle);
+test("a capped discovery shows counts instead of a ratio", () => {
+  const html = renderInspectorBundle(
+    withAggregateCoverage({
+      inspected: 206, available: 206, unavailable: 0, sessionRatio: null,
+      complete: false, discoveryLimited: true, reasons: {},
+    }),
+  );
   assert.match(html, /206 sessions inspected · additional sessions not inspected/);
-  assert.doesNotMatch(html, /206 \/ 206 sessions/);
-  assert.doesNotMatch(html, /100%/);
+  assert.equal(/206 \/ 206 sessions/.test(html), false);
+  assert.equal(/100%/.test(html), false);
 });
 
-test("an empty inspection set is unavailable, never zero", async () => {
-  const bundle = await loadInspectorBundle({
-    ...input,
-    loadHistory: async () => historyWithCoverage({ inspected: 0, available: 0, unavailable: 0, sessionRatio: null, complete: false, discoveryLimited: false, reasons: {} }),
-    loadGlobal: async () => globalWithCoverage({ inspected: 0, available: 0, unavailable: 0, sessionRatio: null, complete: false, discoveryLimited: false, reasons: {} }),
-  });
-  const html = renderInspectorBundle(bundle);
+test("an empty inspection set is unavailable, never zero", () => {
+  const html = renderInspectorBundle(
+    withAggregateCoverage({
+      inspected: 0, available: 0, unavailable: 0, sessionRatio: null,
+      complete: false, discoveryLimited: false, reasons: {},
+    }),
+  );
   assert.match(html, /No tracked sessions/);
-  assert.doesNotMatch(html, /\$0\.00/);
-});
-
-test("a selected history session carries no coverage qualifier", async () => {
-  const bundle = await loadInspectorBundle({ ...input, loadHistory: async () => historyWithOneSessionAndCoverage() });
-  const html = renderInspectorBundle(bundle);
-  const sessionDetail = html.slice(html.indexOf('"kind":"session"'), html.indexOf('"kind":"session"') + 4000);
-  assert.doesNotMatch(sessionDetail, /Known native cost/);
-  assert.doesNotMatch(sessionDetail, /coverage/);
+  assert.equal(/\$0\.00/.test(html), false);
 });
 ```
 
@@ -681,7 +912,7 @@ Expected: FAIL — no coverage copy exists in the document.
  */
 export function aggregateUsageLabels(input: {
   availability: "available" | "unavailable";
-  coverage: CoverageSummary | undefined;
+  coverage: SessionCoverage | undefined;
 }): { cost: string; tokens: string; usageUnavailable: boolean; sessions: string } {
   if (input.availability !== "available") {
     return { cost: "metric.costUnavailable", tokens: "metric.costUnavailable", usageUnavailable: true, sessions: "coverage.unknown" };
@@ -704,6 +935,9 @@ export function aggregateUsageLabels(input: {
   };
 }
 ```
+
+(Note: `coverage.complete` needs the session-line key `coverage.complete` in the
+catalog too: `"{available} / {inspected} sessions"`.)
 
 Project it into both aggregate sections (single place — `sectionProjection`) and into the client panel:
 
@@ -738,13 +972,15 @@ Use the labels for every aggregate metric (cost, tokens) so an incomplete report
 
 - [ ] **Step 4: Keep the qualifier out of the session detail**
 
-`historyEntry()` closes over `sessionView(session.report)`; attach coverage data only to the aggregate projections (`historyOverview`, `globalOverview`) and extend the existing regression in `tests/unit/html.test.ts`:
+`historyEntry()` closes over `sessionView(session.report)`; attach coverage data only to the aggregate projections (`historyOverview`, `globalOverview`) and extend the existing regression in `tests/unit/html.test.ts` (which already has `renderHtml` + `embedded()` + `historyReport()`):
 
 ```ts
-test("selected history session detail has no coverage panel", () => {
-  const document = projectReport(htmlReportForUnavailableWorkspace());
-  const entry = (document.history as { sessions: { view?: { coverage?: unknown } }[] }).sessions[0];
-  assert.equal(entry.view?.coverage, undefined);
+test("a selected history session carries no coverage panel", () => {
+  const html = renderHtml(historyReport());
+  const document = embedded(html) as { history: { coverage?: unknown; sessions: { view?: { coverage?: unknown } }[] } };
+  const entry = document.history.sessions[0];
+  assert.equal(entry?.view?.coverage, undefined);
+  assert.equal("coverage" in (entry?.view ?? {}), false);
 });
 ```
 
@@ -760,7 +996,28 @@ git commit -m "feat: render coverage wording for aggregate sections only"
 
 ---
 
-### Task 4: Logical-call attribution — `AgentRun.observedAt` and the cross-midnight fixture
+### Task 4: RETIRED — `AgentRun.observedAt` / `evidenceToolId` (already on `main`)
+
+> **RETIRED — do not execute any step below as an implementation task.**
+> `910a665` already ships everything this task asked for:
+>
+> - `src/core/events.ts` declares `observedAt`, `evidenceToolId`, `model`,
+>   `thinking`, `failure` on `AgentRun`.
+> - `src/integrations/subagents.ts` fills them (`JoinedResult`,
+>   `publicationOf`, `readObservedAt`, `TOOL_CALL_ID`, `mergeRunObservation`,
+>   `readAgentFailure`, `isProcessSignal`, `isAgentLabel`) and already refuses to
+>   publish a run whose result cannot be joined.
+> - `src/core/reports.ts` re-validates every field in `projectAgent`.
+> - `src/ui/load-current.ts` / `src/ui/load-history.ts` feed the same evidence to
+>   the canonical builder and the report DTO.
+>
+> **What is still worth taking from this task:** the three `subagents.test.ts`
+> tests in Step 1 (join shape, unjoinable result, call without result) are the
+> regression that keeps the absorbed behaviour honest — move them into Task 10's
+> test file if they are not already covered there, and run them once against
+> `main` before touching anything. The `cross-midnight.jsonl` fixture from Step 4
+> moves to Tasks 5 and 9, where §5.7 attribution is actually implemented. Step 3's
+> code is **not** to be written: the fields are already derived.
 
 **Files:**
 
@@ -904,18 +1161,30 @@ git commit -m "feat: attribute child runs by observation time and add the cross-
 
 ---
 
-### Task 5: Bounded per-session `usageByDate` with an honest truncation flag
+### Task 5: Bounded per-session `usageByDate` grouped from the canonical attribution
 
 **Files:**
 
-- Modify: `src/ui/load-history.ts`
+- Modify: `src/ui/load-history.ts` (computed inside `scanHistory`, where the
+  `CanonicalSession` is in scope)
 - Create: `tests/fixtures/pi/0.85.1/mixed-usage.jsonl`
-- Test: `tests/unit/history-reports.test.ts`, `tests/fixtures/pi/0.85.1/long-session.jsonl` (generated in-test, see Step 1)
+- Test: `tests/unit/history-reports.test.ts`, `tests/unit/report-range.test.ts`,
+  plus a generated long-session fixture (`longSessionOptions({ days: 400 })`)
 
 **Interfaces:**
 
-- Consumes: `SessionReport.generations`, `.tools`, `.compactions`, `.errors`, `UsageComposition` (existing).
-- Produces: `DateUsageRow`, `HistoricalSession` (available variant gains `usageByDate`, `usageByDateTruncated`).
+- Consumes: `CanonicalSession` — `usage.lines` (with `domain`, `bucket`,
+  `attributedAt`), `generations`, `tools`, `errors`, and
+  `health.usage.dated`.
+- Produces: `DateUsageRow`, `sessionUsageByDate`, and the available
+  `HistoricalSession` variant gaining `usageByDate` / `usageByDateTruncated`.
+
+> **Retargeted for v0.8.0 (spec R19, §5.6).** The rows are grouped from the
+> builder's own attribution (`CanonicalUsageLine.attributedAt`), never re-walked
+> from `SessionReport` timestamps — the report is only the reconciliation
+> **assertion target**. `usageByDateTruncated` is also true when
+> `health.usage.dated === "partial"` (an unattributable native line), so partial is
+> never presented as complete.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -930,8 +1199,24 @@ git commit -m "feat: attribute child runs by observation time and add the cross-
 {"type":"message","id":"r2","parentId":"g2","timestamp":"2026-09-05T09:00:00.000Z","message":{"role":"toolResult","toolCallId":"call_b","toolName":"edit","isError":true,"content":"[redacted]"}}
 ```
 
+> The fixture has no tracking marker, so the test helper builds the canonical
+> session in **tree** scope over the whole file (the marker rule is Task 1's, not
+> this task's).
+
 ```ts
 // append to tests/unit/history-reports.test.ts
+function canonicalOf(file: string, sessionId: string): CanonicalSession {
+  const source = readFileSync(`tests/fixtures/pi/0.85.1/${file}`, "utf8");
+  const built = buildCanonicalSession({
+    parsed: parseSessionJsonl(source),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  if (built.state !== "ready") throw new Error("fixture must build");
+  return built.session;
+}
+
 function mixedReport(): SessionReport {
   const source = readFileSync("tests/fixtures/pi/0.85.1/mixed-usage.jsonl", "utf8");
   return toSessionReport(reduceEntries("mixed-usage", parseSessionJsonl(source).entries));
@@ -953,8 +1238,7 @@ function projectUsage(report: SessionReport, range: { from: string; to: string }
 }
 
 test("usageByDate attributes every usage source by logical call", () => {
-  const report = mixedReport();
-  const { rows, truncated } = sessionUsageByDate(report);
+  const { rows, truncated } = sessionUsageByDate(canonicalOf("mixed-usage.jsonl", "mixed-usage"));
   assert.equal(truncated, false);
   assert.deepEqual(rows.map((row) => [row.date, row.totalTokens, row.generations, row.tools, row.errors]), [
     ["2026-09-01", 165, 1, 1, 0], // generation 150 + tool-result usage 15, on the CALL day
@@ -973,9 +1257,9 @@ test("usageByDate attributes every usage source by logical call", () => {
 
 test("a fully retained range reconciles with the same range projection of the report", () => {
   const report = mixedReport();
-  const rows = sessionUsageByDate(report).rows;
-  assert.equal(rows.reduce((sum, row) => sum + row.totalTokens, 0), report.usage.totalTokens);
-  assert.equal(Math.round(rows.reduce((sum, row) => sum + row.cost, 0) * 1e6) / 1e6, report.usage.cost);
+  const rows = sessionUsageByDate(canonicalOf("mixed-usage.jsonl", "mixed-usage")).rows;
+  assert.equal(rows.reduce((sum, row) => sum + row.totalTokens, 0), report.usage?.totalTokens);
+  assert.equal(Math.round(rows.reduce((sum, row) => sum + row.cost, 0) * 1e6) / 1e6, report.usage?.cost);
   const range = { preset: null, from: "2026-09-01", to: "2026-09-02" };
   const inRange = rows.filter((row) => isInRange(row.date, range));
   const projection = projectUsage(report, range);
@@ -986,7 +1270,6 @@ test("a fully retained range reconciles with the same range projection of the re
 });
 
 test("usageByDate covers the retained window and flags truncation", async () => {
-  // session with records on 400 distinct UTC days: two on the newest days, the rest older
   const options = await longSessionOptions({ days: 400 });
   const history = await loadHistoryReports(options);
   const session = history.sessions[0];
@@ -1004,8 +1287,7 @@ test("a short session is exact and not truncated", async () => {
   const session = history.sessions[0];
   if (session?.availability !== "available") throw new Error("expected available");
   assert.equal(session.usageByDateTruncated, false);
-  const total = session.usageByDate.reduce((sum, row) => sum + row.totalTokens, 0);
-  assert.equal(total, session.report.usage.totalTokens);
+  assert.equal(session.usageByDate.reduce((sum, row) => sum + row.totalTokens, 0), session.report.usage?.totalTokens);
 });
 ```
 
@@ -1018,6 +1300,8 @@ Expected: FAIL — `usageByDate` is undefined.
 
 ```ts
 // src/ui/load-history.ts
+import type { CanonicalSession, CanonicalUsageLine } from "../core/canonical.ts";
+
 export type DateUsageRow = {
   date: string;
   totalTokens: number;
@@ -1029,19 +1313,29 @@ export type DateUsageRow = {
 };
 
 const MAX_USAGE_BY_DATE = 366;
+/** Bucket -> composition part. Child runs are a breakdown and never appear here. */
+const COMPOSITION_PART: Readonly<Record<CanonicalUsageLine["bucket"], keyof DateUsageRow["composition"] | undefined>> = {
+  generation: "generations",
+  "tool-result": "toolResults",
+  compaction: "compactions",
+  "branch-summary": "branchSummaries",
+  "child-run": undefined,
+};
 const zero = (): SafeUsage => ({ totalTokens: 0, cost: 0 });
 const round = (value: number): number => Math.round(value * 1e6) / 1e6;
 
 /**
- * Dated evidence for one replayed session, newest window first, attributed by
- * LOGICAL CALL (§5.7): generation usage on the generation date, tool-result
- * usage on the tool's CALL date, compaction and branch-summary usage on their own
- * entry dates. Tool and error observation dates create membership evidence even
- * when they carry no usage. `totalTokens`/`cost` are the sums of the four
- * composition parts, so the retained window reconciles with SessionReport.usage.
- * Truncation is reported, never hidden.
+ * Dated evidence for one canonical session, newest window first, grouped from the
+ * builder's own attribution (spec R19): each `CanonicalUsageLine` states its
+ * `attributedAt`, so tool-result usage lands on the tool's CALL date, compaction
+ * and branch-summary usage on their own entry dates, and child usage is excluded
+ * by `domain`. `session.generations`/`session.tools`/`session.errors` add
+ * observation-only membership counters even when they carry no usage (§5.7).
+ * `totalTokens`/`cost` are the sums of the four composition parts, so the retained
+ * window reconciles with `SessionReport.usage`; partiality is reported, never
+ * hidden.
  */
-export function sessionUsageByDate(report: SessionReport): { rows: DateUsageRow[]; truncated: boolean } {
+export function sessionUsageByDate(session: CanonicalSession): { rows: DateUsageRow[]; truncated: boolean } {
   const byDate = new Map<string, DateUsageRow>();
   const rowFor = (date: string): DateUsageRow => {
     const existing = byDate.get(date) ?? {
@@ -1051,57 +1345,62 @@ export function sessionUsageByDate(report: SessionReport): { rows: DateUsageRow[
     byDate.set(date, existing);
     return existing;
   };
-  const addUsage = (row: DateUsageRow, usage: Usage, part: keyof DateUsageRow["composition"]): void => {
+  const addUsage = (row: DateUsageRow, usage: SafeUsage, part: keyof DateUsageRow["composition"]): void => {
     row.composition[part].totalTokens += usage.totalTokens;
     row.composition[part].cost = round(row.composition[part].cost + usage.cost);
     row.totalTokens += usage.totalTokens;
     row.cost = round(row.cost + usage.cost);
   };
-  for (const generation of report.generations) {
-    const date = utcDate(generation.timestamp);
-    if (date === undefined) continue;
-    const row = rowFor(date);
-    row.generations += 1;
-    addUsage(row, generation.usage, "generations");
+  // Usage comes from the builder's lines; a line with no known attribution date
+  // cannot be dated, so it is omitted AND the window is marked partial below.
+  let unattributed = false;
+  if (session.usage.state === "known") {
+    for (const line of session.usage.lines) {
+      if (line.domain !== "native-session") continue;
+      const part = COMPOSITION_PART[line.bucket];
+      if (part === undefined) continue;
+      if (line.attributedAt.state !== "known") {
+        unattributed = true;
+        continue;
+      }
+      const date = line.attributedAt.at.slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        unattributed = true;
+        continue;
+      }
+      addUsage(rowFor(date), line.usage, part);
+    }
   }
-  for (const tool of report.tools) {
-    // Call date, not result date: the call is the logical unit (§5.7).
-    const date = utcDate(tool.timestamp);
-    if (date === undefined) continue;
-    const row = rowFor(date);
-    row.tools += 1;
-    if (tool.usage !== undefined) addUsage(row, tool.usage, "toolResults");
+  // Membership counters describe observed activity, not spend.
+  for (const generation of session.generations) {
+    const date = generation.timestamp.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) rowFor(date).generations += 1;
   }
-  for (const compaction of report.compactions) {
-    const date = utcDate(compaction.timestamp);
-    if (date === undefined) continue;
-    const row = rowFor(date);
-    addUsage(row, compaction.usage, compaction.kind === "branch_summary" ? "branchSummaries" : "compactions");
+  for (const tool of session.tools) {
+    const date = tool.timestamp.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) rowFor(date).tools += 1;
   }
-  for (const error of report.errors) {
-    // Observation-only: membership evidence with no usage of its own.
-    const date = utcDate(error.timestamp);
-    if (date === undefined) continue;
-    rowFor(date).errors += 1;
+  for (const error of session.errors) {
+    const date = error.timestamp.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) rowFor(date).errors += 1;
   }
   const dates = [...byDate.keys()].sort();
-  const truncated = dates.length > MAX_USAGE_BY_DATE;
-  const retained = truncated ? dates.slice(dates.length - MAX_USAGE_BY_DATE) : dates;
+  const capped = dates.length > MAX_USAGE_BY_DATE;
+  const retained = capped ? dates.slice(dates.length - MAX_USAGE_BY_DATE) : dates;
+  // Two causes, one flag: the 366-date cap and any unattributed native usage.
+  const truncated = capped || unattributed || session.health.usage.dated === "partial";
   return { rows: retained.map((date) => byDate.get(date) as DateUsageRow), truncated };
-}
-
-function utcDate(timestamp: unknown): string | undefined {
-  if (typeof timestamp !== "string") return undefined;
-  const match = /^(\d{4}-\d{2}-\d{2})/.exec(timestamp);
-  return match?.[1];
 }
 ```
 
-Attach it to the scan result and the historical session:
+Attach it to the scan result (Task 2 already returns `usageByDate` on the
+available variant; this is where it is computed — the canonical session is in
+scope, the report is unchanged):
 
 ```ts
-      const { rows, truncated } = sessionUsageByDate(report);
-      return { availability: "available", sessionId, report, inventory, resourceCounts, usageByDate: rows, usageByDateTruncated: truncated };
+      const report = (options.replay ?? defaultReplay)({ session, entries, observation, subagentEvidence, sealed });
+      const dated = sessionUsageByDate(session);
+      return { availability: "available", sessionId, report, usageByDate: dated.rows, usageByDateTruncated: dated.truncated };
 ```
 
 ```ts
@@ -1109,7 +1408,7 @@ function toHistoricalSession(session: SessionScan): HistoricalSession {
   return session.availability === "available"
     ? { availability: "available", sessionId: session.sessionId, report: session.report,
         usageByDate: session.usageByDate, usageByDateTruncated: session.usageByDateTruncated }
-    : { availability: "unavailable", sessionId: session.sessionId, ...(session.reason === undefined ? {} : { reason: session.reason }) };
+    : { availability: "unavailable", sessionId: session.sessionId, reason: session.reason };
 }
 ```
 
@@ -1128,12 +1427,24 @@ test("the newest retained date reconciles with the session detail", async () => 
 });
 
 test("an observation-only date is membership evidence with zero usage", () => {
-  const rows = sessionUsageByDate(mixedReport()).rows;
+  const rows = sessionUsageByDate(canonicalOf("mixed-usage.jsonl", "mixed-usage")).rows;
   const observationOnly = rows.find((row) => row.errors > 0) as DateUsageRow;
   assert.equal(observationOnly.totalTokens, 0);
   assert.equal(observationOnly.date, "2026-09-05");
   // Membership is real even though nothing was spent on that date.
   assert.equal(historyRowRange({ usageByDate: rows, usageByDateTruncated: false }, { preset: null, from: "2026-09-05", to: "2026-09-05" }).member, true);
+});
+
+test("an unattributable native usage line marks the window partial, never zero", () => {
+  // An entry with no usable timestamp cannot be dated: the row must not be
+  // silently dropped from a window that then reads as complete.
+  const session = canonicalOf("usage-composition.jsonl", "usage-composition");
+  const { rows, truncated } = sessionUsageByDate({
+    ...session,
+    health: { ...session.health, usage: { ...session.health.usage, dated: "partial" } },
+  });
+  assert.equal(truncated, true);
+  assert.equal(rows.reduce((sum, row) => sum + row.totalTokens, 0) > 0, true);
 });
 ```
 
@@ -1143,28 +1454,47 @@ Run: `node --import tsx --test tests/unit/history-reports.test.ts && npm test`
 Expected: PASS.
 
 ```bash
-git add src/ui/load-history.ts tests/unit/history-reports.test.ts
+git add src/ui/load-history.ts tests/unit/history-reports.test.ts tests/fixtures/pi/0.85.1/mixed-usage.jsonl
 git commit -m "feat: add bounded per-session usageByDate with an explicit truncation flag"
 ```
 
 ---
 
-### Task 6: Dated model rows and daily usage composition in the bundle
+### Task 6: Dated model rows, daily usage composition, and the capability table
 
 **Files:**
 
-- Modify: `src/ui/bundle.ts`
-- Test: `tests/unit/bundle.test.ts`
+- Create: `src/ui/daily.ts` (the single date-bucketing builder)
+- Modify: `src/ui/bundle.ts` (dated model rows, `capabilities`, `sameReportProjection` payload)
+- Modify: `src/ui/html.ts` (re-export/migrate `buildDailyActivityRows` off `bundle.ts:dailyRows`)
+- Test: `tests/unit/bundle.test.ts`, `tests/unit/html.test.ts`
 
 **Interfaces:**
 
-- Consumes: `SessionReport.models`, `.generations`, `.usageComposition`.
-- Produces: `DatedModelRow`, `DailyRow.composition`, `CurrentView.datedModels`, `CurrentView.modelsTruncated`.
+- Consumes: `SessionReport.generations`, `.models`, `.usageComposition`;
+  `CanonicalUsageLine` attribution for dates (spec R19).
+- Produces: `DatedModelRow`, `DailyRow.composition`, `CurrentView.datedModels`,
+  `CurrentView.modelsTruncated`, `CurrentView.capabilities`, `CAPABILITIES`.
+
+> **Retargeted for v0.8.0.** `src/ui/bundle.ts` already has a private `dailyRows()`
+> and `src/ui/html.ts` already has `buildDailyActivityRows()` doing the same
+> bucketing twice (spec §0.2 item 9). Move **one** builder into `src/ui/daily.ts`,
+> give it the composition object, and delete the other; `html.ts` already imports
+> from `bundle.ts`, so both may import the shared module without a cycle. The
+> existing `buildDailyActivityRows` tests in `tests/unit/html.test.ts` (lines ~492,
+> 514, 520) are the fixture to extend — their expectations gain `composition`.
+>
+> **Size gate (P0-B).** Before the first edit, record
+> `renderInspectorBundle(bundleFixture()).length` and write the number into the
+> task report; Task 9 records the after number. Gate: **≤ +15 %** relative growth,
+> no absolute ceiling (spec §5.4/P0-B).
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // append to tests/unit/bundle.test.ts
+import { CAPABILITIES } from "../../src/ui/bundle.ts";
+
 test("a view carries per-date model rows and daily composition", async () => {
   const bundle = await loadInspectorBundle({
     ...input,
@@ -1186,10 +1516,24 @@ test("model rows are capped per date and flagged", async () => {
   const models = Array.from({ length: 70 }, (_, index) => `model-${index}`);
   const bundle = await loadInspectorBundle({ ...input, loadCurrent: async (scope) => modelForMany(scope, models) });
   const view = bundle.current.active;
-  assert.equal(view.datedModels?.length, 64);
+  const newest = view.datedModels?.[view.datedModels.length - 1]?.date;
+  assert.equal(view.datedModels?.filter((row) => row.date === newest).length, 64);
   assert.equal(view.modelsTruncated, true);
 });
+
+test("the capability table is data, not client prose", () => {
+  assert.deepEqual(CAPABILITIES.global, ["overview"]);
+  assert.deepEqual(CAPABILITIES.history, ["overview"]);
+  assert.ok(CAPABILITIES.current.includes("environment"));
+  assert.equal(CAPABILITIES.current.includes("commands"), false);
+  assert.equal(CAPABILITIES.current.includes("skills"), false);
+});
 ```
+
+> `modelForMany`/`modelFor` already exist in `tests/unit/bundle.test.ts`.
+> `modelForMany` must let each model carry a distinct provider/model pair on one
+> date; the existing helper builds one generation per date, so extend it to emit
+> one generation per model name on the newest date.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1199,8 +1543,39 @@ Expected: FAIL — `view.datedModels` is undefined.
 - [ ] **Step 3: Implement the projections**
 
 ```ts
-// src/ui/bundle.ts
+// src/ui/daily.ts — the ONLY date-bucketing builder (moved out of html.ts)
+import type { SessionReport } from "../core/reports.ts";
+
 export type SafeUsage = { totalTokens: number; cost: number };
+export type DailyRow = {
+  date: string;
+  sessions: number;
+  totalTokens: number;
+  cost: number;
+  generations: number;
+  tools: number;
+  composition: { generations: SafeUsage; toolResults: SafeUsage; compactions: SafeUsage; branchSummaries: SafeUsage };
+};
+
+/**
+ * Builds the daily rows every view charts and filters. Buckets exactly like
+ * `sessionUsageByDate` (Task 5): generation usage on the generation date,
+ * tool-result usage on the tool's CALL date, compactions/branch summaries on
+ * their own entry dates. `sessions` counts the distinct session ids that
+ * contributed to that date.
+ */
+export function buildDailyRows(reports: readonly SessionReport[]): DailyRow[] { /* composed from the existing buildDailyActivityRows body + composition */ }
+```
+
+`bundle.ts` replaces its private `dailyRows()` with
+`buildDailyRows([model.report])`; `html.ts` imports and re-exports
+`buildDailyRows` as `buildDailyActivityRows` (its existing public name, used by
+`renderHtml`'s adapter and by `tests/unit/html.test.ts`) so no other call site
+changes. **Delete** the old `dailyRows()` body — leaving both is a second
+attribution implementation (spec R19).
+
+```ts
+// src/ui/bundle.ts
 export type DatedModelRow = { date: string; provider: string; model: string; generations: number; totalTokens: number; cost: number };
 const MAX_MODELS_PER_DATE = 64;
 
@@ -1209,8 +1584,8 @@ function datedModelRows(report: SessionReport): { rows: DatedModelRow[]; truncat
   let truncated = false;
   const perDate = new Map<string, Set<string>>();
   for (const generation of report.generations) {
-    const date = utcDate(generation.timestamp);
-    if (date === undefined) continue;
+    const date = generation.timestamp.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
     const key = `${date}\u0000${generation.provider}\u0000${generation.model}`;
     const seen = perDate.get(date) ?? new Set<string>();
     if (!seen.has(key)) {
@@ -1236,35 +1611,47 @@ function datedModelRows(report: SessionReport): { rows: DatedModelRow[]; truncat
 }
 ```
 
-`DailyRow` gains `composition`, filled from `report.usageComposition` per date using the same `utcDate` bucketing (generation usage on the generation date, tool-result usage on the tool's call date, compactions on their own entry date):
-
 ```ts
-type SafeUsage = { totalTokens: number; cost: number };
-function safe(usage: Usage): SafeUsage { return { totalTokens: usage.totalTokens, cost: roundCost(usage.cost) }; }
-// inside dailyRows(): per date, accumulate generations/toolResults/compactions/branchSummaries
-//   composition.generations        += generation.usage for generations on that date
-//   composition.toolResults        += tool.usage for tools whose timestamp is on that date
-//   composition.compactions        += compaction.usage for kind === "compaction"
-//   composition.branchSummaries    += compaction.usage for kind === "branch_summary"
+// src/ui/bundle.ts — the per-section capability table (spec R8, server-side truth)
+export const CAPABILITIES: Readonly<Record<"current" | "history" | "global", readonly Tab[]>> = {
+  current: ["overview", "models", "tools", "environment", "agents", "integrations", "errors", "ledger"],
+  // Breakdowns across sessions are deferred (spec §15), so the aggregate sections
+  // offer exactly what they compute.
+  history: ["overview"],
+  global: ["overview"],
+};
+/** A view that cannot replay has no capable tab at all. */
+const NO_CAPABILITIES: readonly Tab[] = [];
 ```
 
-`currentView()` returns them:
+`currentView()` returns the rows, the dated models and the capability list —
+the builder returns `{ rows, truncated }` so the cap flag keeps meaning what it
+means today (only the most recent `MAX_DAILY_ROWS = 366` dates are kept):
 
 ```ts
-  const { rows, truncated } = dailyRows(model.report);
-  const models = datedModelRows(model.report);
+// src/ui/daily.ts
+export function buildDailyRows(reports: readonly SessionReport[]): { rows: DailyRow[]; truncated: boolean };
+```
+
+```ts
+// src/ui/bundle.ts — inside currentView()
+  const daily = buildDailyRows([model.report]);
+  const dated = datedModelRows(model.report);
   return {
     availability: "available",
     report: model.report,
-    daily: rows,
-    dailyTruncated: truncated,
-    datedModels: models.rows,
-    modelsTruncated: models.truncated,
+    daily: daily.rows,
+    dailyTruncated: daily.truncated,
+    datedModels: dated.rows,
+    modelsTruncated: dated.truncated,
     capabilities: CAPABILITIES.current,
   };
 ```
 
-Keep `CurrentView` for the unavailable path with `capabilities: []` and no rows.
+The 366-row cap test in `bundle.test.ts` must keep passing unchanged; this task
+only adds `composition` to each row and `datedModels`/`capabilities` to the view.
+`CurrentView` for the unavailable path keeps `capabilities: NO_CAPABILITIES` and
+no rows.
 
 - [ ] **Step 4: Assert the caps and the unavailable path**
 
@@ -1294,6 +1681,13 @@ git commit -m "feat: add per-date model rows and daily usage composition to the 
 
 - Modify: `src/ui/bundle.ts`, `src/ui/html.ts` (i18n + scope block)
 - Test: `tests/unit/bundle.test.ts`, `tests/unit/html-bundle.test.ts`
+
+> **Retargeted for v0.8.0.** The catalog already carries `scope.active`
+> ("Active ancestry"), `scope.tree` ("Full tree") and `scope.fixed`. This task
+> retitles them to the spec §4.2 wording (`Active path`, `Full session tree`),
+> adds the two sub-labels, and renders the same-projection note from the new
+> `current.sameReportProjection` flag. It does not create the scope control —
+> that already exists in `renderBody`.
 
 **Interfaces:**
 
@@ -1610,6 +2004,13 @@ git commit -m "feat: add the pure range module with pair validation and UTC pres
 - Consumes: `src/ui/range.ts` (Task 8), `usageByDate`/`usageByDateTruncated` (Task 5), canonical date fields (Task 11).
 - Produces: browser-side `filterView(view, range)` and `historyRowRange(entry, range)` (both from `src/ui/range.ts`), catalog keys `range.truncated`, `history.dailyTruncated`, `range.restored`.
 
+> **Retargeted for v0.8.0.** The rule this task replaces is
+> `inPeriod(entry)` in the client script (~line 1357): it uses **span overlap**
+> (`entry.firstDate <= to && entry.lastDate >= from`), which is exactly the
+> membership defect spec §5.6 rules out. Membership becomes `historyRowRange`.
+> Record the closing P0-B size-gate number here (Task 6 captured the "before"
+> bytes).
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
@@ -1661,6 +2062,28 @@ test("case 3: a range entirely inside the omitted period is unavailable, never z
   assert.equal(result.totalTokens, null);
   assert.equal(result.cost, null);
 });
+// §5.7 cross-midnight regression (fixture moved here from the retired Task 4).
+test("tool usage stays on the call day while its error is observed the next day", () => {
+  const entries = parseSessionJsonl(readFileSync("tests/fixtures/pi/0.85.1/cross-midnight.jsonl", "utf8")).entries;
+  const report = toSessionReport(reduceEntries("cross-midnight", entries));
+  assert.equal(report.tools[0]?.timestamp, "2026-09-11T23:59:00.000Z");
+  assert.equal(report.tools[0]?.usage?.totalTokens, 2);
+  assert.equal(report.errors[0]?.timestamp, "2026-09-12T00:01:00.000Z");
+  assert.equal(report.errors[0]?.kind, "tool-error");
+  // The call day carries the tool usage; the next day carries the error alone.
+  const callDay = filterView({ rows: [], models: [], tools: report.tools, agents: [], errors: report.errors }, { preset: null, from: "2026-09-11", to: "2026-09-11" });
+  const nextDay = filterView({ rows: [], models: [], tools: report.tools, agents: [], errors: report.errors }, { preset: null, from: "2026-09-12", to: "2026-09-12" });
+  assert.deepEqual(callDay.tools.map((tool) => tool.id), ["tool:call_1"]);
+  assert.deepEqual(callDay.errors, []);
+  assert.deepEqual(nextDay.errors.map((error) => error.id), ["tool:call_1"]);
+});
+```
+
+```jsonl
+// tests/fixtures/pi/0.85.1/cross-midnight.jsonl
+{"type":"session","id":"cross-midnight","timestamp":"2026-09-11T23:58:00.000Z"}
+{"type":"message","id":"g1","parentId":null,"timestamp":"2026-09-11T23:59:00.000Z","message":{"role":"assistant","provider":"anthropic","model":"claude-x","usage":{"input":10,"output":5,"totalTokens":15,"cost":0.5},"content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"true"}}]}}
+{"type":"message","id":"r1","parentId":"g1","timestamp":"2026-09-12T00:01:00.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","isError":true,"usage":{"input":1,"output":1,"totalTokens":2,"cost":0.25},"content":"[redacted]"}}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1769,7 +2192,42 @@ git commit -m "feat: filter every tab through one range projection with honest a
 
 ---
 
-### Task 10: Agent evidence enrichment — model, thinking, failure class, evidence tool id
+### Task 10: RETIRED as a derivation task — child-run usage fraction only
+
+> **RETIRED as written — `readAgentFailure`, the model/thinking grammars and the
+> DTO validation are already on `main`** (`src/integrations/subagents.ts`,
+> `projectAgent`). Do **not** re-implement `readFailure`, `MODEL_TOKEN`,
+> `THINKING_LEVELS` or `PROCESS_SIGNAL`; they exist and are stricter than the
+> sketch below.
+>
+> The only genuine gap left by spec §6.3 (row 11) and §7.2 is the **usage
+> fraction**, so this task is reduced to it:
+>
+> **Files:** `src/integrations/subagents.ts` (`runsWithUsage` on `SubagentEvidence`),
+> `src/core/reports.ts` (`agentUsage` validated on `SessionReport`),
+> `src/ui/load-current.ts` + `src/ui/load-history.ts` (pass the evidence through),
+> tests `tests/unit/subagents.test.ts`, `tests/unit/reports-integrations.test.ts`,
+> `tests/unit/bundle.test.ts`.
+>
+> **Interfaces:** `SubagentEvidence.runsWithUsage: number`;
+> `SessionReport.agentUsage: { runsTotal: number; runsWithUsage: number }`
+> (re-validated: both counts are saturated non-negative safe integers, and
+> `runsWithUsage <= runsTotal`).
+>
+> **Steps:**
+> 1. Failing test: a `subagent` result publishing three runs where two carry
+>    `usage` ⇒ `evidence.runsWithUsage === 2`; a report built from it carries
+>    `agentUsage: { runsTotal: 3, runsWithUsage: 2 }`; a run set with no usage
+>    yields `runsWithUsage: 0` **and the renderer must read that as `Unavailable`,
+>    never `$0.00`** (Task 12 asserts the rendering).
+> 2. Implement `runsWithUsage` in `deriveEvidence` (count runs with a projected
+>    `usage`) and project it in `toSessionReport` with the saturation rule above.
+> 3. Assert a hostile payload (`runsWithUsage: -1`, `1e9`, `"2"`) is rejected or
+>    saturated, never echoed.
+> 4. `npm run format:check && npm run lint && npm run typecheck && npm test`.
+> 5. Commit: `feat: report child-run usage coverage on the agent evidence`.
+
+**Historic task body (do not execute):**
 
 **Files:**
 
@@ -1883,13 +2341,23 @@ git commit -m "feat: project validated agent model, thinking level and bounded f
 
 **Files:**
 
-- Modify: `src/ui/html.ts` (`currentViewProjection`, `sessionView`, `toolRows`, `agentRows`, `errorRows`)
+- Modify: `src/ui/html.ts` — `sessionView` (~line 946), `toolRows` (~904),
+  `agentRows` (~917), `modelRows` (~824), the inline error mapping inside
+  `sessionView`
 - Test: `tests/unit/html-bundle.test.ts`, `tests/unit/integration-privacy.test.ts`
 
 **Interfaces:**
 
-- Consumes: `SessionReport` with the Task 10 fields.
-- Produces: one projection object per view with `tools[].timestamp`, `agents[]` (role/artifacts/observedAt/model/thinking/failure/evidenceToolId/usage/parentId), `errors[].toolName`/`toolSource`, `composition`, `agentUsage`.
+- Consumes: `SessionReport` with the agent fields `main` already derives (spec §0.3).
+- Produces: one projection object per view with `tools[].timestamp`, `agents[]`
+  (role/artifacts/observedAt/model/thinking/failure/evidenceToolId/usage/parentId),
+  `errors[].toolName`/`toolSource`/`relatedChildIds`, `composition`, `agentUsage`.
+
+> **Retargeted for v0.8.0.** `currentViewProjection`/`sectionProjection` already
+> exist and are the projection boundary; the losses are inside the row builders.
+> There is no separate `errorRows()` function — errors are mapped inline in
+> `sessionView`, and that map is where the tool join lands (Task 14 extends it in
+> the same place, so land them in the order given).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1978,8 +2446,12 @@ git commit -m "feat: preserve agent role, observation time and tool timestamps i
 
 **Files:**
 
-- Modify: `src/ui/html.ts` (client `agentsPanel`)
+- Modify: `src/ui/html.ts` (client `agentsPanel`, ~line 1351)
 - Test: `tests/unit/html-bundle.test.ts`
+
+> **Retargeted for v0.8.0.** `agentsPanel` already renders both blocks in one
+> panel: the activity block first, headed by the `metric.agentCalls` label — that
+> label is the defect. The fix is the copy and the ordering, not a new panel.
 
 **Interfaces:**
 
@@ -2171,13 +2643,18 @@ git commit -m "feat: add tools summary and calls timeline over the canonical pro
 
 **Files:**
 
-- Modify: `src/ui/html.ts` (client errors branch + error detail), `src/ui/bundle.ts` (error rows carry `toolName`/`toolSource`/`relatedChildIds`)
+- Modify: `src/ui/html.ts` (the error map in `sessionView` + the client errors
+  branch), `src/ui/bundle.ts` (only if an error row must reach the bundle DTO)
 - Test: `tests/unit/html-bundle.test.ts`, `tests/unit/error-ledger.test.ts`
 
 **Interfaces:**
 
 - Consumes: `report.errors`, `report.tools`, `report.agents[].evidenceToolId`.
 - Produces: catalog keys `errors.toolFailed`, `errors.relatedTool`, `errors.relatedChildren`, `errors.messageUnavailable`, `errors.generation`; projection `errors[].toolName`, `.toolSource`, `.relatedChildIds`.
+
+> **Retargeted for v0.8.0.** Error rows are built inside
+> `src/ui/html.ts:sessionView`, not in `bundle.ts`; the join happens there with
+> the report already in hand, so `bundle.ts` needs no change.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2636,9 +3113,18 @@ git commit -m "feat: add the pure route module with capability-aware parsing and
 ```ts
 // tests/unit/html-navigation.test.ts
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { renderInspectorBundle } from "../../src/ui/html.ts";
-import { bundleFixture } from "./helpers/bundle.ts"; // existing shared fixture helpers
+import type { InspectorBundle } from "../../src/ui/bundle.ts";
+
+// `tests/unit/helpers/` does not exist yet: create this file in this task.
+// Same fixture and same decoding pattern as `tests/unit/html-bundle.test.ts`.
+function bundleFixture(): InspectorBundle {
+  return JSON.parse(
+    readFileSync(new URL("../fixtures/bundles/inspector-bundle.json", import.meta.url), "utf8"),
+  ) as InspectorBundle;
+}
 
 test("the document inlines the same route and range modules the tests import", () => {
   const html = renderInspectorBundle(bundleFixture());
@@ -3108,13 +3594,15 @@ test("mode completion replaces the whole empty argument region", async () => {
 Run: `node --import tsx --test tests/unit/command-completion-application.test.ts`
 Expected: FAIL — either the module cannot resolve `@earendil-works/pi-tui` (add it to `devDependencies` with the exact pinned version from the Pi install) or the quoted-argument case loses the preceding arguments.
 
-- [ ] **Step 3: Resolve the dependency**
+- [ ] **Step 3: Verify the dependency is present**
 
-```bash
-npm install --save-dev @earendil-works/pi-tui@<exact version bundled with pi 0.85.1>
-```
-
-Record the resolved version in the commit message. If the package cannot be installed (offline), import the provider from the installed Pi path inside the helper and note it in the task report — the test must still drive the real provider, never a re-implementation.
+Run: `node -e 'import("@earendil-works/pi-tui").then(m => console.log(m.CombinedAutocompleteProvider.name))'`
+Expected: `CombinedAutocompleteProvider`. The package is already installed at
+`0.85.1` as a **peerDependency** of this project and the type import already
+resolves in `src/commands/completions.ts`, so **no `package.json` change is
+needed**; if the import ever fails, fall back to importing the provider from the
+installed Pi path inside the helper and record that in the task report. The test
+must drive the real provider, never a re-implementation.
 
 - [ ] **Step 4: Verify the failing-before behaviour**
 
@@ -3205,22 +3693,26 @@ git commit -m "feat: align and wrap table columns per column type"
 
 ---
 
-### Task 22: ADR, spec update, CHANGELOG, and version 0.8.0
+### Task 22: ADR, spec update, CHANGELOG, and version 0.9.0
 
 **Files:**
 
-- Create: `docs/architecture/adr/0016-report-coverage-attribution-and-navigation.md`
+- Create: `docs/architecture/adr/0017-report-coverage-attribution-and-navigation.md`
 - Modify: `docs/architecture/adr/README.md`, `docs/specs/pi-session-inspector-v1.md`, `docs/research/pi-ecosystem.md` (only if a pinned version changed), `CHANGELOG.md`, `package.json`, `package-lock.json`
 - Test: none (documents); verified by Task 23
 
+> **Retargeted for v0.8.0.** ADR **0016 is taken** by the evidence foundation
+> (`0016-evidence-foundation-and-canonical-session-model.md`), so this milestone's
+> ADR is **0017**; `package.json` is at **0.8.0**, so the release is **0.9.0**.
+
 **Interfaces:**
 
-- Produces: ADR 0016 (status accepted) recording: coverage is session coverage with an unknown-denominator rule; logical-call timestamp attribution; `usageByDate` truncation honesty; environment-vs-activity separation; route authority and ephemeral caches; no Agent → Models link; autocomplete full-argument rewrite; no new persistence.
+- Produces: ADR 0017 (status accepted) recording: coverage is session coverage with an unknown-denominator rule; logical-call timestamp attribution implemented once in the canonical builder and projected, never re-derived; `usageByDate` truncation/partial honesty with one flag; environment-vs-activity separation; route authority and ephemeral caches; no Agent → Models link; autocomplete full-argument rewrite; no new persistence.
 
-- [ ] **Step 1: Write ADR 0016**
+- [ ] **Step 1: Write ADR 0017**
 
 ```markdown
-# ADR 0016: report coverage, attribution, and navigation
+# ADR 0017: report coverage, attribution, and navigation
 
 **Status:** accepted.
 
@@ -3251,7 +3743,7 @@ Add the row to `docs/architecture/adr/README.md` (matching its existing table fo
 - [ ] **Step 3: CHANGELOG and version**
 
 ```markdown
-## 0.8.0
+## 0.9.0
 
 - Coverage: report-level session coverage with bounded per-session reasons, capped-discovery honesty, and `Known`/`Unavailable` wording instead of unqualified totals.
 - Range: one shared range projection for every tab, per-view-identity ranges, validated custom-range hash round-trips, and logical-call timestamp attribution.
@@ -3263,19 +3755,19 @@ Add the row to `docs/architecture/adr/README.md` (matching its existing table fo
 ```
 
 ```bash
-npm version 0.8.0 --no-git-tag-version
+npm version 0.9.0 --no-git-tag-version
 ```
 
 - [ ] **Step 4: Verify packaging still excludes scratch files**
 
 Run: `npm pack --dry-run 2>&1 | tail -5`
-Expected: `pi-session-inspector-0.8.0.tgz`, `49`-ish files, no `.superpowers`, no `tests`, no `.pi`.
+Expected: `pi-session-inspector-0.9.0.tgz`, ~49 files, no `.superpowers`, no `tests`, no `.pi`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/architecture/adr/0016-report-coverage-attribution-and-navigation.md docs/architecture/adr/README.md docs/specs/pi-session-inspector-v1.md CHANGELOG.md package.json package-lock.json
-git commit -m "docs: record coverage, attribution and navigation decisions and bump to 0.8.0"
+git add docs/architecture/adr/0017-report-coverage-attribution-and-navigation.md docs/architecture/adr/README.md docs/specs/pi-session-inspector-v1.md CHANGELOG.md package.json package-lock.json
+git commit -m "docs: record coverage, attribution and navigation decisions and bump to 0.9.0"
 ```
 
 ---
@@ -3329,7 +3821,9 @@ test("a resumed session does not double count across scopes", async () => {
 });
 ```
 
-Add fixtures: `tests/fixtures/reports/coverage-partial.json` (5 of 27 with reasons), `tests/fixtures/reports/coverage-capped.json` (206 inspected, capped), `tests/fixtures/pi/0.85.1/long-session.jsonl` (>366 observed days), and refresh `tests/fixtures/bundles/inspector-bundle.json` so it carries `capabilities`, `datedModels`, composition and coverage.
+Add fixtures: `tests/fixtures/reports/coverage-partial.json` (5 of 27 with reasons), `tests/fixtures/reports/coverage-capped.json` (206 inspected, capped), `tests/fixtures/pi/0.85.1/long-session.jsonl` (>366 observed days), and refresh `tests/fixtures/bundles/inspector-bundle.json` so it carries `capabilities`, `datedModels`, composition and coverage. Also assert the second partial cause: a session whose
+`evidenceHealth.usage.dated === "partial"` reports `usageByDateTruncated === true`,
+so an unattributable line can never be presented as a complete window.
 
 - [ ] **Step 3: Run the full verification**
 
@@ -3364,7 +3858,12 @@ Expected: all clean; `npm test` reports the new totals (previous 397 plus the ne
     a replay failure shows `replay-failed`; a session with `usageByDateTruncated` renders
     `Known` for a range that reaches into omitted history (exact known subtotal, marked
     partial) and `Unavailable` for a range entirely inside the omitted period — never
-    `$0`.
+    `$0`. A session whose builder reports `evidenceHealth.usage.dated === "partial"`
+    (an unattributable native usage line) also reads `Known`, never complete.
+15. **P0-B document-size gate**: capture `renderInspectorBundle(bundleFixture()).length`
+    **before** starting Task 6 and again after Task 9, and record both numbers, the
+    fixture path (`tests/fixtures/bundles/inspector-bundle.json`) and the relative
+    delta in the slice report. Gate: **≤ +15 %**. No absolute ceiling.
 
 - [ ] **Step 5: Commit**
 
@@ -3377,14 +3876,16 @@ git commit -m "test: extend the privacy corpus, add coverage and long-session fi
 
 ## Self-Review Notes
 
-**Spec coverage.** Every spec section maps to a task: §3 coverage → Tasks 1-3; §4 scope (labels, `sameReportProjection`) → Task 7; §5 range (semantics §5.1, anti-mixing §5.2, state §5.3, projection §5.4 → Tasks 6/8/9; acceptance §5.5, membership §5.6, attribution §5.7 → Tasks 4/5/9); §6 projection contract → Tasks 10-11; §7 agents/tools/errors → Tasks 12-14 (evidence threading in 4 and 10); §8 environment/integrations → Task 15; §9 navigation → Tasks 16-18; §10 autocomplete → Tasks 19-20; §11 privacy/compat → Tasks 11/23; §12 slices → the task order itself; §13 tests → per-task tests plus Task 23; §14 UAT → Task 23 step 4; §15 unsupported/deferred → enforced by Tasks 3/5/9 (no per-day coverage, `Known` truncation, no breakdown tabs); §16 polish → Task 21; §17 rulings R1-R17 → implemented where each ruling is binding (R12/R16 in Tasks 2/5/9, R7 in Tasks 4/14, R17 in Tasks 12/18, R11 in Tasks 17/20).
+**Spec coverage.** Every spec section maps to a task: §3 coverage → Tasks 1-3; §4 scope (labels, `sameReportProjection`) → Task 7; §5 range (semantics §5.1, anti-mixing §5.2, state §5.3, projection §5.4 → Tasks 6/8/9; acceptance §5.5, membership §5.6, attribution §5.7 → Tasks 5/9, with the fixture carried over from the retired Task 4); §6 projection contract → Tasks 10-11; §7 agents/tools/errors → Tasks 12-14 (evidence threading already on `main`, see §0.3 of the spec); §8 environment/integrations → Task 15; §9 navigation → Tasks 16-18; §10 autocomplete → Tasks 19-20; §11 privacy/compat → Tasks 11/23; §12 slices → the task order itself; §13 tests → per-task tests plus Task 23; §14 UAT → Task 23 step 4; §15 unsupported/deferred → enforced by Tasks 3/5/9 (no per-day coverage, `Known` truncation, no breakdown tabs); §16 polish → Task 21; §17 rulings R1-R20 → implemented where each ruling is binding (R12/R16 in Tasks 2/5/9, R7 in Tasks 11/14, R17 in Tasks 12/18, R11 in Tasks 17/20, R18 in Tasks 2/3/23, R19 in Tasks 5/6/9, R20 in Tasks 2/3).
 
-**Placeholder scan.** No `TBD`/`TODO`/"similar to Task N"; every step carries runnable code, an exact command, or an exact checklist item. Two steps intentionally require a measured value rather than a fixed number (Task 10's fixture dates in `longSessionOptions`, Task 20's pinned `pi-tui` version); both state exactly what to record.
+**Placeholder scan.** No `TBD`/`TODO`/"similar to Task N"; every step carries runnable code, an exact command, or an exact checklist item. Four steps intentionally require a measured or environment-dependent value rather than a fixed number: Task 5's oldest retained date in `longSessionOptions`, the document-size measurement of P0-B, Task 20's installed `pi-tui` version, and Task 23's header refresh; each states exactly what to record.
 
-**Type consistency.** `CoverageReason`/`CoverageSummary`/`buildCoverage` (Task 1-2) are used verbatim in Tasks 3, 23. `AgentRun.observedAt`/`evidenceToolId` (Task 4) are consumed by Tasks 10, 11, 14, 18 and referenced in the fixtures. `RangeState` (Task 8) is the only range type in Tasks 9, 16, 17. `InspectorRoute`/`deriveView` (Task 16) are consumed by Tasks 17-18 and asserted in `tests/unit/html-navigation.test.ts`. `scanInspectorArgs` (Task 19) is the only span source used by completions in Tasks 19-20. `capabilities` is produced by Task 6 (`CAPABILITIES`) and consumed by Tasks 15-18.
+**Type consistency.** `CoverageReason` (Task 1) and `SessionCoverage`/`buildSessionCoverage` (Task 2) are used verbatim in Tasks 3, 23 — the older names `CoverageSummary`/`buildCoverage` are gone (spec R18). `AgentRun.observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` already exist on `main` (Task 4 retired) and are consumed by Tasks 11, 12, 14, 18 and the fixtures. `RangeState` (Task 8) is the only range type in Tasks 9, 16, 17. `InspectorRoute`/`deriveView` (Task 16) are consumed by Tasks 17-18 and asserted in `tests/unit/html-navigation.test.ts`. `scanInspectorArgs` (Task 19) is the only span source used by completions in Tasks 19-20. `capabilities` is produced by Task 6 (`CAPABILITIES`) and consumed by Tasks 15-18. `sessionUsageByDate` (Task 5) takes a `CanonicalSession`; `buildDailyRows` (Task 6) is the only date-bucketing builder and takes reports.
+
+**Re-baseline amendments (v2).** Applied on top of the six review amendments below: (a) Tasks 4 and 10 are retired — `main` already derives agent `observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` and validates them (`910a665`), and Task 10 is reduced to the child-usage fraction; (b) the coverage aggregate is `SessionCoverage` in `src/core/session-coverage.ts` with a total reason→code mapping (spec R18/R20); (c) Task 2's reason plumbing now names all five real `scanHistory` failure paths instead of the two the pre-merge plan assumed; (d) Task 5 groups dates from `CanonicalUsageLine.attributedAt` and the truncation flag also covers `usage.dated === "partial"`, so `SessionReport` is an assertion target rather than a second attribution source (spec R19); (e) Task 6 adds `src/ui/daily.ts` as the single date-bucketing builder and the server-side capability table; (f) the file anchors were re-pointed at the real v0.8.0 code (`sessionView`/`toolRows`/`agentRows` in `html.ts`, error rows in `sessionView`, no `tests/unit/helpers/` directory, `pi-tui` already installed); (g) version is 0.9.0 and the ADR is 0017.
 
 **Amendments after plan review (all six applied).** (1) Task 5 now implements the full logical-call attribution — generation, tool-result (on the CALL date), compaction and branch-summary usage — with composition-complete rows plus observation-only `tools`/`errors` counters, a mixed-usage fixture, and `sum(usageByDate) === the same range projection of SessionReport.usage`. (2) Task 9 decides truncation BEFORE returning: member-true rows whose range reaches into omitted history carry the exact known subtotal with `partial: true` (labels say `Known`), fully retained ranges stay exact, and ranges entirely inside the omitted period return unavailable rather than zero — all three cases tested. (3) The 1970 sentinel is gone: a preset is an unresolved `RangeIntent` resolved against the active view's observed dates (`resolveRange` returns `undefined` when nothing was observed), custom ranges parse to exact resolved pairs, and Task 16 adds the preset deep-link/reload regression plus a no-`1970` assertion. (4) Task 2 produces every declared `CoverageReason` on a real path — `session-unreadable` for malformed JSON, missing/invalid header, id mismatch, and `replay-failed` from an injectable replay seam — with focused tests and reason-count assertions. (5) Task 4's join is an explicit `Map<callId, { message, observedAt }>`; a result that cannot be deterministically joined publishes no run, and the contradictory test was replaced by skipped-behaviour tests. (6) Task 3 separates value availability from coverage availability: a legacy aggregate shows its usage with a completeness-unknown qualifier, while `Unavailable` is reserved for a genuinely unavailable value (or an empty inspection set), with a regression distinguishing the two.
 
-**Known ordering constraint.** Tasks 6-18 edit `src/ui/html.ts` sequentially; each task's test step asserts behaviour that the previous task's code still satisfies, so the tasks must be executed in order. Tasks 1-5, 8, 16 and 19-20 are independent of the client script and can be reviewed on their own.
+**Known ordering constraint.** Tasks 6-18 edit `src/ui/html.ts` sequentially; each task's test step asserts behaviour that the previous task's code still satisfies, so the tasks must be executed in order. Tasks 1-3, 5, 8, 16, 19 and 20 are independent of the client script and can be reviewed on their own.
 
 **Inlining constraint (added during self-review).** `String(fn)` copies a function body only, so every function listed in `INLINED_FUNCTIONS` must be self-contained: no module-scope constant, no helper outside the list, no Node/DOM API. The plan keeps `DATE`, `PRESETS`, `SECTIONS` and `PARAM_ORDER` inside the functions that use them for exactly this reason, and Task 17 adds `assertInlinedModulesEvaluate()`, which evaluates the emitted source in Node with no DOM so an incomplete inline fails in a test rather than in the browser.
