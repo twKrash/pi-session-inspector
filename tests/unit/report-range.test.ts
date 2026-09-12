@@ -342,6 +342,8 @@ function runClient(bundle: InspectorBundle): {
     "announcement",
     "report-data",
     "catalog-data",
+    // The server renders the truncation notice only for a capped view.
+    ...(html.includes('id="range-truncated"') ? ["range-truncated"] : []),
   ];
   const store = new Map<string, StubElement>();
   const register = (element: StubElement): void => {
@@ -610,5 +612,221 @@ test("the same-projection note follows the bundle flag and the active view", () 
   assert.equal(
     note?.textContent,
     "Active path and Full session tree produce the same report data for this session.",
+  );
+});
+
+test("an aggregate range with no in-range observation renders the empty state", () => {
+  const harness = runClient(bundleFixture());
+  const { client, element, texts } = harness;
+  const outside = { kind: "custom", from: "2020-01-01", to: "2020-12-31" };
+
+  client.rangeIntents.global = outside;
+  client.state.section = "global";
+  client.state.tab = "overview";
+  client.render();
+  const global = texts(element("view"));
+  assert.equal(
+    global.includes("No daily observations match the selected range."),
+    true,
+  );
+  // Neither a fabricated $0.00 nor a fabricated zero metric.
+  assert.equal(global.includes("$0.00"), false);
+  assert.equal(global.includes("0"), false);
+  assert.equal(global.includes("Observed days"), false);
+
+  client.rangeIntents["history:aggregate"] = outside;
+  client.state.section = "history";
+  client.state.session = null;
+  client.render();
+  const history = texts(element("view"));
+  assert.equal(
+    history.includes("No daily observations match the selected range."),
+    true,
+  );
+  assert.equal(history.includes("$0.00"), false);
+  assert.equal(history.includes("0"), false);
+  assert.equal(history.includes("Known tokens"), false);
+  assert.equal(history.includes("Known native cost"), false);
+});
+
+test("a truncated session outside the range still qualifies the aggregate as Known", () => {
+  const bundle = bundleFixture();
+  const template = bundle.history.sessions[0];
+  if (template?.availability !== "available")
+    throw new Error("fixture session");
+  // Two replayed sessions: one in range, one whose retained window is later and
+  // truncated, so the aggregate is fully covered yet cannot reach the range.
+  bundle.history.sessions = [
+    template,
+    {
+      ...template,
+      sessionId: "session-c",
+      usageByDate: [
+        {
+          date: "2029-06-21",
+          totalTokens: 5,
+          cost: 0.05,
+          generations: 1,
+          tools: 0,
+          errors: 0,
+          composition: {
+            generations: { totalTokens: 5, cost: 0.05 },
+            toolResults: { totalTokens: 0, cost: 0 },
+            compactions: { totalTokens: 0, cost: 0 },
+            branchSummaries: { totalTokens: 0, cost: 0 },
+          },
+        },
+      ],
+      usageByDateTruncated: true,
+    },
+  ];
+  bundle.history.coverage = {
+    inspected: 2,
+    available: 2,
+    unavailable: 0,
+    sessionRatio: 1,
+    complete: true,
+    discoveryLimited: false,
+    reasons: {},
+  };
+  const harness = runClient(bundle);
+  const { client, element, texts } = harness;
+  client.state.section = "history";
+  client.state.session = null;
+  client.state.tab = "overview";
+
+  // The range is inside session-a's retained window and entirely before
+  // session-c's: the aggregate value is still only Known, and the excluded
+  // session contributes nothing to the in-range sums.
+  client.rangeIntents["history:aggregate"] = {
+    kind: "custom",
+    from: "2026-02-01",
+    to: "2026-02-02",
+  };
+  client.render();
+  const outside = texts(element("view"));
+  assert.equal(outside.includes("Known native cost"), true);
+  assert.equal(outside.includes("Known tokens"), true);
+  assert.equal(outside.includes("$0.24"), true);
+  assert.equal(outside.includes("$0.05"), false);
+
+  // A range inside that session's own retained window is not partial.
+  client.rangeIntents["history:aggregate"] = {
+    kind: "custom",
+    from: "2029-06-21",
+    to: "2029-06-21",
+  };
+  client.render();
+  const inside = texts(element("view"));
+  assert.equal(inside.includes("Known native cost"), false);
+  assert.equal(inside.includes("Known tokens"), false);
+  assert.equal(inside.includes("$0.05"), true);
+});
+
+test("scope copy renders the fixed note once, next to the disabled control", () => {
+  const harness = runClient(bundleFixture());
+  const { client, element, texts } = harness;
+  const fixed = "History & Global use full tree.";
+
+  client.state.section = "history";
+  client.render();
+  assert.equal(element("scope-fixed").hidden, false);
+  assert.equal(element("scope-sub").textContent, "");
+  assert.equal(element("scope-note").textContent, "2026-01-20 → 2026-02-02");
+  const scopeGroup = element("scope").parentNode as StubElement;
+  assert.equal(texts(scopeGroup).includes(fixed), false);
+
+  client.state.section = "global";
+  client.render();
+  assert.equal(element("scope-fixed").hidden, false);
+  assert.equal(element("scope-sub").textContent, "");
+  assert.equal(element("scope-note").textContent.includes(fixed), false);
+
+  // The current section keeps the pressed scope's own sub-label.
+  client.state.section = "current";
+  client.render();
+  assert.equal(element("scope-fixed").hidden, true);
+  assert.equal(
+    element("scope-sub").textContent,
+    "All tracked branches in this session",
+  );
+});
+
+test("the current truncation notice fires only for a range inside the retained window", () => {
+  const bundle = bundleFixture();
+  bundle.current.tree.dailyTruncated = true;
+  const harness = runClient(bundle);
+  const { client, element } = harness;
+  client.state.section = "current";
+
+  // The default range is the retained window itself: nothing is being omitted.
+  client.render();
+  assert.equal(element("range-dates").textContent, "2026-02-01 → 2026-02-02");
+  assert.equal(element("range-truncated").hidden, true);
+
+  // A range reaching before the retained window is flagged.
+  client.rangeIntents.current = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  assert.equal(element("range-truncated").hidden, false);
+  assert.equal(
+    element("range-truncated").textContent,
+    "Older days beyond the retained window are not shown.",
+  );
+});
+
+test("the restore notice fires only when a range could fall back to a default", () => {
+  // A view with no observed date has no default range to fall back to.
+  const unobserved = bundleFixture();
+  unobserved.current.tree.daily = [];
+  unobserved.current.tree.dailyTruncated = true;
+  const withoutDates = runClient(unobserved);
+  withoutDates.client.rangeIntents.current = { kind: "preset", preset: 7 };
+  withoutDates.client.render();
+  assert.equal(withoutDates.element("range-name").textContent, "Unavailable");
+  assert.equal(withoutDates.element("range-dates").textContent, "Unavailable");
+  assert.equal(withoutDates.element("range-truncated").hidden, true);
+
+  // A view with observed dates still says when the chosen range did not apply.
+  const withDates = runClient(bundleFixture());
+  withDates.client.rangeIntents.current = {
+    kind: "custom",
+    from: "2026-02-05",
+    to: "2026-02-01",
+  };
+  withDates.client.render();
+  assert.equal(withDates.element("range-name").textContent, "Unavailable");
+  assert.equal(withDates.element("range-truncated").hidden, false);
+  assert.equal(
+    withDates.element("range-truncated").textContent,
+    "Range could not be restored; showing the default range.",
+  );
+});
+
+test("range-scoped empty tabs carry the range-qualified line", () => {
+  const harness = runClient(bundleFixture());
+  const { client, element, texts } = harness;
+  client.state.section = "current";
+  client.rangeIntents.current = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+
+  // The fixture's Errors tab is range-filtered (the rows carry a timestamp), so
+  // an empty range is a range statement, not a session-wide one.
+  client.state.tab = "errors";
+  client.render();
+  const errors = texts(element("view"));
+  assert.equal(
+    errors.includes("No daily observations match the selected range."),
+    true,
+  );
+  assert.equal(
+    errors.includes("No persisted error records. An observed zero stays zero."),
+    false,
   );
 });

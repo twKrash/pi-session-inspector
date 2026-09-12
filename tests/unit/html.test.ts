@@ -10,8 +10,6 @@ import {
 } from "../../src/core/reports.ts";
 import {
   buildDailyActivityRows,
-  type DailyActivityRow,
-  defaultReportPeriod,
   ENGLISH_CATALOG,
   formatDuration,
   type HtmlReport,
@@ -500,42 +498,19 @@ test("embeds deterministic current, history, and global view contracts", () => {
   }
 });
 
-test("defaults report ranges to inclusive UTC dates without a machine clock", () => {
-  const daily: DailyActivityRow[] = [
-    { date: "2026-01-01", sessions: 1, totalTokens: 1, cost: 0.01 },
-    { date: "2026-01-20", sessions: 1, totalTokens: 1, cost: 0.01 },
-  ];
+test("projects no server-chosen range and never emits the sentinel date", () => {
+  const html = renderHtml(globalReport());
+  const data = embedded(html);
 
-  assert.deepEqual(defaultReportPeriod("global", daily), {
-    preset: 14,
-    from: "2026-01-07",
-    to: "2026-01-20",
-  });
-  assert.deepEqual(defaultReportPeriod("history", daily), {
-    preset: 14,
-    from: "2026-01-07",
-    to: "2026-01-20",
-  });
-  assert.deepEqual(defaultReportPeriod("current", daily), {
-    preset: null,
-    from: "2026-01-01",
-    to: "2026-01-20",
-  });
-  assert.deepEqual(defaultReportPeriod("global", []), {
-    preset: 14,
-    from: "1970-01-01",
-    to: "1970-01-01",
-  });
+  // The client resolves every range from the section's own dated rows, so the
+  // projection carries neither a chosen period nor a latest date.
+  for (const section of [data.current.tree, data.history, data.global]) {
+    assert.equal("period" in section, false);
+    assert.equal("latestDate" in section, false);
+  }
+  assert.equal(html.includes("1970-01-01"), false);
 
-  const data = embedded(renderHtml(globalReport()));
-  assert.deepEqual(data.global.period, {
-    preset: 14,
-    from: "2026-08-25",
-    to: "2026-09-07",
-  });
-  assert.equal(data.global.latestDate, "2026-09-07");
-
-  const script = scriptOf(renderHtml(globalReport()));
+  const script = scriptOf(html);
   assert.equal(/Date\.now|Math\.random|new Date\(\)/.test(script), false);
 });
 
@@ -1041,9 +1016,9 @@ test("preserves scroll position and search focus across re-renders", () => {
 
 test("filters presets and custom ranges with inclusive UTC validation", () => {
   const script = scriptOf(renderHtml(historyReport()));
-  // The client preset anchor is the inlined range module's observed-date
-  // resolver; the old per-section `latestDate()` scan no longer exists.
-  assert.match(script, /latestObservedDate\(/);
+  // The client calls the inlined resolver with the active view's own intent;
+  // the old per-section `latestDate()` scan no longer exists.
+  assert.match(script, /activeRange=\(\)=>resolveRange\(activeIntent\(\)/);
   assert.match(script, /from>to/);
   assert.match(script, /tr\("range\.error"\)/);
   assert.match(script, /data-days/);

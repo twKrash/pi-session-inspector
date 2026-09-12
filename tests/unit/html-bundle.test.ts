@@ -281,6 +281,21 @@ test("client range wiring replaced the per-section period and the clamp", () => 
   assert.equal(html.includes("periods[state.section]"), false);
 });
 
+test("a document with no tracked sessions carries no period sentinel", () => {
+  const bundle = bundleFixture();
+  bundle.history.sessions = [];
+  bundle.global.sessions = [];
+  bundle.global.dates = [];
+  const html = renderInspectorBundle(bundle);
+  const data = embeddedJson(html);
+
+  for (const section of [data.history, data.global]) {
+    assert.equal("period" in section, false);
+    assert.equal("latestDate" in section, false);
+  }
+  assert.equal(html.includes("1970-01-01"), false);
+});
+
 test("scope copy names the ancestry and claims only report equality", () => {
   const html = renderInspectorBundle(bundleFixture());
   for (const fragment of [
