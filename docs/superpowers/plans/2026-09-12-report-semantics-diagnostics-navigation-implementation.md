@@ -67,8 +67,21 @@ type AgentFailure = { reason: "exit-nonzero" | "process-signal" | "completion-fa
 type SubagentEvidence = { activity: AgentToolActivity; runs: readonly AgentRun[]; state: EvidenceState; runsWithUsage: number };
 // AgentRun.model? / thinking? / failure? are filled by Task 10.
 
-// Task 5: src/ui/load-history.ts
-type DateUsageRow = { date: string; totalTokens: number; cost: number; generations: number; tools: number };
+// Task 2/5: src/ui/load-history.ts
+/** Deterministic source-read classification; the reason a session could not replay. */
+function sourceReadFailure(parsed: { id?: unknown; hasMalformedJson?: unknown; hasSessionHeader?: unknown }, sessionId: string): CoverageReason | undefined;
+/** Replay seam so a reducer/adapter failure is testable as `replay-failed`. */
+type LoadHistoryOptions = { /* existing */ replay?: (entries: readonly SessionEntry[], sessionId: string) => SessionReport };
+/**
+ * Per-date evidence, composition-complete so it reconciles with SessionReport.usage,
+ * plus observation-only counters (`tools`, `errors`) that create membership
+ * evidence even when they contribute zero additional usage (§5.7).
+ */
+type DateUsageRow = {
+  date: string; totalTokens: number; cost: number;
+  generations: number; tools: number; errors: number;
+  composition: { generations: SafeUsage; toolResults: SafeUsage; compactions: SafeUsage; branchSummaries: SafeUsage };
+};
 type HistoricalSession =
   | { availability: "available"; sessionId: string; report: SessionReport; usageByDate: readonly DateUsageRow[]; usageByDateTruncated: boolean }
   | { availability: "unavailable"; sessionId: string; reason?: CoverageReason };
@@ -90,21 +103,29 @@ function currentViewProjection(view: CurrentView, scope: Scope): Record<string, 
 
 // Task 8: src/ui/range.ts (pure, inlined into the document)
 type RangeState = { preset: 7 | 14 | 30 | null; from: string; to: string };
-function resolveRange(range: RangeState | undefined, dates: readonly string[], kind: "current" | "aggregate"): RangeState;
+/** A range as written in a route or chosen in the UI: a preset stays unresolved until applied to a view's dates. */
+type RangeIntent = { kind: "preset"; preset: 7 | 14 | 30 } | { kind: "custom"; from: string; to: string };
+function resolveRange(intent: RangeIntent | undefined, dates: readonly string[], kind: "current" | "aggregate"): RangeState | undefined;
 function isInRange(date: string, range: RangeState): boolean;
 function presetRange(preset: 7 | 14 | 30, dates: readonly string[]): RangeState | undefined;
 function shiftUtcDay(date: string, offset: number): string;
 function latestObservedDate(dates: readonly string[]): string | undefined;
+function parseRangeQuery(query: string): RangeIntent | undefined;
+function serializeRangeQuery(intent: RangeIntent): [string, string][];
+/** Membership + truncation verdict for one aggregate session row (§5.6). */
+type HistoryRowRange = { member: boolean; totalTokens: number | null; cost: number | null; partial: boolean };
+function historyRowRange(entry: { usageByDate: readonly DateUsageRow[]; usageByDateTruncated?: boolean }, range: RangeState): HistoryRowRange;
 
 // Task 16: src/ui/route.ts (pure, inlined into the document)
 type EntityRef = { kind: "model" | "tool" | "agent" | "error" | "integration" | "command" | "skill" | "resource"; id: string };
 type InspectorRoute = { section: "current" | "history" | "global"; tab: string; session?: string; scope: Scope;
-                        range: RangeState; entity?: EntityRef; table?: { query?: string; sort?: string } };
-function parseRoute(hash: string, defaults: { scope: Scope; range: RangeState; capabilities: Readonly<Record<string, readonly string[]>> }): { route: InspectorRoute; notice?: string };
+                        /** Absent = the view default (full span for current, 14D for aggregates). */
+                        range?: RangeIntent; entity?: EntityRef; table?: { query?: string; sort?: string } };
+function parseRoute(hash: string, defaults: { scope: Scope; capabilities: Readonly<Record<string, readonly string[]>>; knownIds?: ReadonlySet<string> }): { route: InspectorRoute; notice?: string };
 function serializeRoute(route: InspectorRoute): string;
 function routeKey(route: InspectorRoute): string;
-function deriveView(route: InspectorRoute, capabilities: Readonly<Record<string, readonly string[]>>):
-  { activeSection: string; activeTab: string; visibleTabs: readonly string[]; scope: Scope; range: RangeState; entity?: EntityRef; notice?: string; focusTarget: string };
+function deriveView(route: InspectorRoute, capabilities: Readonly<Record<string, readonly string[]>>, dates: readonly string[]):
+  { activeSection: string; activeTab: string; visibleTabs: readonly string[]; scope: Scope; range?: RangeState; entity?: EntityRef; notice?: string; focusTarget: string };
 
 // Task 19: src/commands/grammar.ts
 type RawToken = { raw: string; start: number; end: number; quoted: boolean };
@@ -433,6 +454,54 @@ export async function loadHistoryReports(options: LoadHistoryOptions): Promise<H
 // loadGlobalReport builds the same object from the same scan and adds the same `coverage` key.
 ```
 
+Produce **every** declared reason on a real path (discovery already produces `no-manifest`, `manifest-unavailable`, `marker-unavailable`; the scan produces the other two), and make the replay step injectable so a failure after readability is testable:
+
+```ts
+type LoadHistoryOptions = {
+  root: string;
+  sessionDirectory(): string;
+  scope: Scope;
+  activeLeafId?: (sessionId: string) => string | null;
+  maintenance: MaintenanceOptions;
+  /** Test seam only; production uses the real reducer + adapters. */
+  replay?: (entries: readonly SessionEntry[], sessionId: string) => SessionReport;
+};
+
+/** Deterministic source-read validation: every failure it can name maps to ONE reason. */
+export function sourceReadFailure(
+  parsed: { id?: unknown; hasMalformedJson?: unknown; hasSessionHeader?: unknown },
+  sessionId: string,
+): CoverageReason | undefined {
+  if (parsed.hasMalformedJson === true) return "session-unreadable";
+  if (parsed.hasSessionHeader !== true) return "session-unreadable";
+  if (parsed.id !== sessionId) return "session-unreadable";
+  return undefined;
+}
+```
+
+```ts
+// inside the per-session scan, replacing the previous single try/catch
+      let parsed: ReturnType<typeof parseSessionJsonl>;
+      try {
+        parsed = parseSessionJsonl(await readFile(source, "utf8"));
+      } catch {
+        return { availability: "unavailable", sessionId, reason: "session-unreadable" };
+      }
+      const unreadable = sourceReadFailure(parsed, sessionId);
+      if (unreadable !== undefined) return { availability: "unavailable", sessionId, reason: unreadable };
+      if (!hasTrackingStartMarker(parsed.entries)) {
+        // Discovery already proved the marker once; a re-verification failure keeps its own reason.
+        return { availability: "unavailable", sessionId, reason: "marker-unavailable" };
+      }
+      let report: SessionReport;
+      try {
+        report = (options.replay ?? replaySession)(parsed.entries, sessionId);
+      } catch {
+        // The source was readable; the failure is in replay/adapters.
+        return { availability: "unavailable", sessionId, reason: "replay-failed" };
+      }
+```
+
 Add the optional field to both DTOs:
 
 ```ts
@@ -454,6 +523,27 @@ test("history and global report the same coverage from one scan", async () => {
   assert.equal(history.coverage?.complete, false);
   assert.deepEqual(history.coverage, global.coverage);
   assert.deepEqual(history.coverage?.reasons, { "manifest-unavailable": 1 });
+});
+
+test("every declared coverage reason is produced by a real path", async () => {
+  const cases: [string, string, CoverageReason][] = [
+    ["malformed JSON", "{not json\n", "session-unreadable"],
+    ["missing session header", '{"id":"22222222-2222-4222-8222-222222222222"}\n', "session-unreadable"],
+    ["session id mismatch", headerFor("99999999-9999-4999-8999-999999999999"), "session-unreadable"],
+  ];
+  for (const [label, source, reason] of cases) {
+    const history = await loadHistoryReports(await optionsWithSource(source));
+    assert.equal(history.coverage?.reasons[reason], 1, label);
+    assert.equal(history.coverage?.unavailable, 1, label);
+  }
+  const failing = await loadHistoryReports({
+    ...(await optionsWithSource(validSource())),
+    replay: () => {
+      throw new Error("reducer exploded");
+    },
+  });
+  assert.equal(failing.coverage?.reasons["replay-failed"], 1);
+  assert.equal(failing.coverage?.available, 0);
 });
 ```
 
@@ -495,7 +585,34 @@ test("aggregate sections render coverage wording and never a partial total", asy
   assert.match(html, /Known native cost/);
   assert.match(html, /Known tokens/);
   assert.match(html, /5 \/ 27 sessions · 22 unavailable/);
-  assert.doesNotMatch(html, /"usageLabel":"metric\.cost"/);
+  assert.doesNotMatch(html, /"usageLabels":\{[^}]*"cost":"metric\.cost"/);
+});
+
+test("known usage with unknown coverage shows the value; unavailable usage does not", async () => {
+  const legacy = await loadInspectorBundle({ ...input, loadHistory: async () => historyWithoutCoverage(), loadGlobal: async () => globalWithoutCoverage() });
+  const html = renderInspectorBundle(legacy);
+  assert.match(html, /Known native cost — completeness unknown/);
+  assert.match(html, /"cost":"coverage\.unknownCompletenessCost"/);
+  assert.match(html, /"usageUnavailable":false/);
+  assert.doesNotMatch(html, /"cost":"metric\.costUnavailable"/);
+});
+
+test("the label resolver separates value availability from coverage availability", () => {
+  const known = aggregateUsageLabels({ availability: "available", coverage: undefined });
+  assert.deepEqual(known, {
+    cost: "coverage.unknownCompletenessCost",
+    tokens: "coverage.unknownCompletenessTokens",
+    usageUnavailable: false,
+    sessions: "coverage.unknown",
+  });
+  const unavailable = aggregateUsageLabels({ availability: "unavailable", coverage: undefined });
+  assert.equal(unavailable.usageUnavailable, true);
+  const empty = aggregateUsageLabels({
+    availability: "available",
+    coverage: { inspected: 0, available: 0, unavailable: 0, sessionRatio: null, complete: false, discoveryLimited: false, reasons: {} },
+  });
+  assert.equal(empty.usageUnavailable, true);
+  assert.equal(empty.sessions, "coverage.none");
 });
 
 test("a capped discovery shows counts instead of a ratio", async () => {
@@ -546,6 +663,8 @@ Expected: FAIL — no coverage copy exists in the document.
   "coverage.unknown": "Sessions: Unavailable",
   "coverage.reasons": "Reasons: {reasons}",
   "coverage.completenessUnknown": "Native cost — completeness unknown",
+  "coverage.unknownCompletenessCost": "Known native cost — completeness unknown",
+  "coverage.unknownCompletenessTokens": "Known tokens — completeness unknown",
   "metric.knownCost": "Known native cost",
   "metric.knownTokens": "Known tokens",
   "metric.costUnavailable": "Unavailable",
@@ -554,18 +673,33 @@ Expected: FAIL — no coverage copy exists in the document.
 ```ts
 // src/ui/html.ts, server side
 /** Bounded label keys for an aggregate's cost/token metrics. */
-export function aggregateUsageLabels(coverage: CoverageSummary | undefined): {
-  cost: string; tokens: string; costUnavailable: boolean; sessions: string;
-} {
-  if (coverage === undefined) {
-    return { cost: "coverage.completenessUnknown", tokens: "coverage.completenessUnknown", costUnavailable: true, sessions: "coverage.unknown" };
+/**
+ * Aggregate value availability is INDEPENDENT of coverage availability:
+ * a legacy report with usage but no `coverage` key shows its observed value and
+ * is qualified as completeness-unknown, while `Unavailable` is reserved for a
+ * genuinely unavailable usage value (or an empty inspection set).
+ */
+export function aggregateUsageLabels(input: {
+  availability: "available" | "unavailable";
+  coverage: CoverageSummary | undefined;
+}): { cost: string; tokens: string; usageUnavailable: boolean; sessions: string } {
+  if (input.availability !== "available") {
+    return { cost: "metric.costUnavailable", tokens: "metric.costUnavailable", usageUnavailable: true, sessions: "coverage.unknown" };
   }
-  if (coverage.complete) return { cost: "metric.cost", tokens: "metric.tokens", costUnavailable: false, sessions: "coverage.complete" };
-  if (coverage.inspected === 0) return { cost: "metric.costUnavailable", tokens: "metric.costUnavailable", costUnavailable: true, sessions: "coverage.none" };
+  const coverage = input.coverage;
+  if (coverage === undefined) {
+    return { cost: "coverage.unknownCompletenessCost", tokens: "coverage.unknownCompletenessTokens", usageUnavailable: false, sessions: "coverage.unknown" };
+  }
+  if (coverage.inspected === 0) {
+    return { cost: "metric.costUnavailable", tokens: "metric.costUnavailable", usageUnavailable: true, sessions: "coverage.none" };
+  }
+  if (coverage.complete) {
+    return { cost: "metric.cost", tokens: "metric.tokens", usageUnavailable: false, sessions: "coverage.complete" };
+  }
   return {
     cost: "metric.knownCost",
     tokens: "metric.knownTokens",
-    costUnavailable: coverage.available === 0,
+    usageUnavailable: coverage.available === 0,
     sessions: coverage.discoveryLimited ? "coverage.sessionsLimited" : "coverage.sessions",
   };
 }
@@ -577,9 +711,10 @@ Project it into both aggregate sections (single place — `sectionProjection`) a
 // sectionProjection gains, for history and global:
   coverage: report.coverage === undefined ? null : {
     ...report.coverage,
-    labels: aggregateUsageLabels(report.coverage),
     reasons: Object.entries(report.coverage.reasons).map(([reason, count]) => `${reason}: ${count}`).join(" · "),
   },
+  // The metric labels come from availability + coverage, never from coverage alone.
+  usageLabels: aggregateUsageLabels({ availability: report.availability, coverage: report.coverage }),
 ```
 
 ```js
@@ -588,17 +723,18 @@ function coveragePanel(section){
   var coverage=section.coverage;
   if(!coverage)return el("div","notice",tr("coverage.unknown"));
   var lines=[];
-  if(coverage.labels.sessions==="coverage.sessionsLimited")lines.push(tr("coverage.sessionsLimited",{inspected:coverage.inspected}));
-  else if(coverage.labels.sessions==="coverage.none")lines.push(tr("coverage.none"));
-  else if(coverage.labels.sessions==="coverage.unknown")lines.push(tr("coverage.unknown"));
+  if(coverage.inspected===0)lines.push(tr("coverage.none"));
+  else if(coverage.discoveryLimited)lines.push(tr("coverage.sessionsLimited",{inspected:coverage.inspected}));
   else lines.push(tr("coverage.sessions",{available:coverage.available,inspected:coverage.inspected,unavailable:coverage.unavailable}));
   if(coverage.reasons)lines.push(tr("coverage.reasons",{reasons:coverage.reasons}));
   var box=el("div","notice coverage");box.append(el("strong","",tr("coverage.title")),el("div","",lines.join(" · ")));
   return box;
 }
+// metric values: never replaced by the string "Unavailable" unless
+// section.usageLabels.usageUnavailable is true; otherwise show the number with the label.
 ```
 
-Use the labels for every aggregate metric (cost, tokens) so an incomplete report can never print `Total`/`Native cost` unqualified, and never render `$0.00` when `costUnavailable` is true.
+Use the labels for every aggregate metric (cost, tokens) so an incomplete report can never print `Total`/`Native cost` unqualified, and never render `$0.00` when `usageUnavailable` is true.
 
 - [ ] **Step 4: Keep the qualifier out of the session detail**
 
@@ -656,11 +792,19 @@ test("a child run carries the publishing entry's observation time and tool id", 
   assert.equal(evidence.runsWithUsage, 1);
 });
 
-test("a run without a usable call id keeps the fields absent", () => {
+test("a result that cannot be deterministically joined publishes no run", () => {
   const evidence = readSubagentEvidence([entry({ id: "r1", type: "message", timestamp: "2026-09-12T00:01:00.000Z",
     message: { role: "toolResult", toolName: "subagent", isError: false, details: { results: [{ index: 0, agent: "worker" }] } } })]);
-  assert.equal(evidence.runs[0]?.observedAt, "2026-09-12T00:01:00.000Z");
-  assert.equal(evidence.runs[0]?.evidenceToolId, undefined);
+  // No usable call id ⇒ nothing to correlate: the run is skipped, never guessed.
+  assert.equal(evidence.runs.length, 0);
+  assert.equal(evidence.runsWithUsage, 0);
+});
+
+test("a call without a result publishes no run while activity still counts it", () => {
+  const evidence = readSubagentEvidence([entry({ id: "a1", type: "message", timestamp: "2026-09-11T23:59:00.000Z",
+    message: { role: "assistant", content: [{ type: "toolCall", id: "call_1", name: "subagent", arguments: {} }] } })]);
+  assert.equal(evidence.runs.length, 0);
+  assert.equal(evidence.activity.calls, 1);
 });
 ```
 
@@ -689,16 +833,27 @@ export type AgentRun = {
 ```
 
 ```ts
-// src/integrations/subagents.ts — collectResult already keys by message.toolCallId; keep it and pass context down
-function collectResult(message: Readonly<Record<string, unknown>>, entryTimestamp: string, results: Map<string, Readonly<Record<string, unknown>>>): void {
+// src/integrations/subagents.ts — observation time and the canonical tool id travel together
+type JoinedResult = { message: Readonly<Record<string, unknown>>; observedAt: string };
+
+/**
+ * Only a result carrying a usable `message.toolCallId` for a tool in
+ * `SUBAGENT_TOOL_NAMES` can be joined. A result that cannot be joined publishes
+ * NO run: evidence extraction is never broadened to satisfy a fixture.
+ */
+function collectResult(
+  message: Readonly<Record<string, unknown>>,
+  entryTimestamp: string,
+  joinable: boolean,
+  results: Map<string, JoinedResult>,
+): void {
   const callId = message.toolCallId;
-  if (typeof callId !== "string" || callId.length === 0) return;
-  if (!results.has(callId)) {
-    results.set(callId, message);
-    observedAt.set(callId, entryTimestamp);
-  }
+  if (!joinable || typeof callId !== "string" || callId.length === 0) return;
+  if (!results.has(callId)) results.set(callId, { message, observedAt: entryTimestamp });
 }
 ```
+
+`pushRun` receives `{ runId, parentId, observedAt, evidenceToolId }` derived from **the joined entry** (`JoinedResult`), so a run can never carry an observation time or an evidence id that came from a different result:
 
 `pushRun` gains the two fields (both optional, both validated: `observedAt` only when `isIsoTimestamp` style parse succeeds; `evidenceToolId` only when the call id was non-empty and the tool name is one of `SUBAGENT_TOOL_NAMES`):
 
@@ -754,6 +909,7 @@ git commit -m "feat: attribute child runs by observation time and add the cross-
 **Files:**
 
 - Modify: `src/ui/load-history.ts`
+- Create: `tests/fixtures/pi/0.85.1/mixed-usage.jsonl`
 - Test: `tests/unit/history-reports.test.ts`, `tests/fixtures/pi/0.85.1/long-session.jsonl` (generated in-test, see Step 1)
 
 **Interfaces:**
@@ -764,7 +920,71 @@ git commit -m "feat: attribute child runs by observation time and add the cross-
 - [ ] **Step 1: Write the failing test**
 
 ```ts
+// tests/fixtures/pi/0.85.1/mixed-usage.jsonl  (one session, every usage source)
+{"type":"session","id":"mixed-usage","timestamp":"2026-09-01T08:00:00.000Z"}
+{"type":"message","id":"g1","parentId":null,"timestamp":"2026-09-01T09:00:00.000Z","message":{"role":"assistant","provider":"anthropic","model":"claude-x","usage":{"input":100,"output":50,"totalTokens":150,"cost":1.5},"content":[{"type":"toolCall","id":"call_a","name":"bash","arguments":{"command":"true"}}]}}
+{"type":"message","id":"r1","parentId":"g1","timestamp":"2026-09-02T00:10:00.000Z","message":{"role":"toolResult","toolCallId":"call_a","toolName":"bash","isError":false,"usage":{"input":10,"output":5,"totalTokens":15,"cost":0.15},"content":"[redacted]"}}
+{"type":"compaction","id":"c1","parentId":"r1","timestamp":"2026-09-02T12:00:00.000Z","usage":{"input":20,"output":10,"totalTokens":30,"cost":0.3}}
+{"type":"branch_summary","id":"b1","parentId":"c1","timestamp":"2026-09-03T12:00:00.000Z","usage":{"input":5,"output":5,"totalTokens":10,"cost":0.1}}
+{"type":"message","id":"g2","parentId":"b1","timestamp":"2026-09-04T09:00:00.000Z","message":{"role":"assistant","provider":"anthropic","model":"claude-x","usage":{"input":1,"output":1,"totalTokens":2,"cost":0.02},"content":[{"type":"toolCall","id":"call_b","name":"edit","arguments":{"filePath":"x"}}]}}
+{"type":"message","id":"r2","parentId":"g2","timestamp":"2026-09-05T09:00:00.000Z","message":{"role":"toolResult","toolCallId":"call_b","toolName":"edit","isError":true,"content":"[redacted]"}}
+```
+
+```ts
 // append to tests/unit/history-reports.test.ts
+function mixedReport(): SessionReport {
+  const source = readFileSync("tests/fixtures/pi/0.85.1/mixed-usage.jsonl", "utf8");
+  return toSessionReport(reduceEntries("mixed-usage", parseSessionJsonl(source).entries));
+}
+
+/** The reference the rows must match: same range, straight from the report. */
+function projectUsage(report: SessionReport, range: { from: string; to: string }): { totalTokens: number; cost: number } {
+  let totalTokens = 0;
+  let cost = 0;
+  const add = (timestamp: string, usage: { totalTokens: number; cost: number } | undefined): void => {
+    if (usage === undefined || !isInRange(timestamp.slice(0, 10), { preset: null, ...range })) return;
+    totalTokens += usage.totalTokens;
+    cost += usage.cost;
+  };
+  for (const generation of report.generations) add(generation.timestamp, generation.usage);
+  for (const tool of report.tools) add(tool.timestamp, tool.usage);
+  for (const compaction of report.compactions) add(compaction.timestamp, compaction.usage);
+  return { totalTokens, cost: Math.round(cost * 1e6) / 1e6 };
+}
+
+test("usageByDate attributes every usage source by logical call", () => {
+  const report = mixedReport();
+  const { rows, truncated } = sessionUsageByDate(report);
+  assert.equal(truncated, false);
+  assert.deepEqual(rows.map((row) => [row.date, row.totalTokens, row.generations, row.tools, row.errors]), [
+    ["2026-09-01", 165, 1, 1, 0], // generation 150 + tool-result usage 15, on the CALL day
+    ["2026-09-02", 30, 0, 0, 0],  // compaction
+    ["2026-09-03", 10, 0, 0, 0],  // branch summary
+    ["2026-09-04", 2, 1, 1, 0],   // generation only
+    ["2026-09-05", 0, 0, 0, 1],   // error observation only: membership evidence, zero usage
+  ]);
+  assert.deepEqual(rows[0]?.composition, {
+    generations: { totalTokens: 150, cost: 1.5 },
+    toolResults: { totalTokens: 15, cost: 0.15 },
+    compactions: { totalTokens: 0, cost: 0 },
+    branchSummaries: { totalTokens: 0, cost: 0 },
+  });
+});
+
+test("a fully retained range reconciles with the same range projection of the report", () => {
+  const report = mixedReport();
+  const rows = sessionUsageByDate(report).rows;
+  assert.equal(rows.reduce((sum, row) => sum + row.totalTokens, 0), report.usage.totalTokens);
+  assert.equal(Math.round(rows.reduce((sum, row) => sum + row.cost, 0) * 1e6) / 1e6, report.usage.cost);
+  const range = { preset: null, from: "2026-09-01", to: "2026-09-02" };
+  const inRange = rows.filter((row) => isInRange(row.date, range));
+  const projection = projectUsage(report, range);
+  assert.equal(inRange.reduce((sum, row) => sum + row.totalTokens, 0), projection.totalTokens);
+  assert.equal(Math.round(inRange.reduce((sum, row) => sum + row.cost, 0) * 1e6) / 1e6, projection.cost);
+  assert.equal(inRange.reduce((sum, row) => sum + row.composition.toolResults.totalTokens, 0), 15);
+  assert.equal(inRange.reduce((sum, row) => sum + row.composition.compactions.totalTokens, 0), 30);
+});
+
 test("usageByDate covers the retained window and flags truncation", async () => {
   // session with records on 400 distinct UTC days: two on the newest days, the rest older
   const options = await longSessionOptions({ days: 400 });
@@ -798,34 +1018,71 @@ Expected: FAIL — `usageByDate` is undefined.
 
 ```ts
 // src/ui/load-history.ts
-export type DateUsageRow = { date: string; totalTokens: number; cost: number; generations: number; tools: number };
+export type DateUsageRow = {
+  date: string;
+  totalTokens: number;
+  cost: number;
+  generations: number;
+  tools: number;
+  errors: number;
+  composition: { generations: SafeUsage; toolResults: SafeUsage; compactions: SafeUsage; branchSummaries: SafeUsage };
+};
 
 const MAX_USAGE_BY_DATE = 366;
+const zero = (): SafeUsage => ({ totalTokens: 0, cost: 0 });
+const round = (value: number): number => Math.round(value * 1e6) / 1e6;
 
 /**
- * Dated evidence for one replayed session, newest window first. Truncation is
- * reported, never hidden: a truncated window cannot prove the omitted period, so
- * aggregate rows must qualify their usage as Known (§5.6).
+ * Dated evidence for one replayed session, newest window first, attributed by
+ * LOGICAL CALL (§5.7): generation usage on the generation date, tool-result
+ * usage on the tool's CALL date, compaction and branch-summary usage on their own
+ * entry dates. Tool and error observation dates create membership evidence even
+ * when they carry no usage. `totalTokens`/`cost` are the sums of the four
+ * composition parts, so the retained window reconciles with SessionReport.usage.
+ * Truncation is reported, never hidden.
  */
 export function sessionUsageByDate(report: SessionReport): { rows: DateUsageRow[]; truncated: boolean } {
   const byDate = new Map<string, DateUsageRow>();
   const rowFor = (date: string): DateUsageRow => {
-    const existing = byDate.get(date) ?? { date, totalTokens: 0, cost: 0, generations: 0, tools: 0 };
+    const existing = byDate.get(date) ?? {
+      date, totalTokens: 0, cost: 0, generations: 0, tools: 0, errors: 0,
+      composition: { generations: zero(), toolResults: zero(), compactions: zero(), branchSummaries: zero() },
+    };
     byDate.set(date, existing);
     return existing;
+  };
+  const addUsage = (row: DateUsageRow, usage: Usage, part: keyof DateUsageRow["composition"]): void => {
+    row.composition[part].totalTokens += usage.totalTokens;
+    row.composition[part].cost = round(row.composition[part].cost + usage.cost);
+    row.totalTokens += usage.totalTokens;
+    row.cost = round(row.cost + usage.cost);
   };
   for (const generation of report.generations) {
     const date = utcDate(generation.timestamp);
     if (date === undefined) continue;
     const row = rowFor(date);
     row.generations += 1;
-    row.totalTokens += generation.usage.totalTokens;
-    row.cost = Math.round((row.cost + generation.usage.cost) * 1e6) / 1e6;
+    addUsage(row, generation.usage, "generations");
   }
   for (const tool of report.tools) {
+    // Call date, not result date: the call is the logical unit (§5.7).
     const date = utcDate(tool.timestamp);
     if (date === undefined) continue;
-    rowFor(date).tools += 1;
+    const row = rowFor(date);
+    row.tools += 1;
+    if (tool.usage !== undefined) addUsage(row, tool.usage, "toolResults");
+  }
+  for (const compaction of report.compactions) {
+    const date = utcDate(compaction.timestamp);
+    if (date === undefined) continue;
+    const row = rowFor(date);
+    addUsage(row, compaction.usage, compaction.kind === "branch_summary" ? "branchSummaries" : "compactions");
+  }
+  for (const error of report.errors) {
+    // Observation-only: membership evidence with no usage of its own.
+    const date = utcDate(error.timestamp);
+    if (date === undefined) continue;
+    rowFor(date).errors += 1;
   }
   const dates = [...byDate.keys()].sort();
   const truncated = dates.length > MAX_USAGE_BY_DATE;
@@ -856,20 +1113,27 @@ function toHistoricalSession(session: SessionScan): HistoricalSession {
 }
 ```
 
-- [ ] **Step 4: Prove the reconciliation contract at the boundary**
+- [ ] **Step 4: Prove the reconciliation and membership contracts at the boundary**
 
 ```ts
-test("retained-window dates reconcile with the session detail for a recent range", async () => {
+test("the newest retained date reconciles with the session detail", async () => {
   const options = await longSessionOptions({ days: 400 });
   const history = await loadHistoryReports(options);
   const session = history.sessions[0];
   if (session?.availability !== "available") throw new Error("expected available");
   const newest = session.usageByDate.at(-1)?.date as string;
   const rowTotal = session.usageByDate.filter((row) => row.date === newest).reduce((sum, row) => sum + row.totalTokens, 0);
-  const detailTotal = session.report.generations
-    .filter((generation) => generation.timestamp.startsWith(newest))
-    .reduce((sum, generation) => sum + generation.usage.totalTokens, 0);
+  const detailTotal = projectUsage(session.report, { from: newest, to: newest }).totalTokens;
   assert.equal(rowTotal, detailTotal);
+});
+
+test("an observation-only date is membership evidence with zero usage", () => {
+  const rows = sessionUsageByDate(mixedReport()).rows;
+  const observationOnly = rows.find((row) => row.errors > 0) as DateUsageRow;
+  assert.equal(observationOnly.totalTokens, 0);
+  assert.equal(observationOnly.date, "2026-09-05");
+  // Membership is real even though nothing was spent on that date.
+  assert.equal(historyRowRange({ usageByDate: rows, usageByDateTruncated: false }, { preset: null, from: "2026-09-05", to: "2026-09-05" }).member, true);
 });
 ```
 
@@ -1139,7 +1403,7 @@ git commit -m "feat: report identical report projections and scope copy without 
 
 **Interfaces:**
 
-- Produces: `RangeState`, `resolveRange`, `isInRange`, `presetRange`, `shiftUtcDay`, `latestObservedDate`, `serializeRangeQuery`, `parseRangeQuery` (Shared interfaces plus the query helpers used by Task 16).
+- Produces: `RangeState`, `RangeIntent`, `resolveRange`, `isInRange`, `presetRange`, `shiftUtcDay`, `latestObservedDate`, `serializeRangeQuery`, `parseRangeQuery` (Shared interfaces plus the query helpers used by Task 16).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1167,18 +1431,38 @@ test("boundaries are inclusive on both ends", () => {
 test("defaults are the full observed span for current and 14D for aggregates", () => {
   assert.deepEqual(resolveRange(undefined, dates, "current"), { preset: null, from: "2026-09-01", to: "2026-09-12" });
   assert.deepEqual(resolveRange(undefined, dates, "aggregate"), { preset: 14, from: "2026-08-30", to: "2026-09-12" });
-  assert.deepEqual(resolveRange(undefined, [], "current"), { preset: null, from: "1970-01-01", to: "1970-01-01" });
+  // Nothing observed ⇒ no range at all, never a sentinel date.
+  assert.equal(resolveRange(undefined, [], "current"), undefined);
+  assert.equal(resolveRange(undefined, [], "aggregate"), undefined);
+});
+
+test("a preset is an unresolved intent until it meets a view's dates", () => {
+  assert.deepEqual(parseRangeQuery("preset=7"), { kind: "preset", preset: 7 });
+  assert.deepEqual(parseRangeQuery("preset=30&from=2026-09-01&to=2026-09-12"), { kind: "preset", preset: 30 });
+  assert.equal(parseRangeQuery("preset=99"), undefined);
+  assert.equal(parseRangeQuery("preset="), undefined);
+  const intent = parseRangeQuery("preset=7") as RangeIntent;
+  assert.deepEqual(resolveRange(intent, dates, "current"), presetRange(7, dates)); // identical to the 7D selector
+  assert.equal(resolveRange(intent, [], "current"), undefined);
+  assert.deepEqual(serializeRangeQuery(intent), [["preset", "7"]]);
 });
 
 test("a custom range survives only as a valid pair", () => {
-  assert.deepEqual(parseRangeQuery("from=2026-09-01&to=2026-09-12"), { preset: null, from: "2026-09-01", to: "2026-09-12" });
+  assert.deepEqual(parseRangeQuery("from=2026-09-01&to=2026-09-12"), { kind: "custom", from: "2026-09-01", to: "2026-09-12" });
   assert.equal(parseRangeQuery("from=2026-09-01"), undefined);
   assert.equal(parseRangeQuery("to=2026-09-12"), undefined);
   assert.equal(parseRangeQuery("from=2026-09-12&to=2026-09-01"), undefined);
   assert.equal(parseRangeQuery("from=2026-13-01&to=2026-09-12"), undefined);
-  assert.deepEqual(parseRangeQuery("preset=7&from=2026-09-01&to=2026-09-12"), { preset: 7, from: "1970-01-01", to: "1970-01-01" });
-  assert.deepEqual(serializeRangeQuery({ preset: null, from: "2026-09-01", to: "2026-09-12" }), [["from", "2026-09-01"], ["to", "2026-09-12"]]);
-  assert.deepEqual(serializeRangeQuery({ preset: 7, from: "2026-09-06", to: "2026-09-12" }), [["preset", "7"]]);
+  assert.deepEqual(serializeRangeQuery({ kind: "custom", from: "2026-09-01", to: "2026-09-12" }), [["from", "2026-09-01"], ["to", "2026-09-12"]]);
+});
+
+test("no helper can produce the 1970 sentinel", () => {
+  const pairs = [
+    ...serializeRangeQuery({ kind: "custom", from: "2026-09-01", to: "2026-09-12" }),
+    ...serializeRangeQuery({ kind: "preset", preset: 14 }),
+  ];
+  assert.ok(pairs.every(([, value]) => !value.startsWith("1970")));
+  assert.ok(pairs.every(([, value]) => value !== "1970-01-01"));
 });
 
 test("day shifting is UTC-stable and latestObservedDate ignores bad input", () => {
@@ -1227,17 +1511,13 @@ export function presetRange(preset: 7 | 14 | 30, dates: readonly string[]): Rang
   return { preset, from: shiftUtcDay(to, -(preset - 1)), to };
 }
 
-export function resolveRange(range: RangeState | undefined, dates: readonly string[], kind: "current" | "aggregate"): RangeState {
-  const DATE = /^\d{4}-\d{2}-\d{2}$/;
-  if (range !== undefined) return range;
-  if (kind === "aggregate") {
-    const preset = presetRange(14, dates);
-    if (preset !== undefined) return preset;
-  }
-  const from = dates.filter((date) => DATE.test(date)).sort();
-  const first = from.length === 0 ? "1970-01-01" : from[0] as string;
-  const last = from.length === 0 ? "1970-01-01" : from[from.length - 1] as string;
-  return { preset: null, from: first, to: last };
+export function resolveRange(intent: RangeIntent | undefined, dates: readonly string[], kind: "current" | "aggregate"): RangeState | undefined {
+  if (intent !== undefined && intent.kind === "custom") return { preset: null, from: intent.from, to: intent.to };
+  if (intent !== undefined) return presetRange(intent.preset, dates);
+  if (kind === "aggregate") return presetRange(14, dates);
+  const observed = dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)).sort();
+  if (observed.length === 0) return undefined; // no observed dates ⇒ no range, never a sentinel
+  return { preset: null, from: observed[0] as string, to: observed[observed.length - 1] as string };
 }
 
 export function isInRange(date: string, range: RangeState): boolean {
@@ -1245,17 +1525,25 @@ export function isInRange(date: string, range: RangeState): boolean {
 }
 
 /** Query pairs in canonical order; a preset serializes alone. */
-export function serializeRangeQuery(range: RangeState): [string, string][] {
-  if (range.preset !== null) return [["preset", String(range.preset)]];
-  return [["from", range.from], ["to", range.to]];
+export type RangeIntent = { kind: "preset"; preset: 7 | 14 | 30 } | { kind: "custom"; from: string; to: string };
+
+/**
+ * Query pairs in canonical order. A preset serializes as `preset=<n>` and carries
+ * NO dates: it stays an unresolved intent until the active view's observed dates
+ * resolve it, so no sentinel can ever reach a hash, a filter, or the rendering.
+ */
+export function serializeRangeQuery(intent: RangeIntent): [string, string][] {
+  if (intent.kind === "preset") return [["preset", String(intent.preset)]];
+  return [["from", intent.from], ["to", intent.to]];
 }
 
 /**
- * Reads `<...>` params from an already-decoded parameter map. A lone, malformed,
- * or inverted pair is NOT partially applied: it returns undefined so the caller
- * falls back to the view default and renders the restoration notice.
+ * Reads range params. Rejections are total — there is no partial application and
+ * no fabricated date: an unknown/invalid preset, a lone endpoint, a malformed
+ * date, or an inverted pair all yield undefined so the caller can fall back to
+ * the view default and render the restoration notice.
  */
-export function parseRangeQuery(query: string): RangeState | undefined {
+export function parseRangeQuery(query: string): RangeIntent | undefined {
   const DATE = /^\d{4}-\d{2}-\d{2}$/;
   const PRESETS: readonly number[] = [7, 14, 30];
   const params = new Map<string, string>();
@@ -1268,15 +1556,15 @@ export function parseRangeQuery(query: string): RangeState | undefined {
   const presetText = params.get("preset");
   if (presetText !== undefined) {
     const preset = Number(presetText);
-    if (PRESETS.includes(preset as 7 | 14 | 30)) return { preset: preset as 7 | 14 | 30, from: "1970-01-01", to: "1970-01-01" };
-    return undefined;
+    // A preset wins over a pair (deterministic precedence) and stays unresolved.
+    return PRESETS.includes(preset) ? { kind: "preset", preset: preset as 7 | 14 | 30 } : undefined;
   }
   const from = params.get("from");
   const to = params.get("to");
   if (from === undefined || to === undefined) return undefined;
   if (!DATE.test(from) || !DATE.test(to)) return undefined;
   if (from > to) return undefined;
-  return { preset: null, from, to };
+  return { kind: "custom", from, to };
 }
 ```
 
@@ -1284,9 +1572,17 @@ export function parseRangeQuery(query: string): RangeState | undefined {
 
 ```ts
 test("invalid pairs never yield a partial range", () => {
-  for (const query of ["", "from=2026-09-01", "to=2026-09-12", "from=2026-09-12&to=2026-09-01", "from=x&to=y"]) {
+  for (const query of ["", "from=2026-09-01", "to=2026-09-12", "from=2026-09-12&to=2026-09-01", "from=x&to=y", "preset=99"]) {
     assert.equal(parseRangeQuery(query), undefined, query);
   }
+});
+
+test("a preset intent round-trips without dates", () => {
+  const intent = parseRangeQuery("preset=14") as RangeIntent;
+  const pairs = serializeRangeQuery(intent);
+  assert.deepEqual(pairs, [["preset", "14"]]);
+  const query = pairs.map(([key, value]) => `${key}=${value}`).join("&");
+  assert.deepEqual(parseRangeQuery(query), intent);
 });
 ```
 
@@ -1312,7 +1608,7 @@ git commit -m "feat: add the pure range module with pair validation and UTC pres
 **Interfaces:**
 
 - Consumes: `src/ui/range.ts` (Task 8), `usageByDate`/`usageByDateTruncated` (Task 5), canonical date fields (Task 11).
-- Produces: browser-side `rangeRows(view, range)`, `historyRowInRange(entry, range)`, catalog keys `range.truncated`, `history.dailyTruncated`, `range.restored`.
+- Produces: browser-side `filterView(view, range)` and `historyRowRange(entry, range)` (both from `src/ui/range.ts`), catalog keys `range.truncated`, `history.dailyTruncated`, `range.restored`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1333,20 +1629,37 @@ test("7D and 14D differ on every range-aware widget", () => {
 });
 
 test("a session joins an aggregate range only with an in-range record", () => {
-  const spanning = { usageByDate: [usageRow("2026-01-01", 10), usageRow("2026-09-12", 20)], firstDate: "2026-01-01", lastDate: "2026-09-12" };
+  const spanning = { usageByDate: [usageRow("2026-01-01", 10), usageRow("2026-09-12", 20)] };
   const range = { preset: null, from: "2026-09-01", to: "2026-09-12" };
-  assert.deepEqual(historyRowRange(spanning, range), { member: true, totalTokens: 20, cost: usageRow("2026-09-12", 20).cost, truncated: false });
-  const outside = { usageByDate: [usageRow("2026-01-01", 10)], firstDate: "2026-01-01", lastDate: "2026-09-12" };
-  assert.deepEqual(historyRowRange(outside, range), { member: false, totalTokens: 0, cost: 0, truncated: false });
+  assert.deepEqual(historyRowRange(spanning, range), { member: true, totalTokens: 20, cost: usageRow("2026-09-12", 20).cost, partial: false });
+  const outside = { usageByDate: [usageRow("2026-01-01", 10)] };
+  assert.deepEqual(historyRowRange(outside, range), { member: false, totalTokens: 0, cost: 0, partial: false });
 });
 
-test("a truncated row qualifies its old-range usage instead of reporting zero", () => {
-  const truncated = { usageByDate: [usageRow("2029-06-21", 5)], usageByDateTruncated: true };
-  const old = { preset: null, from: "2020-01-01", to: "2020-12-31" };
-  const result = historyRowRange(truncated, old);
+// Three truncation cases, in the order the contract requires them to be decided.
+const truncatedRows = { usageByDate: [usageRow("2029-06-21", 5)], usageByDateTruncated: true };
+
+test("case 1: a range fully inside the retained window is complete", () => {
+  const retained = { usageByDate: [usageRow("2029-06-21", 5), usageRow("2029-06-22", 7)], usageByDateTruncated: true };
+  assert.deepEqual(historyRowRange(retained, { preset: null, from: "2029-06-22", to: "2029-06-22" }), {
+    member: true, totalTokens: 7, cost: usageRow("2029-06-22", 7).cost, partial: false,
+  });
+});
+
+test("case 2: a range that reaches into omitted history is partial, not complete", () => {
+  const retained = { usageByDate: [usageRow("2029-06-21", 5)], usageByDateTruncated: true };
+  const result = historyRowRange(retained, { preset: null, from: "2020-01-01", to: "2029-06-21" });
+  assert.equal(result.member, true);        // known in-range evidence exists
+  assert.equal(result.totalTokens, 5);      // the exact known subtotal
+  assert.equal(result.partial, true);       // and it is explicitly partial
+});
+
+test("case 3: a range entirely inside the omitted period is unavailable, never zero", () => {
+  const result = historyRowRange(truncatedRows, { preset: null, from: "2020-01-01", to: "2020-12-31" });
   assert.equal(result.member, false);
-  assert.equal(result.truncated, true);
+  assert.equal(result.partial, true);
   assert.equal(result.totalTokens, null);
+  assert.equal(result.cost, null);
 });
 ```
 
@@ -1382,43 +1695,65 @@ export function filterView<V extends ViewRows>(view: V, range: RangeState): V {
   };
 }
 
-export type HistoryRowRange = { member: boolean; totalTokens: number | null; cost: number | null; truncated: boolean };
+export type HistoryRowRange = { member: boolean; totalTokens: number | null; cost: number | null; partial: boolean };
 
-/** Aggregate membership requires an in-range observed record (§5.6). */
+/**
+ * Aggregate membership requires an in-range observed record (§5.6). The
+ * truncation verdict is decided FIRST, so a known subtotal is never presented as
+ * a complete one:
+ *   - retained rows in range, no reach into omitted history → exact, partial false
+ *   - retained rows in range AND the range starts before the oldest retained row
+ *     → member true, exact known subtotal, partial true (labels must say Known)
+ *   - no retained rows in range AND the range reaches into omitted history
+ *     → usage unavailable (null), never 0
+ *   - no retained rows in range, fully covered range → member false, 0
+ */
 export function historyRowRange(
   entry: { usageByDate: readonly { date: string; totalTokens: number; cost: number }[]; usageByDateTruncated?: boolean },
   range: RangeState,
 ): HistoryRowRange {
+  const oldest = entry.usageByDate.map((row) => row.date).sort()[0];
+  const reachesOmitted = entry.usageByDateTruncated === true && oldest !== undefined && range.from < oldest;
   const inRange = entry.usageByDate.filter((row) => isInRange(row.date, range));
   if (inRange.length > 0) {
     return {
       member: true,
       totalTokens: inRange.reduce((sum, row) => sum + row.totalTokens, 0),
       cost: Math.round(inRange.reduce((sum, row) => sum + row.cost, 0) * 1e6) / 1e6,
-      truncated: false,
+      partial: reachesOmitted,
     };
   }
-  const oldest = [...entry.usageByDate].sort((a, b) => a.date.localeCompare(b.date))[0];
-  const reachesBeforeRetained = entry.usageByDateTruncated === true && oldest !== undefined && range.from < oldest.date;
-  return { member: false, totalTokens: reachesBeforeRetained ? null : 0, cost: reachesBeforeRetained ? null : 0, truncated: reachesBeforeRetained };
+  if (reachesOmitted) return { member: false, totalTokens: null, cost: null, partial: true };
+  return { member: false, totalTokens: 0, cost: 0, partial: false };
 }
 ```
 
 In the client, every tab renders from `filterView(view, period())`, and the history list renders rows via `historyRowRange`, grouping `member === false && truncated === true` rows under the `Unavailable · dates unknown` group with the `history-daily-truncated` diagnostic and a `Known` qualifier:
 
 ```js
-function inPeriodRow(entry){var result=historyRowRange(entry,period());return result;}
-function historyMetrics(){ /* sum only rows with result.member === true; when any result.truncated, prefix the metric labels with tr("metric.knownCost") */ }
+function inPeriodRow(entry){return historyRowRange(entry,period());}
+function historyMetrics(){
+  /* Sum only rows with result.member === true. When ANY contributing row has
+     result.partial === true, the aggregate labels switch to tr("metric.knownCost") /
+     tr("metric.knownTokens") and the row shows the history-daily-truncated diagnostic:
+     a known subtotal must never be presented as complete. */
+}
 ```
 
 - [ ] **Step 4: Assert the truncation notice and no-zero rule**
 
 ```ts
-test("a truncated session never renders as zero and states the diagnostic", async () => {
+test("a truncated contribution always renders as Known with the diagnostic", async () => {
   const html = renderInspectorBundle(bundleWithTruncatedHistory());
   assert.match(html, /history-daily-truncated/);
-  assert.match(html, /Known/);
-  assert.doesNotMatch(html, /\$0\.00<\/\w+><\w+[^>]*>history-daily-truncated/);
+  assert.match(html, /Known native cost|Known tokens/);
+  assert.doesNotMatch(html, /"partial":true[^}]*"totalTokens":0/);
+});
+
+test("only a complete range keeps the unqualified labels", async () => {
+  const html = renderInspectorBundle(bundleWithTruncatedHistory());
+  const completeRange = html.slice(0, html.indexOf("history-daily-truncated"));
+  assert.match(completeRange, /metric\.cost|Native cost/);
 });
 ```
 
@@ -2062,12 +2397,13 @@ import { test } from "node:test";
 import { deriveView, parseRoute, routeKey, serializeRoute, type InspectorRoute } from "../../src/ui/route.ts";
 
 const capabilities = { current: ["overview", "models", "tools", "environment", "agents", "integrations", "errors", "ledger"], history: ["overview"], global: ["overview"] };
-const defaults = { scope: "active" as const, range: { preset: null, from: "2026-09-01", to: "2026-09-12" }, capabilities };
+const observed = ["2026-09-01", "2026-09-11", "2026-09-12"];
+const defaults = { scope: "active" as const, capabilities, knownIds: new Set(["tool:call_abc", "tool:call_1"]) };
 
 test("a route round-trips with the canonical parameter order", () => {
   const route: InspectorRoute = {
     section: "current", tab: "tools", scope: "tree",
-    range: { preset: 7, from: "2026-09-06", to: "2026-09-12" },
+    range: { kind: "preset", preset: 7 },
     entity: { kind: "tool", id: "tool:call_abc" },
     table: { query: "bash", sort: "cost" },
   };
@@ -2077,8 +2413,25 @@ test("a route round-trips with the canonical parameter order", () => {
   assert.equal(routeKey(parseRoute(hash, defaults).route), hash);
 });
 
+test("a preset deep link resolves against the view's dates, exactly like the selector", () => {
+  const { route } = parseRoute("#/current/tools?scope=tree&preset=7", defaults);
+  assert.deepEqual(route.range, { kind: "preset", preset: 7 });
+  assert.deepEqual(resolveRange(route.range, observed, "current"), presetRange(7, observed));
+  assert.equal(serializeRoute(route), "#/current/tools?scope=tree&preset=7"); // no dates baked in
+  const view = deriveView(route, capabilities, observed);
+  assert.deepEqual(view.range, presetRange(7, observed));
+  assert.deepEqual(view.range, resolveRange({ kind: "preset", preset: 7 }, observed, "current"));
+});
+
+test("a view with no observed dates has no range at all", () => {
+  const { route } = parseRoute("#/current/tools", defaults);
+  const view = deriveView(route, capabilities, []);
+  assert.equal(view.range, undefined);
+  assert.doesNotMatch(serializeRoute(route), /1970-01-01/);
+});
+
 test("a custom range serializes both endpoints and restores exactly", () => {
-  const route: InspectorRoute = { section: "current", tab: "tools", scope: "tree", range: { preset: null, from: "2026-09-01", to: "2026-09-12" } };
+  const route: InspectorRoute = { section: "current", tab: "tools", scope: "tree", range: { kind: "custom", from: "2026-09-01", to: "2026-09-12" } };
   const hash = serializeRoute(route);
   assert.equal(hash, "#/current/tools?scope=tree&from=2026-09-01&to=2026-09-12");
   assert.deepEqual(parseRoute(hash, defaults).route.range, route.range);
@@ -2086,11 +2439,14 @@ test("a custom range serializes both endpoints and restores exactly", () => {
 
 test("an invalid or lone range endpoint falls back with a notice", () => {
   const lone = parseRoute("#/current/tools?from=2026-09-01", defaults);
-  assert.deepEqual(lone.route.range, defaults.range);
+  assert.equal(lone.route.range, undefined);
   assert.equal(lone.notice, "range-restored");
   const inverted = parseRoute("#/current/tools?from=2026-09-12&to=2026-09-01", defaults);
-  assert.deepEqual(inverted.route.range, defaults.range);
+  assert.equal(inverted.route.range, undefined);
   assert.equal(inverted.notice, "range-restored");
+  const badPreset = parseRoute("#/current/tools?preset=99", defaults);
+  assert.equal(badPreset.route.range, undefined);
+  assert.equal(badPreset.notice, "range-restored");
 });
 
 test("unsupported tabs and sections degrade with a notice", () => {
@@ -2103,16 +2459,17 @@ test("unsupported tabs and sections degrade with a notice", () => {
 });
 
 test("unknown ids are dropped, never echoed", () => {
-  const parsed = parseRoute("#/current/tools?entity=agent%3ASECRET%20TEXT", { ...defaults, knownIds: new Set(["tool:call_1"]) } as never);
+  const parsed = parseRoute("#/current/tools?entity=agent%3ASECRET%20TEXT", defaults);
   assert.equal(parsed.route.entity, undefined);
 });
 
 test("deriveView exposes exactly the state that drives rendering", () => {
-  const route: InspectorRoute = { section: "global", tab: "models", scope: "tree", range: { preset: 30, from: "2026-08-14", to: "2026-09-12" } };
-  const view = deriveView(route, capabilities);
+  const route: InspectorRoute = { section: "global", tab: "models", scope: "tree", range: { kind: "preset", preset: 30 } };
+  const view = deriveView(route, capabilities, observed);
   assert.equal(view.activeSection, "global");
   assert.equal(view.activeTab, "overview");
   assert.deepEqual(view.visibleTabs, ["overview"]);
+  assert.deepEqual(view.range, presetRange(30, observed));
   assert.equal(view.notice, "tab-unavailable");
   assert.equal(view.focusTarget, "section-heading");
 });
@@ -2131,7 +2488,7 @@ Expected: FAIL — cannot resolve `../../src/ui/route.ts`.
  * Pure offline routing for the single generated document. Inlined verbatim into
  * the HTML (Task 17), so it must stay dependency-free and DOM-free.
  */
-import { parseRangeQuery, serializeRangeQuery, type RangeState } from "./range.ts";
+import { parseRangeQuery, resolveRange, serializeRangeQuery, type RangeIntent, type RangeState } from "./range.ts";
 
 export type EntityRef = { kind: "model" | "tool" | "agent" | "error" | "integration" | "command" | "skill" | "resource"; id: string };
 export type InspectorRoute = {
@@ -2139,7 +2496,8 @@ export type InspectorRoute = {
   tab: string;
   session?: string;
   scope: Scope;
-  range: RangeState;
+  /** Absent = the view default (full observed span for current, 14D for aggregates). */
+  range?: RangeIntent;
   entity?: EntityRef;
   table?: { query?: string; sort?: string };
 };
@@ -2152,7 +2510,8 @@ export function serializeRoute(route: InspectorRoute): string {
   const PARAM_ORDER = ["scope", "preset", "from", "to", "session", "entity", "q", "sort"] as const;
   const params: [string, string][] = [];
   if (route.section === "current") params.push(["scope", route.scope]);
-  for (const pair of serializeRangeQuery(route.range)) params.push(pair);
+  // A preset stays an unresolved intent: only `preset=<n>` is written, never dates.
+  if (route.range !== undefined) for (const pair of serializeRangeQuery(route.range)) params.push(pair);
   if (route.session !== undefined) params.push(["session", route.session]);
   if (route.entity !== undefined) params.push(["entity", `${route.entity.kind}:${route.entity.id}`]);
   if (route.table?.query) params.push(["q", route.table.query]);
@@ -2184,7 +2543,6 @@ export function parseRoute(hash: string, defaults: {...}): { route: InspectorRou
   }
   const parsedRange = parseRangeQuery(queryPart);
   const params = new URLSearchParams(queryPart);
-  const range = parsedRange ?? defaults.range;
   if (parsedRange === undefined && (params.has("from") || params.has("to") || params.has("preset"))) notice = "range-restored";
   const scopeText = params.get("scope");
   const scope = scopeText === "tree" || scopeText === "active" ? scopeText : defaults.scope;
@@ -2202,7 +2560,8 @@ export function parseRoute(hash: string, defaults: {...}): { route: InspectorRou
   const sort = params.get("sort") ?? undefined;
   return {
     route: {
-      section, tab, scope, range,
+      section, tab, scope,
+      ...(parsedRange === undefined ? {} : { range: parsedRange }),
       ...(section === "history" && session !== undefined ? { session } : {}),
       ...(entity === undefined ? {} : { entity }),
       ...(query === undefined && sort === undefined ? {} : { table: { ...(query === undefined ? {} : { query }), ...(sort === undefined ? {} : { sort }) } }),
@@ -2211,15 +2570,17 @@ export function parseRoute(hash: string, defaults: {...}): { route: InspectorRou
   };
 }
 
-export function deriveView(route: InspectorRoute, capabilities: {...}): {...} {
+export function deriveView(route: InspectorRoute, capabilities: {...}, dates: readonly string[]): {...} {
   const allowed = capabilities[route.section] ?? [];
   const tab = allowed.includes(route.tab) ? route.tab : (allowed[0] ?? "overview");
+  // The preset becomes a concrete range only here, against this view's own dates.
+  const range = resolveRange(route.range, dates, route.section === "current" ? "current" : "aggregate");
   return {
     activeSection: route.section,
     activeTab: tab,
     visibleTabs: allowed,
     scope: route.scope,
-    range: route.range,
+    ...(range === undefined ? {} : { range }),
     ...(route.entity === undefined ? {} : { entity: route.entity }),
     ...(tab === route.tab ? {} : { notice: "tab-unavailable" as const }),
     focusTarget: "section-heading",
@@ -2232,16 +2593,17 @@ export function deriveView(route: InspectorRoute, capabilities: {...}): {...} {
 ```ts
 test("deriveView never invents a tab outside the capability list", () => {
   for (const section of ["current", "history", "global"] as const) {
-    const view = deriveView({ section, tab: "agents", scope: "tree", range: defaults.range }, capabilities);
+    const view = deriveView({ section, tab: "agents", scope: "tree" }, capabilities, observed);
     assert.ok(capabilities[section].includes(view.activeTab));
     assert.ok(view.visibleTabs.every((tab) => capabilities[section].includes(tab)));
   }
 });
 
 test("prompt text can never become a route parameter", () => {
-  const hash = serializeRoute({ section: "current", tab: "tools", scope: "active", range: defaults.range });
+  const hash = serializeRoute({ section: "current", tab: "tools", scope: "active" });
   assert.doesNotMatch(hash, /\s/);
   assert.doesNotMatch(hash, /SECRET/);
+  assert.doesNotMatch(hash, /1970/);
 });
 ```
 
@@ -2352,7 +2714,7 @@ export function assertInlinedModulesEvaluate(): void {
     serializeRoute: (route: unknown) => string;
   };
   if (api.parseRangeQuery("from=2026-09-01&to=2026-09-12") === undefined) throw new Error("inlined range module is incomplete");
-  const serialized = api.serializeRoute({ section: "current", tab: "tools", scope: "active", range: { preset: 7, from: "2026-09-06", to: "2026-09-12" } });
+  const serialized = api.serializeRoute({ section: "current", tab: "tools", scope: "active", range: { kind: "preset", preset: 7 } });
   if (!serialized.startsWith("#/current/tools?")) throw new Error("inlined route module is incomplete");
 }
 
@@ -2364,7 +2726,7 @@ const EPHEMERAL={ranges:{},tables:{}};
 let lastAppliedKey=null;
 function navigate(next){location.hash=serializeRoute(next);}
 function applyLocation(){
-  const parsed=parseRoute(location.hash,{scope:data.initialScope,range:resolveRange(EPHEMERAL.ranges.current,activeDates(),"current"),capabilities:CAPABILITIES,knownIds:knownIds()});
+  const parsed=parseRoute(location.hash,{scope:data.initialScope,capabilities:CAPABILITIES,knownIds:knownIds()});
   const next=parsed.route;
   const key=routeKey(next);
   if(key===lastAppliedKey)return;      // hashchange + popstate coalesce to one render
@@ -2383,7 +2745,7 @@ addEventListener("popstate",applyLocation);
 
 ```js
 function render(){
-  const view=deriveView(state.route,CAPABILITIES);
+  const view=deriveView(state.route,CAPABILITIES,activeDates());
   state.notice=view.notice||state.notice;
   [].slice.call(document.querySelectorAll("[data-section]")).forEach(function(node){node.setAttribute("aria-current",node.dataset.section===view.activeSection?"page":"false");});
   [].slice.call(document.querySelectorAll("[data-tab]")).forEach(function(node){
@@ -2392,7 +2754,8 @@ function render(){
     node.setAttribute("aria-selected",String(capable&&node.dataset.tab===view.activeTab));
   });
   scopeButtons.forEach(function(button){button.setAttribute("aria-pressed",String(button.dataset.scope===view.scope));});
-  /* content render uses filterView(currentRows(view.activeTab), view.range) and historyRowRange for the session list */
+  /* content render uses filterView(currentRows(view.activeTab), view.range) and historyRowRange for the session list;
+     when view.range is undefined (nothing observed) the section renders its empty/unavailable state instead of filtering */
   if(!state.keepFocus)focusSection();
   state.keepFocus=false;
   announce(view,state.notice);
@@ -2988,6 +3351,20 @@ Expected: all clean; `npm test` reports the new totals (previous 397 plus the ne
 8. `/session-inspector json history` → file carries `coverage` and per-session `reason`/`usageByDateTruncated`.
 9. `/session-ins ui --output "/tmp/my report.json" --th` + TAB keeps the quoted argument and completes `--theme`.
 10. Generated HTML opens with networking disabled and issues no network requests.
+11. **Preset deep link**: copy `#/current/tools?preset=7`, reload in a new tab → the same
+    numbers as clicking `7D`, and no `1970-01-01` in the document or the hash.
+12. **Legacy report** (aggregate with usage but no `coverage`): numbers still render,
+    labelled `Known native cost — completeness unknown`; `Unavailable` appears only when
+    the usage value itself is unavailable.
+13. **Mixed-usage session**: tool-result usage sits on the call day, compaction and
+    branch-summary usage on their own days, and an error-only date appears as membership
+    with zero usage; range totals match the Tools tab, the Models tab, and the usage
+    composition for the same range.
+14. **Coverage reasons and truncation**: an unreadable source shows `session-unreadable`,
+    a replay failure shows `replay-failed`; a session with `usageByDateTruncated` renders
+    `Known` for a range that reaches into omitted history (exact known subtotal, marked
+    partial) and `Unavailable` for a range entirely inside the omitted period — never
+    `$0`.
 
 - [ ] **Step 5: Commit**
 
@@ -3005,6 +3382,8 @@ git commit -m "test: extend the privacy corpus, add coverage and long-session fi
 **Placeholder scan.** No `TBD`/`TODO`/"similar to Task N"; every step carries runnable code, an exact command, or an exact checklist item. Two steps intentionally require a measured value rather than a fixed number (Task 10's fixture dates in `longSessionOptions`, Task 20's pinned `pi-tui` version); both state exactly what to record.
 
 **Type consistency.** `CoverageReason`/`CoverageSummary`/`buildCoverage` (Task 1-2) are used verbatim in Tasks 3, 23. `AgentRun.observedAt`/`evidenceToolId` (Task 4) are consumed by Tasks 10, 11, 14, 18 and referenced in the fixtures. `RangeState` (Task 8) is the only range type in Tasks 9, 16, 17. `InspectorRoute`/`deriveView` (Task 16) are consumed by Tasks 17-18 and asserted in `tests/unit/html-navigation.test.ts`. `scanInspectorArgs` (Task 19) is the only span source used by completions in Tasks 19-20. `capabilities` is produced by Task 6 (`CAPABILITIES`) and consumed by Tasks 15-18.
+
+**Amendments after plan review (all six applied).** (1) Task 5 now implements the full logical-call attribution — generation, tool-result (on the CALL date), compaction and branch-summary usage — with composition-complete rows plus observation-only `tools`/`errors` counters, a mixed-usage fixture, and `sum(usageByDate) === the same range projection of SessionReport.usage`. (2) Task 9 decides truncation BEFORE returning: member-true rows whose range reaches into omitted history carry the exact known subtotal with `partial: true` (labels say `Known`), fully retained ranges stay exact, and ranges entirely inside the omitted period return unavailable rather than zero — all three cases tested. (3) The 1970 sentinel is gone: a preset is an unresolved `RangeIntent` resolved against the active view's observed dates (`resolveRange` returns `undefined` when nothing was observed), custom ranges parse to exact resolved pairs, and Task 16 adds the preset deep-link/reload regression plus a no-`1970` assertion. (4) Task 2 produces every declared `CoverageReason` on a real path — `session-unreadable` for malformed JSON, missing/invalid header, id mismatch, and `replay-failed` from an injectable replay seam — with focused tests and reason-count assertions. (5) Task 4's join is an explicit `Map<callId, { message, observedAt }>`; a result that cannot be deterministically joined publishes no run, and the contradictory test was replaced by skipped-behaviour tests. (6) Task 3 separates value availability from coverage availability: a legacy aggregate shows its usage with a completeness-unknown qualifier, while `Unavailable` is reserved for a genuinely unavailable value (or an empty inspection set), with a regression distinguishing the two.
 
 **Known ordering constraint.** Tasks 6-18 edit `src/ui/html.ts` sequentially; each task's test step asserts behaviour that the previous task's code still satisfies, so the tasks must be executed in order. Tasks 1-5, 8, 16 and 19-20 are independent of the client script and can be reviewed on their own.
 
