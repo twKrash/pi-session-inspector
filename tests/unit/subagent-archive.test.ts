@@ -12,9 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { readPublishedArchiveState } from "../../src/integrations/subagent-archive.ts";
-import { readSubagentEvidenceWithArchives } from "../../src/integrations/subagents.ts";
+import { readSubagentEvidenceWithArchives as readSubagentEvidenceWithArchivesForSession } from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
+
+const SESSION_ID = "session-archive-test";
+const readSubagentEvidenceWithArchives = (
+  entries: Parameters<typeof readSubagentEvidenceWithArchivesForSession>[0],
+) => readSubagentEvidenceWithArchivesForSession(entries, SESSION_ID);
 
 async function readFixture(): Promise<string> {
   return readFile(

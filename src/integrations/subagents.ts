@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type {
   AgentFailure,
   AgentRun,
@@ -7,6 +6,7 @@ import type {
   Usage,
 } from "../core/events.ts";
 import { boundedProducerLabel } from "../core/evidence.ts";
+import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
 
 /** Persisted pi-subagents tool names, in the report's fixed column order. */
@@ -25,6 +25,8 @@ const MAX_TOTAL_TOKENS = 1_000_000_000;
 /** Bound on a published archive path so a corrupt session cannot retain an arbitrarily large string. */
 const MAX_ARCHIVE_PATH = 4096;
 const MAX_COST = 1_000_000_000;
+/** Exit-code detail bound, shared with the report projection (R24). */
+const MAX_EXIT_CODE = 2_147_483_647;
 /** Bounded native tool-call id used to name the publishing result. */
 const TOOL_CALL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 /** Persisted Pi entry timestamps are ISO instants, never free text. */
@@ -39,7 +41,12 @@ const PROCESS_SIGNALS: ReadonlySet<string> = new Set([
   "SIGALRM",
   "SIGBUS",
   "SIGCHLD",
+  "SIGCLD",
   "SIGCONT",
+  "SIGEMT",
+  "SIGIOT",
+  "SIGPWR",
+  "SIGSTKFLT",
   "SIGFPE",
   "SIGHUP",
   "SIGILL",
@@ -105,13 +112,14 @@ export type SubagentEvidence = {
  */
 export async function readSubagentEvidenceWithArchives(
   entries: readonly SessionEntry[],
+  sessionId: string,
 ): Promise<SubagentEvidence> {
-  const evidence = readSubagentEvidence(entries);
+  const evidence = readSubagentEvidence(entries, sessionId);
   if (evidence.runs.length === 0) return evidence;
 
   let references: Map<string, { path: string; runId: string }>;
   try {
-    references = collectArchiveReferences(entries);
+    references = collectArchiveReferences(entries, sessionId);
   } catch {
     return evidence;
   }
@@ -161,9 +169,10 @@ export function isProcessSignal(value: unknown): value is string {
  */
 export function readSubagentEvidence(
   entries: readonly SessionEntry[],
+  sessionId: string,
 ): SubagentEvidence {
   try {
-    return deriveEvidence(entries);
+    return deriveEvidence(entries, sessionId);
   } catch {
     return unavailableEvidence();
   }
@@ -209,7 +218,10 @@ type RunCollector = {
   conflicts: number;
 };
 
-function deriveEvidence(entries: readonly SessionEntry[]): SubagentEvidence {
+function deriveEvidence(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+): SubagentEvidence {
   const calls: { name: string; callId?: string }[] = [];
   const resultsByCallId = new Map<string, JoinedResult>();
   entries.forEach((entry, ordinal) => {
@@ -278,7 +290,7 @@ function deriveEvidence(entries: readonly SessionEntry[]): SubagentEvidence {
   // row index (preserved by the stable sort within one result).
   publications.sort((a, b) => a.ordinal - b.ordinal);
   for (const { result, publication } of publications) {
-    collectRuns(result, publication, collector);
+    collectRuns(result, publication, collector, sessionId);
   }
 
   const activity: AgentToolActivity = {
@@ -368,47 +380,20 @@ function collectRuns(
   result: Readonly<Record<string, unknown>>,
   publication: RunPublication,
   collector: RunCollector,
+  sessionId: string,
 ): void {
   const details = snapshotRecord(result.details);
   if (details === undefined) return;
   // Aggregate run id used to parent rows that carry no run id of their own.
   const aggregateRunId = readRawRunId(details.runId);
   const aggregateParentId =
-    aggregateRunId === undefined ? undefined : opaqueSubagentId(aggregateRunId);
+    aggregateRunId === undefined
+      ? undefined
+      : opaqueSubagentId(sessionId, aggregateRunId);
 
-  if (Array.isArray(details.completions)) {
-    for (const value of details.completions.slice(0, MAX_RUNS)) {
-      const completion = snapshotRecord(value);
-      if (completion === undefined) continue;
-      const completionRunId = readRawRunId(completion.runId);
-      pushRun(
-        completion,
-        collector,
-        publication,
-        completionRunId === undefined
-          ? undefined
-          : opaqueSubagentId(completionRunId),
-        undefined,
-      );
-      if (!Array.isArray(completion.results)) continue;
-      for (const child of completion.results.slice(0, MAX_RUNS)) {
-        const record = snapshotRecord(child);
-        if (record === undefined) continue;
-        // Nested completion children are identified by their own run id.
-        const childRunId = readRawRunId(record.runId);
-        pushRun(
-          record,
-          collector,
-          publication,
-          childRunId === undefined ? undefined : opaqueSubagentId(childRunId),
-          completionRunId === undefined
-            ? undefined
-            : opaqueSubagentId(completionRunId),
-        );
-      }
-    }
-  }
-
+  // §8.5 within-entry order is `results[]` → `completions[]` →
+  // `workflowChildren.children[]`: completions carry terminal evidence and
+  // therefore win as the later observation.
   if (Array.isArray(details.results)) {
     for (const value of details.results.slice(0, MAX_RUNS)) {
       const record = snapshotRecord(value);
@@ -422,11 +407,46 @@ function collectRuns(
       const index = readChildIndex(record.index);
       const id =
         rowRunId !== undefined
-          ? opaqueSubagentId(rowRunId)
+          ? opaqueSubagentId(sessionId, rowRunId)
           : aggregateRunId === undefined || index === undefined
             ? undefined
-            : opaqueSubagentId(`${aggregateRunId}#${index}`);
+            : opaqueSubagentId(sessionId, `${aggregateRunId}#${index}`);
       pushRun(record, collector, publication, id, aggregateParentId);
+    }
+  }
+
+  if (Array.isArray(details.completions)) {
+    for (const value of details.completions.slice(0, MAX_RUNS)) {
+      const completion = snapshotRecord(value);
+      if (completion === undefined) continue;
+      const completionRunId = readRawRunId(completion.runId);
+      pushRun(
+        completion,
+        collector,
+        publication,
+        completionRunId === undefined
+          ? undefined
+          : opaqueSubagentId(sessionId, completionRunId),
+        undefined,
+      );
+      if (!Array.isArray(completion.results)) continue;
+      for (const child of completion.results.slice(0, MAX_RUNS)) {
+        const record = snapshotRecord(child);
+        if (record === undefined) continue;
+        // Nested completion children are identified by their own run id.
+        const childRunId = readRawRunId(record.runId);
+        pushRun(
+          record,
+          collector,
+          publication,
+          childRunId === undefined
+            ? undefined
+            : opaqueSubagentId(sessionId, childRunId),
+          completionRunId === undefined
+            ? undefined
+            : opaqueSubagentId(sessionId, completionRunId),
+        );
+      }
     }
   }
 }
@@ -533,17 +553,21 @@ function mergeRunStatus(
 function readAgentFailure(
   record: Readonly<Record<string, unknown>>,
 ): AgentFailure | undefined {
+  // R21 precedence: signal first (it carries the process cause), then exit
+  // code, then an explicit failure, then absent output.
+  const signal = record.processSignal;
+  if (isProcessSignal(signal)) {
+    return { reason: "process-signal", detail: signal };
+  }
   const exitCode = record.exitCode;
   if (
     typeof exitCode === "number" &&
     Number.isSafeInteger(exitCode) &&
+    exitCode >= 0 &&
+    exitCode <= MAX_EXIT_CODE &&
     exitCode !== 0
   ) {
     return { reason: "exit-nonzero", detail: exitCode };
-  }
-  const signal = record.processSignal;
-  if (isProcessSignal(signal)) {
-    return { reason: "process-signal", detail: signal };
   }
   if (record.success === false) return { reason: "completion-failed" };
   if (record.outputState === "absent") return { reason: "output-absent" };
@@ -678,6 +702,7 @@ function readCostTotal(value: unknown): number | undefined {
  */
 function collectArchiveReferences(
   entries: readonly SessionEntry[],
+  sessionId: string,
 ): Map<string, { path: string; runId: string }> {
   const references = new Map<string, { path: string; runId: string }>();
   for (const entry of entries) {
@@ -697,7 +722,7 @@ function collectArchiveReferences(
       const runId = readRawRunId(completion.runId);
       const path = readArchivePath(completion.archivePath);
       if (runId === undefined || path === undefined) continue;
-      const id = opaqueSubagentId(runId);
+      const id = opaqueSubagentId(sessionId, runId);
       if (!references.has(id)) references.set(id, { path, runId });
     }
   }
@@ -733,14 +758,13 @@ function readChildIndex(value: unknown): number | undefined {
 }
 
 /**
- * Producer run ids are producer-controlled metadata. Hash them before they
- * leave this adapter so reports retain explicit parentage without copying IDs.
+ * Producer run ids are producer-controlled metadata. Hash them session-scoped
+ * through the canonical opaque-id binding before they leave this adapter, so
+ * reports retain explicit parentage without copying or cross-session-colliding
+ * IDs.
  */
-function opaqueSubagentId(id: string): string {
-  return `subagent-${createHash("sha256")
-    .update("pi-session-inspector:subagent-artifact-id:v1\0")
-    .update(id)
-    .digest("hex")}`;
+function opaqueSubagentId(sessionId: string, id: string): string {
+  return `subagent-${canonicalOpaqueDigest("subagent-run", sessionId, id)}`;
 }
 
 function isBoundedTokens(value: unknown): value is number {

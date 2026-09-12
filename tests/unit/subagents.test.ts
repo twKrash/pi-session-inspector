@@ -2,11 +2,18 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
-  readSubagentEvidence,
-  readSubagentEvidenceWithArchives,
+  readSubagentEvidence as readSubagentEvidenceWithSession,
+  readSubagentEvidenceWithArchives as readSubagentEvidenceWithArchivesForSession,
 } from "../../src/integrations/subagents.ts";
 import type { SessionEntry } from "../../src/core/events.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+
+/** A fixed session id: identity is session-scoped but tests only need determinism. */
+const SESSION_ID = "session-test";
+const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
+  readSubagentEvidenceWithSession(entries, SESSION_ID);
+const readSubagentEvidenceWithArchives = (entries: readonly SessionEntry[]) =>
+  readSubagentEvidenceWithArchivesForSession(entries, SESSION_ID);
 
 const assistantEntry = (
   id: string,
@@ -867,4 +874,241 @@ test("selects the latest child usage instead of summing repeated publications", 
     ),
   ]);
   assert.deepEqual(evidence.runs[0]?.usage, { totalTokens: 20, cost: 0.2 });
+});
+
+test("classifies a payload carrying both a signal and an exit code as process-signal", () => {
+  // R21 precedence: a signal carries the process cause and wins over exitCode.
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        results: [
+          {
+            runId: "run-1",
+            agent: "delegate",
+            exitCode: 137,
+            processSignal: "SIGKILL",
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  assert.deepEqual(evidence.runs[0]?.failure, {
+    reason: "process-signal",
+    detail: "SIGKILL",
+  });
+});
+
+test("a later completions row wins over an earlier results row in the same entry", () => {
+  // R22 within-entry order: `results[]` is applied first and `completions[]`
+  // last, so the completion's terminal status and usage win with no conflict.
+  const usage = (input: number, cost: number) => ({
+    input,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost,
+  });
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        results: [
+          {
+            runId: "run-1",
+            agent: "delegate",
+            state: "running",
+            usage: usage(10, 0.1),
+          },
+        ],
+        completions: [
+          {
+            runId: "run-1",
+            agent: "delegate",
+            success: true,
+            usage: usage(20, 0.2),
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  assert.equal(evidence.runs.length, 1);
+  assert.equal(evidence.runs[0]?.status, "succeeded");
+  assert.deepEqual(evidence.runs[0]?.usage, { totalTokens: 20, cost: 0.2 });
+  assert.equal(evidence.runs[0]?.observedAt, "2026-09-12T10:00:05.000Z");
+  assert.deepEqual(evidence.diagnostics, []);
+});
+
+test("run identity is session-scoped and deterministic", () => {
+  // R23: identity is `canonicalOpaqueDigest("subagent-run", sessionId, rawId)`.
+  const entries: SessionEntry[] = [
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      { results: [{ runId: "shared-run", agent: "delegate", success: true }] },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ];
+  const first = readSubagentEvidenceWithSession(entries, "session-a");
+  const again = readSubagentEvidenceWithSession(entries, "session-a");
+  const second = readSubagentEvidenceWithSession(entries, "session-b");
+  assert.equal(first.runs.length, 1);
+  assert.match(first.runs[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.equal(first.runs[0]?.id, again.runs[0]?.id);
+  assert.notEqual(first.runs[0]?.id, second.runs[0]?.id);
+});
+
+test("recognises previously omitted real process signals", () => {
+  // R25: the hand-written closed set now includes SIGPWR/SIGSTKFLT/SIGEMT/…
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        results: [
+          {
+            runId: "run-1",
+            agent: "a",
+            state: "failed",
+            processSignal: "SIGPWR",
+          },
+          {
+            runId: "run-2",
+            agent: "b",
+            state: "failed",
+            processSignal: "SIGSTKFLT",
+          },
+          {
+            runId: "run-3",
+            agent: "c",
+            state: "failed",
+            processSignal: "SIGEMT",
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  assert.deepEqual(
+    evidence.runs.map((run) => run.failure),
+    [
+      { reason: "process-signal", detail: "SIGPWR" },
+      { reason: "process-signal", detail: "SIGSTKFLT" },
+      { reason: "process-signal", detail: "SIGEMT" },
+    ],
+  );
+});
+
+test("bounds the accepted exit-code failure detail", () => {
+  // R24: a detail outside [0, 2_147_483_647] is not evidence.
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        results: [
+          { runId: "run-max", agent: "a", exitCode: 2_147_483_647 },
+          { runId: "run-over", agent: "b", exitCode: 2_147_483_648 },
+          { runId: "run-negative", agent: "c", exitCode: -1 },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  assert.deepEqual(byAgent.get("a")?.failure, {
+    reason: "exit-nonzero",
+    detail: 2_147_483_647,
+  });
+  assert.equal(byAgent.get("b")?.failure, undefined);
+  assert.equal(byAgent.get("c")?.failure, undefined);
+});
+
+test("keeps the latest value of a field omitted by a later publication", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        results: [
+          {
+            runId: "run-1",
+            agent: "delegate",
+            model: "gpt-5",
+            thinking: "high",
+            exitCode: 2,
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+    assistantEntry("b", "call_2", "subagent_wait"),
+    resultEntry(
+      "r2",
+      "call_2",
+      { completions: [{ runId: "run-1", agent: "delegate" }] },
+      "2026-09-12T10:01:00.000Z",
+    ),
+  ]);
+  assert.equal(evidence.runs.length, 1);
+  assert.equal(evidence.runs[0]?.model, "gpt-5");
+  assert.equal(evidence.runs[0]?.thinking, "high");
+  assert.deepEqual(evidence.runs[0]?.failure, {
+    reason: "exit-nonzero",
+    detail: 2,
+  });
+});
+
+test("orders publications by entry ordinal, not by timestamp", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      { results: [{ runId: "run-1", agent: "delegate", success: true }] },
+      "2026-09-12T10:05:00.000Z",
+    ),
+    assistantEntry("b", "call_2", "subagent_wait"),
+    resultEntry(
+      "r2",
+      "call_2",
+      { completions: [{ runId: "run-1", agent: "delegate", success: true }] },
+      "2026-09-12T10:00:00.000Z",
+    ),
+  ]);
+  assert.equal(evidence.runs.length, 1);
+  assert.equal(evidence.runs[0]?.observedAt, "2026-09-12T10:00:00.000Z");
+  assert.equal(evidence.runs[0]?.evidenceToolId, "tool:call_2");
+});
+
+test("counts two independent field conflicts", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      { results: [{ runId: "run-1", agent: "delegate", success: true }] },
+      "2026-09-12T10:00:05.000Z",
+    ),
+    assistantEntry("b", "call_2", "subagent_wait"),
+    resultEntry(
+      "r2",
+      "call_2",
+      { completions: [{ runId: "run-1", agent: "reviewer", success: false }] },
+      "2026-09-12T10:01:00.000Z",
+    ),
+  ]);
+  assert.deepEqual(evidence.diagnostics, [
+    { code: "cooperative-evidence-conflict", count: 2 },
+  ]);
 });

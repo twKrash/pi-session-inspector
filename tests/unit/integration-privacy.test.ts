@@ -10,7 +10,7 @@ import { readInventory } from "../../src/integrations/inventory.ts";
 import { registerLiveCounters } from "../../src/integrations/live-counters.ts";
 import { readIntegrationPresence } from "../../src/integrations/presence.ts";
 import { readPiEntryEvidence } from "../../src/integrations/pi-entries.ts";
-import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
+import { readSubagentEvidence as readSubagentEvidenceWithSession } from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { CURRENT_TABS, createCurrentTuiModel } from "../../src/ui/current.ts";
@@ -18,6 +18,10 @@ import { createCurrentTuiComponent } from "../../src/ui/current-tui.ts";
 import { renderInspectorBundle } from "../../src/ui/html.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { emptyObservation } from "../../src/ui/observation.ts";
+
+const SUBAGENT_SESSION_ID = "session-privacy-test";
+const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
+  readSubagentEvidenceWithSession(entries, SUBAGENT_SESSION_ID);
 
 const secret = "m5-seeded-secret";
 const parent: ReducedSession = {

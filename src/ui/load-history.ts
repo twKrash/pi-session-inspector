@@ -171,8 +171,10 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
           // Subagent runs are auto-discovered from persisted tool results;
           // their usage is a breakdown of this session's toolResult usage.
           // Published archive presence is validated, bounded, and never a path.
-          const subagentEvidence =
-            await readSubagentEvidenceWithArchives(entries);
+          const subagentEvidence = await readSubagentEvidenceWithArchives(
+            entries,
+            sessionId,
+          );
           return {
             availability: "available",
             sessionId,

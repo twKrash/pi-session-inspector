@@ -3,11 +3,15 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
 import { readPiEntryEvidence } from "../../src/integrations/pi-entries.ts";
-import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
+import { readSubagentEvidence as readSubagentEvidenceWithSession } from "../../src/integrations/subagents.ts";
 import { MAX_COUNTER_KEYS } from "../../src/core/live-counter-fold.ts";
 import { isAllowedIntegrationCounter } from "../../src/core/integration-counter-allowlists.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+
+const SESSION_ID = "session-reports-test";
+const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
+  readSubagentEvidenceWithSession(entries, SESSION_ID);
 
 const parent: ReducedSession = {
   sessionId: "session-1",
@@ -655,4 +659,25 @@ test("drops invalid activity counts, unbounded names, and usage", () => {
   ]);
   assert.equal(report.agentActivity.usage, undefined);
   assert.equal(JSON.stringify(report).includes("PRIVATE"), false);
+});
+
+test("projects bounded exit-code failure details and drops out-of-range ones", () => {
+  const run = (seed: string, detail: number) => ({
+    id: `subagent-${seed.repeat(64)}`,
+    status: "failed" as const,
+    confidence: "cooperative" as const,
+    failure: { reason: "exit-nonzero" as const, detail },
+  });
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [run("a", 2_147_483_647), run("b", 2_147_483_648), run("c", -1)],
+    },
+  });
+  assert.deepEqual(report.agents[0]?.failure, {
+    reason: "exit-nonzero",
+    detail: 2_147_483_647,
+  });
+  assert.deepEqual(report.agents[1]?.failure, { reason: "exit-nonzero" });
+  assert.deepEqual(report.agents[2]?.failure, { reason: "exit-nonzero" });
 });

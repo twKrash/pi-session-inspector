@@ -67,7 +67,7 @@ const FAILURE_REASONS = new Set<AgentFailure["reason"]>([
   "completion-failed",
   "output-absent",
 ]);
-const MAX_EXIT_CODE = 255;
+const MAX_EXIT_CODE = 2_147_483_647;
 const AGENT_STATUSES = new Set<AgentRun["status"]>([
   "running",
   "succeeded",
@@ -521,7 +521,8 @@ function projectFailureDetail(
   if (reason === "exit-nonzero") {
     return typeof detail === "number" &&
       Number.isSafeInteger(detail) &&
-      Math.abs(detail) <= MAX_EXIT_CODE
+      detail >= 0 &&
+      detail <= MAX_EXIT_CODE
       ? detail
       : undefined;
   }

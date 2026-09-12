@@ -61,7 +61,10 @@ export async function loadCurrentSessionReport(
     // Subagent runs are auto-discovered from persisted tool results; the
     // evidence usage stays a child-agent breakdown, never a session total.
     // Only validated published archive references add presence evidence.
-    const subagentEvidence = await readSubagentEvidenceWithArchives(entries);
+    const subagentEvidence = await readSubagentEvidenceWithArchives(
+      entries,
+      session.id,
+    );
     return createCurrentTuiModel(
       toSessionReport(reduceEntries(session.id, entries), {
         ...(Object.values(
