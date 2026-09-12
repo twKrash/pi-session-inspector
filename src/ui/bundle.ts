@@ -9,6 +9,7 @@ import {
   loadHistoryReports,
   type GlobalReport,
   type HistoryReport,
+  type SessionEvidenceProvider,
 } from "./load-history.ts";
 import type { SessionObservation } from "./observation.ts";
 
@@ -80,6 +81,12 @@ export type InspectorBundleInput = {
     walRecords?: readonly RetainedWalRecord[];
     liveOverflow?: number;
   };
+  /**
+   * Per-session L0 evidence for history/global sections, built by the
+   * composition root (R51). The default history/global loaders forward it; a
+   * caller that injects its own loaders may omit it.
+   */
+  historyEvidence?: SessionEvidenceProvider;
   current?: { sessionFile?: string; leafId: string | null };
   loadCurrent?: CurrentSessionLoader;
   loadHistory?: HistoryLoader;
@@ -261,6 +268,9 @@ function defaultHistoryLoader(input: InspectorBundleInput): HistoryLoader {
       sessionDirectory: input.sessionDirectory,
       scope: "tree",
       maintenance: input.maintenance,
+      ...(input.historyEvidence === undefined
+        ? {}
+        : { sessionEvidence: input.historyEvidence }),
     });
 }
 
@@ -271,5 +281,8 @@ function defaultGlobalLoader(input: InspectorBundleInput): GlobalLoader {
       sessionDirectory: input.sessionDirectory,
       scope: "tree",
       maintenance: input.maintenance,
+      ...(input.historyEvidence === undefined
+        ? {}
+        : { sessionEvidence: input.historyEvidence }),
     });
 }

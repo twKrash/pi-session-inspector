@@ -17,6 +17,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import registerSessionInspector, { registerTracking } from "../../src/index.ts";
+import { readInventory } from "../../src/integrations/inventory.ts";
 
 type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type CustomFactory = Parameters<ExtensionCommandContext["ui"]["custom"]>[0];
@@ -306,6 +307,142 @@ test("json current, history and global export deterministically and never open",
     assert.equal(global.usage.totalTokens, 18);
     assert.equal(harness.opens.length, 0);
     assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("json history projects the composition root's checkpoint evidence and inventory", async () => {
+  const harness = await createHarness();
+  try {
+    const sessionRoot = join(harness.root, "sessions", "real-session");
+    await mkdir(sessionRoot, { recursive: true });
+    await writeFile(
+      join(sessionRoot, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        sessionId: "real-session",
+        sourceFile: "session.jsonl",
+        state: "tracking",
+      }),
+    );
+    await writeFile(
+      join(sessionRoot, "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: { pi: { lineCount: 3, revision: "0".repeat(64) }, wal: {} },
+        aggregates: {
+          totalTokens: 18,
+          totalCost: 0.2,
+          generations: 2,
+          tools: 0,
+          compactions: 0,
+          integrationCounters: { permission: { decisions: 2 } },
+          skillInvocations: { "council-mode": 3 },
+          skillOverflowInvocations: 2,
+          presence: { permission: true },
+          resourceCounts: { commands: 9, skills: 4 },
+        },
+      }),
+    );
+
+    type HistoryJson = {
+      inventory: {
+        commands: number | null;
+        skills: number | null;
+        resources: number | null;
+      };
+      sessions: Array<{
+        report: {
+          commands: { state: string; count: number | null };
+          skills: {
+            invocationCount: number | null;
+            otherInvocations: number | null;
+            items: readonly { name: string; explicitInvocations?: number }[];
+          };
+          resources: { items: readonly unknown[] };
+          integrations: readonly { integration: string; presence: string }[];
+          evidenceHealth: { aggregates: { detail: string } };
+        };
+      }>;
+    };
+    const historyPath = join(harness.cache, "history.json");
+    const readHistory = async (): Promise<HistoryJson> =>
+      JSON.parse(await readFile(historyPath, "utf8")) as HistoryJson;
+
+    await harness.handler()(
+      "json history",
+      harness.context({ mode: "interactive" }),
+    );
+    const report = (await readHistory()).sessions[0]?.report;
+    assert.equal(report?.evidenceHealth.aggregates.detail, "aggregate-only");
+    assert.equal(report?.commands.count, 9);
+    assert.equal(report?.skills.invocationCount, 5);
+    assert.equal(report?.skills.otherInvocations, 2);
+    assert.deepEqual(report?.skills.items, [
+      { name: "council-mode", explicitInvocations: 3 },
+    ]);
+    assert.equal(
+      report?.integrations.find((row) => row.integration === "permission")
+        ?.presence,
+      "present",
+    );
+
+    await harness.handler()(
+      "json global",
+      harness.context({ mode: "interactive" }),
+    );
+    const global = JSON.parse(
+      await readFile(join(harness.cache, "global.json"), "utf8"),
+    ) as HistoryJson;
+    assert.deepEqual(global.inventory, {
+      commands: 9,
+      skills: 4,
+      resources: null,
+    });
+
+    // A persisted snapshot read by the composition root feeds the same report,
+    // while the checkpoint counts stay the global canonical resource totals.
+    const snapshot = readInventory(
+      [
+        {
+          name: "ponytail",
+          source: "extension",
+          sourceInfo: {
+            source: "npm:ponytail",
+            scope: "user",
+            origin: "package",
+          },
+        },
+      ],
+      [
+        {
+          name: "subagent",
+          parameters: {},
+          sourceInfo: {
+            source: "npm:pi-subagents",
+            scope: "user",
+            origin: "package",
+          },
+        },
+      ],
+    );
+    await writeFile(
+      join(sessionRoot, "inventory.json"),
+      JSON.stringify(snapshot),
+    );
+    await harness.handler()(
+      "json history",
+      harness.context({ mode: "interactive" }),
+    );
+    const withInventory = (await readHistory()).sessions[0]?.report;
+    assert.equal(withInventory?.commands.state, "supported");
+    assert.equal(withInventory?.resources.items.length, 2);
+    assert.equal(
+      withInventory?.integrations.find((row) => row.integration === "ponytail")
+        ?.presence,
+      "present",
+    );
   } finally {
     await harness.cleanup();
   }

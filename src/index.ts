@@ -40,6 +40,7 @@ import { trackPiSession } from "./pi/tracking-pi.ts";
 import { readCheckpoint, type Checkpoint } from "./storage/checkpoint.ts";
 import {
   boundInventorySnapshot,
+  readInventorySnapshot,
   refreshInventorySnapshot,
 } from "./storage/inventory-snapshot.ts";
 import { scheduleMaintenance } from "./storage/maintenance.ts";
@@ -50,7 +51,11 @@ import { createCurrentTuiComponent } from "./ui/current-tui.ts";
 import { renderInspectorBundle } from "./ui/html.ts";
 import { renderJson } from "./ui/json.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
-import { loadGlobalReport, loadHistoryReports } from "./ui/load-history.ts";
+import {
+  loadGlobalReport,
+  loadHistoryReports,
+  type SessionEvidenceProvider,
+} from "./ui/load-history.ts";
 import type { SessionObservation } from "./ui/observation.ts";
 import { generatedReportPath, writeReportOutput } from "./ui/report-output.ts";
 
@@ -549,6 +554,53 @@ function foldedCheckpointEvidence(
   return evidence;
 }
 
+/**
+ * Builds one history/global session's L0 evidence plus its sanitized
+ * observation (R51). A history session has no live process state, so the live
+ * WAL records/overflow stay absent and counters/aggregates come from the
+ * checkpoint alone; the inventory snapshot and its presence model are read
+ * here, never by the loader. Observer-only: any failure returns `undefined`,
+ * which degrades exactly that session to `unavailable`, never a fabricated
+ * zero.
+ */
+const readHistorySessionEvidence: SessionEvidenceProvider = async ({
+  sessionId,
+  directory,
+}) => {
+  try {
+    const checkpoint = await readCheckpoint({ directory });
+    const inventory = await readInventorySnapshot(directory);
+    const permission = checkpoint?.aggregates.presence?.permission === true;
+    return {
+      evidence: {
+        atomic: [],
+        folded: foldedCheckpointEvidence(sessionId, checkpoint),
+      },
+      observation: {
+        presence: readIntegrationPresence({
+          // Only `source === "extension"` rows may signal extension presence; a
+          // skill sharing the name must never be reported as the extension.
+          extensionCommands:
+            inventory === undefined
+              ? []
+              : inventory.commands
+                  .filter((row) => row.source === "extension")
+                  .map((row) => row.name),
+          tools:
+            inventory === undefined ? [] : Object.keys(inventory.toolSources),
+          // Durable presence: the checkpoint may have folded a previously
+          // observed `permissions:ready`; absence is `unknown`, not `absent`.
+          permissionsReady: permission,
+          inventoryAvailable: inventory !== undefined,
+        }),
+        ...(inventory === undefined ? {} : { inventory }),
+      },
+    };
+  } catch {
+    return undefined;
+  }
+};
+
 function notifyCurrentUnavailable(ctx: {
   ui: { notify(message: string, level: "info"): void };
 }): void {
@@ -761,6 +813,9 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                       liveOverflow: evidenceRead.liveOverflow,
                     },
                   }),
+              // History/global sections get their own per-session evidence from
+              // the composition root; the loaders never read storage (R51).
+              historyEvidence: readHistorySessionEvidence,
               maintenance,
             });
             const generated = generatedReportPath(
@@ -792,6 +847,9 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             sessionDirectory: () => sessionManager.getSessionDir(),
             scope: "tree" as const,
             maintenance,
+            // L2 reads no storage: the composition root supplies each history
+            // session's L0 evidence (R51).
+            sessionEvidence: readHistorySessionEvidence,
           };
           let dto: unknown;
           let reportName: string;

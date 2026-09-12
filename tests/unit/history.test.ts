@@ -336,6 +336,17 @@ test("resolves only a direct regular JSONL source file without exposing its path
   }
 });
 
+test("history reports keep no direct storage evidence reads", async () => {
+  // The L2 boundary (design §15.2): the loader may keep discovery/marker
+  // validation, but no WAL, checkpoint, inventory, or archive reader may reach
+  // it — the per-session L0 evidence arrives through the injected provider.
+  const source = await readFile("src/ui/load-history.ts", "utf8");
+  assert.equal(
+    /readCheckpoint|readInventorySnapshot|recoverSession|readWal/.test(source),
+    false,
+  );
+});
+
 test("makes invalid or unavailable manifest sources unavailable without source diagnostics", async () => {
   const root = await mkdtemp(join(tmpdir(), "inspector-history-"));
   try {
