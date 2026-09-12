@@ -8,6 +8,7 @@ import type { FoldedAggregateEvidence } from "../../src/core/evidence.ts";
 import type { SessionEvidenceHealth } from "../../src/core/evidence-health.ts";
 import type { CanonicalRetainedAggregates } from "../../src/core/retained-aggregates.ts";
 import { readIntegrationPresence } from "../../src/integrations/presence.ts";
+import type { CoverageReason } from "../../src/storage/history.ts";
 import {
   loadGlobalReport,
   loadHistoryReports,
@@ -301,7 +302,11 @@ test("degrades one session to unavailable when its evidence provider fails or re
         sessionEvidence,
       });
       assert.deepEqual(history.sessions, [
-        { availability: "unavailable", sessionId: "history-session" },
+        {
+          availability: "unavailable",
+          sessionId: "history-session",
+          reason: "replay-failed",
+        },
       ]);
     }
   } finally {
@@ -624,6 +629,15 @@ test("replays manifest-discovered history through the shared session report pipe
         },
       ],
       diagnostics: [],
+      coverage: {
+        inspected: 1,
+        available: 1,
+        unavailable: 0,
+        sessionRatio: 1,
+        complete: true,
+        discoveryLimited: false,
+        reasons: {},
+      },
     });
     assert.equal(renderJson(history).includes("history-session.jsonl"), false);
     assert.equal(renderJson(history).includes(sessionDirectory), false);
@@ -646,7 +660,11 @@ test("returns explicit unavailable sessions when a manifest source cannot replay
       maintenance,
     });
     assert.deepEqual(history.sessions, [
-      { availability: "unavailable", sessionId: "history-session" },
+      {
+        availability: "unavailable",
+        sessionId: "history-session",
+        reason: "manifest-unavailable",
+      },
     ]);
     assert.equal(JSON.stringify(history).includes("missing.jsonl"), false);
   } finally {
@@ -681,7 +699,11 @@ test("makes malformed JSONL after a valid header and marker unavailable rather t
     });
 
     assert.deepEqual(history.sessions, [
-      { availability: "unavailable", sessionId: "history-session" },
+      {
+        availability: "unavailable",
+        sessionId: "history-session",
+        reason: "session-unreadable",
+      },
     ]);
     assert.deepEqual(global.sessions, [
       { availability: "unavailable", sessionId: "history-session" },
@@ -727,7 +749,11 @@ test("rejects active scope for durable history and global reports rather than in
       maintenance,
     });
     assert.deepEqual(unavailable.sessions, [
-      { availability: "unavailable", sessionId: "history-session" },
+      {
+        availability: "unavailable",
+        sessionId: "history-session",
+        reason: "marker-unavailable",
+      },
     ]);
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -870,6 +896,15 @@ test("folds native session usage once into deterministic sorted date rows and in
       ],
       inventory: { commands: null, skills: null, resources: null },
       diagnostics: [],
+      coverage: {
+        inspected: 1,
+        available: 1,
+        unavailable: 0,
+        sessionRatio: 1,
+        complete: true,
+        discoveryLimited: false,
+        reasons: {},
+      },
     });
 
     const repeated = await loadGlobalReport({
@@ -1035,4 +1070,119 @@ test("projects history inventory rows from the persisted snapshot", async () => 
   } finally {
     await rm(root, { force: true, recursive: true });
   }
+});
+
+/** The one session id every coverage case below uses. */
+const COVERAGE_SESSION_ID = "11111111-1111-4111-8111-111111111111";
+
+/** The marker's bounded customType token; a source either carries it or not. */
+const TRACKING_MARKER_TOKEN = "session-inspector:tracking-start";
+
+/** The session header line for one Pi session id. */
+function headerFor(id: string): string {
+  return JSON.stringify({ type: "session", version: 3, id });
+}
+
+/** The native tracking marker Pi persists when a session starts tracking. */
+function trackingMarkerLine(): string {
+  return JSON.stringify({
+    type: "custom",
+    id: "marker",
+    parentId: null,
+    timestamp: "2026-02-01T00:00:01.000Z",
+    customType: TRACKING_MARKER_TOKEN,
+    data: { schemaVersion: 1 },
+  });
+}
+
+/** A complete body: the session header plus the tracking marker. */
+function validSource(): string {
+  return `${headerFor(COVERAGE_SESSION_ID)}\n${trackingMarkerLine()}`;
+}
+
+/**
+ * Writes one manifest and one JSONL source into a fresh temp root and returns
+ * LoadHistoryOptions. The helper owns the marker line, so a case body can fail
+ * on its own first line while the session still counts as Inspector-tracked.
+ */
+async function optionsWithSource(
+  source: string,
+  { marker = true }: { marker?: boolean } = {},
+): Promise<Parameters<typeof loadHistoryReports>[0]> {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-coverage-"));
+  const sessionDirectory = join(root, "public-sessions");
+  await mkdir(sessionDirectory);
+  const body = [
+    ...source
+      .split("\n")
+      .filter((line) => line.trim() && !line.includes(TRACKING_MARKER_TOKEN)),
+    ...(marker ? [trackingMarkerLine()] : []),
+  ].join("\n");
+  await writeFile(
+    join(sessionDirectory, `${COVERAGE_SESSION_ID}.jsonl`),
+    `${body}\n`,
+  );
+  const directory = join(root, "sessions", COVERAGE_SESSION_ID);
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "meta.json"),
+    `${JSON.stringify({ schemaVersion: 2, sessionId: COVERAGE_SESSION_ID, sourceFile: `${COVERAGE_SESSION_ID}.jsonl`, state: "tracking" })}\n`,
+  );
+  return {
+    root,
+    sessionDirectory: () => sessionDirectory,
+    scope: "tree",
+    maintenance,
+  };
+}
+
+test("history and global report the same coverage from the same inputs", async () => {
+  const options = await optionsWithSource(validSource());
+  const history = await loadHistoryReports(options);
+  const global = await loadGlobalReport(options);
+  assert.equal(history.coverage?.inspected, 1);
+  assert.equal(history.coverage?.complete, true);
+  assert.deepEqual(history.coverage, global.coverage);
+});
+
+test("every declared reason is produced by a real path", async () => {
+  const cases: [string, string, CoverageReason][] = [
+    ["malformed JSON", "{not json\n", "session-unreadable"],
+    [
+      "missing session header",
+      '{"type":"message","id":"x"}\n',
+      "session-unreadable",
+    ],
+    [
+      "session id mismatch",
+      headerFor("99999999-9999-4999-8999-999999999999"),
+      "session-unreadable",
+    ],
+  ];
+  for (const [label, source, reason] of cases) {
+    const history = await loadHistoryReports(await optionsWithSource(source));
+    assert.equal(history.coverage?.reasons[reason], 1, label);
+    assert.equal(history.coverage?.unavailable, 1, label);
+  }
+  const failing = await loadHistoryReports({
+    ...(await optionsWithSource(validSource())),
+    replay: () => {
+      throw new Error("projection exploded");
+    },
+  });
+  assert.deepEqual(
+    [failing.coverage?.reasons["replay-failed"], failing.coverage?.available],
+    [1, 0],
+  );
+});
+
+test("a missing marker keeps its own reason, not replay-failed", async () => {
+  const history = await loadHistoryReports(
+    await optionsWithSource(validSource(), { marker: false }),
+  );
+  // The manifest cannot be promoted without marker evidence, so discovery already
+  // reports it and the row never becomes a report.
+  assert.equal(history.sessions[0]?.availability, "unavailable");
+  assert.deepEqual(history.coverage?.reasons, { "marker-unavailable": 1 });
+  assert.equal(history.coverage?.available, 0);
 });
