@@ -45,9 +45,18 @@ export type RecoveryResult = {
   diagnostics: RecoveryDiagnostic[];
   /** Telemetry folded strictly after each writer's checkpoint WAL cursor. */
   deltaCounters: FoldedCounters;
+  /**
+   * R46: the bounded, already-validated retained records this replay parsed,
+   * capped by the existing replay budget and exposed in the `RetainedWalRecord`
+   * shape L1 consumes. Nothing is parsed twice and no raw producer content is
+   * carried: `telemetry` is a validated envelope and `timing` a validated
+   * lifecycle payload. A partial replay exposes no records, exactly like its
+   * `deltaCounters`, so an incomplete suffix can never be folded downstream.
+   */
+  records: RecoveredWalRecord[];
 };
 
-type WalRecord = {
+export type RecoveredWalRecord = {
   eventId: string;
   timestamp: string;
   writerId: string;
@@ -57,12 +66,15 @@ type WalRecord = {
     category: "agent" | "turn" | "tool" | "provider" | "model";
     status: "running" | "unknown" | "unsupported";
     confidence: "live" | "unsupported";
+    subjectId?: string;
     startedAt?: string;
     endedAt?: string;
     durationMs?: number;
   };
   telemetry?: Record<string, unknown>;
 };
+
+type WalRecord = RecoveredWalRecord;
 
 type ReplayBudget = { segments: number; bytes: number; records: number };
 
@@ -123,6 +135,7 @@ export async function recoverSession({
     },
     running: recoverRunning(replay.records),
     diagnostics: [...diagnostics].sort(),
+    records: replay.unavailable ? [] : replay.records,
     deltaCounters: replay.unavailable
       ? emptyFoldedCounters()
       : counterDeltaAfterCursors(
@@ -448,6 +461,8 @@ function baseRecord(
 
 function parseTiming(value: unknown): WalRecord["timing"] | undefined {
   if (!isRecord(value)) return undefined;
+  const subjectId = value.subjectId;
+  if (subjectId !== undefined && !isToken(subjectId)) return undefined;
   if (
     value.status === "running" &&
     value.confidence === "live" &&
@@ -460,6 +475,7 @@ function parseTiming(value: unknown): WalRecord["timing"] | undefined {
       category: value.category,
       status: "running",
       confidence: "live",
+      ...(subjectId === undefined ? {} : { subjectId }),
       startedAt: value.startedAt,
     };
   if (
@@ -474,6 +490,7 @@ function parseTiming(value: unknown): WalRecord["timing"] | undefined {
       category: value.category,
       status: "unknown",
       confidence: "live",
+      ...(subjectId === undefined ? {} : { subjectId }),
       startedAt: value.startedAt,
       endedAt: value.endedAt,
       durationMs: value.durationMs,
@@ -482,6 +499,7 @@ function parseTiming(value: unknown): WalRecord["timing"] | undefined {
     value.status === "unsupported" &&
     value.confidence === "unsupported" &&
     isUnsupportedCategory(value.category) &&
+    value.subjectId === undefined &&
     value.startedAt === undefined &&
     value.endedAt === undefined &&
     value.durationMs === undefined
@@ -507,6 +525,7 @@ function unavailableResult(
     },
     running: [],
     diagnostics: [...diagnostics].sort(),
+    records: [],
     deltaCounters: emptyFoldedCounters(),
   };
 }

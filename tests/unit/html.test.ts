@@ -3,7 +3,11 @@ import { test } from "node:test";
 
 import { buildLedger } from "../../src/core/ledger.ts";
 import { reduceEntries } from "../../src/core/reduce.ts";
-import { type SessionReport, toSessionReport } from "../../src/core/reports.ts";
+import {
+  type SessionReport,
+  toSessionReport,
+  unavailableEvidenceHealth,
+} from "../../src/core/reports.ts";
 import {
   buildDailyActivityRows,
   type DailyActivityRow,
@@ -81,6 +85,7 @@ const report: SessionReport = {
   },
   resources: { state: "unavailable", items: [] },
   errors: [],
+  evidenceHealth: unavailableEvidenceHealth(),
 };
 
 /** Cross-day session with tokens, tools, errors, child runs, and live timing. */
@@ -227,6 +232,7 @@ const richReport: SessionReport = {
       confidence: "native",
     },
   ],
+  evidenceHealth: unavailableEvidenceHealth(),
 };
 
 const current: HtmlReport = { kind: "current", report, scope: "active" };

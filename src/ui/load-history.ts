@@ -1,29 +1,77 @@
-import { join } from "node:path";
-import { readCheckpoint } from "../storage/checkpoint.ts";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
-import type { Scope, Usage } from "../core/events.ts";
-import { foldedFromCheckpointAggregates } from "../core/live-counter-fold.ts";
+import {
+  buildCanonicalSession,
+  type RetainedWalRecord,
+} from "../core/canonical.ts";
+import type { L0Evidence } from "../core/evidence.ts";
+import type { Scope, SessionEntry, Usage } from "../core/events.ts";
 import { addUsage, reduceEntries } from "../core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../core/reports.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
-import { readSubagentEvidenceWithArchives } from "../integrations/subagents.ts";
-import { readIntegrationPresence } from "../integrations/presence.ts";
-import type { InventorySnapshot } from "../integrations/inventory.ts";
+import {
+  readSubagentEvidence,
+  type SubagentEvidence,
+} from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
-import { hasTrackingStartMarker, selectScope } from "../pi/sessions.ts";
-import { readInventorySnapshot } from "../storage/inventory-snapshot.ts";
+import { hasTrackingStartMarker } from "../pi/sessions.ts";
 import {
   discoverHistory,
   resolveManifestSourceFile,
   type HistoryDiagnostic,
 } from "../storage/history.ts";
+import type { SessionObservation } from "./observation.ts";
+import {
+  countersFrom,
+  resourceCountsFrom,
+  usageFrom,
+} from "./l2-projection.ts";
 
 type MaintenanceOptions = {
   writerId: string;
   now: () => Date;
   isPidAlive: (pid: number) => boolean;
 };
+
+/** One session's evidence request; the provider owns every durable read. */
+export type SessionEvidenceRequest = {
+  sessionId: string;
+  /** Inspector root (`root/sessions/<sessionId>` lives under it). */
+  root: string;
+  /** `root/sessions/<sessionId>`, already resolved by the loader. */
+  directory: string;
+  /** Already parsed Pi entries selected by L1; never a producer-storage read. */
+  entries: readonly SessionEntry[];
+};
+
+/**
+ * The per-session L0 evidence the composition root assembles (R51): the
+ * unreconciled checkpoint folded aggregates plus the process-local observation.
+ * A history session normally has no live WAL evidence of its own, so the
+ * optional live signals stay absent unless a provider has them.
+ */
+export type HistorySessionEvidence = {
+  evidence: L0Evidence;
+  /** WAL-validated retained records (R41/R46); absent for a historical read. */
+  walRecords?: readonly RetainedWalRecord[];
+  /** Process-local dropped-tool-start overflow (R29); absent for history. */
+  liveOverflow?: number;
+  /** Sanitized inventory snapshot plus the explicit presence model. */
+  observation?: SessionObservation;
+  /** Cooperative evidence assembled by the composition-root provider. */
+  subagents?: SubagentEvidence;
+};
+
+/**
+ * Async evidence provider injected by the composition root. It is the only
+ * path from durable storage into a history/global report; a throw or an
+ * `undefined` result degrades exactly that session to `unavailable` and never
+ * fabricates a zero (R51).
+ */
+export type SessionEvidenceProvider = (
+  request: SessionEvidenceRequest,
+) => Promise<HistorySessionEvidence | undefined>;
 
 export type HistoricalSession =
   | { availability: "available"; sessionId: string; report: SessionReport }
@@ -62,20 +110,20 @@ type LoadHistoryOptions = {
   scope: Scope;
   activeLeafId?: (sessionId: string) => string | null;
   maintenance: MaintenanceOptions;
+  /**
+   * Per-session L0 evidence (R51). The loader never reads storage for it; an
+   * absent provider means "no Inspector evidence", a failing provider means
+   * that session is `unavailable`.
+   */
+  sessionEvidence?: SessionEvidenceProvider;
 };
 
 /**
  * Per-session scan result. History and global reads share this so a session is
- * replayed and its bounded snapshot read exactly once.
+ * replayed exactly once and every global value comes from the same report.
  */
 type SessionScan =
-  | {
-      availability: "available";
-      sessionId: string;
-      report: SessionReport;
-      inventory: InventorySnapshot | undefined;
-      resourceCounts: { commands: number; skills: number } | undefined;
-    }
+  | { availability: "available"; sessionId: string; report: SessionReport }
   | { availability: "unavailable"; sessionId: string };
 
 type HistoryScan = {
@@ -83,6 +131,9 @@ type HistoryScan = {
   sessions: SessionScan[];
   diagnostics: HistoryDiagnostic[];
 };
+
+/** No Inspector evidence observed; never a fabricated zero. */
+const NO_EVIDENCE: L0Evidence = { atomic: [], folded: [] };
 
 /** Replays only manifest-discovered Pi sources into renderer-neutral reports. */
 export async function loadHistoryReports(
@@ -140,63 +191,97 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
             return { availability: "unavailable", sessionId };
           }
           const directory = join(options.root, "sessions", sessionId);
-          const checkpoint = await readCheckpoint({ directory });
-          // History/global counters come from the checkpoint aggregates only
-          // (never WAL), so a read can never double count or mutate state.
-          const counters =
-            checkpoint === undefined
+          // R51: the per-session L0 evidence is injected. A provider that
+          // throws or cannot supply this session is an unavailable session,
+          // never a report with fabricated zeros.
+          const supplied =
+            options.sessionEvidence === undefined
               ? undefined
-              : foldedFromCheckpointAggregates(checkpoint.aggregates);
-          // The bounded snapshot may already have expired; absence is unknown.
-          const inventory = await readInventorySnapshot(directory);
-          const presence =
-            inventory === undefined
-              ? undefined
-              : readIntegrationPresence({
-                  extensionCommands: inventory.commands
-                    .filter((row) => row.source === "extension")
-                    .map((row) => row.name),
-                  tools: Object.keys(inventory.toolSources),
-                  permissionsReady: counters?.presence.permission ?? false,
-                  inventoryAvailable: true,
+              : await options.sessionEvidence({
+                  sessionId,
+                  root: options.root,
+                  directory,
+                  entries: parsed.entries,
                 });
-          const resourceCounts = checkpoint?.aggregates.resourceCounts;
-          const entries = selectScope(
-            parsed.entries,
-            options.scope === "active"
-              ? (options.activeLeafId?.(sessionId) ?? null)
-              : null,
-            options.scope,
-          );
+          if (options.sessionEvidence !== undefined && supplied === undefined) {
+            return { availability: "unavailable", sessionId };
+          }
+          const observation = supplied?.observation;
+          const buildInput = {
+            parsed,
+            // `tree` only: `active` was rejected above, and active ancestry is
+            // a live concept the builder owns elsewhere.
+            scope: options.scope,
+            leafId: null,
+            evidence: supplied?.evidence ?? NO_EVIDENCE,
+            ...(supplied?.walRecords === undefined
+              ? {}
+              : { walRecords: supplied.walRecords }),
+            ...(supplied?.liveOverflow === undefined
+              ? {}
+              : { liveOverflow: supplied.liveOverflow }),
+            ...(observation?.inventory === undefined
+              ? {}
+              : { inventory: observation.inventory }),
+          };
+          // The builder is the single scope authority (R49) and the single
+          // health/availability authority for the session.
+          const resolved = buildCanonicalSession(buildInput);
+          if (resolved.state !== "ready")
+            return { availability: "unavailable", sessionId };
+          // R49: the entry set is the builder's resolution in order, mapped
+          // back to parsed entries; an id without a parsed entry (an
+          // unknown-semantic node) is skipped instead of fabricating a node.
+          const byId = new Map<string, SessionEntry>();
+          for (const entry of parsed.entries) {
+            if (!byId.has(entry.id)) byId.set(entry.id, entry);
+          }
+          const entries = resolved.session.scopedEntryIds.flatMap((id) => {
+            const entry = byId.get(id);
+            return entry === undefined ? [] : [entry];
+          });
           // Subagent runs are auto-discovered from persisted tool results;
           // their usage is a breakdown of this session's toolResult usage.
           // Published archive presence is validated, bounded, and never a path.
           const subagentEvidence =
-            await readSubagentEvidenceWithArchives(entries);
+            supplied?.subagents ?? readSubagentEvidence(entries, sessionId);
+          // Task 15 discipline: the builder receives the same cooperative
+          // evidence the DTO publishes, so health and body cannot contradict
+          // each other (`joins.agentRuns === report.agents.length`).
+          const built = buildCanonicalSession({
+            ...buildInput,
+            subagents: subagentEvidence,
+          });
+          if (built.state !== "ready")
+            return { availability: "unavailable", sessionId };
+          const session = built.session;
+          // R47: `expired` keeps its existing meaning — some prune seal exists.
+          const sealed = Object.values(
+            session.retainedAggregates.boundary.sealedThrough,
+          ).some((cursor) => cursor > 0);
           return {
             availability: "available",
             sessionId,
-            report: toSessionReport(reduceEntries(sessionId, entries), {
-              ...(Object.values(
-                checkpoint?.sealingVersion === 1
-                  ? (checkpoint.sealedWal ?? {})
-                  : {},
-              ).some((cursor) => cursor > 0)
-                ? { walDetail: "expired" as const }
-                : {}),
-              integrations: readPiEntryEvidence(entries),
+            report: toSessionReport(reduceEntries(session.sessionId, entries), {
+              ...(sealed ? { walDetail: "expired" as const } : {}),
               agents: {
                 state: subagentEvidence.state,
                 runs: subagentEvidence.runs,
               },
               agentActivity: subagentEvidence.activity,
-              ...(counters === undefined ? {} : { counters }),
-              ...(inventory === undefined ? {} : { inventory }),
-              ...(presence === undefined ? {} : { presence }),
-              ...(resourceCounts === undefined ? {} : { resourceCounts }),
+              presence: observation?.presence,
+              ...countersFrom(session),
+              ...usageFrom(session),
+              ...resourceCountsFrom(session),
+              ...(observation?.inventory === undefined
+                ? {}
+                : { inventory: observation.inventory }),
+              integrations: readPiEntryEvidence(entries),
+              // Task 14 fields: canonical health and checkpoint-surviving
+              // aggregates reach L2 as L1 produced them, never re-derived.
+              evidenceHealth: session.health,
+              retainedAggregates: session.retainedAggregates,
             }),
-            inventory,
-            resourceCounts,
           };
         } catch {
           return { availability: "unavailable", sessionId };
@@ -261,8 +346,9 @@ export async function loadGlobalReport(
 }
 
 /**
- * Sums each known per-session inventory count. `null` means no discovered
- * session carried evidence for that field, never a fabricated zero.
+ * Sums the canonical resource counts of the same reports. `null` means no
+ * discovered session carried evidence for that field, never a fabricated zero;
+ * a session that is `unavailable` contributes nothing.
  */
 function globalInventory(
   sessions: readonly SessionScan[],
@@ -272,12 +358,19 @@ function globalInventory(
   let resources: number | null = null;
   for (const session of sessions) {
     if (session.availability !== "available") continue;
-    if (session.resourceCounts !== undefined) {
-      commands = (commands ?? 0) + session.resourceCounts.commands;
-      skills = (skills ?? 0) + session.resourceCounts.skills;
+    const counts = session.report.retainedAggregates?.resources?.counts;
+    if (counts?.commands !== undefined) {
+      commands = (commands ?? 0) + counts.commands;
     }
-    if (session.inventory !== undefined) {
-      resources = (resources ?? 0) + session.inventory.resources.length;
+    if (counts?.skills !== undefined) {
+      skills = (skills ?? 0) + counts.skills;
+    }
+    // The persisted resource-count aggregate is the canonical count when it
+    // exists; otherwise the retained inventory rows are the observed detail.
+    if (counts?.resources !== undefined) {
+      resources = (resources ?? 0) + counts.resources;
+    } else if (session.report.resources.state !== "unavailable") {
+      resources = (resources ?? 0) + session.report.resources.items.length;
     }
   }
   return { commands, skills, resources };

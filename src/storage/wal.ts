@@ -19,6 +19,7 @@ type LiveTiming = {
   category: "agent" | "turn" | "tool" | "provider" | "model";
   status: "running" | "unknown" | "unsupported";
   confidence: "live" | "unsupported";
+  subjectId?: string;
   startedAt?: string;
   endedAt?: string;
   durationMs?: number;
@@ -83,6 +84,7 @@ function isLiveTiming(value: LiveTiming): boolean {
       value.status === "unknown" ||
       value.status === "unsupported") &&
     (value.confidence === "live" || value.confidence === "unsupported") &&
+    (value.subjectId === undefined || isAsciiToken(value.subjectId)) &&
     (value.startedAt === undefined || isTimestamp(value.startedAt)) &&
     (value.endedAt === undefined || isTimestamp(value.endedAt)) &&
     (value.durationMs === undefined ||

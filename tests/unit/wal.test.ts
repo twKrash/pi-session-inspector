@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 
-import { recoverSession } from "../../src/storage/recovery.ts";
+import { parseWalRecord, recoverSession } from "../../src/storage/recovery.ts";
 
 const execFile = promisify(execFileCallback);
 
@@ -31,6 +31,7 @@ type CreateWriter = (options: {
       category: "agent" | "turn" | "tool" | "provider" | "model";
       status: "running" | "unknown" | "unsupported";
       confidence: "live" | "unsupported";
+      subjectId?: string;
       startedAt?: string;
       endedAt?: string;
       durationMs?: number;
@@ -727,4 +728,116 @@ test("writes an ordered dated writer shard on flush", async () => {
   } finally {
     await rm(root, { force: true, recursive: true });
   }
+});
+
+const SUBJECT_ID = `live-tool-${"a".repeat(64)}`;
+
+test("persists and parses a bounded live timing subjectId", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+    });
+    writer.append({
+      eventId: "event-1",
+      timestamp: "2026-09-07T12:00:00.000Z",
+      kind: "live_timing",
+      timing: {
+        category: "tool",
+        status: "running",
+        confidence: "live",
+        subjectId: SUBJECT_ID,
+        startedAt: "2026-09-07T12:00:00.000Z",
+      },
+    });
+    writer.append({
+      eventId: "event-2",
+      timestamp: "2026-09-07T12:00:01.000Z",
+      kind: "live_timing",
+      timing: {
+        category: "tool",
+        status: "unknown",
+        confidence: "live",
+        subjectId: SUBJECT_ID,
+        startedAt: "2026-09-07T12:00:00.000Z",
+        endedAt: "2026-09-07T12:00:01.000Z",
+        durationMs: 1,
+      },
+    });
+    await writer.flush();
+
+    const lines = (
+      await readFile(join(root, "wal", "writer-1", "2026-09-07.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n");
+    assert.equal(lines.length, 2);
+    for (const line of lines) {
+      const record = parseWalRecord(line);
+      assert.ok(record);
+      assert.equal(record.timing?.subjectId, SUBJECT_ID);
+    }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rejects a malformed live timing subjectId", async () => {
+  const createWalWriter = await loadWriter();
+  assert.ok(createWalWriter);
+
+  const root = await mkdtemp(join(tmpdir(), "inspector-wal-"));
+  try {
+    const written: string[] = [];
+    const writer = await createWalWriter({
+      root,
+      writerId: "writer-1",
+      now: () => new Date("2026-09-07T12:00:00.000Z"),
+      write: async (_path, data) => {
+        written.push(data);
+      },
+    });
+    for (const subjectId of ["bad id!", "x".repeat(129), ""]) {
+      writer.append({
+        eventId: "event-1",
+        timestamp: "2026-09-07T12:00:00.000Z",
+        kind: "live_timing",
+        timing: {
+          category: "tool",
+          status: "running",
+          confidence: "live",
+          subjectId,
+          startedAt: "2026-09-07T12:00:00.000Z",
+        },
+      });
+    }
+    await writer.flush();
+
+    assert.deepEqual(written, []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("keeps legacy anonymous timing rows valid without a subjectId", () => {
+  const record = parseWalRecord(
+    '{"eventId":"start-1","timestamp":"2026-09-07T12:00:00.000Z","kind":"live_timing","timing":{"category":"tool","status":"running","confidence":"live","startedAt":"2026-09-07T12:00:00.000Z"},"writerId":"writer-1","writerSequence":1}',
+  );
+  assert.ok(record);
+  assert.equal(record.timing?.status, "running");
+  assert.equal(record.timing?.subjectId, undefined);
+});
+
+test("rejects a live timing row whose subjectId is not a bounded token", () => {
+  assert.equal(
+    parseWalRecord(
+      '{"eventId":"start-1","timestamp":"2026-09-07T12:00:00.000Z","kind":"live_timing","timing":{"category":"tool","status":"running","confidence":"live","subjectId":"bad id!","startedAt":"2026-09-07T12:00:00.000Z"},"writerId":"writer-1","writerSequence":1}',
+    ),
+    undefined,
+  );
 });

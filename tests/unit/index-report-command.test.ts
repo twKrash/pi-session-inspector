@@ -17,6 +17,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import registerSessionInspector, { registerTracking } from "../../src/index.ts";
+import { readInventory } from "../../src/integrations/inventory.ts";
 
 type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type CustomFactory = Parameters<ExtensionCommandContext["ui"]["custom"]>[0];
@@ -311,7 +312,143 @@ test("json current, history and global export deterministically and never open",
   }
 });
 
-test("a report load refreshes the inventory snapshot only when the producer changed", async () => {
+test("json history projects the composition root's checkpoint evidence and inventory", async () => {
+  const harness = await createHarness();
+  try {
+    const sessionRoot = join(harness.root, "sessions", "real-session");
+    await mkdir(sessionRoot, { recursive: true });
+    await writeFile(
+      join(sessionRoot, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        sessionId: "real-session",
+        sourceFile: "session.jsonl",
+        state: "tracking",
+      }),
+    );
+    await writeFile(
+      join(sessionRoot, "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: { pi: { lineCount: 3, revision: "0".repeat(64) }, wal: {} },
+        aggregates: {
+          totalTokens: 18,
+          totalCost: 0.2,
+          generations: 2,
+          tools: 0,
+          compactions: 0,
+          integrationCounters: { permission: { decisions: 2 } },
+          skillInvocations: { "council-mode": 3 },
+          skillOverflowInvocations: 2,
+          presence: { permission: true },
+          resourceCounts: { commands: 9, skills: 4 },
+        },
+      }),
+    );
+
+    type HistoryJson = {
+      inventory: {
+        commands: number | null;
+        skills: number | null;
+        resources: number | null;
+      };
+      sessions: Array<{
+        report: {
+          commands: { state: string; count: number | null };
+          skills: {
+            invocationCount: number | null;
+            otherInvocations: number | null;
+            items: readonly { name: string; explicitInvocations?: number }[];
+          };
+          resources: { items: readonly unknown[] };
+          integrations: readonly { integration: string; presence: string }[];
+          evidenceHealth: { aggregates: { detail: string } };
+        };
+      }>;
+    };
+    const historyPath = join(harness.cache, "history.json");
+    const readHistory = async (): Promise<HistoryJson> =>
+      JSON.parse(await readFile(historyPath, "utf8")) as HistoryJson;
+
+    await harness.handler()(
+      "json history",
+      harness.context({ mode: "interactive" }),
+    );
+    const report = (await readHistory()).sessions[0]?.report;
+    assert.equal(report?.evidenceHealth.aggregates.detail, "aggregate-only");
+    assert.equal(report?.commands.count, 9);
+    assert.equal(report?.skills.invocationCount, 5);
+    assert.equal(report?.skills.otherInvocations, 2);
+    assert.deepEqual(report?.skills.items, [
+      { name: "council-mode", explicitInvocations: 3 },
+    ]);
+    assert.equal(
+      report?.integrations.find((row) => row.integration === "permission")
+        ?.presence,
+      "present",
+    );
+
+    await harness.handler()(
+      "json global",
+      harness.context({ mode: "interactive" }),
+    );
+    const global = JSON.parse(
+      await readFile(join(harness.cache, "global.json"), "utf8"),
+    ) as HistoryJson;
+    assert.deepEqual(global.inventory, {
+      commands: 9,
+      skills: 4,
+      resources: null,
+    });
+
+    // A persisted snapshot read by the composition root feeds the same report,
+    // while the checkpoint counts stay the global canonical resource totals.
+    const snapshot = readInventory(
+      [
+        {
+          name: "ponytail",
+          source: "extension",
+          sourceInfo: {
+            source: "npm:ponytail",
+            scope: "user",
+            origin: "package",
+          },
+        },
+      ],
+      [
+        {
+          name: "subagent",
+          parameters: {},
+          sourceInfo: {
+            source: "npm:pi-subagents",
+            scope: "user",
+            origin: "package",
+          },
+        },
+      ],
+    );
+    await writeFile(
+      join(sessionRoot, "inventory.json"),
+      JSON.stringify(snapshot),
+    );
+    await harness.handler()(
+      "json history",
+      harness.context({ mode: "interactive" }),
+    );
+    const withInventory = (await readHistory()).sessions[0]?.report;
+    assert.equal(withInventory?.commands.state, "supported");
+    assert.equal(withInventory?.resources.items.length, 2);
+    assert.equal(
+      withInventory?.integrations.find((row) => row.integration === "ponytail")
+        ?.presence,
+      "present",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("a report load reuses unchanged inventory payload but advances its observation time", async () => {
   const commands: unknown[] = [
     {
       name: "ponytail",
@@ -344,23 +481,37 @@ test("a report load refreshes the inventory snapshot only when the producer chan
     const output = join(harness.directory, "report.json");
     const names = (bytes: string) =>
       (JSON.parse(bytes).commands as { name: string }[]).map((row) => row.name);
+    // Payload identity excludes the observation time, which is expected to
+    // advance on every successful observation.
+    const payload = (bytes: string): unknown => {
+      const parsed = JSON.parse(bytes) as Record<string, unknown>;
+      delete parsed.observedAt;
+      return parsed;
+    };
     const run = () =>
       harness.handler()(
         `json --scope tree --output ${JSON.stringify(output)}`,
         harness.context({ mode: "interactive" }),
       );
 
-    // The first report load captures the current producer rows.
+    // The first report load captures the current producer rows and stamps the
+    // successful observation time.
     await run();
     const firstBytes = await readFile(snapshotPath, "utf8");
     assert.deepEqual(names(firstBytes), ["ponytail"]);
-    const first = await stat(snapshotPath);
+    const firstObservedAt = JSON.parse(firstBytes).observedAt as string;
+    assert.equal(typeof firstObservedAt, "string");
 
-    // An unchanged producer hashes equal: the next load writes nothing.
+    // An unchanged producer reuses the payload bytes, but a byte-equivalent
+    // observation must still advance `observedAt` (spec §14.2.1).
     await sleep(20);
     await run();
-    assert.equal(await readFile(snapshotPath, "utf8"), firstBytes);
-    assert.equal((await stat(snapshotPath)).mtimeMs, first.mtimeMs);
+    const secondBytes = await readFile(snapshotPath, "utf8");
+    assert.deepEqual(payload(secondBytes), payload(firstBytes));
+    const secondObservedAt = JSON.parse(secondBytes).observedAt as string;
+    assert.notEqual(secondObservedAt, firstObservedAt);
+    assert.ok(Date.parse(secondObservedAt) >= Date.parse(firstObservedAt));
+    const second = await stat(snapshotPath);
 
     // A late runtime registration changes the hash: one atomic rewrite.
     commands.push({
@@ -371,10 +522,10 @@ test("a report load refreshes the inventory snapshot only when the producer chan
     await sleep(20);
     await run();
     const changedBytes = await readFile(snapshotPath, "utf8");
-    assert.notEqual(changedBytes, firstBytes);
+    assert.notEqual(payload(changedBytes), payload(secondBytes));
     assert.deepEqual(names(changedBytes), ["ponytail", "caveman"]);
     const changed = await stat(snapshotPath);
-    assert.ok(changed.mtimeMs > first.mtimeMs);
+    assert.ok(changed.mtimeMs >= second.mtimeMs);
 
     // The refreshed snapshot feeds presence and the report injection...
     const report = JSON.parse(await readFile(output, "utf8"));
@@ -389,19 +540,21 @@ test("a report load refreshes the inventory snapshot only when the producer chan
       "present",
     );
 
-    // ...and the next identical load is a no-write again, so the change
-    // produced exactly one rewrite.
+    // ...and the next identical payload is reused while its observation time
+    // advances, so the payload changed exactly once.
     await sleep(20);
     await run();
-    assert.equal(await readFile(snapshotPath, "utf8"), changedBytes);
-    assert.equal((await stat(snapshotPath)).mtimeMs, changed.mtimeMs);
+    const finalBytes = await readFile(snapshotPath, "utf8");
+    assert.deepEqual(payload(finalBytes), payload(changedBytes));
+    assert.deepEqual(names(finalBytes), ["ponytail", "caveman"]);
 
     // An unreadable producer keeps the last readable snapshot: no wipe, no
     // fabricated zero inventory, and the report still sees the last snapshot.
     failing = true;
     await run();
-    assert.equal(await readFile(snapshotPath, "utf8"), changedBytes);
-    assert.deepEqual(names(changedBytes), ["ponytail", "caveman"]);
+    const failedBytes = await readFile(snapshotPath, "utf8");
+    assert.deepEqual(payload(failedBytes), payload(changedBytes));
+    assert.deepEqual(names(failedBytes), ["ponytail", "caveman"]);
   } finally {
     await harness.cleanup();
   }

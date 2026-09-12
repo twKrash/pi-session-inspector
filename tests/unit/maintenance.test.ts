@@ -89,13 +89,15 @@ test("folds recovered telemetry into checkpoint aggregates exactly once across r
       kind: "counter",
     });
 
+    // Deliberately no pinned clock: the no-new-telemetry passes must be
+    // byte-identical because nothing materialized changed, not because time
+    // was frozen.
     const maintain = (maintenanceWriterId: string) =>
       maintainSession({
         root,
         sessionId,
         sessionFile,
         writerId: maintenanceWriterId,
-        now: () => new Date("2026-09-07T12:00:00.000Z"),
       });
 
     assert.equal((await maintain("m1")).status, "available");
@@ -316,6 +318,187 @@ test("requires active tracking marker evidence before sealing or pruning", async
   }
 });
 
+test("stamps checkpoint materialization and resource observation times without fabricating usage coverage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  try {
+    const sessionId = "session-1";
+    const sessionFile = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(sessionFile, `${trackingMarkerLine}\n`);
+
+    assert.equal(
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile,
+          writerId: "m1",
+          inventoryCounts: {
+            commands: 3,
+            skills: 1,
+            resources: 2,
+            toolSources: 4,
+            observedAt: "2026-09-12T10:00:00.000Z",
+          },
+          now: () => new Date("2026-09-12T10:00:05.000Z"),
+        })
+      ).status,
+      "available",
+    );
+
+    const checkpoint = await readCheckpoint({ directory });
+    assert.equal(
+      checkpoint?.evidence?.checkpointedAt,
+      "2026-09-12T10:00:05.000Z",
+    );
+    // Coverage is owned by the canonical usage ledger (Task 13), so
+    // maintenance must not fabricate a constant all-`complete` claim.
+    assert.equal(checkpoint?.evidence?.usageCoverage, undefined);
+    assert.deepEqual(checkpoint?.aggregates.resourceCounts, {
+      commands: 3,
+      skills: 1,
+      resources: 2,
+      toolSources: 4,
+      observedAt: "2026-09-12T10:00:00.000Z",
+    });
+    // The inventory observation time is never the checkpoint write time.
+    assert.notEqual(
+      checkpoint?.aggregates.resourceCounts?.observedAt,
+      checkpoint?.evidence?.checkpointedAt,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("keeps checkpoint bytes and checkpointedAt stable until materialized content changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  try {
+    const sessionId = "session-1";
+    const sessionFile = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    const writerId = "writer-a";
+    const walSegment = join(directory, "wal", writerId, "2026-09-07.jsonl");
+    await mkdir(join(directory, "wal", writerId), { recursive: true });
+    await writeFile(sessionFile, `${trackingMarkerLine}\n`);
+    await appendTelemetry(
+      walSegment,
+      writerId,
+      1,
+      "permission-1",
+      permissionEnvelope("user_denied", "deny"),
+    );
+
+    let clock = new Date("2026-09-07T12:00:00.000Z");
+    const maintain = (maintenanceWriterId: string) =>
+      maintainSession({
+        root,
+        sessionId,
+        sessionFile,
+        writerId: maintenanceWriterId,
+        now: () => clock,
+      });
+
+    assert.equal((await maintain("m1")).status, "available");
+    const firstBytes = await readFile(
+      join(directory, "checkpoint.json"),
+      "utf8",
+    );
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.checkpointedAt,
+      "2026-09-07T12:00:00.000Z",
+    );
+
+    // The clock advanced but nothing else materialized: the file must not be
+    // rewritten and `checkpointedAt` must not advance.
+    clock = new Date("2026-09-07T12:05:00.000Z");
+    assert.equal((await maintain("m2")).status, "available");
+    assert.equal(
+      await readFile(join(directory, "checkpoint.json"), "utf8"),
+      firstBytes,
+    );
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.checkpointedAt,
+      "2026-09-07T12:00:00.000Z",
+    );
+
+    // A genuine change advances `checkpointedAt` to the new write time.
+    await appendTelemetry(
+      walSegment,
+      writerId,
+      2,
+      "permission-2",
+      permissionEnvelope("user_approved", "allow"),
+    );
+    clock = new Date("2026-09-07T12:10:00.000Z");
+    assert.equal((await maintain("m3")).status, "available");
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.checkpointedAt,
+      "2026-09-07T12:10:00.000Z",
+    );
+    assert.notEqual(
+      await readFile(join(directory, "checkpoint.json"), "utf8"),
+      firstBytes,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("preserves stored resource counts and observedAt across a caller that omits them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  try {
+    const sessionId = "session-1";
+    const sessionFile = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(sessionFile, `${trackingMarkerLine}\n`);
+
+    assert.equal(
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile,
+          writerId: "m1",
+          inventoryCounts: {
+            commands: 3,
+            skills: 1,
+            observedAt: "2026-09-12T10:00:00.000Z",
+          },
+        })
+      ).status,
+      "available",
+    );
+    assert.deepEqual(
+      (await readCheckpoint({ directory }))?.aggregates.resourceCounts,
+      { commands: 3, skills: 1, observedAt: "2026-09-12T10:00:00.000Z" },
+    );
+
+    // A caller that only knows about commands/skills must not erase the
+    // previously known observation time or other stored keys.
+    assert.equal(
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile,
+          writerId: "m2",
+          inventoryCounts: { commands: 4, skills: 2 },
+        })
+      ).status,
+      "available",
+    );
+    assert.deepEqual(
+      (await readCheckpoint({ directory }))?.aggregates.resourceCounts,
+      { commands: 4, skills: 2, observedAt: "2026-09-12T10:00:00.000Z" },
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("maintenance rereads Pi source and WAL under its lease before publishing a checkpoint", async () => {
   const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
   try {
@@ -342,6 +525,7 @@ test("maintenance rereads Pi source and WAL under its lease before publishing a 
           sessionId,
           sessionFile: source,
           writerId: "maintenance-1",
+          now: () => new Date("2026-09-07T12:00:00.000Z"),
         })
       ).status,
       "available",
@@ -374,6 +558,7 @@ test("maintenance rereads Pi source and WAL under its lease before publishing a 
           tools: 0,
           compactions: 0,
         },
+        evidence: { checkpointedAt: "2026-09-07T12:00:00.000Z" },
       },
     );
     assert.equal(
@@ -414,5 +599,97 @@ test("malformed durable WAL is not reported maintained when no validated prefix 
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("production session start stamps resource counts with the inventory observation time", async () => {
+  const { registerTracking } = await import("../../src/index.ts");
+  const directory = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  const sessionId = "session-r52";
+  const nativeDirectory = join(directory, "native");
+  const sessionFile = join(nativeDirectory, "session.jsonl");
+  const root = join(directory, "session-inspector", "v1");
+  const inspectorDirectory = join(root, "sessions", sessionId);
+  try {
+    await mkdir(nativeDirectory, { recursive: true });
+    await mkdir(inspectorDirectory, { recursive: true });
+    await writeFile(sessionFile, `${trackingMarkerLine}\n`);
+
+    let handler:
+      | ((event: unknown, context: unknown) => Promise<void>)
+      | undefined;
+    registerTracking(
+      {
+        on: (
+          _event: string,
+          registered: (event: unknown, context: unknown) => Promise<void>,
+        ) => {
+          handler = registered;
+        },
+        appendEntry: () => {},
+        getCommands: () => [
+          {
+            name: "ponytail",
+            source: "extension",
+            sourceInfo: {
+              source: "local",
+              scope: "user",
+              origin: "top-level",
+            },
+          },
+        ],
+        getAllTools: () => [],
+      } as unknown as Parameters<typeof registerTracking>[0],
+      {
+        agentDir: directory,
+        track: async () => true,
+        setupSessionWal: async () => {},
+      },
+    );
+    assert.ok(handler);
+    const startedAt = Date.now();
+    await handler(
+      {},
+      {
+        sessionManager: {
+          getSessionId: () => sessionId,
+          getSessionFile: () => sessionFile,
+          getSessionDir: () => nativeDirectory,
+        },
+      },
+    );
+
+    // Production scheduling is detached; poll for the persisted observation
+    // and the checkpoint write it feeds.
+    const snapshotPath = join(inspectorDirectory, "inventory.json");
+    let snapshot: { observedAt?: unknown } | undefined;
+    let checkpoint = await readCheckpoint({ directory: inspectorDirectory });
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try {
+        snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as {
+          observedAt?: unknown;
+        };
+      } catch {
+        snapshot = undefined;
+      }
+      checkpoint = await readCheckpoint({ directory: inspectorDirectory });
+      if (
+        typeof snapshot?.observedAt === "string" &&
+        typeof checkpoint?.aggregates.resourceCounts?.observedAt === "string"
+      )
+        break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(snapshot, "the session-start capture must persist its snapshot");
+    assert.ok(checkpoint, "production maintenance must publish a checkpoint");
+    const observedAt = checkpoint.aggregates.resourceCounts?.observedAt;
+    // R52: the checkpoint carries the snapshot's own observation instant, not
+    // the later maintenance/checkpoint write clock and never mtime.
+    assert.equal(observedAt, snapshot.observedAt);
+    const at = Date.parse(observedAt as string);
+    assert.equal(Number.isNaN(at), false);
+    assert.ok(at >= startedAt && at <= Date.now());
+  } finally {
+    await rm(directory, { force: true, recursive: true });
   }
 });

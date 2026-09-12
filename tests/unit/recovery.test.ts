@@ -82,6 +82,38 @@ test("uses valid checkpoint aggregates while replaying WAL timing state", async 
       wal: { "writer-1": 2 },
     });
     assert.deepEqual(recovered.running, []);
+    // R46: the retained records are exposed exactly in the shape L1 consumes,
+    // validated timing payload included, without a second parse.
+    assert.deepEqual(recovered.records, [
+      {
+        eventId: "start-1",
+        timestamp: "2026-09-07T12:00:00.000Z",
+        writerId: "writer-1",
+        writerSequence: 1,
+        kind: "live_timing",
+        timing: {
+          category: "tool",
+          status: "running",
+          confidence: "live",
+          startedAt: "2026-09-07T12:00:00.000Z",
+        },
+      },
+      {
+        eventId: "end-1",
+        timestamp: "2026-09-07T12:00:01.000Z",
+        writerId: "writer-1",
+        writerSequence: 2,
+        kind: "live_timing",
+        timing: {
+          category: "tool",
+          status: "unknown",
+          confidence: "live",
+          startedAt: "2026-09-07T12:00:00.000Z",
+          endedAt: "2026-09-07T12:00:01.000Z",
+          durationMs: 1,
+        },
+      },
+    ]);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
@@ -342,6 +374,9 @@ test("rejects contradictory timing state without allowing it to close a live sta
       recovered.running.map((record) => record.eventId),
       ["start-1"],
     );
+    // A partial replay exposes no records, exactly like its empty delta
+    // counters, so an incomplete suffix can never be folded downstream.
+    assert.deepEqual(recovered.records, []);
     assert.ok(recovered.diagnostics.includes("wal-unavailable"));
   } finally {
     await rm(directory, { force: true, recursive: true });

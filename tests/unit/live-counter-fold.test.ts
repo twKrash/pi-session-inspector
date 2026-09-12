@@ -292,6 +292,98 @@ test("counterDeltaAfterCursors folds only records strictly after each writer cur
   assert.deepEqual(bounded.counters.permission, { decisions: 1, allowed: 1 });
 });
 
+/**
+ * R45: proto-named producer values are legal (a writer id and a skill name are
+ * both bounded tokens) and must survive as ordinary data, never as prototype
+ * members.
+ */
+test("R45: a prototype-named writer's telemetry is never excluded from the cursor delta", () => {
+  const allow = envelope({
+    dimensions: { result: "allow", resolution: "policy_allow" },
+  });
+  const records = [
+    { writerId: "__proto__", writerSequence: 2, telemetry: allow },
+    { writerId: "constructor", writerSequence: 2, telemetry: allow },
+    { writerId: "w1", writerSequence: 2, telemetry: allow },
+  ];
+
+  // No cursor is recorded for `__proto__`/`constructor`: their records are not
+  // "after a cursor", so every one of them must be folded (the inherited
+  // prototype member must never be read as a cursor).
+  const folded = counterDeltaAfterCursors(records, {});
+  assert.deepEqual(folded.counters.permission, {
+    decisions: 3,
+    allowed: 3,
+  });
+
+  // An own cursor for the same writer is honoured exactly like any other. The
+  // map is a plain object carrying own `__proto__`/`constructor` data keys, as
+  // a spread cursor map in the builder does.
+  const bounded = counterDeltaAfterCursors(
+    records,
+    Object.fromEntries([
+      ["__proto__", 2],
+      ["constructor", 2],
+    ]),
+  );
+  assert.deepEqual(bounded.counters.permission, { decisions: 1, allowed: 1 });
+});
+
+test("R45: a skill named after a prototype member counts as a number", () => {
+  const invocation = (skill: string) =>
+    envelope({
+      source: "pi-input",
+      metric: "skill.invocation",
+      dimensions: { skill },
+    });
+
+  const folded = foldTelemetryCounters([
+    invocation("constructor"),
+    invocation("constructor"),
+    invocation("toString"),
+  ]);
+  assert.deepEqual(folded.skillInvocations, {
+    constructor: 2,
+    toString: 1,
+  });
+  assert.equal(typeof folded.skillInvocations.constructor, "number");
+
+  const merged = mergeFoldedCounters(undefined, {
+    ...emptyFoldedCounters(),
+    skillInvocations: { constructor: 2 },
+  });
+  assert.equal(merged.skillInvocations.constructor, 2);
+  const twice = mergeFoldedCounters(merged, {
+    ...emptyFoldedCounters(),
+    skillInvocations: { constructor: 1, toString: 5 },
+  });
+  assert.equal(twice.skillInvocations.constructor, 3);
+  assert.equal(twice.skillInvocations.toString, 5);
+  // Normal names keep byte-identical JSON keys and order.
+  assert.deepEqual(Object.keys(twice.skillInvocations), [
+    "constructor",
+    "toString",
+  ]);
+});
+
+test("R45: a prototype-named counter key counts as a number across the merge", () => {
+  const merged = mergeFoldedCounters(undefined, {
+    ...emptyFoldedCounters(),
+    counters: { permission: { constructor: 2 } },
+  });
+  assert.equal(merged.counters.permission?.constructor, 2);
+  const twice = mergeFoldedCounters(merged, {
+    ...emptyFoldedCounters(),
+    counters: { permission: { constructor: 1, toString: 4 } },
+  });
+  assert.equal(twice.counters.permission?.constructor, 3);
+  assert.equal(twice.counters.permission?.toString, 4);
+  assert.deepEqual(Object.keys(twice.counters.permission ?? {}).sort(), [
+    "constructor",
+    "toString",
+  ]);
+});
+
 test("counterDeltaAfterCursors returns a fold independent of its inputs", () => {
   const allow = envelope({
     dimensions: { result: "allow", resolution: "policy_allow" },

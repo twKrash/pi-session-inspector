@@ -366,3 +366,205 @@ test("a failed inventory producer read preserves stored resource counts", async 
     await rm(root, { force: true, recursive: true });
   }
 });
+
+function emptyInventory() {
+  return {
+    schemaVersion: 1 as const,
+    commands: [],
+    skills: [],
+    resources: [],
+    toolSources: {},
+  };
+}
+
+test("records and advances observedAt for a byte-equivalent observation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-inventory-"));
+  try {
+    const snapshot = emptyInventory();
+    await refreshInventorySnapshot({
+      directory,
+      snapshot,
+      observedAt: "2026-09-12T10:00:00.000Z",
+    });
+    assert.equal(
+      (await readInventorySnapshot(directory))?.observedAt,
+      "2026-09-12T10:00:00.000Z",
+    );
+
+    // Byte-equivalent content must still advance the observation time.
+    await refreshInventorySnapshot({
+      directory,
+      snapshot,
+      observedAt: "2026-09-12T11:00:00.000Z",
+    });
+    const read = await readInventorySnapshot(directory);
+    assert.equal(read?.observedAt, "2026-09-12T11:00:00.000Z");
+    assert.deepEqual(read?.commands, snapshot.commands);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("an older observation time never regresses stored freshness", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-inventory-"));
+  try {
+    const snapshot = emptyInventory();
+    await refreshInventorySnapshot({
+      directory,
+      snapshot,
+      observedAt: "2026-09-12T11:00:00.000Z",
+    });
+    await refreshInventorySnapshot({
+      directory,
+      snapshot,
+      observedAt: "2026-09-12T10:00:00.000Z",
+    });
+    assert.equal(
+      (await readInventorySnapshot(directory))?.observedAt,
+      "2026-09-12T11:00:00.000Z",
+    );
+
+    // A payload change with a regressed clock still must not move freshness
+    // backwards.
+    await refreshInventorySnapshot({
+      directory,
+      snapshot: {
+        ...snapshot,
+        commands: [
+          {
+            name: "cmd",
+            source: "extension",
+            sourceLabel: "local",
+            scope: "user",
+            origin: "top-level",
+          },
+        ],
+      },
+      observedAt: "2026-09-12T09:00:00.000Z",
+    });
+    const read = await readInventorySnapshot(directory);
+    assert.equal(read?.observedAt, "2026-09-12T11:00:00.000Z");
+    assert.equal(read?.commands.length, 1);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("a failed observation never advances the stored observation time", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-inventory-"));
+  const directory = join(root, "sessions", "session-1");
+  try {
+    // refreshSessionInventory writes into <root>/sessions/<sessionId>.
+    await mkdir(directory, { recursive: true });
+    await refreshInventorySnapshot({
+      directory,
+      snapshot: emptyInventory(),
+      observedAt: "2026-09-12T10:00:00.000Z",
+    });
+
+    const { refreshSessionInventory } = await import(
+      "../../src/pi/session-start.ts"
+    );
+    const throwing = {
+      getCommands() {
+        throw new Error("transient producer failure");
+      },
+      getAllTools() {
+        return [];
+      },
+    };
+    assert.equal(
+      await refreshSessionInventory({
+        api: throwing,
+        root,
+        sessionId: "session-1",
+        now: () => new Date("2026-09-12T11:00:00.000Z"),
+      }),
+      undefined,
+    );
+    assert.equal(
+      (await readInventorySnapshot(directory))?.observedAt,
+      "2026-09-12T10:00:00.000Z",
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("refreshSessionInventory stamps observedAt from the injected clock", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-inventory-"));
+  const directory = join(root, "sessions", "session-1");
+  try {
+    await mkdir(directory, { recursive: true });
+    const { readSessionInventory, refreshSessionInventory } = await import(
+      "../../src/pi/session-start.ts"
+    );
+    const api = { getCommands: () => [], getAllTools: () => [] };
+    const snapshot = await refreshSessionInventory({
+      api,
+      root,
+      sessionId: "session-1",
+      now: () => new Date("2026-09-12T12:00:00.000Z"),
+    });
+    // The in-memory producer read stays payload-only.
+    assert.deepEqual(snapshot, readSessionInventory(api));
+    assert.equal(
+      (await readInventorySnapshot(directory))?.observedAt,
+      "2026-09-12T12:00:00.000Z",
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("validates observedAt additively without discarding payload", () => {
+  const valid = parseInventorySnapshot({
+    ...BASE,
+    observedAt: "2026-09-12T10:00:00.000Z",
+  });
+  assert.equal(valid?.observedAt, "2026-09-12T10:00:00.000Z");
+
+  // Present-but-invalid is dropped, never fabricated, and never corrupts the
+  // payload the reader already validated.
+  const invalid = parseInventorySnapshot({ ...BASE, observedAt: "yesterday" });
+  assert.ok(invalid);
+  assert.equal(invalid.observedAt, undefined);
+
+  // An over-long value is not a bounded instant either.
+  const overlong = parseInventorySnapshot({
+    ...BASE,
+    observedAt: `2026-09-12T10:00:00.${"0".repeat(40)}Z`,
+  });
+  assert.equal(overlong?.observedAt, undefined);
+});
+
+test("a payload change with no observation time keeps the last known freshness", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-inventory-"));
+  try {
+    await refreshInventorySnapshot({
+      directory,
+      snapshot: emptyInventory(),
+      observedAt: "2026-09-12T11:00:00.000Z",
+    });
+    await refreshInventorySnapshot({
+      directory,
+      snapshot: {
+        ...emptyInventory(),
+        commands: [
+          {
+            name: "cmd",
+            source: "extension",
+            sourceLabel: "local",
+            scope: "user",
+            origin: "top-level",
+          },
+        ],
+      },
+    });
+    const read = await readInventorySnapshot(directory);
+    assert.equal(read?.commands.length, 1);
+    assert.equal(read?.observedAt, "2026-09-12T11:00:00.000Z");
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});

@@ -14,10 +14,16 @@ const observerHooks = [
 ] as const;
 
 type ObserverHook = (typeof observerHooks)[number];
-type ObserverHandler = () => Promise<void>;
+type ObserverHandler = (payload?: unknown) => Promise<void>;
+
+const MAX_TOOL_CALL_ID_BYTES = 512;
+const encoder = new TextEncoder();
+
+export type LiveObserverEventKind = ObserverHook;
 
 export type LiveObserverEvent = {
-  kind: ObserverHook;
+  kind: LiveObserverEventKind;
+  toolCallId?: string;
 };
 
 /** A structural subset of Pi's public lifecycle observer API. */
@@ -44,11 +50,13 @@ export function registerLiveObserver(
   observe: LiveObserver,
 ): void {
   for (const kind of observerHooks) {
-    const handler = (): Promise<void> => {
+    const handler: ObserverHandler = (payload?: unknown): Promise<void> => {
       try {
-        void Promise.resolve(observe({ kind })).catch(() => {
-          // Observer failures must not alter Pi execution.
-        });
+        void Promise.resolve(observe(observerEvent(kind, payload))).catch(
+          () => {
+            // Observer failures must not alter Pi execution.
+          },
+        );
       } catch {
         // Observer failures must not alter Pi execution.
       }
@@ -105,5 +113,35 @@ function registerHook(
     case "thinking_level_select":
       api.on("thinking_level_select", handler);
       break;
+  }
+}
+
+/**
+ * Copies only the bounded native tool-call id for tool boundaries. Pi hook
+ * payloads may carry args, results, messages, prompts, and model objects; none
+ * of them may reach the observer, the WAL, or a diagnostic.
+ */
+function observerEvent(
+  kind: ObserverHook,
+  payload: unknown,
+): LiveObserverEvent {
+  if (kind !== "tool_execution_start" && kind !== "tool_execution_end") {
+    return { kind };
+  }
+  const toolCallId = readToolCallId(payload);
+  return toolCallId === undefined ? { kind } : { kind, toolCallId };
+}
+
+function readToolCallId(payload: unknown): string | undefined {
+  try {
+    if (payload === null || typeof payload !== "object") return undefined;
+    const value = (payload as { toolCallId?: unknown }).toolCallId;
+    if (typeof value !== "string" || value.length === 0) return undefined;
+    if (/\p{Cc}/u.test(value)) return undefined;
+    if (encoder.encode(value).byteLength > MAX_TOOL_CALL_ID_BYTES)
+      return undefined;
+    return value;
+  } catch {
+    return undefined;
   }
 }

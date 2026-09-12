@@ -28,8 +28,8 @@ test("replays active branch without counting sibling usage", () => {
     entries.map((entry) => entry.id),
     ["e1", "e2", "e7"],
   );
-  assert.equal(report.usage.totalTokens, 30);
-  assert.equal(report.usage.cost, 0.03);
+  assert.equal(report.usage?.totalTokens, 30);
+  assert.equal(report.usage?.cost, 0.03);
   assert.equal(report.tools[0]?.id, "tool:call-2");
   assert.equal(report.tools[0]?.status, "interrupted");
 });
@@ -121,13 +121,13 @@ test("uses the earliest marker for tree scope despite later duplicates", () => {
 
 test("ignores malformed tracking markers", () => {
   const session = parseSessionJsonl(trackingBoundaryFixture);
+  // Only the malformed marker is present, so no valid boundary exists. The
+  // scope is unavailable rather than falling back to every entry.
   const malformedOnlyEntries = session.entries.slice(0, 4);
 
   assert.deepEqual(
-    selectScope(malformedOnlyEntries, "pre-boundary", "tree").map(
-      (entry) => entry.id,
-    ),
-    ["old-root", "old-parent", "malformed-marker", "pre-boundary"],
+    selectScope(malformedOnlyEntries, "pre-boundary", "tree"),
+    [],
   );
 });
 
@@ -137,8 +137,8 @@ test("replays full tree exactly once and emits stable JSON and ledger", () => {
     reduceEntries(session.id, selectScope(session.entries, "e7", "tree")),
   );
 
-  assert.equal(report.usage.totalTokens, 72);
-  assert.equal(report.usage.cost, 0.086);
+  assert.equal(report.usage?.totalTokens, 72);
+  assert.equal(report.usage?.cost, 0.086);
   assert.deepEqual(report.models, [
     {
       provider: "acme",

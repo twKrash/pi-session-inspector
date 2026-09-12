@@ -27,6 +27,10 @@ const MAX_RESOURCES = 64;
 const MAX_NAME_BYTES = 64;
 const MAX_DESCRIPTION_BYTES = 120;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+// Bounded ISO-8601 instant; observation times are never free-form strings.
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const MAX_TIMESTAMP_LENGTH = 35;
 
 type Scope = "user" | "project" | "temporary";
 type Origin = "package" | "top-level";
@@ -74,6 +78,7 @@ export function boundInventorySnapshot(
 ): InventorySnapshot {
   const capped = parseInventorySnapshot({
     schemaVersion: 1,
+    ...observedFields(snapshot.observedAt),
     commands: Array.isArray(snapshot.commands)
       ? snapshot.commands.slice(0, MAX_COMMANDS)
       : [],
@@ -90,6 +95,7 @@ export function boundInventorySnapshot(
 
   const withoutDescriptions: InventorySnapshot = {
     schemaVersion: 1,
+    ...observedFields(normalized.observedAt),
     commands: normalized.commands.map((row) => ({
       name: row.name,
       source: row.source,
@@ -111,6 +117,7 @@ export function boundInventorySnapshot(
   if (serializedBytes(withoutDescriptions) <= MAX_BYTES)
     return withoutDescriptions;
 
+  const observedAt = withoutDescriptions.observedAt;
   const commands = [...withoutDescriptions.commands];
   const skills = [...withoutDescriptions.skills];
   const resources = [...withoutDescriptions.resources];
@@ -120,6 +127,7 @@ export function boundInventorySnapshot(
   );
   let candidate: InventorySnapshot = {
     schemaVersion: 1,
+    ...observedFields(observedAt),
     commands,
     skills,
     resources,
@@ -137,6 +145,7 @@ export function boundInventorySnapshot(
     }
     candidate = {
       schemaVersion: 1,
+      ...observedFields(observedAt),
       commands,
       skills,
       resources,
@@ -171,25 +180,45 @@ export async function writeInventorySnapshot(
 }
 
 /**
- * Refreshes the snapshot only when its content hash changed, so an unchanged
- * inventory never rewrites the file (no mtime churn, no needless IO).
+ * Persists the snapshot when the payload changed or the observation time
+ * advanced. A byte-equivalent observation reuses the payload bytes but must
+ * still advance `observedAt` (spec §14.2.1); a call with no observation time
+ * keeps the payload's own `observedAt` untouched.
  */
 export async function refreshInventorySnapshot({
   directory,
   snapshot,
+  observedAt,
 }: {
   directory: string;
   snapshot: InventorySnapshot;
+  observedAt?: string;
 }): Promise<void> {
   try {
+    const incoming = isBoundedObservationTime(observedAt)
+      ? observedAt
+      : snapshot.observedAt;
     // Compare the bounded form so a trimmed candidate still short-circuits.
-    const candidate = boundInventorySnapshot(snapshot);
+    let candidate = boundInventorySnapshot({
+      ...snapshot,
+      ...observedFields(incoming),
+    });
     const existing = await readInventorySnapshot(directory);
-    if (
-      existing !== undefined &&
-      inventoryHash(existing) === inventoryHash(candidate)
-    )
-      return;
+    if (existing !== undefined) {
+      // Freshness is the latest successful observation: a payload change must
+      // never regress the stored instant, and an observation with no clock
+      // keeps the last known instant rather than dropping it.
+      candidate = {
+        ...candidate,
+        ...observedFields(
+          laterInstant(candidate.observedAt, existing.observedAt),
+        ),
+      };
+      const payloadUnchanged =
+        inventoryHash(existing) === inventoryHash(candidate);
+      const observedAtChanged = candidate.observedAt !== existing.observedAt;
+      if (payloadUnchanged && !observedAtChanged) return;
+    }
     await writeInventorySnapshot(directory, candidate);
   } catch {
     // Snapshot maintenance is observer-only and must never alter Pi.
@@ -227,7 +256,18 @@ export function parseInventorySnapshot(
       resources === undefined
     )
       return undefined;
-    return { schemaVersion: 1, commands, skills, resources, toolSources };
+    return {
+      schemaVersion: 1,
+      ...observedFields(
+        isBoundedObservationTime(record.observedAt)
+          ? record.observedAt
+          : undefined,
+      ),
+      commands,
+      skills,
+      resources,
+      toolSources,
+    };
   } catch {
     return undefined;
   }
@@ -376,6 +416,34 @@ function isBoundedName(value: string): boolean {
     Buffer.byteLength(value, "utf8") <= MAX_NAME_BYTES &&
     NAME.test(value)
   );
+}
+
+/** Validation for an additive snapshot field; absent or invalid is dropped. */
+function isBoundedObservationTime(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_TIMESTAMP_LENGTH &&
+    ISO_INSTANT.test(value) &&
+    !Number.isNaN(Date.parse(value))
+  );
+}
+
+/** Emits the optional `observedAt` key only when a validated value exists. */
+function observedFields(observedAt: string | undefined): {
+  observedAt?: string;
+} {
+  return observedAt === undefined ? {} : { observedAt };
+}
+
+/** The later of two validated observation instants, tolerating absent ones. */
+function laterInstant(
+  a: string | undefined,
+  b: string | undefined,
+): string | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Date.parse(a) >= Date.parse(b) ? a : b;
 }
 
 function asRecord(

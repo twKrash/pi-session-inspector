@@ -64,18 +64,23 @@ export function readSessionInventory(
 }
 
 /**
- * Builds and persists the active session's inventory snapshot. Failures are
- * swallowed and yield `undefined` so callers never substitute fabricated zero
- * counts. Snapshot maintenance can never alter Pi execution.
+ * Builds and persists the active session's inventory snapshot. The persisted
+ * snapshot is stamped with the observation time from `now` (the latest
+ * successful observation, spec §14.2.1); the returned in-memory snapshot stays
+ * payload-only. Failures are swallowed and yield `undefined` so callers never
+ * substitute fabricated zero counts. Snapshot maintenance can never alter Pi
+ * execution.
  */
 export async function refreshSessionInventory({
   api,
   root,
   sessionId,
+  now = () => new Date(),
 }: {
   api: InventoryApi;
   root: string;
   sessionId: string;
+  now?: () => Date;
 }): Promise<InventorySnapshot | undefined> {
   const snapshot = readSessionInventory(api);
   if (snapshot === undefined) return undefined;
@@ -83,6 +88,7 @@ export async function refreshSessionInventory({
     await refreshInventorySnapshot({
       directory: join(root, "sessions", sessionId),
       snapshot,
+      observedAt: now().toISOString(),
     });
   } catch {
     // Inventory persistence is observer-only.

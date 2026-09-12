@@ -14,6 +14,7 @@ import { acquireMaintenanceLease } from "./lease.js";
 import { recoverSession, type RecoveredRunningRecord } from "./recovery.js";
 import {
   type Checkpoint,
+  type CheckpointResourceCounts,
   readCheckpoint,
   writeCheckpoint,
 } from "./checkpoint.js";
@@ -50,7 +51,7 @@ export async function maintainSession({
   sessionFile: string;
   writerId: string;
   /** Current sanitized inventory counts; omitted preserves any stored value. */
-  inventoryCounts?: { commands: number; skills: number };
+  inventoryCounts?: CheckpointResourceCounts;
   now?: () => Date;
 }): Promise<MaintenanceResult> {
   const directory = join(root, "sessions", sessionId);
@@ -78,8 +79,13 @@ export async function maintainSession({
       foldedFromCheckpointAggregates(existing?.aggregates),
       recovered.deltaCounters,
     );
+    // Stored values are the base and caller-supplied keys win, so a caller
+    // that only observed `commands`/`skills` (e.g. `src/index.ts`) never erases
+    // a previously known `observedAt`/`resources`/`toolSources`.
     const resourceCounts =
-      inventoryCounts ?? existing?.aggregates.resourceCounts;
+      inventoryCounts === undefined
+        ? existing?.aggregates.resourceCounts
+        : { ...existing?.aggregates.resourceCounts, ...inventoryCounts };
     const reduced = reduceEntries(
       sessionId,
       selectScope(source.entries, null, "tree"),
@@ -95,39 +101,49 @@ export async function maintainSession({
     };
     // A source rewrite cannot be sealed from a stale reduction.
     if (!(await sourceStillCurrent())) return unavailableMaintenance();
-    const checkpointWritten = await writeCheckpoint({
-      directory,
-      lease,
-      checkpoint: {
-        schemaVersion: 1,
-        cursors: {
-          pi: source.cursor,
-          wal:
-            recovered.availability === "available"
-              ? recovered.cursors.wal
-              : (existing?.cursors.wal ?? {}),
-        },
-        ...(existing?.sealingVersion !== 1 || existing.sealedWal === undefined
-          ? {}
-          : { sealedWal: existing.sealedWal, sealingVersion: 1 }),
-        aggregates: {
-          totalTokens: reduced.usage.totalTokens,
-          totalCost: reduced.usage.cost,
-          generations: reduced.generations.length,
-          tools: reduced.tools.length,
-          compactions: reduced.compactions.length,
-          ...foldedAggregateFields(folded),
-          ...(resourceCounts === undefined
-            ? {}
-            : {
-                resourceCounts: {
-                  commands: resourceCounts.commands,
-                  skills: resourceCounts.skills,
-                },
-              }),
-        },
+    const candidate: Checkpoint = {
+      schemaVersion: 1,
+      cursors: {
+        pi: source.cursor,
+        wal:
+          recovered.availability === "available"
+            ? recovered.cursors.wal
+            : (existing?.cursors.wal ?? {}),
       },
-    });
+      ...(existing?.sealingVersion !== 1 || existing.sealedWal === undefined
+        ? {}
+        : { sealedWal: existing.sealedWal, sealingVersion: 1 }),
+      aggregates: {
+        totalTokens: reduced.usage.totalTokens,
+        totalCost: reduced.usage.cost,
+        generations: reduced.generations.length,
+        tools: reduced.tools.length,
+        compactions: reduced.compactions.length,
+        ...foldedAggregateFields(folded),
+        ...(resourceCounts === undefined
+          ? {}
+          : { resourceCounts: serializeResourceCounts(resourceCounts) }),
+      },
+      evidence: {
+        // `detailCoverage` is owned by retention and is preserved so a counter
+        // pass never erases another component's evidence.
+        ...(existing?.evidence?.detailCoverage === undefined
+          ? {}
+          : { detailCoverage: existing.evidence.detailCoverage }),
+        // `usageCoverage` is deliberately not written here. The reducer exposes
+        // no per-owner usage-presence signal, so any value would be fabricated;
+        // the canonical usage ledger supplies real coverage (Task 13).
+        checkpointedAt: now().toISOString(),
+      },
+    };
+    // A pass that only observes a later clock must not rewrite the checkpoint.
+    // Compare everything except `evidence.checkpointedAt`; when nothing else
+    // differs, keep the stored bytes and the stored `checkpointedAt`.
+    const materializationUnchanged =
+      existing !== undefined && sameMaterializedCheckpoint(candidate, existing);
+    const checkpointWritten =
+      materializationUnchanged ||
+      (await writeCheckpoint({ directory, lease, checkpoint: candidate }));
     if (!checkpointWritten) return unavailableMaintenance();
     const deleted = await pruneExpiredWalSegments({
       directory,
@@ -154,10 +170,89 @@ function unavailableMaintenance(): MaintenanceResult {
 }
 
 /**
+ * Copies only the keys the merged caller view actually carries. `observedAt` is
+ * the inventory snapshot's observation time and is never fabricated from the
+ * checkpoint write time; an absent optional key stays absent. Caller-supplied
+ * keys already won over stored ones before this call, so an omitted key keeps
+ * its stored value rather than being dropped (spec §14.2.1 rule 6).
+ */
+function serializeResourceCounts(
+  counts: CheckpointResourceCounts,
+): CheckpointResourceCounts {
+  return {
+    commands: counts.commands,
+    skills: counts.skills,
+    ...(counts.resources === undefined ? {} : { resources: counts.resources }),
+    ...(counts.toolSources === undefined
+      ? {}
+      : { toolSources: counts.toolSources }),
+    ...(counts.observedAt === undefined
+      ? {}
+      : { observedAt: counts.observedAt }),
+  };
+}
+
+/**
+ * True when rewriting `candidate` would not change any materialized field other
+ * than `evidence.checkpointedAt`. Prototypes and key insertion order are
+ * ignored because parsed WAL cursors are null-prototype and the candidate is
+ * assembled separately from the parsed stored checkpoint.
+ */
+function sameMaterializedCheckpoint(a: Checkpoint, b: Checkpoint): boolean {
+  return sameValue(stripCheckpointedAt(a), stripCheckpointedAt(b));
+}
+
+type CheckpointWithoutMaterializedAt = Omit<Checkpoint, "evidence"> & {
+  evidence?: Omit<NonNullable<Checkpoint["evidence"]>, "checkpointedAt">;
+};
+
+function stripCheckpointedAt(
+  checkpoint: Checkpoint,
+): CheckpointWithoutMaterializedAt {
+  const { evidence, ...rest } = checkpoint;
+  if (evidence === undefined) return rest;
+  const { checkpointedAt: _checkpointedAt, ...remaining } = evidence;
+  return Object.keys(remaining).length === 0
+    ? rest
+    : { ...rest, evidence: remaining };
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (
+    typeof a !== "object" ||
+    typeof b !== "object" ||
+    a === null ||
+    b === null
+  ) {
+    return false;
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((value, index) => sameValue(value, b[index]))
+    );
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every(
+    (key) => Object.hasOwn(right, key) && sameValue(left[key], right[key]),
+  );
+}
+
+/**
  * Serializes only the folded fields that carry information: empty maps and
- * zero counts are omitted rather than written as `{}`/`0` filler, so repeated
- * passes with no new telemetry stay byte-identical. `resourceCounts` is owned
- * by inventory maintenance and is not part of the counter fold.
+ * zero counts are omitted rather than written as `{}`/`0` filler. Together with
+ * `maintainSession`'s materialization comparison, a pass whose checkpoint
+ * content (ignoring `evidence.checkpointedAt`) is unchanged does not rewrite the
+ * file at all, so an unchanged session keeps byte-identical checkpoints and a
+ * stable `checkpointedAt`; it advances only when some other field changed.
+ * `resourceCounts` is owned by inventory maintenance and is not part of the
+ * counter fold.
  *
  * Every emitted map is canonicalized into sorted key order at this write
  * boundary. `mergeFoldedCounters` keeps already-stored keys first and appends

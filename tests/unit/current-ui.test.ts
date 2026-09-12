@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { SessionReport } from "../../src/core/reports.ts";
+import {
+  type SessionReport,
+  unavailableEvidenceHealth,
+} from "../../src/core/reports.ts";
 import {
   CURRENT_TABS,
   createCurrentTuiModel,
@@ -44,6 +47,7 @@ const report: SessionReport = {
   },
   resources: { state: "unavailable", items: [] },
   errors: [],
+  evidenceHealth: unavailableEvidenceHealth(),
 };
 
 const initial: CurrentTuiState = { tab: "overview", scope: "active" };

@@ -40,6 +40,11 @@ export type ResourceSourceRow = {
 
 export type InventorySnapshot = {
   schemaVersion: 1;
+  /**
+   * Time of the latest successful observation, not the time the content last
+   * changed (spec §14.2.1). Absent only on legacy snapshots.
+   */
+  observedAt?: string;
   commands: readonly CommandRow[];
   skills: readonly SkillRow[];
   resources: readonly ResourceSourceRow[];
@@ -78,9 +83,21 @@ export function sanitizeSourceLabel(value: unknown): string {
   return "other";
 }
 
-/** Stable content hash over the canonical snapshot JSON. */
+/**
+ * Stable payload-identity hash over the canonical snapshot JSON. The
+ * observation time is deliberately excluded: a byte-equivalent observation must
+ * not read as a content change, so `observedAt` advances independently of this
+ * hash (spec §14.2.1).
+ */
 export function inventoryHash(snapshot: InventorySnapshot): string {
-  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  const payload = {
+    schemaVersion: snapshot.schemaVersion,
+    commands: snapshot.commands,
+    skills: snapshot.skills,
+    resources: snapshot.resources,
+    toolSources: snapshot.toolSources,
+  };
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 /**

@@ -1,4 +1,7 @@
+import type { RetainedWalRecord } from "../core/canonical.ts";
 import type { Scope } from "../core/events.ts";
+import type { L0Evidence } from "../core/evidence.ts";
+import type { SubagentEvidence } from "../integrations/subagents.ts";
 import type { SessionReport } from "../core/reports.ts";
 import type { CurrentTuiModel } from "./current.ts";
 import { loadCurrentSessionReport } from "./load-current.ts";
@@ -7,6 +10,7 @@ import {
   loadHistoryReports,
   type GlobalReport,
   type HistoryReport,
+  type SessionEvidenceProvider,
 } from "./load-history.ts";
 import type { SessionObservation } from "./observation.ts";
 
@@ -68,6 +72,27 @@ export type InspectorBundleInput = {
   sessionDirectory(): string;
   maintenance: MaintenanceOptions;
   observation?: SessionObservation;
+  /**
+   * L0 evidence for the current session, built by the composition root. The
+   * bundle never reads storage for it; without it the current views stay
+   * evidence-free exactly like a loader called without evidence.
+   */
+  currentEvidence?: {
+    evidence: L0Evidence;
+    walRecords?: readonly RetainedWalRecord[];
+    liveOverflow?: number;
+  };
+  /** Composition-root provider for validated archive-backed child evidence. */
+  subagentEvidence?: (
+    entries: readonly import("../core/events.ts").SessionEntry[],
+    sessionId: string,
+  ) => Promise<SubagentEvidence>;
+  /**
+   * Per-session L0 evidence for history/global sections, built by the
+   * composition root (R51). The default history/global loaders forward it; a
+   * caller that injects its own loaders may omit it.
+   */
+  historyEvidence?: SessionEvidenceProvider;
   current?: { sessionFile?: string; leafId: string | null };
   loadCurrent?: CurrentSessionLoader;
   loadHistory?: HistoryLoader;
@@ -233,12 +258,15 @@ function defaultCurrentLoader(
 ): CurrentSessionLoader {
   const sessionFile = input.current?.sessionFile;
   const leafId = input.current?.leafId ?? null;
-  const { observation } = input;
+  const { observation, currentEvidence } = input;
   return (scope) =>
     loadCurrentSessionReport(sessionFile, scope, {
       leafId,
       ...(observation === undefined ? {} : { observation }),
-      inspectorRoot: input.root,
+      ...(currentEvidence === undefined ? {} : currentEvidence),
+      ...(input.subagentEvidence === undefined
+        ? {}
+        : { subagentEvidence: input.subagentEvidence }),
     });
 }
 
@@ -249,6 +277,9 @@ function defaultHistoryLoader(input: InspectorBundleInput): HistoryLoader {
       sessionDirectory: input.sessionDirectory,
       scope: "tree",
       maintenance: input.maintenance,
+      ...(input.historyEvidence === undefined
+        ? {}
+        : { sessionEvidence: input.historyEvidence }),
     });
 }
 
@@ -259,5 +290,8 @@ function defaultGlobalLoader(input: InspectorBundleInput): GlobalLoader {
       sessionDirectory: input.sessionDirectory,
       scope: "tree",
       maintenance: input.maintenance,
+      ...(input.historyEvidence === undefined
+        ? {}
+        : { sessionEvidence: input.historyEvidence }),
     });
 }
