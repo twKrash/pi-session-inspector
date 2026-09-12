@@ -31,11 +31,14 @@ test("domains and sessions are collision-isolated", () => {
     base,
     canonicalOpaqueDigest("live-tool", `${SESSION}-2`, "id"),
   );
-  // Field-boundary test: a `+` concatenation would make these two equal.
+  // Field-boundary test: with `+` concatenation both preimages become
+  // `...fixture-sessionab`, so these two must differ only if NUL separators exist.
   assert.notEqual(
     canonicalOpaqueDigest("live-tool", SESSION, "ab"),
-    canonicalOpaqueDigest("live-tool", `${SESSION}b`, "a"),
+    canonicalOpaqueDigest("live-tool", `${SESSION}a`, "b"),
   );
+  // Trailing whitespace is hashed, never trimmed.
+  assert.notEqual(base, canonicalOpaqueDigest("live-tool", SESSION, "id "));
   assert.deepEqual(
     [...OPAQUE_ID_DOMAINS],
     ["live-tool", "permission-request", "subagent-run"],
