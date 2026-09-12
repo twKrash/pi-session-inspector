@@ -34,3 +34,26 @@ The focused test run initially exposed intentional baseline failures after chang
 ## Residual concerns
 
 The report DTO's legacy usage fields remain statically required for compatibility, while the overflow path deliberately supplies `undefined` so JSON omits them; renderer paths must continue treating missing runtime usage as unavailable. The current TUI has this guard. Existing HTML projection assumes a present usage value and should receive an explicit unavailable-safe presentation follow-up if overflow HTML rendering is exercised.
+
+---
+
+# Final review follow-up — commit `5068524`
+
+## Findings closed
+
+- **Optional/unavailable usage rendering:** `SessionReport.usage` and `usageComposition` are optional when L1 rejects a native aggregate. HTML now emits the bounded unavailable usage section, JSON omits the rejected fields, and the bundle path is covered by an overflow regression test.
+- **Bundle archive evidence wiring:** `loadInspectorBundle` accepts and forwards the composition-root archive provider to both current-scope loads; direct and bundled reports now carry the same archive verdict.
+- **Duplicate scope IDs:** tree resolution, current loading, and history loading use first-occurrence ownership, so duplicate Pi IDs cannot replace an earlier logical entry or double-count usage.
+- **Missing I4 test pin:** a checkpoint folded counter at `MAX_FOLDED_COUNT + 1` is rejected as bounded invalid rather than truncated or published.
+- **Missing I7/I8/M3 test pins:** loader source scans pin the archive-reader boundary; retention verifies inventory expiry is checkpointed before unlink; differing frozen observation instants verify only the expected inventory evidence changes.
+- **M1 documentation sentence:** ADR 0016 and the v1 spec now accurately state that L2 loaders read only Pi session-file bytes for L0 parsing, while Inspector-owned storage remains outside L2.
+
+## Validation
+
+- Focused regression suites: **183/183 passed**.
+- `npm test`: **588/588 passed**.
+- `npm run typecheck`: passed.
+- `npm run lint`: passed; three informational pre-existing suggestions remain.
+- `npm run format:check`: passed.
+- `npm pack --dry-run`: passed; `pi-session-inspector-0.8.0.tgz`, 59 files.
+- `git diff --check`: passed.
