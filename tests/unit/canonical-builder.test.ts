@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -512,8 +513,22 @@ test("P1.2c: an uncorrelated native tool call reports the live source partial", 
 });
 
 test("P1.2c: a non-zero liveOverflow reports the live source partial", () => {
+  // No native tool call and no running live fact: `liveOverflow` is the only
+  // term that can flip the source to partial.
+  const assistantNoToolCall = {
+    type: "message",
+    id: "gen-no-tool",
+    parentId: "marker",
+    timestamp: "2026-09-12T10:01:00.000Z",
+    message: {
+      role: "assistant",
+      provider: "openai",
+      model: "gpt",
+      content: [],
+    },
+  };
   const result = buildCanonicalSession({
-    parsed: parsed([MARKER, ASSISTANT]),
+    parsed: parsed([MARKER, assistantNoToolCall]),
     scope: "tree",
     leafId: null,
     evidence: { atomic: [liveTiming("turn")], folded: [] },
@@ -632,4 +647,63 @@ test("P2.3: a pattern-valid but non-canonical integration key is never republish
     JSON.stringify(session.retainedAggregates).includes("evil-integration"),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Round 2 fix tests
+// ---------------------------------------------------------------------------
+
+test("P1.A: a usage-bearing branch summary emits a branch-summary usage line", () => {
+  const fixture = readFileSync(
+    "tests/fixtures/pi/0.85.1/usage-composition.jsonl",
+    "utf8",
+  );
+  const result = buildCanonicalSession({
+    parsed: parseSessionJsonl(fixture),
+    scope: "tree",
+    leafId: "b1",
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  assert.equal(session.usage.state, "known");
+  if (session.usage.state !== "known") return;
+  const branchLine = session.usage.lines.find(
+    (line) => line.bucket === "branch-summary",
+  );
+  assert.ok(branchLine, "branch-summary usage line missing");
+  assert.equal(branchLine.usage.totalTokens, 10);
+  assert.equal(branchLine.contributesToSession, true);
+  assert.equal(session.usage.composition.branchSummaries.totalTokens, 10);
+  // Session total reconciles the branch summary instead of dropping it.
+  assert.equal(session.usage.known.totalTokens, 180);
+});
+
+test("P1.A: a lone usage-bearing branch summary reconciles its own usage", () => {
+  const branchSummary = {
+    type: "branch_summary",
+    id: "b-only",
+    parentId: "marker",
+    timestamp: "2026-09-12T10:05:00.000Z",
+    summary: "bounded",
+    usage: { totalTokens: 17, cost: { total: 0.017 } },
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, branchSummary]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  assert.equal(session.usage.state, "known");
+  if (session.usage.state !== "known") return;
+  const branchLine = session.usage.lines.find(
+    (line) => line.bucket === "branch-summary",
+  );
+  assert.ok(branchLine, "branch-summary usage line missing");
+  assert.equal(branchLine.usage.totalTokens, 17);
+  assert.deepEqual(session.usage.known, { totalTokens: 17, cost: 0.017 });
 });

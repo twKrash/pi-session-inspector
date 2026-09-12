@@ -726,8 +726,15 @@ function buildUsage(
   }
   for (const compaction of reduced.compactions) {
     const entryId = compaction.id.replace(/^compaction:/, "");
-    // Spec §10.2: a usage-less compaction contributes no fabricated zero.
-    if (!presence.compactionsWithUsage.has(entryId)) continue;
+    // Spec §10.2: a usage-less compaction contributes no fabricated zero. A
+    // branch summary is a disjoint owner family, so its usage presence is
+    // tracked separately; gating both on `compactionsWithUsage` made the
+    // `branch-summary` bucket unreachable.
+    const withUsage =
+      compaction.kind === "branch_summary"
+        ? presence.branchSummariesWithUsage
+        : presence.compactionsWithUsage;
+    if (!withUsage.has(entryId)) continue;
     lines.push({
       id: `usage-line:compaction:${entryId}`,
       ownerId: compaction.id,
