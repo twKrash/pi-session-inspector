@@ -1,6 +1,7 @@
 import type { EvidenceState, Scope } from "../core/events.ts";
 import { buildLedger, type LedgerItem } from "../core/ledger.ts";
 import type { SessionReport } from "../core/reports.ts";
+import type { SessionCoverage } from "../core/session-coverage.ts";
 import type { CurrentView, DailyRow, InspectorBundle } from "./bundle.ts";
 import type { GlobalReport, HistoryReport } from "./load-history.ts";
 
@@ -52,7 +53,10 @@ export const ENGLISH_CATALOG = {
   "tab.errors": "Errors",
   "tab.ledger": "Ledger",
   "metric.cost": "Native cost",
+  "metric.knownCost": "Known native cost",
+  "metric.costUnavailable": "Unavailable",
   "metric.tokens": "Total tokens",
+  "metric.knownTokens": "Known tokens",
   "metric.generations": "Generations",
   "metric.tools": "Tool calls",
   "metric.sessions": "Tracked sessions",
@@ -264,6 +268,18 @@ export const ENGLISH_CATALOG = {
   "local.design": "Local by design",
   "metric.child": "Child breakdown",
   "metric.child.note": "breakdown only · never added",
+  "coverage.title": "Coverage",
+  "coverage.sessions":
+    "{available} / {inspected} sessions · {unavailable} unavailable",
+  "coverage.complete": "{available} / {inspected} sessions",
+  "coverage.sessionsLimited":
+    "{inspected} sessions inspected · additional sessions not inspected",
+  "coverage.none": "No tracked sessions",
+  "coverage.unknown": "Sessions: Unavailable",
+  "coverage.reasons": "Reasons: {reasons}",
+  "coverage.unknownCompletenessCost":
+    "Known native cost — completeness unknown",
+  "coverage.unknownCompletenessTokens": "Known tokens — completeness unknown",
 } as const;
 
 export type HtmlReport =
@@ -589,6 +605,104 @@ function sectionProjection(input: HtmlReport): Record<string, unknown> {
   const projected = projectReport(input);
   delete projected.kind;
   return projected;
+}
+
+/**
+ * The one wording ladder for an aggregate's labels. Value availability
+ * (`usageUnavailable`) is independent of coverage availability: an all-
+ * unavailable session set still has a known inspection size, while a report
+ * without `coverage` has values of unknown completeness.
+ */
+export function aggregateUsageLabels(input: {
+  availability: "available" | "unavailable";
+  coverage: SessionCoverage | undefined;
+}): {
+  cost: string;
+  tokens: string;
+  usageUnavailable: boolean;
+  sessions: string;
+} {
+  if (input.availability !== "available") {
+    return {
+      cost: "metric.costUnavailable",
+      tokens: "metric.costUnavailable",
+      usageUnavailable: true,
+      sessions: "coverage.unknown",
+    };
+  }
+  const coverage = input.coverage;
+  if (coverage === undefined) {
+    return {
+      cost: "coverage.unknownCompletenessCost",
+      tokens: "coverage.unknownCompletenessTokens",
+      usageUnavailable: false,
+      sessions: "coverage.unknown",
+    };
+  }
+  if (coverage.inspected === 0) {
+    return {
+      cost: "metric.costUnavailable",
+      tokens: "metric.costUnavailable",
+      usageUnavailable: true,
+      sessions: "coverage.none",
+    };
+  }
+  if (coverage.complete) {
+    return {
+      cost: "metric.cost",
+      tokens: "metric.tokens",
+      usageUnavailable: false,
+      sessions: "coverage.complete",
+    };
+  }
+  return {
+    cost: "metric.knownCost",
+    tokens: "metric.knownTokens",
+    usageUnavailable: coverage.available === 0,
+    sessions: coverage.discoveryLimited
+      ? "coverage.sessionsLimited"
+      : "coverage.sessions",
+  };
+}
+
+/** Aggregate-only coverage projection: the report's coverage plus its wording. */
+type CoverageProjection = {
+  inspected: number;
+  available: number;
+  unavailable: number;
+  sessionRatio: number | null;
+  complete: boolean;
+  discoveryLimited: boolean;
+  /** Pre-joined bounded reason tokens, `reason: count` in enumeration order. */
+  reasons: string;
+  /** Pre-rendered session line; the catalog key comes from the one ladder. */
+  line: string;
+};
+
+/**
+ * `null` when the report carries no coverage at all (unavailable aggregate or a
+ * report older than the coverage field), never a fabricated zero pass. The
+ * session line is interpolated here from the catalog template the ladder chose,
+ * so the document states its own completeness without a second wording ladder
+ * and without waiting for the browser runtime.
+ */
+function coverageProjection(
+  availability: "available" | "unavailable",
+  coverage: SessionCoverage | undefined,
+): CoverageProjection | null {
+  if (coverage === undefined) return null;
+  const key = aggregateUsageLabels({ availability, coverage }).sessions;
+  return {
+    ...coverage,
+    reasons: Object.entries(coverage.reasons)
+      .map(([reason, count]) => `${reason}: ${count}`)
+      .join(" · "),
+    line: fill(ENGLISH_CATALOG[key as keyof typeof ENGLISH_CATALOG], {
+      available: coverage.available,
+      inspected: coverage.inspected,
+      unavailable: coverage.unavailable,
+    }),
+  };
 }
 
 /**
@@ -1242,6 +1356,14 @@ function projectReport(input: HtmlReport): Record<string, unknown> {
     return {
       kind: "history",
       availability: input.report.availability,
+      coverage: coverageProjection(
+        input.report.availability,
+        input.report.coverage,
+      ),
+      usageLabels: aggregateUsageLabels({
+        availability: input.report.availability,
+        coverage: input.report.coverage,
+      }),
       period: defaultReportPeriod("history", daily),
       latestDate: latestDate(daily),
       daily,
@@ -1259,6 +1381,14 @@ function projectReport(input: HtmlReport): Record<string, unknown> {
   return {
     kind: "global",
     availability: input.report.availability,
+    coverage: coverageProjection(
+      input.report.availability,
+      input.report.coverage,
+    ),
+    usageLabels: aggregateUsageLabels({
+      availability: input.report.availability,
+      coverage: input.report.coverage,
+    }),
     period: defaultReportPeriod("global", daily),
     latestDate: latestDate(daily),
     daily,
@@ -1340,6 +1470,7 @@ function metric(title,value,note,details){const node=el("section","card metric")
 function bars(title,subtitle,rows){const section=card(title,subtitle,badge(tr("evidence.native"),"")),body=el("div","bars");if(rows.length===0)body.append(el("p","muted",tr("bars.empty")));rows.forEach(item=>{const row=el("div","bar"),label=el("div","bar-label");label.append(el("span","mono",item.label),el("span","mono",item.value));const track=el("div","track"),fill=el("div","fill");fill.style.width=item.percent+"%";track.append(fill);row.append(label,track);body.append(row);});section.append(body);return section;}
 function emptyCard(title,note,eyebrowKey){const section=el("section","card empty");section.append(el("p","eyebrow",tr(eyebrowKey)),el("h2","",title),el("p","",note));return section;}
 function unavailableSection(title,reason){return emptyCard(title,reason,"evidence.unavailable");}
+function coveragePanel(section){const coverage=section.coverage,labels=section.usageLabels,line=coverage&&coverage.line?coverage.line:tr(labels.sessions),node=card(tr("coverage.title"),line);if(coverage&&coverage.reasons)node.append(el("div","footnote",tr("coverage.reasons",{reasons:coverage.reasons})));return node;}
 function compositionCard(composition){if(!composition.available)return unavailableSection(tr("usage.title"),tr("unavailable.composition"));const section=card(tr("usage.title"),tr("usage.note"),badge(composition.reconciles?tr("usage.reconciled"):tr("usage.unreconciled"),composition.reconciles?"":"warn")),rows=composition.parts.map(part=>[tr("metric.usage."+part.key),number(part.totalTokens),money(part.cost),badge(tr("evidence."+part.confidence),confidenceTone(part.confidence))]);rows.push([tr("usage.total"),number(composition.total.totalTokens),money(composition.total.cost),badge(tr("evidence.native"),"")]);return simpleTable(section,[tr("table.source"),tr("table.tokens"),tr("table.cost"),tr("table.confidence")],rows);}
 function evidencePanel(evidence){const section=card(tr("panel.evidence"),tr("evidence.note"),badge(tr("evidence.source"),"neutral"));return simpleTable(section,[tr("table.source"),tr("table.observation"),tr("table.confidence")],evidence.map(row=>[row.source,row.observation,badge(row.confidence,confidenceTone(row.confidence))]));}
 function currentEvidence(){const view=data.current[state.scope];return (view&&view.evidence)||[];}
@@ -1355,9 +1486,9 @@ function inPeriod(entry){if(entry.firstDate===null||entry.lastDate===null)return
 function sessionCell(entry){const cell=document.createElement("div");cell.append(el("span","mono",entry.sessionId));cell.append(el("small","",entry.firstDate?(entry.firstDate+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")):tr("evidence.unavailable")));return cell;}
 function openButton(index){const button=el("button","",tr("table.open"));button.dataset.session=String(index);button.setAttribute("aria-label",tr("table.open")+" "+historySessions()[index].sessionId);return button;}
 function historyTable(visible){const section=card(tr("panel.history"),tr("history.note")),headers=[tr("table.session"),tr("table.duration"),tr("table.tokens"),tr("table.generations"),tr("table.agents"),tr("table.status"),tr("table.cost")];headers.push(tr("table.inspect"));const rows=visible.map(item=>{const entry=item.entry;return [sessionCell(entry),orUnavailable(entry.durationLabel),entry.totalTokens===null?tr("evidence.unavailable"):number(entry.totalTokens),entry.generationCount===null?tr("evidence.unavailable"):number(entry.generationCount),entry.agentCount===null?tr("evidence.unavailable"):number(entry.agentCount),entry.status?badge(tr(entry.status.key),entry.status.tone):tr("evidence.unavailable"),entry.cost===null?tr("evidence.unavailable"):money(entry.cost),openButton(item.index)];});simpleTable(section,headers,rows);const wrap=section.querySelector(".table-wrap"),node=section.querySelector("table");if(wrap)wrap.className="table-wrap history-table-wrap";if(node)node.className="history-table";return section;}
-function historyOverview(){const days=selectedDays(),tokens=days.reduce((sum,row)=>sum+row.totalTokens,0),cost=days.reduce((sum,row)=>sum+row.cost,0),generations=days.reduce((sum,row)=>sum+(row.generations||0),0),sessions=historySessions(),visible=sessions.map((entry,index)=>({entry:entry,index:index})).filter(item=>inPeriod(item.entry)),metrics=el("div","metrics");metrics.append(metric(tr("metric.cost"),money(cost),tr("metric.native"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr("metric.tokens"),number(tokens),tr("metric.tokens.note"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr("metric.generations"),number(generations),tr("metric.generations.note"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr("metric.sessions"),number(visible.length),tr("history.sessions.note"),[[tr("evidence.native"),number(sessions.length)+" tracked"]]));const all=el("div","");all.append(metrics,historyTable(visible),evidencePanel(activeEvidence()));return all;}
+function historyOverview(){const days=selectedDays(),tokens=days.reduce((sum,row)=>sum+row.totalTokens,0),cost=days.reduce((sum,row)=>sum+row.cost,0),generations=days.reduce((sum,row)=>sum+(row.generations||0),0),sessions=historySessions(),visible=sessions.map((entry,index)=>({entry:entry,index:index})).filter(item=>inPeriod(item.entry)),labels=data.history.usageLabels,costValue=labels.usageUnavailable?tr("metric.costUnavailable"):money(cost),tokensValue=labels.usageUnavailable?tr("metric.costUnavailable"):number(tokens),metrics=el("div","metrics");metrics.append(metric(tr(labels.cost),costValue,tr("metric.native"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr(labels.tokens),tokensValue,tr("metric.tokens.note"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr("metric.generations"),number(generations),tr("metric.generations.note"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr("metric.sessions"),number(visible.length),tr("history.sessions.note"),[[tr("evidence.native"),number(sessions.length)+" tracked"]]));const all=el("div","");all.append(metrics,coveragePanel(data.history),historyTable(visible),evidencePanel(activeEvidence()));return all;}
 function backBar(){const bar=el("div","toolbar"),button=el("button","",tr("nav.back"));button.dataset.back="true";bar.append(button);return bar;}
-function globalOverview(){const days=selectedDays(),tokens=days.reduce((sum,row)=>sum+row.totalTokens,0),cost=days.reduce((sum,row)=>sum+row.cost,0),metrics=el("div","metrics");metrics.append(metric(tr("metric.cost"),money(cost),tr("metric.native"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr("metric.tokens"),number(tokens),tr("metric.tokens.note"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr("metric.days"),number(days.length),tr("metric.days.note"),[[tr("range.label"),period().from+" → "+period().to]]),metric(tr("metric.sessions"),number(data.global.trackedSessions),tr("metric.sessions.global.note"),[[tr("evidence.native"),number(data.global.trackedSessions-data.global.unavailableSessions)+" replayed"],[tr("evidence.unavailable"),number(data.global.unavailableSessions)+" unavailable"]]));const all=el("div","");all.append(metrics,compositionCard(data.global.composition),evidencePanel(activeEvidence()));return all;}
+function globalOverview(){const days=selectedDays(),tokens=days.reduce((sum,row)=>sum+row.totalTokens,0),cost=days.reduce((sum,row)=>sum+row.cost,0),labels=data.global.usageLabels,costValue=labels.usageUnavailable?tr("metric.costUnavailable"):money(cost),tokensValue=labels.usageUnavailable?tr("metric.costUnavailable"):number(tokens),metrics=el("div","metrics");metrics.append(metric(tr(labels.cost),costValue,tr("metric.native"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr(labels.tokens),tokensValue,tr("metric.tokens.note"),[[tr("table.date"),period().from+" → "+period().to]]),metric(tr("metric.days"),number(days.length),tr("metric.days.note"),[[tr("range.label"),period().from+" → "+period().to]]));const all=el("div","");all.append(metrics,coveragePanel(data.global),compositionCard(data.global.composition),evidencePanel(activeEvidence()));return all;}
 function sessionPanel(entry){if(!entry||!entry.view)return unavailableSection(tr("tab."+state.tab),tr("unavailable.session"));return state.tab==="overview"?overview(entry.view):detail(entry.view,tr("tab."+state.tab));}
 function renderView(){const nodes=[];if(state.section==="global"){if(state.tab==="overview"){nodes.push(globalOverview());nodes.push(chart());}else nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.global")));return nodes;}if(state.section==="history"){if(state.session===null){nodes.push(historyOverview());if(state.tab==="overview")nodes.push(chart());else nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.session")));return nodes;}nodes.push(sessionPanel(historySessions()[state.session]));if(state.tab==="overview")nodes.push(chart());nodes.push(backBar());return nodes;}const view=currentView();if(!view||view.availability!=="available"){nodes.push(unavailableSection(tr("tab."+state.tab),tr("unavailable.current")+(view&&view.diagnostic?" · "+view.diagnostic:"")));return nodes;}if(state.tab==="overview"){nodes.push(overview(view.report));nodes.push(chart());}else nodes.push(detail(view.report,tr("tab."+state.tab)));return nodes;}
 function sessionScopeNote(){const entry=historySessions()[state.session];return (entry.firstDate||tr("evidence.unavailable"))+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")+" · "+tr("scope.tree")+" after tracking marker";}

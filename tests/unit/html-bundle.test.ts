@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+import type { SessionCoverage } from "../../src/core/session-coverage.ts";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
-import { renderInspectorBundle } from "../../src/ui/html.ts";
+import {
+  aggregateUsageLabels,
+  renderInspectorBundle,
+} from "../../src/ui/html.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: decoding the report's embedded JSON in tests
 function embeddedJson(html: string): Record<string, any> {
@@ -185,4 +189,117 @@ test("escapes hostile session ids and command names in the bundle payload", () =
     assert.equal(payload.includes(raw), false, `raw ${JSON.stringify(raw)}`);
   }
   assert.equal(payload.includes("</script"), false);
+});
+
+// Clones the fixture bundle and sets/removes coverage on both aggregates.
+function withAggregateCoverage(
+  coverage: SessionCoverage | undefined,
+): InspectorBundle {
+  const bundle = bundleFixture();
+  for (const section of [bundle.history, bundle.global] as Record<
+    string,
+    unknown
+  >[]) {
+    if (coverage === undefined) delete section.coverage;
+    else section.coverage = coverage;
+  }
+  return bundle;
+}
+
+test("a partial aggregate renders Known wording and never an unqualified total", () => {
+  const html = renderInspectorBundle(
+    withAggregateCoverage({
+      inspected: 27,
+      available: 5,
+      unavailable: 22,
+      sessionRatio: 0.1852,
+      complete: false,
+      discoveryLimited: false,
+      reasons: { "manifest-unavailable": 22 },
+    }),
+  );
+  assert.match(html, /Known native cost/);
+  assert.match(html, /Known tokens/);
+  assert.match(html, /5 \/ 27 sessions · 22 unavailable/);
+  assert.equal(/"cost":"metric\.cost"/.test(html), false);
+});
+
+test("legacy aggregates show their value qualified as completeness-unknown", () => {
+  const html = renderInspectorBundle(withAggregateCoverage(undefined));
+  assert.match(html, /Known native cost — completeness unknown/);
+  assert.equal(/"cost":"metric\.costUnavailable"/.test(html), false);
+});
+
+test("a capped discovery shows counts and never a ratio", () => {
+  const html = renderInspectorBundle(
+    withAggregateCoverage({
+      inspected: 206,
+      available: 206,
+      unavailable: 0,
+      sessionRatio: null,
+      complete: false,
+      discoveryLimited: true,
+      reasons: {},
+    }),
+  );
+  assert.match(
+    html,
+    /206 sessions inspected · additional sessions not inspected/,
+  );
+  // Excludes the inline stylesheet: its layout `100%` declarations are presentation, not coverage.
+  assert.equal(
+    /206 \/ 206 sessions|100%/.test(
+      html.replace(/<style>[\s\S]*?<\/style>/g, ""),
+    ),
+    false,
+  );
+});
+
+test("an empty inspection set is unavailable, never zero", () => {
+  const html = renderInspectorBundle(
+    withAggregateCoverage({
+      inspected: 0,
+      available: 0,
+      unavailable: 0,
+      sessionRatio: null,
+      complete: false,
+      discoveryLimited: false,
+      reasons: {},
+    }),
+  );
+  assert.match(html, /No tracked sessions/);
+  assert.equal(/\$0\.00/.test(html), false);
+});
+
+test("the label resolver separates value availability from coverage availability", () => {
+  assert.deepEqual(
+    aggregateUsageLabels({ availability: "available", coverage: undefined }),
+    {
+      cost: "coverage.unknownCompletenessCost",
+      tokens: "coverage.unknownCompletenessTokens",
+      usageUnavailable: false,
+      sessions: "coverage.unknown",
+    },
+  );
+  assert.equal(
+    aggregateUsageLabels({ availability: "unavailable", coverage: undefined })
+      .usageUnavailable,
+    true,
+  );
+  const empty = aggregateUsageLabels({
+    availability: "available",
+    coverage: {
+      inspected: 0,
+      available: 0,
+      unavailable: 0,
+      sessionRatio: null,
+      complete: false,
+      discoveryLimited: false,
+      reasons: {},
+    },
+  });
+  assert.deepEqual(
+    [empty.usageUnavailable, empty.sessions],
+    [true, "coverage.none"],
+  );
 });

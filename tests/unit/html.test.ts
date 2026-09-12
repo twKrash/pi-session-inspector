@@ -969,3 +969,14 @@ test("ships the English catalog used by report labels", () => {
   );
   assert.equal(ENGLISH_CATALOG["evidence.unavailable"], "Unavailable");
 });
+
+test("a selected history session carries no coverage panel", () => {
+  const document = embedded(renderHtml(historyReport())) as {
+    history: {
+      coverage?: unknown;
+      sessions: { view?: Record<string, unknown> }[];
+    };
+  };
+  assert.equal(document.history.sessions[0]?.view?.coverage, undefined);
+  assert.equal("coverage" in (document.history.sessions[0]?.view ?? {}), false);
+});
