@@ -102,11 +102,14 @@ export function presetRange(
 }
 
 /**
- * Resolves a range intent against a view's own dates. With no intent, `current`
- * defaults to the full observed span (`preset: null`) and `aggregate` to 14
- * days. A preset intent anchors on the view's latest date; a custom intent
- * passes through unchanged (never clamped to observed data). `undefined` when
- * the view has no valid date, or when a custom pair is itself invalid.
+ * Resolves a range intent against a view's own dates. A valid custom pair
+ * passes through unchanged (never clamped to observed data) and is honoured
+ * even when the view has no observed dates, so a deep link is restored exactly.
+ * With no intent, `current` defaults to the full observed span (`preset: null`)
+ * and `aggregate` to 14 days. A preset intent anchors on the view's latest
+ * date. `undefined` when a default or preset intent meets a view with no valid
+ * date (there is nothing to anchor on), or when a custom pair is itself
+ * invalid.
  */
 export function resolveRange(
   intent: RangeIntent | undefined,
@@ -121,7 +124,6 @@ export function resolveRange(
     if (earliest === undefined || value < earliest) earliest = value;
     if (latest === undefined || value > latest) latest = value;
   }
-  if (latest === undefined) return undefined;
   if (intent !== undefined && intent.kind === "custom") {
     if (
       !DATE.test(intent.from) ||
@@ -132,6 +134,7 @@ export function resolveRange(
     }
     return { preset: null, from: intent.from, to: intent.to };
   }
+  if (latest === undefined) return undefined;
   const preset: RangePreset | null =
     intent === undefined ? (kind === "aggregate" ? 14 : null) : intent.preset;
   if (preset === null)

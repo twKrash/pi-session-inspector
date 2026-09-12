@@ -113,6 +113,37 @@ test("a custom range survives only as a valid pair", () => {
   );
 });
 
+test("a validated custom pair is restored even with no observed dates", () => {
+  const custom = {
+    kind: "custom",
+    from: "2026-09-01",
+    to: "2026-09-12",
+  } as const;
+  assert.deepEqual(resolveRange(custom, [], "current"), {
+    preset: null,
+    from: "2026-09-01",
+    to: "2026-09-12",
+  });
+  assert.deepEqual(resolveRange(custom, [], "aggregate"), {
+    preset: null,
+    from: "2026-09-01",
+    to: "2026-09-12",
+  });
+  assert.equal(
+    resolveRange(
+      { kind: "custom", from: "2026-09-12", to: "2026-09-01" },
+      [],
+      "current",
+    ),
+    undefined,
+  );
+  assert.equal(resolveRange(undefined, [], "current"), undefined);
+  assert.equal(
+    resolveRange({ kind: "preset", preset: 7 }, [], "current"),
+    undefined,
+  );
+});
+
 test("no helper can produce the 1970 sentinel", () => {
   const pairs = [
     ...serializeRangeQuery({
