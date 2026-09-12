@@ -20,8 +20,8 @@ Evidence Foundation: every report now comes from one canonical session pipeline,
 ### Changed
 
 - Public subagent agent IDs keep the `subagent-<64hex>` shape but change value: the digest is now session-scoped instead of process-global. All links are regenerated from the same report; generation/tool/compaction ID values are unchanged.
-- Checkpoint `aggregates.resourceCounts` is extended in place with `resources`, `toolSources`, and `observedAt`, and one additive `evidence` object records materialization time, usage coverage, and detail coverage. Inventory snapshots now carry `observedAt` (the latest successful observation; mtime is never evidence time).
-- Skill invocation counts are projected from the L1 effective counters with an explicit `retained`/`aggregate-only`/`unavailable` state instead of being re-folded per loader.
+- Checkpoint `aggregates.resourceCounts` is extended in place with `resources`, `toolSources`, and `observedAt`, and one additive `evidence` object records materialization time and detail coverage (its `usageCoverage` slot is schema-reserved but currently unwritten; no writer fabricates it). Inventory snapshots now carry `observedAt` (the latest successful observation; mtime is never evidence time).
+- Skill invocation counts are projected from L1 `effectiveCounters`/retained skill facts and never re-folded in L2; the report state vocabulary (`supported`/`unavailable`) is unchanged.
 
 ### Fixed
 

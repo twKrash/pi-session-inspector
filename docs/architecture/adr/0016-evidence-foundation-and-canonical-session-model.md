@@ -14,7 +14,7 @@ Pi persisted data remains the billing and source authority (ADR 0002), Inspector
 
 ### Three layers, one semantic boundary
 
-**L0 — safe evidence.** Source adapters are the only code that touches raw sources (Pi JSONL, Inspector WAL, checkpoint, inventory snapshot, pi-subagents results/archives, producer telemetry, current environment). An adapter performs structural validation, byte bounds, redaction, enum validation, timestamp parsing without inference, source-specific provenance assignment, prohibited-field removal, and accept/reject accounting, then emits exactly two disjoint classes:
+**L0 — safe evidence.** Source adapters are the only code that reads Inspector-owned raw sources (Inspector WAL, checkpoint, inventory snapshot, pi-subagents results/archives, producer telemetry, current environment). The Pi session file is the one explicit exception: the L2 loaders read it solely to hand its bytes to the L0 Pi JSONL parser (`src/ui/load-current.ts`, `src/ui/load-history.ts`). An adapter performs structural validation, byte bounds, redaction, enum validation, timestamp parsing without inference, source-specific provenance assignment, prohibited-field removal, and accept/reject accounting, then emits exactly two disjoint classes:
 
 - `AtomicEvidence` — one validated observation per fact (graph nodes, retained WAL records, explicit skill invocations, cooperative publications, retained inventory detail);
 - `FoldedAggregateEvidence` — already-folded checkpoint counters/counts with their exact cursor/seal boundary and aggregate-only provenance.
@@ -63,7 +63,7 @@ Because the fields are written only by the prune path, a checkpoint sealed by an
 
 `InventorySnapshot.observedAt` is the time of the **latest successful observation**, not the time the content last changed. The snapshot file, the in-memory mirror handed to the builder, and `aggregates.resourceCounts.observedAt` all carry the same observation instant when it is known. A later successful observation with byte-equivalent content advances `observedAt` (content equality may skip rebuilding payload data, but never preserves a stale timestamp); a failed observation leaves the previous value untouched. `mtime` is never evidence time, never a freshness input, and never a retention input once `observedAt` exists. Retention measures inventory expiry against `observedAt`.
 
-`inventory-observation-time-missing` therefore means **genuinely instant-less inventory evidence** — a legacy or otherwise observation-time-free snapshot for which no instant exists. It is not a statement about the shape of the in-memory mirror: production keeps the remembered snapshot payload-only by design and hands the observation instant to the builder separately, so a readable snapshot with a known instant must not raise the diagnostic while the same report publishes a known `retainedAggregates.resources.observedAt`. Reporting it in that case would be a self-contradicting health signal.
+`inventory-observation-time-missing` therefore means **genuinely instant-less inventory evidence** — a legacy or otherwise observation-time-free snapshot for which no instant exists. It is not a statement about the shape of the in-memory mirror: the remembered snapshot carries the observation instant inline, and the same instant is threaded separately into `aggregates.resourceCounts.observedAt`, so a readable snapshot with a known instant must not raise the diagnostic while the same report publishes a known `retainedAggregates.resources.observedAt`. Reporting it in that case would be a self-contradicting health signal.
 
 ### One validated WAL path feeds L1
 
@@ -96,7 +96,7 @@ permission-request-<canonicalOpaqueDigest("permission-request", sessionId, rawRe
 
 and nothing else changes:
 
-- the raw request ID is never read, persisted, or rendered, and its preimage never leaves the adapter call frame;
+- the raw request ID is never read outside this adapter, persisted, or rendered, and its preimage never leaves the adapter call frame;
 - the hashed value is additive envelope metadata only: it is never folded into a counter, never a join key, and never pairs a prompt with its decision or with any other outcome;
 - an absent, empty, oversized, or malformed request ID yields no attribution rather than a guess;
 - every other field on ADR 0014's "never read" list — `origin`, `value`, `matchedPattern`, `agentName`, `forwarding` — remains prohibited, as does reading raw `request` itself.

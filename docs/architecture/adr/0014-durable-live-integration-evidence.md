@@ -1,6 +1,6 @@
 # ADR 0014: durable live integration evidence
 
-**Status:** accepted.
+**Status:** accepted. Partially superseded by [ADR 0016](0016-evidence-foundation-and-canonical-session-model.md) for the hashed `attribution.request` form only; the rest of this decision text stays historical and in force.
 
 ## Context
 
