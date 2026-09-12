@@ -57,6 +57,7 @@ type WalRecord = {
     category: "agent" | "turn" | "tool" | "provider" | "model";
     status: "running" | "unknown" | "unsupported";
     confidence: "live" | "unsupported";
+    subjectId?: string;
     startedAt?: string;
     endedAt?: string;
     durationMs?: number;
@@ -448,6 +449,8 @@ function baseRecord(
 
 function parseTiming(value: unknown): WalRecord["timing"] | undefined {
   if (!isRecord(value)) return undefined;
+  const subjectId = value.subjectId;
+  if (subjectId !== undefined && !isToken(subjectId)) return undefined;
   if (
     value.status === "running" &&
     value.confidence === "live" &&
@@ -460,6 +463,7 @@ function parseTiming(value: unknown): WalRecord["timing"] | undefined {
       category: value.category,
       status: "running",
       confidence: "live",
+      ...(subjectId === undefined ? {} : { subjectId }),
       startedAt: value.startedAt,
     };
   if (
@@ -474,6 +478,7 @@ function parseTiming(value: unknown): WalRecord["timing"] | undefined {
       category: value.category,
       status: "unknown",
       confidence: "live",
+      ...(subjectId === undefined ? {} : { subjectId }),
       startedAt: value.startedAt,
       endedAt: value.endedAt,
       durationMs: value.durationMs,
@@ -482,6 +487,7 @@ function parseTiming(value: unknown): WalRecord["timing"] | undefined {
     value.status === "unsupported" &&
     value.confidence === "unsupported" &&
     isUnsupportedCategory(value.category) &&
+    value.subjectId === undefined &&
     value.startedAt === undefined &&
     value.endedAt === undefined &&
     value.durationMs === undefined

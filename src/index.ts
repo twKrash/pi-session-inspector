@@ -218,11 +218,13 @@ function setupProductionSessionWal(input: {
       liveSession(input.sessionId).writer = writer;
       return writer;
     },
-    registerLive: (api, writer) =>
+    registerLive: (api, writer) => {
       registerLiveWal(api as LiveObserverApi, writer as LiveWalWriter, {
+        sessionId: input.sessionId,
         now: () => new Date(),
         randomId: randomUUID,
-      }),
+      });
+    },
     registerLiveCounters: (api, writer, context) => {
       registerLiveCounterProducers(
         api as LiveCounterApi,
