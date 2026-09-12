@@ -1033,6 +1033,25 @@ test("bounds the accepted exit-code failure detail", () => {
   assert.equal(byAgent.get("c")?.failure, undefined);
 });
 
+test("collects workflowChildren children after results and completions", () => {
+  const entries = [
+    assistantEntry("call", "tool"),
+    resultEntry(
+      "result",
+      "tool",
+      {
+        runId: "parent",
+        results: [{ index: 0, status: "failed" }],
+        workflowChildren: { children: [{ index: 0, success: true }] },
+      },
+      "2026-09-12T10:00:01.000Z",
+    ),
+  ];
+  const evidence = readSubagentEvidence(entries);
+  assert.equal(evidence.runs.length, 1);
+  assert.equal(evidence.runs[0]?.status, "succeeded");
+});
+
 test("keeps the latest value of a field omitted by a later publication", () => {
   const evidence = readSubagentEvidence([
     assistantEntry("a", "call_1"),

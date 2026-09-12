@@ -18,6 +18,7 @@ import {
   mergeFoldedCounters,
 } from "./core/live-counter-fold.ts";
 import type { InventorySnapshot } from "./integrations/inventory.ts";
+import { readSubagentEvidenceWithArchives } from "./integrations/subagents.ts";
 import {
   type LiveCounterApi,
   type LiveCounterWriter,
@@ -605,16 +606,33 @@ function foldedCheckpointEvidence(
 const readHistorySessionEvidence: SessionEvidenceProvider = async ({
   sessionId,
   directory,
+  entries,
 }) => {
   try {
     const checkpoint = await readCheckpoint({ directory });
     const inventory = await readInventorySnapshot(directory);
+    // Retained WAL is durable evidence even when no process is live (R60).
+    // Recovery validates and caps it before L1 receives it; no live overflow
+    // exists for history because no live registration is consulted here.
+    const recovered = await recoverSession({
+      directory,
+      piCursor: checkpoint?.cursors.pi ?? NO_PI_SOURCE_CURSOR,
+    });
     const permission = checkpoint?.aggregates.presence?.permission === true;
     return {
       evidence: {
-        atomic: [],
+        atomic: [
+          ...readSkillInvocations({ sessionId, records: recovered.records }),
+          ...readLiveTimings({
+            sessionId,
+            records: recovered.records,
+            running: recovered.running,
+          }),
+        ],
         folded: foldedCheckpointEvidence(sessionId, checkpoint),
       },
+      walRecords: recovered.records,
+      subagents: await readSubagentEvidenceWithArchives(entries, sessionId),
       observation: {
         presence: readIntegrationPresence({
           // Only `source === "extension"` rows may signal extension presence; a
@@ -818,7 +836,11 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             const model = await loadCurrentSessionReport(
               sessionFile,
               command.scope,
-              { leafId, ...currentSession },
+              {
+                leafId,
+                ...currentSession,
+                subagentEvidence: readSubagentEvidenceWithArchives,
+              },
             );
             if (!model) return notifyCurrentUnavailable(ctx);
             await ctx.ui.custom((tui, theme, _keybindings, done) =>
@@ -828,6 +850,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                   loadCurrentSessionReport(sessionFile, scope, {
                     leafId,
                     ...currentSession,
+                    subagentEvidence: readSubagentEvidenceWithArchives,
                   }),
                 theme,
                 requestRender: () => tui.requestRender(),
@@ -905,7 +928,11 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             const model = await loadCurrentSessionReport(
               sessionFile,
               command.scope,
-              { leafId, ...currentSession },
+              {
+                leafId,
+                ...currentSession,
+                subagentEvidence: readSubagentEvidenceWithArchives,
+              },
             );
             if (!model) return notifyCurrentUnavailable(ctx);
             dto = model.report;

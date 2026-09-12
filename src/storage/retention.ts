@@ -46,39 +46,38 @@ export async function pruneExpiredWalSegments({
   const cutoff = cutoffDate(now());
   if (cutoff === undefined) return 0;
 
-  // Read before the inventory prune so a successful inventory unlink can
-  // publish its own observation boundary into the checkpoint it already owns.
+  // The checkpoint boundary is the durable expiration record. Publish it
+  // before best-effort physical cleanup: a crash may leave a stale boundary
+  // over a still-present snapshot, but can never delete detail unrecorded.
   const checkpoint = await readCheckpoint({ directory });
-
-  // Inventory expiry does not require a checkpoint: a session whose WAL was
-  // never checkpointed must still let its aged `inventory.json` expire.
   let deleted = 0;
-  try {
-    const expiredAt = await pruneExpiredInventory({
-      directory,
-      cutoff,
-      remove,
-    });
-    if (expiredAt !== undefined) {
-      deleted += 1;
-      if (checkpoint !== undefined) {
-        const boundary = maxInstant(
-          checkpoint.evidence?.detailCoverage?.inventoryDetailExpiredAt,
-          expiredAt,
-        );
-        if (
-          checkpoint.evidence?.detailCoverage?.inventoryDetailExpiredAt !==
-          boundary
-        ) {
+  if (checkpoint !== undefined) {
+    try {
+      const expired = await pruneExpiredInventory({
+        directory,
+        cutoff,
+        remove,
+        recordBoundary: async (expiredAt) => {
+          const boundary = maxInstant(
+            checkpoint.evidence?.detailCoverage?.inventoryDetailExpiredAt,
+            expiredAt,
+          );
+          if (
+            checkpoint.evidence?.detailCoverage?.inventoryDetailExpiredAt ===
+            boundary
+          )
+            return true;
           const next = withInventoryBoundary(checkpoint, boundary);
-          if (await writeCheckpoint({ directory, lease, checkpoint: next })) {
-            Object.assign(checkpoint, next);
-          }
-        }
-      }
+          if (!(await writeCheckpoint({ directory, lease, checkpoint: next })))
+            return false;
+          Object.assign(checkpoint, next);
+          return true;
+        },
+      });
+      if (expired) deleted += 1;
+    } catch {
+      // Inventory expiry is observer-only and never blocks WAL maintenance.
     }
-  } catch {
-    // Inventory expiry is observer-only and never blocks WAL maintenance.
   }
 
   if (checkpoint === undefined) return deleted;
@@ -120,27 +119,32 @@ export async function pruneExpiredWalSegments({
  * size/mtime/dev/ino immediately before unlink so a concurrent refresh aborts
  * the deletion. mtime is never a freshness or retention input. A missing or
  * invalid `observedAt` carries no freshness evidence, so the snapshot is kept
- * rather than guessed at. Returns the pruned snapshot's own observation
- * instant on an actual unlink, `undefined` otherwise; that instant - never the
- * cutoff day, mtime, or process clock - is the recorded expiration boundary.
+ * rather than guessed at. The durable expiration boundary is written before
+ * the best-effort unlink; a failed boundary write retains detail. Returns true
+ * only when the unlink completed.
  */
 async function pruneExpiredInventory({
   directory,
   cutoff,
   remove,
+  recordBoundary,
 }: {
   directory: string;
   cutoff: string;
   remove: (path: string) => Promise<void>;
-}): Promise<string | undefined> {
+  recordBoundary: (observedAt: string) => Promise<boolean>;
+}): Promise<boolean> {
   const path = join(directory, INVENTORY_FILE_NAME);
   try {
     const before = await stat(path);
-    if (!before.isFile()) return undefined;
+    if (!before.isFile()) return false;
     const observedAt = (await readInventorySnapshot(directory))?.observedAt;
-    if (observedAt === undefined) return undefined;
+    if (observedAt === undefined) return false;
     const observedDay = observationDay(observedAt);
-    if (observedDay === undefined || observedDay >= cutoff) return undefined;
+    if (observedDay === undefined || observedDay >= cutoff) return false;
+    // The durable record precedes physical deletion (R59). A crash after this
+    // call is pessimistic but safe; a failed write leaves the snapshot intact.
+    if (!(await recordBoundary(observedAt))) return false;
     const after = await stat(path);
     if (
       after.size !== before.size ||
@@ -148,11 +152,11 @@ async function pruneExpiredInventory({
       after.dev !== before.dev ||
       after.ino !== before.ino
     )
-      return undefined;
+      return false;
     await remove(path);
-    return observedAt;
+    return true;
   } catch {
-    return undefined;
+    return false;
   }
 }
 

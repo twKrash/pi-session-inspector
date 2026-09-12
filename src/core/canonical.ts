@@ -41,6 +41,7 @@ import type {
 import {
   counterDeltaAfterCursors,
   foldedFromCheckpointAggregates,
+  MAX_FOLDED_COUNT,
   mergeFoldedCounters,
   type CheckpointCounterAggregates,
   type FoldedCounters,
@@ -449,8 +450,18 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   }
 
   const graph = buildGraph(parsed, diagnostics);
-  const entryById = new Map(parsed.entries.map((entry) => [entry.id, entry]));
+  // A Pi id owns at most one logical native fact. Keep its first appearance in
+  // scope order: a duplicate producer row remains health-visible, but cannot
+  // cause the last row to be reduced repeatedly through duplicate resolution
+  // ids (or replace its first logical owner).
+  const entryById = new Map<string, SessionEntry>();
+  for (const entry of parsed.entries) {
+    if (!entryById.has(entry.id)) entryById.set(entry.id, entry);
+  }
+  const resolvedIds = new Set<string>();
   const entries = resolution.entryIds.flatMap((id) => {
+    if (resolvedIds.has(id)) return [];
+    resolvedIds.add(id);
     const entry = entryById.get(id);
     return entry === undefined ? [] : [entry];
   });
@@ -1102,6 +1113,12 @@ function buildRetainedAggregatesSafely(
       },
     });
     const suffix = mergeRetainedSuffix(wal, input.walRecords ?? []);
+    // Both sides were individually valid, but their union is a new published
+    // aggregate and must satisfy the same cap. Reject rather than clamp: a
+    // clamped count would be a fabricated total. The catch records the bounded
+    // checkpoint-aggregate-invalid diagnostic.
+    if (!countsWithinFoldedBound(suffix))
+      throw new TypeError("counter overflow");
     const aggregates = supplement(foldedOnly, suffix);
     return {
       aggregates,
@@ -1309,6 +1326,21 @@ function mergeRetainedSuffix(
     wal?.foldedThrough ?? {},
   );
   return mergeFoldedCounters(folded, delta);
+}
+
+/** Every count remains bounded after prefix/suffix addition, not just at input. */
+function countsWithinFoldedBound(counters: FoldedCounters): boolean {
+  if (counters.otherInvocations > MAX_FOLDED_COUNT) return false;
+  for (const count of Object.values(counters.skillInvocations)) {
+    if (count > MAX_FOLDED_COUNT) return false;
+  }
+  for (const bucket of Object.values(counters.counters)) {
+    if (bucket === undefined) continue;
+    for (const count of Object.values(bucket)) {
+      if (count > MAX_FOLDED_COUNT) return false;
+    }
+  }
+  return true;
 }
 
 function toCheckpointCounters(

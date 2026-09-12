@@ -3,20 +3,17 @@ import { join } from "node:path";
 
 import {
   buildCanonicalSession,
-  type CanonicalSession,
   type RetainedWalRecord,
 } from "../core/canonical.ts";
 import type { L0Evidence } from "../core/evidence.ts";
-import type { IntegrationKey, Scope, Usage } from "../core/events.ts";
-import {
-  MAX_SKILL_KEYS,
-  type FoldedCounters,
-} from "../core/live-counter-fold.ts";
+import type { Scope, SessionEntry, Usage } from "../core/events.ts";
 import { addUsage, reduceEntries } from "../core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../core/reports.ts";
-import { isIntegrationKey } from "../core/retained-aggregates.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
-import { readSubagentEvidenceWithArchives } from "../integrations/subagents.ts";
+import {
+  readSubagentEvidence,
+  type SubagentEvidence,
+} from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { hasTrackingStartMarker } from "../pi/sessions.ts";
 import {
@@ -25,6 +22,11 @@ import {
   type HistoryDiagnostic,
 } from "../storage/history.ts";
 import type { SessionObservation } from "./observation.ts";
+import {
+  countersFrom,
+  resourceCountsFrom,
+  usageFrom,
+} from "./l2-projection.ts";
 
 type MaintenanceOptions = {
   writerId: string;
@@ -39,6 +41,8 @@ export type SessionEvidenceRequest = {
   root: string;
   /** `root/sessions/<sessionId>`, already resolved by the loader. */
   directory: string;
+  /** Already parsed Pi entries selected by L1; never a producer-storage read. */
+  entries: readonly SessionEntry[];
 };
 
 /**
@@ -55,6 +59,8 @@ export type HistorySessionEvidence = {
   liveOverflow?: number;
   /** Sanitized inventory snapshot plus the explicit presence model. */
   observation?: SessionObservation;
+  /** Cooperative evidence assembled by the composition-root provider. */
+  subagents?: SubagentEvidence;
 };
 
 /**
@@ -195,6 +201,7 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
                   sessionId,
                   root: options.root,
                   directory,
+                  entries: parsed.entries,
                 });
           if (options.sessionEvidence !== undefined && supplied === undefined) {
             return { availability: "unavailable", sessionId };
@@ -235,10 +242,8 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
           // Subagent runs are auto-discovered from persisted tool results;
           // their usage is a breakdown of this session's toolResult usage.
           // Published archive presence is validated, bounded, and never a path.
-          const subagentEvidence = await readSubagentEvidenceWithArchives(
-            entries,
-            resolved.session.sessionId,
-          );
+          const subagentEvidence =
+            supplied?.subagents ?? readSubagentEvidence(entries, sessionId);
           // Task 15 discipline: the builder receives the same cooperative
           // evidence the DTO publishes, so health and body cannot contradict
           // each other (`joins.agentRuns === report.agents.length`).
@@ -265,6 +270,7 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
               agentActivity: subagentEvidence.activity,
               presence: observation?.presence,
               ...countersFrom(session),
+              ...usageFrom(session),
               ...resourceCountsFrom(session),
               ...(observation?.inventory === undefined
                 ? {}
@@ -367,106 +373,6 @@ function globalInventory(
     }
   }
   return { commands, skills, resources };
-}
-
-/**
- * Projects L1's effective counters into the legacy folded-counter DTO field
- * (spec §11 compatibility). This is a projection, not a fold: L1 already
- * unioned the folded prefix with the post-cursor retained suffix, and L2 never
- * adds a fact on top of a published total (R50c). Absent content stays absent,
- * so a report never claims counters it did not observe.
- */
-function countersFrom(session: CanonicalSession): {
-  counters?: FoldedCounters;
-} {
-  const effective = session.effectiveCounters;
-  if (effective.state === "unavailable") {
-    // R50(b): with no boundary L1 states no total, so per-key integration
-    // counts stay unavailable — but the retained explicit skill-invocation
-    // detail still reaches the body from the canonical facts (invariant 29),
-    // so `skills` agrees with the health that counts those same facts.
-    const skills = retainedSkillCounters(session.skillInvocations);
-    if (
-      Object.keys(skills.skillInvocations).length === 0 &&
-      skills.otherInvocations === 0
-    ) {
-      return {};
-    }
-    return {
-      counters: {
-        counters: {},
-        skillInvocations: skills.skillInvocations,
-        otherInvocations: skills.otherInvocations,
-        presence: { permission: false },
-      },
-    };
-  }
-  const counters: Partial<Record<IntegrationKey, Record<string, number>>> = {};
-  for (const key of Object.keys(effective.integration ?? {}).sort()) {
-    if (!isIntegrationKey(key)) continue;
-    const value = effective.integration?.[key];
-    if (value === undefined) continue;
-    counters[key] = { ...value };
-  }
-  const skillInvocations = { ...(effective.skillInvocations?.named ?? {}) };
-  const otherInvocations = effective.skillInvocations?.overflow ?? 0;
-  const permission = effective.permissionPresence === true;
-  if (
-    Object.keys(counters).length === 0 &&
-    Object.keys(skillInvocations).length === 0 &&
-    otherInvocations === 0 &&
-    !permission
-  ) {
-    return {};
-  }
-  return {
-    counters: {
-      counters,
-      skillInvocations,
-      otherInvocations,
-      presence: { permission },
-    },
-  };
-}
-
-/**
- * Exact named counts of the canonical retained skill facts. Names beyond the
- * shared key cap are still counted exactly as `otherInvocations`, mirroring the
- * live fold's contract; the map is prototype-free like every counter map.
- */
-function retainedSkillCounters(facts: readonly { skill: string }[]): {
-  skillInvocations: Record<string, number>;
-  otherInvocations: number;
-} {
-  const named = Object.create(null) as Record<string, number>;
-  let otherInvocations = 0;
-  for (const fact of facts) {
-    const current = named[fact.skill];
-    if (current !== undefined) {
-      named[fact.skill] = current + 1;
-      continue;
-    }
-    if (Object.keys(named).length >= MAX_SKILL_KEYS) {
-      otherInvocations += 1;
-      continue;
-    }
-    named[fact.skill] = 1;
-  }
-  return { skillInvocations: named, otherInvocations };
-}
-
-/**
- * The persisted checkpoint resource counts L1 retained, as the legacy DTO's
- * `resourceCounts` evidence. Absent means unknown, never zero.
- */
-function resourceCountsFrom(session: CanonicalSession): {
-  resourceCounts?: { commands: number; skills: number };
-} {
-  const counts = session.retainedAggregates.resources?.counts;
-  if (counts?.commands === undefined || counts.skills === undefined) return {};
-  return {
-    resourceCounts: { commands: counts.commands, skills: counts.skills },
-  };
 }
 
 function usageEvents(

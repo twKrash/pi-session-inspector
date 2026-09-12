@@ -74,20 +74,42 @@ export function resolveScope(
     };
   }
 
-  const nodeById = new Map(nodes.map((node) => [node.entryId, node]));
+  // A selected ancestry must be structurally complete. Do not use a last-wins
+  // map here: duplicate graph ids make parentage ambiguous, rather than merely
+  // selecting one of the producer's conflicting rows.
+  const nodeById = new Map<string, PiGraphNode>();
+  const duplicateIds = new Set<string>();
+  for (const node of nodes) {
+    if (nodeById.has(node.entryId)) duplicateIds.add(node.entryId);
+    else nodeById.set(node.entryId, node);
+  }
   const leaf = leafId === null ? undefined : nodeById.get(leafId);
-  if (leaf === undefined) {
+  const postMarkerSet = new Set(postMarkerNodes.map((node) => node.entryId));
+  if (
+    leaf === undefined ||
+    duplicateIds.has(leaf.entryId) ||
+    !postMarkerSet.has(leaf.entryId)
+  ) {
     return { state: "unavailable", reason: "active-leaf-unavailable" };
   }
 
-  const postMarkerSet = new Set(postMarkerNodes.map((node) => node.entryId));
   const path: string[] = [];
   const visited = new Set<string>();
   let next: PiGraphNode | undefined = leaf;
-  while (next !== undefined && !visited.has(next.entryId)) {
+  while (next !== undefined) {
+    // A repeated node, duplicate id, or missing parent cannot prove active
+    // ancestry (§8.2). Unknown semantic *types* still have nodes and therefore
+    // remain valid structure (R18).
+    if (visited.has(next.entryId) || duplicateIds.has(next.entryId)) {
+      return { state: "unavailable", reason: "active-leaf-unavailable" };
+    }
     visited.add(next.entryId);
     if (postMarkerSet.has(next.entryId)) path.push(next.entryId);
-    next = next.parentId === null ? undefined : nodeById.get(next.parentId);
+    if (next.parentId === null) break;
+    next = nodeById.get(next.parentId);
+    if (next === undefined) {
+      return { state: "unavailable", reason: "active-leaf-unavailable" };
+    }
   }
   path.reverse();
 

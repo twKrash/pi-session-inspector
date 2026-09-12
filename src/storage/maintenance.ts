@@ -202,14 +202,19 @@ function sameMaterializedCheckpoint(a: Checkpoint, b: Checkpoint): boolean {
   return sameValue(stripCheckpointedAt(a), stripCheckpointedAt(b));
 }
 
-function stripCheckpointedAt(checkpoint: Checkpoint): unknown {
+type CheckpointWithoutMaterializedAt = Omit<Checkpoint, "evidence"> & {
+  evidence?: Omit<NonNullable<Checkpoint["evidence"]>, "checkpointedAt">;
+};
+
+function stripCheckpointedAt(
+  checkpoint: Checkpoint,
+): CheckpointWithoutMaterializedAt {
   const { evidence, ...rest } = checkpoint;
   if (evidence === undefined) return rest;
-  const coverage: Record<string, unknown> = { ...evidence };
-  delete coverage.checkpointedAt;
-  return Object.keys(coverage).length === 0
+  const { checkpointedAt: _checkpointedAt, ...remaining } = evidence;
+  return Object.keys(remaining).length === 0
     ? rest
-    : { ...rest, evidence: coverage };
+    : { ...rest, evidence: remaining };
 }
 
 function sameValue(a: unknown, b: unknown): boolean {

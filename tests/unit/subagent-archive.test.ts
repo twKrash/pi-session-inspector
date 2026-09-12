@@ -387,6 +387,8 @@ test("production report path consumes archive enrichment", async () => {
 
   const model = await loadCurrentSessionReport(sessionFile, "active", {
     leafId: "r1",
+    // Archive I/O belongs to the composition-root seam, not this loader.
+    subagentEvidence: readSubagentEvidenceWithArchivesForSession,
   });
   assert.ok(model);
   assert.equal(model.report.agents.length, 1);
@@ -410,6 +412,7 @@ test("production report path consumes archive enrichment", async () => {
   await rm(archivePath, { force: true });
   const missing = await loadCurrentSessionReport(sessionFile, "active", {
     leafId: "r1",
+    subagentEvidence: readSubagentEvidenceWithArchivesForSession,
   });
   assert.equal(missing?.report.agents[0]?.artifacts, "missing");
   assert.equal(missing?.report.agentEvidence, "supported");

@@ -449,6 +449,25 @@ function collectRuns(
       }
     }
   }
+
+  // R22's final publication surface. It is intentionally last so it wins over
+  // a results/completions observation of the same run in this Pi entry.
+  const workflowChildren = snapshotRecord(details.workflowChildren);
+  if (Array.isArray(workflowChildren?.children)) {
+    for (const value of workflowChildren.children.slice(0, MAX_RUNS)) {
+      const record = snapshotRecord(value);
+      if (record === undefined) continue;
+      const rowRunId = readRawRunId(record.runId);
+      const index = readChildIndex(record.index);
+      const id =
+        rowRunId !== undefined
+          ? opaqueSubagentId(sessionId, rowRunId)
+          : aggregateRunId === undefined || index === undefined
+            ? undefined
+            : opaqueSubagentId(sessionId, `${aggregateRunId}#${index}`);
+      pushRun(record, collector, publication, id, aggregateParentId);
+    }
+  }
 }
 
 function pushRun(

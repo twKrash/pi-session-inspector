@@ -1525,14 +1525,15 @@ test("expires an aged inventory snapshot while keeping a current one and persist
   }
 });
 
-test("expires an aged inventory snapshot even when no checkpoint exists", async () => {
+test("keeps an aged inventory snapshot when no checkpoint can record its expiry", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
   try {
     const inventory = join(directory, "inventory.json");
     const lease = await acquireLease(directory);
 
-    // No checkpoint: the inventory prune must still run and expire the file.
-    // The recent mtime proves retention reads `observedAt`, not mtime.
+    // Without a checkpoint there is nowhere to record the durable expiry
+    // boundary, so physical deletion is forbidden. The recent mtime proves
+    // this still reasons from `observedAt`, not mtime.
     await writeFile(inventory, inventorySnapshot("2026-09-07T12:00:00.000Z"));
     await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
     assert.equal(
@@ -1542,11 +1543,11 @@ test("expires an aged inventory snapshot even when no checkpoint exists", async 
         now: () => directoryNow,
         validate: async () => true,
       }),
-      1,
+      0,
     );
-    assert.equal((await readdir(directory)).includes("inventory.json"), false);
+    assert.equal((await readdir(directory)).includes("inventory.json"), true);
 
-    // A snapshot inside the retention window survives the identical pass even
+    // A snapshot inside the retention window also survives the identical pass even
     // with an aged mtime.
     await writeFile(inventory, inventorySnapshot("2026-09-20T12:00:00.000Z"));
     await setModifiedTime(inventory, "2026-09-01T12:00:00.000Z");
@@ -1990,7 +1991,8 @@ test("a retention cutoff between two observations keeps the snapshot", async () 
     );
     assert.equal((await readdir(directory)).includes("inventory.json"), true);
 
-    // The day before the cutoff is strictly before it and expires.
+    // The day before the cutoff is eligible, but no checkpoint means no
+    // durable expiration record, so it remains present.
     await writeFile(inventory, inventorySnapshot("2026-09-11T11:00:00.000Z"));
     await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
     assert.equal(
@@ -2000,8 +2002,9 @@ test("a retention cutoff between two observations keeps the snapshot", async () 
         now,
         validate: async () => true,
       }),
-      1,
+      0,
     );
+    assert.equal((await readdir(directory)).includes("inventory.json"), true);
     await lease.release();
   } finally {
     await rm(directory, { force: true, recursive: true });

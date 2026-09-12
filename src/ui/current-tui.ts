@@ -108,11 +108,12 @@ export function createCurrentTuiComponent({
 
   function renderContent(tab: CurrentTab): string[] {
     switch (tab) {
-      case "overview":
-        return [
-          `Total tokens: ${currentModel.report.usage.totalTokens}`,
-          `Cost: ${currentModel.report.usage.cost}`,
-        ];
+      case "overview": {
+        const usage = currentModel.report.usage;
+        return usage === undefined
+          ? ["Usage: unavailable"]
+          : [`Total tokens: ${usage.totalTokens}`, `Cost: ${usage.cost}`];
+      }
       case "models":
         return [`Models: ${currentModel.report.models.length}`];
       case "tools":

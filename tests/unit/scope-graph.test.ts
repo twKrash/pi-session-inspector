@@ -102,6 +102,23 @@ test("invalid leaf never falls back to tree", () => {
   });
 });
 
+test("invalid active ancestry is unavailable for missing parents, cycles, pre-marker leaves, and duplicate ids", () => {
+  const cases: Array<Record<string, unknown>[]> = [
+    [marker("m", null), node("leaf", "missing")],
+    [marker("m", null), node("a", "b"), node("b", "a")],
+    [node("before", null), marker("m", "before"), node("after", "m")],
+    [marker("m", null), node("a", "m"), node("a", "m")],
+  ];
+  for (const [index, records] of cases.entries()) {
+    const leaf =
+      index === 1 ? "a" : index === 2 ? "before" : index === 3 ? "a" : "leaf";
+    assert.deepEqual(scopeOf(records, leaf, "active"), {
+      state: "unavailable",
+      reason: "active-leaf-unavailable",
+    });
+  }
+});
+
 test("boundary is the marker node ordinal, not a records-derived id set", () => {
   const knownA = node("knownA", null);
   const preUnknown = node("preUnknown", "knownA", "future_widget");

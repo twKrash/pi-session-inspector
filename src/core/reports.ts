@@ -270,6 +270,14 @@ export type SessionReportEvidence = {
   evidenceHealth?: SessionEvidenceHealth;
   /** Canonical checkpoint-surviving aggregates, if a boundary exists. */
   retainedAggregates?: CanonicalRetainedAggregates;
+  /** L1's usage verdict; unavailable deliberately omits legacy totals. */
+  usage?:
+    | {
+        state: "known";
+        usage: Usage;
+        composition: ReducedSession["usageComposition"];
+      }
+    | { state: "unavailable" };
 };
 
 /** Inventory rows are always a bounded, sanitized projection of a snapshot. */
@@ -345,6 +353,22 @@ export function toSessionReport(
   }
   const projectedEvidence = projectEvidence(evidence);
   const inventory = projectedEvidence.inventory;
+  const {
+    sessionId,
+    usage: reducedUsage,
+    usageComposition: reducedComposition,
+    ...body
+  } = reduced;
+  const usage =
+    evidence.usage?.state === "unavailable"
+      ? undefined
+      : evidence.usage?.state === "known"
+        ? evidence.usage
+        : {
+            state: "known" as const,
+            usage: reducedUsage,
+            composition: reducedComposition,
+          };
   const tools = reduced.tools.map((tool) => {
     const durationMs = projectedEvidence.duration.tools.get(tool.id);
     const source = inventory?.toolSources[tool.name];
@@ -356,7 +380,17 @@ export function toSessionReport(
     return projected;
   });
   return {
-    ...reduced,
+    sessionId,
+    ...(usage === undefined
+      ? {
+          // L1 rejected this aggregate (for example overflow). The legacy DTO
+          // has required static fields, but `undefined` deliberately omits them
+          // from JSON rather than publishing a clamped or zero total.
+          usage: undefined as never,
+          usageComposition: undefined as never,
+        }
+      : { usage: usage.usage, usageComposition: usage.composition }),
+    ...body,
     tools,
     ...(projectedEvidence.walDetail === "expired"
       ? { walDetail: "expired" as const }
