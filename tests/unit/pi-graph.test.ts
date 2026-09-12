@@ -51,6 +51,14 @@ test("unknown semantic entries keep a node but no payload", () => {
   assert.equal(JSON.stringify(nodes).includes("secret"), false);
   // R12: unknown raw type text is dropped with the payload.
   assert.equal(JSON.stringify(nodes).includes("future_widget"), false);
+  // The known variant carries its bounded type token, and a valid timestamp
+  // round-trips unchanged.
+  const knownSemanticType = nodes[0].semanticType;
+  assert.equal(
+    knownSemanticType.state === "known" ? knownSemanticType.type : undefined,
+    "message",
+  );
+  assert.equal(nodes[0].timestamp, "2026-09-12T10:00:01.000Z");
 });
 
 test("adapter keeps header facts and graph nodes", () => {
@@ -62,18 +70,43 @@ test("adapter keeps header facts and graph nodes", () => {
   assert.equal(parsed.unknownEntryCount, 1);
 });
 
-test("structurally invalid entries become no node", () => {
+test("structurally invalid entries become no node; absent fields keep the node", () => {
   const nodes = buildGraphNodes([
     { type: "message", id: "", parentId: null, timestamp: "t" },
     { type: "message", id: "x", parentId: 5, timestamp: "t" },
     { type: "message", id: "y", parentId: null, timestamp: "t" },
+    // Absent timestamp must not drop the node.
+    { type: "message", id: "z", parentId: "y" },
+    // Absent parentId must map to null, not drop the node.
+    { type: "message", id: "w", timestamp: "t" },
+    // Byte-length bounds: id > 128 bytes is rejected...
+    { type: "message", id: "a".repeat(129), parentId: null, timestamp: "t" },
+    // ...and a type > 64 bytes is rejected.
+    { type: "a".repeat(65), id: "v", parentId: null, timestamp: "t" },
   ]);
-  assert.deepEqual(
-    nodes.map((n) => [n.entryId, n.appendOrdinal]),
-    [
-      // R13: ordinals are dense over accepted nodes, so rejected records
-      // consume none.
-      ["y", 0],
-    ],
-  );
+  assert.deepEqual(nodes, [
+    // R13: ordinals are dense over accepted nodes, so rejected records
+    // consume none.
+    {
+      entryId: "y",
+      parentId: null,
+      appendOrdinal: 0,
+      semanticType: { state: "known", type: "message" },
+      timestamp: "t",
+    },
+    {
+      entryId: "z",
+      parentId: "y",
+      appendOrdinal: 1,
+      semanticType: { state: "known", type: "message" },
+      timestamp: undefined,
+    },
+    {
+      entryId: "w",
+      parentId: null,
+      appendOrdinal: 2,
+      semanticType: { state: "known", type: "message" },
+      timestamp: "t",
+    },
+  ]);
 });
