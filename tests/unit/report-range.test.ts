@@ -806,6 +806,204 @@ test("the restore notice fires only when a range could fall back to a default", 
   );
 });
 
+/**
+ * The fixture bundle predates the dated model projection, so this builds the
+ * tree view a real bundle carries: three model days inside a 14-day span and
+ * only two inside a 7-day one.
+ */
+function datedTreeBundle(): InspectorBundle {
+  const bundle = bundleFixture();
+  const trees = bundle.current.tree;
+  trees.daily = ["2026-01-20", "2026-01-27", "2026-02-02"].map((date) => ({
+    date,
+    sessions: 1,
+    totalTokens:
+      date === "2026-01-20" ? 100 : date === "2026-01-27" ? 200 : 800,
+    cost: date === "2026-01-20" ? 0.01 : date === "2026-01-27" ? 0.02 : 0.16,
+    generations: 1,
+    tools: 1,
+    composition: {
+      generations: {
+        totalTokens:
+          date === "2026-01-20" ? 100 : date === "2026-01-27" ? 200 : 800,
+        cost:
+          date === "2026-01-20" ? 0.01 : date === "2026-01-27" ? 0.02 : 0.16,
+      },
+      toolResults: { totalTokens: 0, cost: 0 },
+      compactions: { totalTokens: 0, cost: 0 },
+      branchSummaries: { totalTokens: 0, cost: 0 },
+    },
+  }));
+  trees.datedModels = [
+    {
+      date: "2026-01-20",
+      provider: "acme",
+      model: "legacy",
+      generations: 1,
+      totalTokens: 100,
+      cost: 0.01,
+    },
+    {
+      date: "2026-01-27",
+      provider: "acme",
+      model: "alpha",
+      generations: 1,
+      totalTokens: 200,
+      cost: 0.02,
+    },
+    {
+      date: "2026-02-02",
+      provider: "acme",
+      model: "beta",
+      generations: 1,
+      totalTokens: 800,
+      cost: 0.16,
+    },
+  ];
+  trees.modelsTruncated = false;
+  return bundle;
+}
+
+/** True when any rendered text node contains the fragment. */
+function has(values: string[], fragment: string): boolean {
+  return values.some((value) => value.includes(fragment));
+}
+
+/** The cells of one model row, counted from its model name. */
+function modelCells(values: string[], model: string, count = 3): string[] {
+  const at = values.indexOf(model);
+  return at < 0 ? [] : values.slice(at + 1, at + 1 + count);
+}
+
+test("the current Models tab renders the dated rows in range, not the aggregate", () => {
+  const harness = runClient(datedTreeBundle());
+  const { client, element, texts } = harness;
+  client.state.section = "current";
+  client.state.tab = "models";
+
+  // 7D anchors on this view's latest observed day, so the older model day drops.
+  client.rangeIntents.current = { kind: "preset", preset: 7 };
+  client.render();
+  assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
+  const seven = texts(element("view"));
+  assert.deepEqual(modelCells(seven, "alpha"), ["1", "200", "$0.02"]);
+  assert.deepEqual(modelCells(seven, "beta"), ["1", "800", "$0.16"]);
+  assert.deepEqual(modelCells(seven, "legacy"), []);
+  assert.equal(has(seven, "All report dates"), false);
+
+  // 14D reaches the older day, so the same tab shows one more model row.
+  client.rangeIntents.current = { kind: "preset", preset: 14 };
+  client.render();
+  assert.equal(element("range-dates").textContent, "2026-01-20 → 2026-02-02");
+  const fourteen = texts(element("view"));
+  assert.deepEqual(modelCells(fourteen, "legacy"), ["1", "100", "$0.01"]);
+  assert.notDeepEqual(fourteen, seven);
+});
+
+test("the current Models tab stays range-scoped and never falls back to an aggregate", () => {
+  const harness = runClient(datedTreeBundle());
+  const { client, element, texts } = harness;
+  client.state.section = "current";
+  client.state.tab = "models";
+
+  // The default range is the whole observed span: every dated row is in range.
+  client.render();
+  const whole = texts(element("view"));
+  assert.deepEqual(modelCells(whole, "legacy"), ["1", "100", "$0.01"]);
+  assert.equal(has(whole, "All report dates"), false);
+  assert.equal(has(whole, "No native generations recorded."), false);
+
+  // A range with no in-range model day is a range statement, never the
+  // session-wide "no generations" card and never the aggregate rows.
+  client.rangeIntents.current = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  const outside = texts(element("view"));
+  assert.equal(
+    has(outside, "No daily observations match the selected range."),
+    true,
+  );
+  assert.equal(has(outside, "No native generations recorded."), false);
+  assert.equal(has(outside, "All report dates"), false);
+  assert.equal(has(outside, "acme"), false);
+
+  // A capped dated source says so instead of passing as complete.
+  const truncated = datedTreeBundle();
+  truncated.current.tree.modelsTruncated = true;
+  const capped = runClient(truncated);
+  capped.client.state.section = "current";
+  capped.client.state.tab = "models";
+  capped.client.render();
+  assert.equal(
+    has(
+      capped.texts(capped.element("view")),
+      "Older dates' model rows beyond the retained window are not shown.",
+    ),
+    true,
+  );
+});
+
+test("a history session detail keeps the aggregate model table labelled for all report dates", () => {
+  const harness = runClient(bundleFixture());
+  const { client, element, texts } = harness;
+  client.state.section = "history";
+  client.state.session = 0;
+  client.state.tab = "models";
+
+  // A session detail carries no dated model rows, so its table is the aggregate
+  // one, labelled, and it is never emptied by the range.
+  client.rangeIntents["history:session-a"] = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  const values = texts(element("view"));
+  assert.equal(has(values, "All report dates"), true);
+  assert.deepEqual(modelCells(values, "alpha", 7), [
+    "2",
+    "Unavailable",
+    "Unavailable",
+    "Unavailable",
+    "Unavailable",
+    "1,000",
+    "$0.20",
+  ]);
+  assert.equal(has(values, "No native generations recorded."), false);
+  assert.equal(
+    has(values, "No daily observations match the selected range."),
+    false,
+  );
+
+  // A current view without a dated projection (the fixture's shape, and what
+  // the legacy adapter emits) keeps the same aggregate table, and the range
+  // never empties it either.
+  const legacy = runClient(bundleFixture());
+  legacy.client.state.section = "current";
+  legacy.client.state.tab = "models";
+  legacy.client.rangeIntents.current = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  legacy.client.render();
+  const aggregate = legacy.texts(legacy.element("view"));
+  assert.equal(has(aggregate, "All report dates"), true);
+  assert.deepEqual(modelCells(aggregate, "alpha", 7), [
+    "2",
+    "800",
+    "150",
+    "40",
+    "10",
+    "1,000",
+    "$0.20",
+  ]);
+  assert.equal(has(aggregate, "No native generations recorded."), false);
+});
+
 test("range-scoped empty tabs carry the range-qualified line", () => {
   const harness = runClient(bundleFixture());
   const { client, element, texts } = harness;
