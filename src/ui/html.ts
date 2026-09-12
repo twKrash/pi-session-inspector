@@ -251,6 +251,8 @@ export const ENGLISH_CATALOG = {
   "unavailable.skills":
     "Pi does not persist skill attribution records. Inspector will not infer them from prompts, outputs, or tool names.",
   "unavailable.composition": "This report carries no per-source usage split.",
+  "unavailable.usage":
+    "Usage unavailable. The native aggregate was rejected; no total is shown.",
   "unavailable.agents":
     "No native subagent activity recorded for this session.",
   "unavailable.current": "This current view could not be replayed offline.",
@@ -284,7 +286,7 @@ export type ReportPeriod = {
   to: string;
 };
 
-type SafeUsage = SessionReport["usage"];
+type SafeUsage = NonNullable<SessionReport["usage"]>;
 type CompositionKey =
   | "generations"
   | "toolResults"
@@ -298,7 +300,7 @@ type CompositionView = {
     cost: number;
     confidence: "native";
   }>;
-  total: { totalTokens: number; cost: number };
+  total?: { totalTokens: number; cost: number };
   reconciles: boolean;
 };
 type ModelRow = {
@@ -356,7 +358,7 @@ type StatusView = {
 };
 type SessionView = {
   sessionId: string;
-  usage: SafeUsage;
+  usage?: SafeUsage;
   composition: CompositionView;
   generationCount: number;
   toolCount: number;
@@ -621,7 +623,7 @@ export function renderInspectorBundle(bundle: InspectorBundle): string {
 }
 
 /** Optional token fields stay absent unless an input observed them. */
-function safeUsage(usage: SessionReport["usage"]): SafeUsage {
+function safeUsage(usage: NonNullable<SessionReport["usage"]>): SafeUsage {
   return {
     totalTokens: usage.totalTokens,
     cost: usage.cost,
@@ -790,18 +792,23 @@ export function formatDuration(ms: number): string {
 }
 
 function compositionView(report: SessionReport): CompositionView {
+  const usage = report.usage;
+  const composition = report.usageComposition;
+  if (usage === undefined || composition === undefined) {
+    return { available: false, parts: [], reconciles: false };
+  }
   const parts = COMPOSITION_KEYS.map((key) => {
-    const usage = report.usageComposition[key];
+    const part = composition[key];
     return {
       key,
-      totalTokens: usage.totalTokens,
-      cost: usage.cost,
+      totalTokens: part.totalTokens,
+      cost: part.cost,
       confidence: "native" as const,
     };
   });
   const total = {
-    totalTokens: report.usage.totalTokens,
-    cost: report.usage.cost,
+    totalTokens: usage.totalTokens,
+    cost: usage.cost,
   };
   const tokens = parts.reduce((sum, part) => sum + part.totalTokens, 0);
   const cost = roundCost(parts.reduce((sum, part) => sum + part.cost, 0));
@@ -871,7 +878,8 @@ function addOptionalTokens(row: ModelRow, usage: SafeUsage): void {
 }
 
 function modelBars(report: SessionReport): BarRow[] {
-  const totalCost = report.usage.cost;
+  const totalCost = report.usage?.cost;
+  if (totalCost === undefined) return [];
   return modelRows(report).map((row) => ({
     label: `${row.provider}/${row.model}`,
     value: money(row.cost),
@@ -940,7 +948,7 @@ function sessionView(report: SessionReport): SessionView {
   const dates = reportDates(report);
   return {
     sessionId: report.sessionId,
-    usage: safeUsage(report.usage),
+    ...(report.usage === undefined ? {} : { usage: safeUsage(report.usage) }),
     composition: compositionView(report),
     generationCount: report.generations.length,
     toolCount: report.tools.length,
@@ -1199,8 +1207,8 @@ function historyEntry(
     firstDate: view.span === null ? null : view.span.from,
     lastDate: view.span === null ? null : view.span.to,
     durationLabel: view.durationLabel,
-    totalTokens: view.usage.totalTokens,
-    cost: view.usage.cost,
+    totalTokens: view.usage?.totalTokens ?? null,
+    cost: view.usage?.cost ?? null,
     generationCount: view.generationCount,
     agentCount: view.agentCount,
     status: view.status,
@@ -1337,7 +1345,7 @@ function evidencePanel(evidence){const section=card(tr("panel.evidence"),tr("evi
 function currentEvidence(){const view=data.current[state.scope];return (view&&view.evidence)||[];}
 function activeEvidence(){if(state.section==="current")return currentEvidence();if(state.section==="history")return data.history.evidence||[];return data.global.evidence||[];}
 function chart(){const rows=selectedDays(),label=chartLabel(state.metric),section=card(tr("panel.daily"),period().from+" → "+period().to),select=document.createElement("select");select.id="chart-metric";select.setAttribute("aria-label",tr("chart.metric"));activeMetrics().forEach(value=>{const option=el("option","",chartLabel(value));option.value=value;option.selected=state.metric===value;select.append(option);});section.querySelector(".panel-head").append(select);if(rows.length===0){section.append(el("div","chart-note",tr("chart.empty")));return section;}const values=rows.map(row=>chartValue(row,state.metric)),maximum=Math.max.apply(null,values.concat([1])),firstDate=Date.parse(rows[0].date+"T00:00:00Z"),lastDate=Date.parse(rows[rows.length-1].date+"T00:00:00Z"),span=lastDate-firstDate,points=rows.map((row,index)=>{const x=span<=0?400:8+((Date.parse(row.date+"T00:00:00Z")-firstDate)/span)*784;return {x:x,y:172-(values[index]/maximum)*164,row:row,value:values[index]};}),chartNode=el("div","chart"),axis=el("div","chart-axis");axis.setAttribute("aria-hidden","true");[maximum,maximum/2,0].forEach(value=>axis.append(el("span","",chartText(state.metric,value))));const svg=document.createElementNS(SVG_NS,"svg");svg.setAttribute("class","line-chart");svg.setAttribute("viewBox","0 0 800 180");svg.setAttribute("preserveAspectRatio","none");svg.setAttribute("role","img");svg.setAttribute("aria-label",tr("chart.aria",{metric:label,days:rows.length}));[8,90,172].forEach(y=>{const line=document.createElementNS(SVG_NS,"line");line.setAttribute("class","chart-grid");line.setAttribute("x1","8");line.setAttribute("x2","792");line.setAttribute("y1",String(y));line.setAttribute("y2",String(y));svg.append(line);});const polyline=document.createElementNS(SVG_NS,"polyline");polyline.setAttribute("class","activity-line");polyline.setAttribute("points",points.map(point=>point.x.toFixed(2)+","+point.y.toFixed(2)).join(" "));svg.append(polyline);points.forEach(point=>{const circle=document.createElementNS(SVG_NS,"circle");circle.setAttribute("class","line-point");circle.setAttribute("cx",point.x.toFixed(2));circle.setAttribute("cy",point.y.toFixed(2));circle.setAttribute("r","3");const title=document.createElementNS(SVG_NS,"title");title.textContent=point.row.date+" · "+chartText(state.metric,point.value);circle.append(title);svg.append(circle);});chartNode.append(axis,svg,el("div","chart-dates",rows[0].date+" → "+rows[rows.length-1].date));section.append(chartNode,el("div","chart-note",tr("chart.note",{metric:label})));const details=document.createElement("details"),summary=el("summary","",tr("chart.data")),headers=[tr("table.date"),tr("table.sessions"),tr("table.tokens"),tr("table.cost")],withGenerations=activeMetrics().indexOf("generations")>=0,withTools=activeMetrics().indexOf("tools")>=0;if(withGenerations)headers.push(tr("table.generations"));if(withTools)headers.push(tr("table.tools"));const tableRows=rows.map(row=>{const cells=[row.date,number(row.sessions),number(row.totalTokens),money(row.cost)];if(withGenerations)cells.push(number(row.generations));if(withTools)cells.push(number(row.tools));return cells;});details.append(summary);simpleTable(details,headers,tableRows);section.append(details);return section;}
-function overview(view){const metrics=el("div","metrics");metrics.append(metric(tr("metric.cost"),money(view.usage.cost),tr("metric.native"),[[tr("evidence.native"),money(view.usage.cost)],[tr("metric.child"),view.agentCount===null?tr("evidence.unavailable"):number(view.agentCount)+" · "+tr("metric.child.note")]]),metric(tr("metric.tokens"),number(view.usage.totalTokens),tr("metric.tokens.note"),[[tr("metric.input"),tokenCell(view.usage,"inputTokens")],[tr("metric.output"),tokenCell(view.usage,"outputTokens")],[tr("metric.cacheRead"),tokenCell(view.usage,"cacheReadTokens")],[tr("metric.cacheWrite"),tokenCell(view.usage,"cacheWriteTokens")],[tr("usage.total"),number(view.usage.totalTokens)]]),metric(tr("metric.generations"),number(view.generationCount),tr("metric.generations.note"),[[tr("evidence.native"),number(view.generationCount)]]),metric(tr("metric.tools"),number(view.toolCount),tr("metric.tools.note"),[[tr("evidence.native"),number(view.toolCount)]]),metric(tr("metric.duration"),orUnavailable(view.durationLabel),tr("metric.duration.note"),[[tr("evidence.native"),view.span?view.span.from+" → "+view.span.to:tr("evidence.unavailable")]]));const grid=el("div","grid");grid.append(bars(tr("panel.models"),tr("models.note"),view.modelBars),bars(tr("panel.tools"),tr("tools.bars.note"),view.toolBars));const all=el("div","");all.append(metrics,grid,compositionCard(view.composition),evidencePanel(activeEvidence()));return all;}
+function overview(view){if(view.usage===undefined)return unavailableSection(tr("usage.title"),tr("unavailable.usage"));const metrics=el("div","metrics");metrics.append(metric(tr("metric.cost"),money(view.usage.cost),tr("metric.native"),[[tr("evidence.native"),money(view.usage.cost)],[tr("metric.child"),view.agentCount===null?tr("evidence.unavailable"):number(view.agentCount)+" · "+tr("metric.child.note")]]),metric(tr("metric.tokens"),number(view.usage.totalTokens),tr("metric.tokens.note"),[[tr("metric.input"),tokenCell(view.usage,"inputTokens")],[tr("metric.output"),tokenCell(view.usage,"outputTokens")],[tr("metric.cacheRead"),tokenCell(view.usage,"cacheReadTokens")],[tr("metric.cacheWrite"),tokenCell(view.usage,"cacheWriteTokens")],[tr("usage.total"),number(view.usage.totalTokens)]]),metric(tr("metric.generations"),number(view.generationCount),tr("metric.generations.note"),[[tr("evidence.native"),number(view.generationCount)]]),metric(tr("metric.tools"),number(view.toolCount),tr("metric.tools.note"),[[tr("evidence.native"),number(view.toolCount)]]),metric(tr("metric.duration"),orUnavailable(view.durationLabel),tr("metric.duration.note"),[[tr("evidence.native"),view.span?view.span.from+" → "+view.span.to:tr("evidence.unavailable")]]));const grid=el("div","grid");grid.append(bars(tr("panel.models"),tr("models.note"),view.modelBars),bars(tr("panel.tools"),tr("tools.bars.note"),view.toolBars));const all=el("div","");all.append(metrics,grid,compositionCard(view.composition),evidencePanel(activeEvidence()));return all;}
 function agentsPanel(view,title){const wrap=el("div",""),activity=view.agentActivity;let has=false;if(activity&&activity.state==="supported"){has=true;const section=card(tr("panel.activity"),tr("agents.activity.note"),badge(tr("evidence."+activity.state),confidenceTone(activity.state))),metrics=el("div","metrics");metrics.append(metric(tr("metric.agentCalls"),number(activity.calls),tr("metric.tools.note"),[[tr("agents.succeeded"),number(activity.succeeded)],[tr("agents.failed"),number(activity.failed)],[tr("agents.interrupted"),number(activity.interrupted)] ]));section.append(metrics);if(activity.tools&&activity.tools.length>0)simpleTable(section,[tr("table.tool"),tr("table.calls")],activity.tools.map(row=>[row.name,number(row.calls)]));wrap.append(section);}if(view.agentEvidence==="supported"){has=true;wrap.append(table(title,tr("agents.note"),[tr("table.run"),tr("table.parent"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.evidence")],view.agents.map(row=>[row.id,row.parentId===null?tr("evidence.unavailable"):row.parentId,row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))])));}if(!has)wrap.append(unavailableSection(title,tr("unavailable.agents")));return wrap;}
 function skillsPanel(view,title){const skills=view.skills;if(!skills)return unavailableSection(title,tr("unavailable.skills"));const section=skills.items.length===0?emptyCard(title,tr("skills.empty"),"evidence.unavailable"):table(title,tr("skills.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.invocations")],skills.items.map(row=>[row.name,orUnavailable(row.sourceLabel),orUnavailable(row.scope),orUnavailable(row.origin),row.explicitInvocations===undefined?tr("evidence.unavailable"):number(row.explicitInvocations)]));if(skills.otherInvocations!==null&&skills.otherInvocations!==undefined&&skills.otherInvocations>0)section.append(el("div","footnote",tr("skills.otherInvocations",{count:number(skills.otherInvocations)})));return section;}
 function resourcesCard(resources){if(!resources||resources.state!=="supported"||resources.items.length===0)return unavailableSection(tr("panel.resources"),tr("resources.unavailable"));return simpleTable(card(tr("panel.resources"),tr("resources.note")),[tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.commands"),tr("table.skills"),tr("table.prompts"),tr("table.tools")],resources.items.map(row=>[row.sourceLabel,row.scope,row.origin,number(row.commands),number(row.skills),number(row.prompts),number(row.tools)]));}

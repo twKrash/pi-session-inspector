@@ -14,6 +14,7 @@ import { test } from "node:test";
 import { readPublishedArchiveState } from "../../src/integrations/subagent-archive.ts";
 import { readSubagentEvidenceWithArchives as readSubagentEvidenceWithArchivesForSession } from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+import { loadInspectorBundle } from "../../src/ui/bundle.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 
 const SESSION_ID = "session-archive-test";
@@ -373,6 +374,56 @@ test("a rejected or non-absolute reference yields missing for that run only", as
     evidence.runs.map((run) => run.artifacts),
     ["available", "missing", "missing", undefined],
   );
+});
+
+test("bundle current report carries the same archive verdict as direct current loading", async () => {
+  const fixture = await readFixture();
+  const directory = await mkdtemp(join(tmpdir(), "inspector-archive-bundle-"));
+  const sessionFile = join(directory, "session.jsonl");
+  const archives = join(directory, "output-archives");
+  const archivePath = join(archives, "run-raw.json");
+  await mkdir(archives, { recursive: true });
+  await writeFile(archivePath, fixture.replace('"run-a"', '"run-raw"'));
+  await writeFile(sessionFile, sessionWithArchive(archivePath));
+  const archiveProvider = readSubagentEvidenceWithArchivesForSession;
+  const direct = await loadCurrentSessionReport(sessionFile, "active", {
+    leafId: "r1",
+    subagentEvidence: archiveProvider,
+  });
+  assert.ok(direct);
+
+  const bundle = await loadInspectorBundle({
+    theme: "light",
+    initialScope: "active",
+    root: directory,
+    sessionDirectory: () => directory,
+    maintenance: {
+      writerId: "maintenance-bundle",
+      now: () => new Date("2026-09-12T12:00:00.000Z"),
+      isPidAlive: () => false,
+    },
+    current: { sessionFile, leafId: "r1" },
+    subagentEvidence: archiveProvider,
+    loadHistory: async () => ({
+      availability: "unavailable" as const,
+      sessions: [],
+      diagnostics: [],
+    }),
+    loadGlobal: async () => ({
+      availability: "unavailable" as const,
+      sessions: [],
+      usage: { totalTokens: 0, cost: 0 },
+      dates: [],
+      diagnostics: [],
+      inventory: { commands: null, skills: null, resources: null },
+    }),
+  });
+  assert.equal(
+    bundle.current.active.report?.agents[0]?.artifacts,
+    direct.report.agents[0]?.artifacts,
+  );
+  assert.equal(bundle.current.active.report?.agents[0]?.artifacts, "available");
+  await rm(directory, { recursive: true, force: true });
 });
 
 test("production report path consumes archive enrichment", async () => {

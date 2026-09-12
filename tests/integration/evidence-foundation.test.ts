@@ -216,14 +216,17 @@ type LiveEnvelopes = {
 const FROZEN_NOW_ISO = "2026-09-12T07:00:09.000Z";
 
 /** Runs `run` with `new Date()`/`Date.now()` frozen, then restores `Date`. */
-async function withFrozenClock<T>(run: () => Promise<T>): Promise<T> {
+async function withFrozenClock<T>(
+  run: () => Promise<T>,
+  instant = FROZEN_NOW_ISO,
+): Promise<T> {
   const RealDate = Date;
   class FrozenDate extends RealDate {
     constructor(value?: number | string | Date) {
-      super(value === undefined ? FROZEN_NOW_ISO : value);
+      super(value === undefined ? instant : value);
     }
     static now(): number {
-      return new RealDate(FROZEN_NOW_ISO).getTime();
+      return new RealDate(instant).getTime();
     }
   }
   globalThis.Date = FrozenDate as unknown as DateConstructor;
@@ -316,7 +319,9 @@ type BuiltFixture = {
  * comparable. The root is removed before returning; nothing in the returned
  * value depends on the temporary path or the wall clock.
  */
-async function buildFixtureSession(): Promise<BuiltFixture> {
+async function buildFixtureSession(
+  nowIso = FROZEN_NOW_ISO,
+): Promise<BuiltFixture> {
   const directory = await mkdtemp(join(tmpdir(), "inspector-evidence-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   try {
@@ -558,20 +563,23 @@ async function buildFixtureSession(): Promise<BuiltFixture> {
     assert.ok(handler);
     process.env.PI_CODING_AGENT_DIR = directory;
     try {
-      await withFrozenClock(() =>
-        handler(`json --output "${output}"`, {
-          mode: "interactive",
-          sessionManager: {
-            getSessionId: () => SESSION_ID,
-            getLeafId: () => "gen-2",
-            getSessionFile: () => sessionFile,
-            getSessionDir: () => directory,
-          },
-          ui: {
-            notify: () => assert.fail("must export the current session report"),
-            custom: async () => assert.fail("must export the current report"),
-          },
-        } as unknown as ExtensionCommandContext),
+      await withFrozenClock(
+        () =>
+          handler(`json --output "${output}"`, {
+            mode: "interactive",
+            sessionManager: {
+              getSessionId: () => SESSION_ID,
+              getLeafId: () => "gen-2",
+              getSessionFile: () => sessionFile,
+              getSessionDir: () => directory,
+            },
+            ui: {
+              notify: () =>
+                assert.fail("must export the current session report"),
+              custom: async () => assert.fail("must export the current report"),
+            },
+          } as unknown as ExtensionCommandContext),
+        nowIso,
       );
     } finally {
       if (previousAgentDir === undefined)
@@ -598,21 +606,57 @@ type CommandHandler = (
   ctx: ExtensionCommandContext,
 ) => Promise<void>;
 
-test("unchanged inputs produce byte-identical canonical JSON twice", async () => {
-  const first = JSON.stringify(await buildFixtureSession());
-  const second = JSON.stringify(await buildFixtureSession());
+test("different observation instants change only inventory observation evidence", async () => {
+  const first = await buildFixtureSession("2026-09-12T07:00:09.000Z");
+  const second = await buildFixtureSession("2026-09-12T07:00:10.000Z");
 
-  assert.equal(first, second);
+  assert.notEqual(first.reportText, second.reportText);
+  for (const key of [
+    "walText",
+    "checkpointText",
+    "inventoryText",
+    "sessionText",
+  ] as const) {
+    assert.equal(first[key], second[key], `${key} must remain deterministic`);
+  }
+  const withoutInventoryObservation = (text: string): unknown => {
+    const report = JSON.parse(text) as {
+      evidenceHealth?: {
+        sources?: Array<{ source?: string; observedAt?: string }>;
+      };
+    };
+    const inventory = report.evidenceHealth?.sources?.find(
+      (source) => source.source === "inventory",
+    );
+    if (inventory !== undefined) delete inventory.observedAt;
+    return report;
+  };
+  assert.deepEqual(
+    withoutInventoryObservation(first.reportText),
+    withoutInventoryObservation(second.reportText),
+  );
+  const firstInventory = JSON.parse(
+    first.reportText,
+  ).evidenceHealth.sources.find(
+    (source: { source?: string }) => source.source === "inventory",
+  );
+  const secondInventory = JSON.parse(
+    second.reportText,
+  ).evidenceHealth.sources.find(
+    (source: { source?: string }) => source.source === "inventory",
+  );
+  assert.equal(firstInventory.observedAt, "2026-09-12T07:00:09.000Z");
+  assert.equal(secondInventory.observedAt, "2026-09-12T07:00:10.000Z");
+
   // The fixture really is the milestone's shape: a folded prefix, a retained
   // suffix, a completed live boundary, and a checkpoint resource observation.
-  const built = JSON.parse(first) as BuiltFixture;
-  assert.equal(built.report.walDetail, "expired");
+  assert.equal(first.report.walDetail, "expired");
   assert.equal(
-    built.report.retainedAggregates?.boundary.detail,
+    first.report.retainedAggregates?.boundary.detail,
     "aggregate-only",
   );
-  assert.equal(built.report.durationEvidence, "supported");
-  assert.equal(built.report.tools[0]?.durationMs, DURATION_MS);
+  assert.equal(first.report.durationEvidence, "supported");
+  assert.equal(first.report.tools[0]?.durationMs, DURATION_MS);
 });
 
 test("privacy scanner finds no prohibited key in any artifact", async () => {

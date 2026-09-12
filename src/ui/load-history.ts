@@ -232,9 +232,10 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
           // R49: the entry set is the builder's resolution in order, mapped
           // back to parsed entries; an id without a parsed entry (an
           // unknown-semantic node) is skipped instead of fabricating a node.
-          const byId = new Map(
-            parsed.entries.map((entry) => [entry.id, entry]),
-          );
+          const byId = new Map<string, SessionEntry>();
+          for (const entry of parsed.entries) {
+            if (!byId.has(entry.id)) byId.set(entry.id, entry);
+          }
           const entries = resolved.session.scopedEntryIds.flatMap((id) => {
             const entry = byId.get(id);
             return entry === undefined ? [] : [entry];

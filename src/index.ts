@@ -868,6 +868,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
               root,
               sessionDirectory: () => sessionManager.getSessionDir(),
               current: { sessionFile, leafId },
+              subagentEvidence: readSubagentEvidenceWithArchives,
               ...(evidenceRead === undefined
                 ? {}
                 : {

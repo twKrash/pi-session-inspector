@@ -389,7 +389,7 @@ test("reduces exactly the builder's tree-scoped entries and never pre-marker fac
 
     // R49: the builder is the single scope authority; the body reduces its
     // resolved ids (post-marker only), never every parsed entry.
-    assert.equal(session.report.usage.totalTokens, 7);
+    assert.equal(session.report.usage?.totalTokens, 7);
     assert.deepEqual(
       session.report.generations.map((generation) => generation.id),
       ["generation:post"],

@@ -1396,7 +1396,7 @@ test("cold-detail notice reaches JSON and HTML while native data stays available
     const report = model.report;
     assert.equal(report.walDetail, "expired");
     // Native Pi aggregates survive; live WAL-derived detail does not guess.
-    assert.equal(report.usage.totalTokens, 9);
+    assert.equal(report.usage?.totalTokens, 9);
     assert.deepEqual(
       report.tools.map((tool) => tool.name),
       ["read"],
@@ -1522,6 +1522,33 @@ test("expires an aged inventory snapshot while keeping a current one and persist
     await lease.release();
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("records inventory expiry before invoking the injected remove", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const inventory = join(directory, "inventory.json");
+    await writeFile(inventory, inventorySnapshot("2026-09-07T12:00:00.000Z"));
+    const lease = await acquireLease(directory);
+    await writeCheckpoint({ directory, lease, checkpoint: checkpoint(0) });
+    let observedBoundary: string | undefined;
+    const removed = await pruneExpiredWalSegments({
+      directory,
+      lease,
+      now: () => directoryNow,
+      validate: async () => true,
+      remove: async (path) => {
+        observedBoundary = (await readCheckpoint({ directory }))?.evidence
+          ?.detailCoverage?.inventoryDetailExpiredAt;
+        await rm(path, { force: true });
+      },
+    });
+    assert.equal(removed, 1);
+    assert.equal(observedBoundary, "2026-09-07T12:00:00.000Z");
+    await lease.release();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

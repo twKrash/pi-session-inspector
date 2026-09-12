@@ -306,8 +306,10 @@ export type SessionReportTool = Tool & { source?: string };
 export type SessionReport = {
   walDetail?: "expired";
   sessionId: string;
-  usage: Usage;
-  usageComposition: ReducedSession["usageComposition"];
+  /** Absent when L1 rejects the native aggregate (for example overflow). */
+  usage?: Usage;
+  /** Absent together with usage so the DTO cannot imply a zero total. */
+  usageComposition?: ReducedSession["usageComposition"];
   models: ModelSummary[];
   tools: SessionReportTool[];
   compactions: Compaction[];
@@ -381,14 +383,10 @@ export function toSessionReport(
   });
   return {
     sessionId,
+    // L1 rejected this aggregate (for example overflow). Omit both fields
+    // rather than publishing a clamped or zero total.
     ...(usage === undefined
-      ? {
-          // L1 rejected this aggregate (for example overflow). The legacy DTO
-          // has required static fields, but `undefined` deliberately omits them
-          // from JSON rather than publishing a clamped or zero total.
-          usage: undefined as never,
-          usageComposition: undefined as never,
-        }
+      ? {}
       : { usage: usage.usage, usageComposition: usage.composition }),
     ...body,
     tools,

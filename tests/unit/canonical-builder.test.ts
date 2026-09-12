@@ -12,6 +12,7 @@ import type {
   LiveTimingObservation,
   SkillInvocationObservation,
 } from "../../src/core/evidence.ts";
+import { MAX_FOLDED_COUNT } from "../../src/core/live-counter-fold.ts";
 import type { SubagentEvidence } from "../../src/integrations/subagents.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
@@ -65,6 +66,87 @@ function parsed(records: object[]) {
       "\n",
   );
 }
+
+test("deduplicates a duplicate tree-scope id before L1 usage reduction", () => {
+  const first = {
+    ...ASSISTANT,
+    id: "duplicate-generation",
+    parentId: "marker",
+    message: {
+      ...ASSISTANT.message,
+      usage: { totalTokens: 7, cost: { total: 0.07 } },
+    },
+  };
+  const duplicate = {
+    ...first,
+    timestamp: "2026-09-12T10:02:00.000Z",
+    message: {
+      ...first.message,
+      usage: { totalTokens: 99, cost: { total: 0.99 } },
+    },
+  };
+  const source = parsed([MARKER, first, duplicate]);
+  const result = buildCanonicalSession({
+    parsed: source,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(result.state, "ready");
+  if (result.state !== "ready") return;
+  assert.deepEqual(result.session.scopedEntryIds, ["duplicate-generation"]);
+  assert.equal(
+    result.session.scopedEntryIds.filter((id) => id === "duplicate-generation")
+      .length,
+    1,
+  );
+  assert.equal(result.session.generations.length, 1);
+  assert.equal(result.session.usage.state, "known");
+  if (result.session.usage.state === "known") {
+    assert.equal(result.session.usage.known.totalTokens, 7);
+  }
+});
+
+test("rejects a cap-plus-one retained checkpoint counter as bounded invalid", () => {
+  const folded: FoldedAggregateEvidence[] = [
+    {
+      kind: "checkpoint-wal-aggregates",
+      sessionId: "s1",
+      foldedThrough: { w1: 1 },
+      sealedThrough: {},
+      skillInvocations: { demo: MAX_FOLDED_COUNT },
+      checkpointedAt: {
+        state: "known",
+        at: "2026-09-12T10:00:30.000Z",
+        basis: "checkpoint-observer",
+      },
+      provenance: {
+        source: "checkpoint",
+        authority: "derived",
+        schemaVersion: 1,
+      },
+    },
+  ];
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded },
+    walRecords: [skillRecord("evt-cap-plus-one", 2, "demo")],
+  });
+  assert.equal(result.state, "ready");
+  if (result.state !== "ready") return;
+  assert.equal(result.session.effectiveCounters.state, "unavailable");
+  assert.ok(
+    result.session.health.diagnostics.some(
+      (diagnostic) => diagnostic.code === "checkpoint-aggregate-invalid",
+    ),
+  );
+  assert.equal(
+    result.session.retainedAggregates.skillInvocations?.named?.value.demo,
+    undefined,
+  );
+});
 
 test("R49: a ready session publishes the builder's resolved scoped entry ids", () => {
   // The full native graph is not the scoped set: the branching fixture keeps a

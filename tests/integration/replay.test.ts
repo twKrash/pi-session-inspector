@@ -28,8 +28,8 @@ test("replays active branch without counting sibling usage", () => {
     entries.map((entry) => entry.id),
     ["e1", "e2", "e7"],
   );
-  assert.equal(report.usage.totalTokens, 30);
-  assert.equal(report.usage.cost, 0.03);
+  assert.equal(report.usage?.totalTokens, 30);
+  assert.equal(report.usage?.cost, 0.03);
   assert.equal(report.tools[0]?.id, "tool:call-2");
   assert.equal(report.tools[0]?.status, "interrupted");
 });
@@ -137,8 +137,8 @@ test("replays full tree exactly once and emits stable JSON and ledger", () => {
     reduceEntries(session.id, selectScope(session.entries, "e7", "tree")),
   );
 
-  assert.equal(report.usage.totalTokens, 72);
-  assert.equal(report.usage.cost, 0.086);
+  assert.equal(report.usage?.totalTokens, 72);
+  assert.equal(report.usage?.cost, 0.086);
   assert.deepEqual(report.models, [
     {
       provider: "acme",

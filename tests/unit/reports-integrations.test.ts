@@ -62,7 +62,7 @@ test("projects explicit integration evidence without adding child usage", async 
   });
 
   // Child-agent usage is a breakdown: the parent total is unchanged.
-  assert.equal(report.usage.cost, 10);
+  assert.equal(report.usage?.cost, 10);
   assert.equal(report.agentEvidence, "supported");
   const completed = report.agents.find((run) => run.status === "succeeded");
   assert.equal(completed?.usage?.cost, 0.1);
@@ -640,8 +640,8 @@ test("never adds aggregate subagent activity usage to session totals", () => {
   assert.equal(report.agentActivity.usage?.totalTokens, 500);
   assert.equal(report.agentActivity.usage?.cost, 5);
   // Session totals are owned by the Pi reduction, never the child breakdown.
-  assert.equal(report.usage.totalTokens, 100);
-  assert.equal(report.usage.cost, 10);
+  assert.equal(report.usage?.totalTokens, 100);
+  assert.equal(report.usage?.cost, 10);
 });
 
 test("drops invalid activity counts, unbounded names, and usage", () => {

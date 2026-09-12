@@ -87,7 +87,10 @@ export async function loadCurrentSessionReport(
     // R49: the entry set is the builder's resolution in order, mapped back to
     // parsed entries; an id without a parsed entry (an unknown-semantic node)
     // is skipped instead of fabricating a node. Scope is never re-derived here.
-    const byId = new Map(parsed.entries.map((entry) => [entry.id, entry]));
+    const byId = new Map<string, (typeof parsed.entries)[number]>();
+    for (const entry of parsed.entries) {
+      if (!byId.has(entry.id)) byId.set(entry.id, entry);
+    }
     const entries = resolved.session.scopedEntryIds.flatMap((id) => {
       const entry = byId.get(id);
       return entry === undefined ? [] : [entry];

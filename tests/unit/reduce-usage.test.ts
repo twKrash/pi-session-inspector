@@ -70,16 +70,18 @@ test("keeps absent or invalid optional token fields absent instead of zero", () 
     ]),
   );
 
-  assert.equal(report.usage.totalTokens, 5);
-  assert.equal(report.usage.cost, 0.05);
-  assert.equal(Object.hasOwn(report.usage, "inputTokens"), false);
-  assert.equal(Object.hasOwn(report.usage, "outputTokens"), false);
-  assert.equal(Object.hasOwn(report.usage, "cacheReadTokens"), false);
-  assert.equal(Object.hasOwn(report.usage, "cacheWriteTokens"), false);
+  assert.equal(report.usage?.totalTokens, 5);
+  assert.equal(report.usage?.cost, 0.05);
+  assert.equal(Object.hasOwn(report.usage ?? {}, "inputTokens"), false);
+  assert.equal(Object.hasOwn(report.usage ?? {}, "outputTokens"), false);
+  assert.equal(Object.hasOwn(report.usage ?? {}, "cacheReadTokens"), false);
+  assert.equal(Object.hasOwn(report.usage ?? {}, "cacheWriteTokens"), false);
 });
 
 test("usage composition reconciles to the session total exactly", () => {
   const report = fixtureReport();
+  assert.ok(report.usageComposition);
+  assert.ok(report.usage);
   const { generations, toolResults, compactions, branchSummaries } =
     report.usageComposition;
 
@@ -122,6 +124,8 @@ test("four-way composition splits compaction from branch-summary usage", () => {
   const report = toSessionReport(
     reduceEntries(session.id, selectScope(session.entries, "b1", "tree")),
   );
+  assert.ok(report.usageComposition);
+  assert.ok(report.usage);
   const { generations, toolResults, compactions, branchSummaries } =
     report.usageComposition;
 
@@ -278,7 +282,7 @@ test("tool usage stays absent when a result carries no valid usage record", () =
     assert.equal(Object.hasOwn(tool ?? {}, "usage"), false);
     assert.equal(Object.hasOwn(json.tools[0] ?? {}, "usage"), false);
     assert.deepEqual(report.usage, { totalTokens: 4, cost: 0.004 });
-    assert.deepEqual(report.usageComposition.toolResults, {
+    assert.deepEqual(report.usageComposition?.toolResults, {
       totalTokens: 0,
       cost: 0,
     });
@@ -304,7 +308,7 @@ test("a duplicate tool result for one call id accumulates usage once", () => {
   assert.equal(report.tools.length, 1);
   assert.deepEqual(report.tools[0]?.usage, { totalTokens: 4, cost: 0.004 });
   assert.deepEqual(report.usage, { totalTokens: 8, cost: 0.008 });
-  assert.deepEqual(report.usageComposition.toolResults, {
+  assert.deepEqual(report.usageComposition?.toolResults, {
     totalTokens: 4,
     cost: 0.004,
   });
@@ -330,7 +334,7 @@ test("a later duplicate result supplies usage the first result omitted", () => {
   assert.equal(report.tools[0]?.status, "succeeded");
   assert.deepEqual(report.tools[0]?.usage, { totalTokens: 7, cost: 0.007 });
   assert.deepEqual(report.usage, { totalTokens: 11, cost: 0.011 });
-  assert.deepEqual(report.usageComposition.toolResults, {
+  assert.deepEqual(report.usageComposition?.toolResults, {
     totalTokens: 7,
     cost: 0.007,
   });
@@ -380,7 +384,7 @@ test("the first result still decides status when a later duplicate adds usage", 
   assert.equal(report.tools[0]?.status, "failed");
   assert.deepEqual(report.tools[0]?.usage, { totalTokens: 7, cost: 0.007 });
   assert.deepEqual(report.usage, { totalTokens: 11, cost: 0.011 });
-  assert.deepEqual(report.usageComposition.toolResults, {
+  assert.deepEqual(report.usageComposition?.toolResults, {
     totalTokens: 7,
     cost: 0.007,
   });
@@ -410,11 +414,11 @@ test("bounds out-of-range usage instead of propagating it", () => {
 
   assert.equal(Object.hasOwn(report.tools[0] ?? {}, "usage"), false);
   assert.deepEqual(report.usage, { totalTokens: 9, cost: 0.054 });
-  assert.deepEqual(report.usageComposition.toolResults, {
+  assert.deepEqual(report.usageComposition?.toolResults, {
     totalTokens: 0,
     cost: 0,
   });
-  assert.equal(Number.isFinite(report.usage.cost), true);
+  assert.equal(Number.isFinite(report.usage?.cost), true);
 });
 
 test("addUsage keeps totals finite and safe when a part is out of range", () => {

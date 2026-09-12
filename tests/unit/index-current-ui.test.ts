@@ -17,6 +17,8 @@ import registerSessionInspector, {
   registerTracking,
 } from "../../src/index.ts";
 import { renderHtml } from "../../src/ui/html.ts";
+import { renderInspectorBundle } from "../../src/ui/html.ts";
+import { renderJson } from "../../src/ui/json.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 
 const sleep = (ms: number): Promise<void> =>
@@ -38,13 +40,167 @@ function registerCommand(handlerRef: { current?: CommandHandler }): void {
 }
 
 test("loaders never import storage readers", async () => {
-  const source = await readFile("src/ui/load-current.ts", "utf8");
+  const currentSource = await readFile("src/ui/load-current.ts", "utf8");
   assert.equal(
-    /readCheckpoint|recoverSession|readInventorySnapshot|readWal/.test(source),
+    /readCheckpoint|recoverSession|readInventorySnapshot|readWal/.test(
+      currentSource,
+    ),
     false,
   );
   // Not just the named readers: no storage module reaches L2 at all.
-  assert.equal(/from "\.\.\/storage\//.test(source), false);
+  assert.equal(/from "\.\.\/storage\//.test(currentSource), false);
+
+  const historySource = await readFile("src/ui/load-history.ts", "utf8");
+  for (const source of [currentSource, historySource]) {
+    assert.equal(
+      /readSubagentEvidenceWithArchives|subagent-archive|readPublishedArchiveState/.test(
+        source,
+      ),
+      false,
+    );
+  }
+});
+
+test("overflow usage remains unavailable through the bundle and JSON production paths", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "overflow-session.jsonl");
+  const max = Number.MAX_SAFE_INTEGER;
+  await writeFile(
+    sessionFile,
+    [
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "overflow-session",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      }),
+      JSON.stringify({
+        type: "custom",
+        id: "tracking-marker",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:01.000Z",
+        customType: "session-inspector:tracking-start",
+        data: { schemaVersion: 1 },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "overflow-1",
+        parentId: "tracking-marker",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: { totalTokens: max, cost: { total: 0.01 } },
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "overflow-2",
+        parentId: "overflow-1",
+        timestamp: "2026-01-01T00:00:03.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: { totalTokens: max, cost: { total: 0.02 } },
+        },
+      }),
+    ].join("\n") + "\n",
+  );
+  try {
+    const model = await loadCurrentSessionReport(sessionFile, "tree", {
+      leafId: null,
+      evidence: { atomic: [], folded: [] },
+    });
+    assert.ok(model);
+    const report = model.report;
+    const bundle = renderInspectorBundle({
+      schemaVersion: 1,
+      theme: "light",
+      initialScope: "tree",
+      current: {
+        active: { availability: "available", report, daily: [] },
+        tree: { availability: "available", report, daily: [] },
+      },
+      history: { availability: "unavailable", sessions: [], diagnostics: [] },
+      global: {
+        availability: "unavailable",
+        sessions: [],
+        usage: { totalTokens: 0, cost: 0 },
+        dates: [],
+        diagnostics: [],
+        inventory: { commands: null, skills: null, resources: null },
+      },
+    });
+    assert.match(bundle, /Usage unavailable/);
+    const json = JSON.parse(renderJson(report)) as Record<string, unknown>;
+    assert.equal(Object.hasOwn(json, "usage"), false);
+    assert.equal(Object.hasOwn(json, "usageComposition"), false);
+    assert.equal(report.usage, undefined);
+    assert.equal(report.usageComposition, undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("current loader maps a duplicated tree id to its first parsed entry", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
+  const sessionFile = join(directory, "duplicate-session.jsonl");
+  await writeFile(
+    sessionFile,
+    [
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "duplicate-session",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      }),
+      JSON.stringify({
+        type: "custom",
+        id: "tracking-marker",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:01.000Z",
+        customType: "session-inspector:tracking-start",
+        data: { schemaVersion: 1 },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "duplicate-generation",
+        parentId: "tracking-marker",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: { totalTokens: 7, cost: { total: 0.07 } },
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "duplicate-generation",
+        parentId: "tracking-marker",
+        timestamp: "2026-01-01T00:00:03.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: { totalTokens: 99, cost: { total: 0.99 } },
+        },
+      }),
+    ].join("\n") + "\n",
+  );
+  try {
+    const model = await loadCurrentSessionReport(sessionFile, "tree", {
+      leafId: null,
+      evidence: { atomic: [], folded: [] },
+    });
+    assert.ok(model);
+    assert.equal(model.report.generations.length, 1);
+    assert.equal(model.report.usage?.totalTokens, 7);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("current report is produced from supplied L0 evidence", async () => {
@@ -65,7 +221,7 @@ test("current report is produced from supplied L0 evidence", async () => {
   });
   assert.equal(model?.report.evidenceHealth.core, "supported");
   // The report body still reduces the builder-resolved entries.
-  assert.equal(model?.report.usage.totalTokens, 7);
+  assert.equal(model?.report.usage?.totalTokens, 7);
 
   // The canonical builder owns availability: an untracked session and an
   // unsupported format stay undefined exactly as before.
@@ -113,7 +269,7 @@ test("current report is produced from supplied L0 evidence", async () => {
     evidence: { atomic: [], folded: [] },
   });
   assert.equal(partial?.report.evidenceHealth.core, "partial");
-  assert.equal(partial?.report.usage.totalTokens, 7);
+  assert.equal(partial?.report.usage?.totalTokens, 7);
 });
 
 /**
@@ -672,7 +828,7 @@ test("auto-discovers subagent runs from persisted tool results in the production
     true,
   );
   // Child usage is a breakdown: session totals only count persisted Pi usage.
-  assert.equal(model?.report.usage.totalTokens, 1515);
+  assert.equal(model?.report.usage?.totalTokens, 1515);
 });
 
 test("uses Pi's active leaf rather than the latest appended branch", async () => {
@@ -686,7 +842,7 @@ test("uses Pi's active leaf rather than the latest appended branch", async () =>
   const model = await loadCurrentSessionReport(file, "active", {
     leafId: "e6",
   });
-  assert.equal(model?.report.usage.totalTokens, 42);
+  assert.equal(model?.report.usage?.totalTokens, 42);
 });
 
 test("keeps understood facts when Pi's active leaf is an unknown-typed entry", async () => {
@@ -705,7 +861,7 @@ test("keeps understood facts when Pi's active leaf is an unknown-typed entry", a
     leafId: "e8",
   });
   assert.ok(model);
-  assert.equal(model.report.usage.totalTokens, 30);
+  assert.equal(model.report.usage?.totalTokens, 30);
 });
 
 test("leaves active scope unavailable when Pi has no known active leaf", async () => {
@@ -726,7 +882,7 @@ test("leaves active scope unavailable when Pi has no known active leaf", async (
   );
 
   const tree = await loadCurrentSessionReport(file, "tree", { leafId: null });
-  assert.equal(tree?.report.usage.totalTokens, 72);
+  assert.equal(tree?.report.usage?.totalTokens, 72);
 });
 
 test("opens the current-session TUI through Pi's public session lookup", async () => {

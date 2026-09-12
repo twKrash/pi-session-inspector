@@ -66,9 +66,17 @@ export function resolveScope(
   );
 
   if (scope === "tree") {
+    // A duplicated native id still owns one logical row. Keep the first node
+    // in append/scope order, matching L1's first-win entry ownership.
+    const seenIds = new Set<string>();
+    const entryIds = postMarkerNodes.flatMap((node) => {
+      if (seenIds.has(node.entryId)) return [];
+      seenIds.add(node.entryId);
+      return [node.entryId];
+    });
     return {
       state: "available",
-      entryIds: postMarkerNodes.map((node) => node.entryId),
+      entryIds,
       markerEntryId,
       duplicateMarkers,
     };

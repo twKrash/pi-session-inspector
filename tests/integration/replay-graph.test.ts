@@ -86,5 +86,5 @@ test("active scope keeps known messages across an unknown semantic node", () => 
     report.generations.map((generation) => generation.id),
     ["generation:known-a", "generation:known-c"],
   );
-  assert.equal(report.usage.totalTokens, 30);
+  assert.equal(report.usage?.totalTokens, 30);
 });
