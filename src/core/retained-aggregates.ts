@@ -276,7 +276,8 @@ function mergeIntegrationCounters(
       if (!INTEGRATION_KEYS.has(integration)) continue;
       const counters = retained[integration];
       if (!isRecord(counters)) continue;
-      const target = merged[integration as IntegrationKey]?.value ?? {};
+      const target =
+        merged[integration as IntegrationKey]?.value ?? Object.create(null);
       for (const key of Object.keys(counters).sort()) {
         const count = counters[key];
         if (!COUNTER_KEY_PATTERN.test(key) || !isFoldCount(count)) continue;
@@ -325,7 +326,7 @@ function buildSkillAggregates(
   retainedNames: readonly string[],
   boundary: AggregateValue<unknown>["boundary"],
 ): CanonicalRetainedAggregates["skillInvocations"] {
-  const named: Record<string, number> = {};
+  const named: Record<string, number> = Object.create(null);
   const foldedNames = new Set<string>();
 
   if (isRecord(folded)) {
@@ -433,7 +434,9 @@ function expirationBoundary(evidence: CheckpointEvidence | undefined): {
 function cloneSequences(
   value: Record<string, number> | undefined,
 ): Record<string, number> {
-  const copy: Record<string, number> = {};
+  // Null prototype: a legal `__proto__` writer id must survive the copy rather
+  // than being swallowed by the inherited setter.
+  const copy: Record<string, number> = Object.create(null);
   if (!isRecord(value)) return copy;
   for (const [writerId, cursor] of Object.entries(value)) {
     if (

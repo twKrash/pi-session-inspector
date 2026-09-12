@@ -25,13 +25,17 @@ test("folded prefix and retained suffix are disjoint and labelled", () => {
       permissionPresence: false,
     },
   });
-  assert.deepEqual(aggregates.skillInvocations?.named?.value, {
-    alpha: 4,
-    beta: 1,
-  });
+  // Null-prototype canonical maps: normalize before comparing to a literal.
+  assert.deepEqual(
+    { ...aggregates.skillInvocations?.named?.value },
+    {
+      alpha: 4,
+      beta: 1,
+    },
+  );
   assert.equal(aggregates.skillInvocations?.named?.state, "aggregate-only");
-  assert.deepEqual(aggregates.boundary.foldedThrough, { "w-1": 2 });
-  assert.deepEqual(aggregates.boundary.sealedThrough, { "w-1": 2 });
+  assert.deepEqual({ ...aggregates.boundary.foldedThrough }, { "w-1": 2 });
+  assert.deepEqual({ ...aggregates.boundary.sealedThrough }, { "w-1": 2 });
   assert.equal(aggregates.permissionPresence?.value, true);
   assert.equal(aggregates.integration?.permission?.value.decisions, 3);
 });
@@ -44,6 +48,33 @@ test("no checkpoint yields no synthetic aggregate values", () => {
   });
   assert.equal(aggregates.skillInvocations, undefined);
   assert.equal(aggregates.boundary.detail, "expired");
+});
+
+test("a __proto__ writer id survives the canonical boundary", () => {
+  // `__proto__` is a legal writer token; the cursor copy must keep it as an own
+  // key on both boundary maps instead of dropping it via the inherited setter.
+  const aggregates = buildRetainedAggregates({
+    sessionId: "s1",
+    checkpoint: {
+      aggregates: { presence: { permission: true } },
+      cursors: { wal: { ["__proto__"]: 3 } },
+      sealedWal: { ["__proto__"]: 3 },
+      evidence: { checkpointedAt: "2026-09-12T10:00:00.000Z" },
+    },
+    retained: { skillNames: [], counters: {}, permissionPresence: false },
+  });
+
+  assert.equal(
+    Object.hasOwn(aggregates.boundary.foldedThrough, "__proto__"),
+    true,
+  );
+  assert.equal(aggregates.boundary.foldedThrough["__proto__"], 3);
+  assert.equal(
+    Object.hasOwn(aggregates.boundary.sealedThrough, "__proto__"),
+    true,
+  );
+  assert.equal(aggregates.boundary.sealedThrough["__proto__"], 3);
+  assert.equal(aggregates.boundary.detail, "aggregate-only");
 });
 
 test("boundary inconsistency is rejected, never repaired", () => {

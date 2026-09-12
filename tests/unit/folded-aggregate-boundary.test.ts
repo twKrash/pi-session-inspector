@@ -39,8 +39,10 @@ test("sealed streams without folded counts stay aggregate-only, never zero", () 
   assert.equal(aggregates.boundary.detail, "aggregate-only");
   assert.equal(aggregates.integration, undefined);
   assert.equal(aggregates.skillInvocations, undefined);
-  assert.deepEqual(aggregates.boundary.foldedThrough, { "w-1": 5 });
-  assert.deepEqual(aggregates.boundary.sealedThrough, { "w-1": 5 });
+  // The canonical boundary/aggregate maps use a null prototype so a legal
+  // `__proto__` key survives; normalize before comparing to a literal.
+  assert.deepEqual({ ...aggregates.boundary.foldedThrough }, { "w-1": 5 });
+  assert.deepEqual({ ...aggregates.boundary.sealedThrough }, { "w-1": 5 });
 });
 
 test("cursor ahead of the retained sequence needs a matching seal", () => {
@@ -152,10 +154,13 @@ test("named skills keep the folded prefix and add only new retained names", () =
       permissionPresence: false,
     },
   });
-  assert.deepEqual(aggregates.skillInvocations?.named?.value, {
-    alpha: 4,
-    beta: 2,
-  });
+  assert.deepEqual(
+    { ...aggregates.skillInvocations?.named?.value },
+    {
+      alpha: 4,
+      beta: 2,
+    },
+  );
   assert.equal(aggregates.skillInvocations?.overflow?.value, 1);
 });
 
@@ -180,8 +185,8 @@ test("aggregate values carry only the boundary, never an event time", () => {
     "state",
     "value",
   ]);
-  assert.deepEqual(named?.boundary.foldedThrough, { "w-1": 2 });
-  assert.deepEqual(named?.boundary.sealedThrough, { "w-1": 2 });
+  assert.deepEqual({ ...named?.boundary.foldedThrough }, { "w-1": 2 });
+  assert.deepEqual({ ...named?.boundary.sealedThrough }, { "w-1": 2 });
   assert.equal(JSON.stringify(named).includes("observedAt"), false);
   assert.equal(JSON.stringify(aggregates).includes("../etc"), false);
 });

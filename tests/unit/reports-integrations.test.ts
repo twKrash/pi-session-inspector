@@ -1108,3 +1108,92 @@ test("preserves a supplied truncated boolean and rejects other supplied types", 
   });
   assert.equal(rejected.evidenceHealth.truncated, undefined);
 });
+
+test("keeps a __proto__ writer id in the boundary with its aggregate", () => {
+  // `__proto__` is a legal storage writer id (underscore-leading token). A
+  // plain-object cursor map silently loses it, which would drop the writer
+  // from the boundary while keeping the aggregate: exactly what the
+  // projection forbids. Computed keys keep it an own property on the way in.
+  const boundaryCursor = { ["__proto__"]: 4 };
+  const report = toSessionReport(parent, {
+    retainedAggregates: {
+      schemaVersion: 1,
+      boundary: {
+        detail: "aggregate-only",
+        foldedThrough: boundaryCursor,
+        sealedThrough: { ["__proto__"]: 4 },
+        checkpointedAt: { state: "unavailable" },
+      },
+      integration: {
+        permission: {
+          value: { decisions: 2 },
+          state: "aggregate-only",
+          boundary: { foldedThrough: boundaryCursor, sealedThrough: {} },
+        },
+      },
+    } as never,
+  });
+
+  const folded = report.retainedAggregates?.boundary.foldedThrough as
+    | Record<string, number>
+    | undefined;
+  assert.ok(folded);
+  assert.equal(Object.hasOwn(folded, "__proto__"), true);
+  assert.equal(folded["__proto__"], 4);
+  assert.equal(
+    Object.hasOwn(
+      report.retainedAggregates?.boundary.sealedThrough ?? {},
+      "__proto__",
+    ),
+    true,
+  );
+  assert.equal(
+    report.retainedAggregates?.integration?.permission?.value.decisions,
+    2,
+  );
+});
+
+test("drops a retained aggregate for writer ids outside the token grammar", () => {
+  const tooLong = "w".repeat(129);
+  const longReport = toSessionReport(parent, {
+    retainedAggregates: {
+      schemaVersion: 1,
+      boundary: {
+        detail: "aggregate-only",
+        foldedThrough: { [tooLong]: 0 },
+        sealedThrough: {},
+        checkpointedAt: { state: "unavailable" },
+      },
+    } as never,
+  });
+  assert.equal(longReport.retainedAggregates, undefined);
+
+  const slashReport = toSessionReport(parent, {
+    retainedAggregates: {
+      schemaVersion: 1,
+      boundary: {
+        detail: "aggregate-only",
+        foldedThrough: { "writer/a": 0 },
+        sealedThrough: {},
+        checkpointedAt: { state: "unavailable" },
+      },
+    } as never,
+  });
+  assert.equal(slashReport.retainedAggregates, undefined);
+});
+
+test("drops a retained aggregate when only one expired cursor map is populated", () => {
+  const report = toSessionReport(parent, {
+    retainedAggregates: {
+      schemaVersion: 1,
+      boundary: {
+        detail: "expired",
+        foldedThrough: { "writer-a": 4 },
+        sealedThrough: {},
+        checkpointedAt: { state: "unavailable" },
+      },
+    } as never,
+  });
+
+  assert.equal(report.retainedAggregates, undefined);
+});

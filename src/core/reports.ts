@@ -1549,7 +1549,9 @@ function projectSequenceMap(
 ): Record<string, number> | undefined {
   const input = snapshotRecord(value);
   if (input === undefined) return undefined;
-  const sequences: Record<string, number> = {};
+  // Null prototype: a legal `__proto__` writer id must survive the copy rather
+  // than being swallowed by the inherited setter (storage precedent).
+  const sequences: Record<string, number> = Object.create(null);
   for (const key of Object.keys(input)) {
     if (!WRITER_ID.test(key)) return undefined;
     const cursor = input[key];
@@ -1592,7 +1594,8 @@ function projectRetainedCounterMap(
   if (input === undefined) return undefined;
   const keys = Object.keys(input).sort();
   if (keys.length > MAX_COUNTER_KEYS) return undefined;
-  const counters: Record<string, number> = {};
+  // Null prototype: a legal `__proto__` counter key must survive the copy.
+  const counters: Record<string, number> = Object.create(null);
   for (const key of keys) {
     if (!RETAINED_COUNTER_KEY.test(key)) continue;
     const count = input[key];
@@ -1625,7 +1628,9 @@ function projectRetainedNamedSkills(
   if (input === undefined || input.state !== "aggregate-only") return undefined;
   const rows = snapshotRecord(input.value);
   if (rows === undefined) return undefined;
-  const named: Record<string, number> = {};
+  // Null prototype: a skill named `constructor`/`__proto__` must be copied as
+  // an own key, never inherited from `Object.prototype`.
+  const named: Record<string, number> = Object.create(null);
   for (const name of Object.keys(rows).sort()) {
     if (Object.keys(named).length >= MAX_SKILL_KEYS) break;
     const count = rows[name];
