@@ -219,7 +219,7 @@ a mode, a target, or an option.
 | D1 | Agents summary = child runs, not `agentActivity.calls` | renderer-only | both values already in the payload |
 | D2 | Agent tool activity shown separately | renderer-only | `agentActivity` already in the payload |
 | D3 | Parent/child navigation + "outside selected scope" | deterministic report derivation + renderer | `parentId` resolution against the selected scope |
-| D4 | Error/tool → child-run relation | deterministic report derivation + renderer | `originToolId` from the persisted tool-result `message.toolCallId`; the relation is one-to-many (§7.5) |
+| D4 | Error/tool → child-run relation | deterministic report derivation + renderer | `evidenceToolId` from the persisted tool-result `message.toolCallId`; the relation is one-to-many (§7.5) |
 | E1 | Tool↔error deterministic join | renderer-only | ids already identical |
 | E2 | Error message for tool errors | **unsupported** | no safe structured field (§1.5) |
 | F1 | Tools summary (calls/succeeded/failed/interrupted/known usage/last used) | deterministic derivation in the projection | all derivable from `report.tools` |
@@ -272,7 +272,10 @@ export type CoverageSummary = {
    * workspace denominator. Sessions, never usage.
    */
   sessionRatio: number | null;
-  /** True only when every inspected session replayed **and** discovery was not capped. */
+  /**
+   * True only when `inspected > 0`, every inspected session replayed, **and**
+   * discovery was not capped. An empty inspection set is **not** complete.
+   */
   complete: boolean;
   /** True when discovery stopped at MAX_HISTORY_SESSIONS: more sessions exist, uninspected. */
   discoveryLimited: boolean;
@@ -304,10 +307,13 @@ yet) renderers must show "Unavailable", never a guessed reason.
    directories exist that discovery never examined. `available` = rows that
    replayed; `unavailable = inspected - available`, so the three counts always
    add up and a renderer can never show a fraction that does not close.
-2. `complete` = `unavailable === 0 && !discoveryLimited && availability ===
-   "available"`. A capped discovery is *not* complete even when every inspected
-   session replayed, and the capped set may never be rendered as
-   `206 / 206 sessions` or as any workspace-wide claim.
+2. `complete` = `inspected > 0 && unavailable === 0 && !discoveryLimited &&
+   availability === "available"`. Two consequences are binding:
+   a capped discovery is *not* complete even when every inspected session
+   replayed (and the capped set may never be rendered as `206 / 206 sessions` or
+   as any workspace-wide claim), and an **empty** inspection set is *not*
+   complete — with `inspected === 0` the aggregate has nothing to measure, so its
+   usage is `Unavailable`, never `$0` and never `Total`.
 3. `sessionRatio` = `available / inspected` rounded to 4 decimals, and **null**
    when `inspected === 0` **or** `discoveryLimited === true`. A ratio over a
    capped denominator would assert workspace coverage that was never measured, so
@@ -348,6 +354,14 @@ Additional rules:
 - Unavailable sessions contribute **nothing** to `usage`, `dates`, charts, or
   any count other than the coverage line itself. They are never rendered as a
   zero-cost row.
+- An empty inspection set (`inspected === 0`) is never complete and never shows a
+  ratio, a percentage, `$0`, or the word `Total`: usage reads `Unavailable` and
+  the session line reads `No tracked sessions`.
+- A session whose retained dated window was truncated (`usageByDateTruncated`,
+  §5.6) qualifies its own in-range contribution as `Known` for ranges that reach
+  before the oldest retained row. That qualifier is independent of report-level
+  `coverage` and never changes a complete report's `Total` wording for ranges that
+  are fully covered by the retained evidence.
 - The coverage panel belongs to the **aggregate** sections only (history
   aggregate, global). It carries the bounded diagnostics (`manifest-unavailable`,
   …) as plain tokens, plus `discovery-limited` when discovery hit the cap.
@@ -373,19 +387,23 @@ Additional rules:
 3. Zero available with a non-empty, uncapped discovery ⇒ cost shows
    `Unavailable`, session line `0 / N sessions · N unavailable`, no `$0.00`
    anywhere.
-4. Sessions directory unreadable ⇒ `availability: "unavailable"`, no `coverage`
+4. **Empty inspection set** (`inspected === 0` with discovery available) ⇒
+   `complete === false`, `sessionRatio === null`, session line
+   `No tracked sessions`, and aggregate usage `Unavailable` — never `$0.00`, never
+   `Total`.
+5. Sessions directory unreadable ⇒ `availability: "unavailable"`, no `coverage`
    key, every aggregate metric `Unavailable`.
-5. Discovery capped at 206 while further directories exist ⇒
+6. Discovery capped at 206 while further directories exist ⇒
    `discoveryLimited === true`, `complete === false`,
    **`sessionRatio === null`**, session line
    `206 sessions inspected · additional sessions not inspected`, cost label
    `Known native cost`; nowhere may a `206 / 206 sessions` fraction or a
    percentage be rendered, and even an all-available capped set stays incomplete.
-6. A `coverage`-less report (older file) renders the `completeness unknown`
+7. A `coverage`-less report (older file) renders the `completeness unknown`
    variants, not `Total`.
-7. A selected history session's detail shows that session's own figures with no
+8. A selected history session's detail shows that session's own figures with no
    coverage panel and no `Known` qualifier.
-8. Byte-identical regeneration of the same inputs (determinism unchanged).
+9. Byte-identical regeneration of the same inputs (determinism unchanged).
 
 ---
 
@@ -476,6 +494,9 @@ must:
 
 - **UTC calendar dates** (`YYYY-MM-DD`) only. A record's date is the UTC date of
   its persisted ISO timestamp (`utcDate()` / `DAY` in `src/ui/html.ts`).
+- **Which timestamp supplies that date is normative** and defined once, by
+  logical call, in §5.7. No start time, end time, or duration is ever inferred
+  for range attribution.
 - Boundaries are **inclusive on both ends**: a record is in range iff
   `from <= utcDate(record.timestamp) <= to`.
 - Presets are anchored on the **latest observed date in the view**, never on the
@@ -555,11 +576,11 @@ type RangeState = { preset: 7 | 14 | 30 | null; from: string; to: string };
 
 ### 5.4 Implementation shape (why this is derivation, not new persistence)
 
-The canonical browser projection already carries per-row timestamps for tools,
-agents and errors (§6), so those tabs filter **their own canonical rows**
-directly — one row per call/run/error, no dated duplicate. Only the two values
-that exist solely as aggregates need a per-date form: model summaries and the
-usage composition.
+The canonical browser projection already carries per-row time fields for tools,
+agents and errors (`Tool.timestamp`, `AgentRun.observedAt`, `ErrorRecord.timestamp`
+— see §5.7), so those tabs filter **their own canonical rows** directly — one row
+per call/run/error, no dated duplicate. Only the two values that exist solely as
+aggregates need a per-date form: model summaries and the usage composition.
 
 ```ts
 // Models: ModelSummary is an aggregate, so it needs a dated form.
@@ -607,6 +628,18 @@ Rules:
 9. A custom range round-trips: serialize → reload → identical selection and
    identical rendered numbers; an invalid or half pair falls back to the view
    default with the notice (§9.1).
+10. **Cross-midnight regression**: a tool call at `23:59Z` whose result (and error)
+    is observed at `00:01Z` the next day ⇒ the tool's usage/cost appears in the
+    call day's range totals and the tool summary row, the error appears in the next
+    day's Errors list, and switching between the two single-day ranges keeps the
+    session total, the tool summary, and the usage composition mutually consistent
+    (each evidence row counted exactly once).
+11. **Truncated per-session dated history**: a session spanning more than 366
+    observed days ⇒ `usageByDateTruncated === true`; an old Custom range reaching
+    before the retained window renders the row's usage as `Known` with the
+    `history-daily-truncated` diagnostic and never as a complete or zero figure,
+    while a recent range fully inside the window still reconciles exactly with the
+    session's detail view.
 
 ### 5.6 Session membership in aggregate ranges
 
@@ -617,13 +650,55 @@ Rules:
   records bracket the range may have no usage inside it.
 - The history entry projection therefore carries bounded per-session evidence for
   this decision: `usageByDate: { date, totalTokens, cost, generations, tools }[]`
-  (≤ 366 dates, truncation-flagged), derived from the already-replayed report. The
-  row's cost/tokens for a range are the sum over its in-range dates, so a
-  range-filtered session row and that session's own detail view agree exactly.
+  plus `usageByDateTruncated?: boolean` (≤ 366 dates, newest window), derived from
+  the already-replayed report. The row's cost/tokens for a range are the sum over
+  its in-range dates.
+- **Reconciliation contract** (what truncation must not break):
+  - Within the retained dated window, a range-filtered aggregate session row
+    reconciles **exactly** with the same session's detail view for that range.
+    Exact row/detail equality is claimed **only** for ranges fully covered by the
+    retained dated evidence.
+  - When `usageByDateTruncated === true` **and** the selected aggregate range
+    reaches before the oldest retained dated row, that session's range membership
+    and usage are **partial/unknown** for the omitted portion. The omitted activity
+    is never silently excluded, never counted as zero, and never extrapolated.
+  - Such a row renders a bounded truncation diagnostic
+    (`history-daily-truncated`) and its in-range usage is rendered `Known …` with
+    the retained window stated, so a partial figure can never read as complete.
+  - Because the retained window is anchored on the newest dates, a truncated
+    session is exact for recent ranges and partial only for ranges reaching beyond
+    the retained window.
 - Sessions with **no dated evidence** — which includes every unavailable session —
   cannot be attributed to any range. They are listed in a separate
   `Unavailable · dates unknown` group, are never counted in range totals, and are
   never rendered as `$0`.
+
+### 5.7 Timestamp attribution (normative)
+
+Every range-filtered number must be attributable to exactly one UTC date, and the
+attribution is by **logical call**, never by result arrival and never by inferring
+a start or an end:
+
+| Evidence | Date comes from | Consequence |
+| --- | --- | --- |
+| generation usage | `Generation.timestamp` (assistant message) | native parent-session usage |
+| tool call identity, status, and its attached usage | `Tool.timestamp` (the assistant call time) | a call at 23:59 whose result arrives at 00:01 has its usage/cost attributed to the **call day** |
+| tool error event | `ErrorRecord.timestamp` (result/error observation time) | the resulting error can therefore land on the **next day** than that call's usage |
+| child run | `AgentRun.observedAt`, derived from the persisted tool-result entry that published the run evidence | observation time of the evidence only — **not** a start time, end time, or duration |
+| compaction / branch summary | its own persisted entry timestamp | — |
+
+Rules:
+
+- No start time, end time, duration, or elapsed time is ever inferred, and no field
+  is repurposed as one. `AgentRun.observedAt` is the only time field added to a
+  child run and carries no causal or ordering claim beyond observation.
+- Because each evidence row is counted once, in its own bucket, a cross-midnight
+  call stays internally consistent: the tool summary, the tool's range-filtered
+  usage, and the usage composition all read `Tool.timestamp`, while the error list
+  reads `ErrorRecord.timestamp`. Splitting a call's usage from its error across
+  two days is the intended, documented consequence of logical-call attribution.
+- Tool duration remains `Unavailable` unless live duration evidence exists (§7.6);
+  attribution never substitutes for it.
 
 ---
 
@@ -665,15 +740,15 @@ Rules:
 | Loss | Fix (class) | Slice |
 | --- | --- | --- |
 | `AgentRow` drops `agent`, `artifacts` | pass through validated values (renderer) | P1-C |
-| `AgentRow` has no timestamp | `AgentRun.timestamp` derived from the publishing entry (derivation) | P1-C |
+| `AgentRow` has no time field | `AgentRun.observedAt` derived from the publishing entry (§5.7) | P1-C |
 | `ToolRow` drops `timestamp` | pass through (renderer) | P1-C |
 | Models cannot be range-filtered | per-date model rows in the browser projection (derivation) | P0-B |
 | Composition cannot be range-filtered | per-date composition in `DailyRow` (derivation) | P0-B |
-| Agents cannot be range-filtered | `AgentRun.timestamp` (derivation); the canonical agent row is filtered directly, no dated copy | P0-B |
+| Agents cannot be range-filtered | `AgentRun.observedAt` (derivation, §5.7); the canonical agent row is filtered directly, no dated copy | P0-B |
 | Tools/errors cannot be range-filtered | `Tool.timestamp` and `ErrorRecord.timestamp` pass through (renderer) | P1-C |
 | `AgentRun` has no model/thinking | `model?`, `thinking?` validated from `results[]` (derivation, producer-version dependent) | P1-C |
 | `AgentRun` has no bounded failure class | `failure?: AgentFailure` from validated enums (derivation) | P1-C |
-| Errors cannot link to a child run | `AgentRun.originToolId = "tool:" + message.toolCallId` (derivation; one-to-many) | P1-D |
+| Errors cannot link to a child run | `AgentRun.evidenceToolId = "tool:" + message.toolCallId` (derivation; one-to-many) | P1-D |
 | Child usage completeness unknown | `childUsage` counts (`runsWithUsage` / `runsTotal`) in the agent projection (derivation) | P1-D |
 
 Every derivation above is computed from already-persisted producer payloads,
@@ -681,12 +756,15 @@ validated with the existing bounded-validator style, and optional in the DTO.
 Where the producer is absent or of an unknown version, the field is absent and
 the UI shows `Unavailable`.
 
-The child-run origin is the **persisted tool-result `message.toolCallId`** — the
-id the reducer already turns into `tool:<callId>` and the id the subagent adapter
-already joins results by. `details.toolCallId` is **not** used: it is
-producer-internal and is not the canonical call id. Because one result may
-publish several runs, the relation is **one-to-many** and is never collapsed
-into a single attributed child (§7.5).
+The child run's **evidence tool id** is the persisted tool-result
+`message.toolCallId` — the id the reducer already turns into `tool:<callId>` and
+the id the subagent adapter already joins results by. `details.toolCallId` is
+**not** used: it is producer-internal and is not the canonical call id. The field
+is named `evidenceToolId` rather than `originToolId` because the publishing result
+is **not necessarily the call that launched the child** (a `subagent_wait` result
+can publish completion evidence for a run another call launched). Because one
+result may publish several runs, the relation is **one-to-many**, is never
+collapsed into a single attributed child, and carries **no causal claim** (§7.5).
 
 ### 6.4 Acceptance criteria
 
@@ -748,6 +826,11 @@ present, else `Unavailable`. Then status, model (when known), thinking level
 `missing` / `Unavailable`), parent (see 7.4). The opaque id (`subagent-<sha256>`)
 is shown only in the details panel with a copy affordance.
 
+Child `model` and `thinking` are **metadata inside this agent's detail panel** and
+never a link to the Models tab: `SessionReport.models` describes the native
+parent-session generations, while an agent run's model is a different usage
+domain (§9.4). The run's time field is `observedAt` (§5.7).
+
 Optional bounded failure classification (never free text, present only for a
 failed or interrupted run whose producer published the enum):
 
@@ -781,12 +864,15 @@ Presentation priority:
    and status. The raw `tool:call_…` id moves to the details panel.
 2. **Generation errors**: keep the existing bounded, redacted `errorMessage` when
    present; show model/provider when the generation is known.
-3. **Related child run(s)**: every child run whose `originToolId` equals the
-   failed tool's id is a *candidate*. The relation is **one-to-many** — a single
-   `subagent`/`subagent_wait` result can publish several child runs — so the panel
-   lists them under `Related child run(s)` and **never** names one of them as the
-   cause. Zero candidates ⇒ the section is omitted entirely (never inferred from
-   timestamps, never padded with an unrelated run).
+3. **Related child run(s)**: every child run whose `evidenceToolId` equals the
+   failed tool's id is a *candidate*. `evidenceToolId` is the canonical
+   `tool:<message.toolCallId>` of the persisted tool result that **published the
+   run's evidence**; it is not necessarily the call that originally launched the
+   child (`subagent_wait` can publish completion evidence for a run launched
+   earlier). The relation is **one-to-many** — a single result can publish several
+   child runs — so the panel lists them under `Related child run(s)` and **never**
+   names one of them as the cause. Zero candidates ⇒ the section is omitted
+   entirely (never inferred from timestamps, never padded with an unrelated run).
 4. **Message**: tool errors have no safe structured message (§1.5) ⇒
    `Message: Unavailable`. No text is ever taken from `content`, tool output,
    arguments, or child output.
@@ -831,9 +917,10 @@ adjacent timestamps.
 8. One `subagent` tool result publishing three child runs, with a failure on that
    call ⇒ the error detail lists **all three** under `Related child run(s)` and
    attributes the failure to none of them.
-9. `originToolId` is present only when the persisted tool result carried a
+9. `evidenceToolId` is present only when the persisted tool result carried a
    non-empty `message.toolCallId`; otherwise it is absent, with no fallback to
-   any other id.
+   any other id. A run whose evidence arrived through a `subagent_wait` result
+   joins to that wait call, not to the launching call.
 
 ---
 
@@ -1013,13 +1100,18 @@ unsupported tab to the section default with the notice above. Tabs are never
 | Tool call row (failed) | Errors, entity-focus the matching error | range, scope |
 | Error row | related tool call / related agent run (when deterministic) | range, scope |
 | Agent row | parent / child run (when resolved in scope) | range, scope |
-| Agent row | model row when `AgentRun.model` exists | range, scope |
 | Integration row | its own detail panel (counters, version, telemetry reason) | all |
 | Command / Skill / Resource row | Environment subsection | all |
 
 Every link is an anchor with a hash target; non-linked labels keep their plain
 text and are never styled as links. Focused entities get `:target`-style
 highlighting plus a visible focus ring (existing `focus-visible` outline).
+
+`AgentRun.model` is deliberately **not** a navigation target and no Agent → Models
+link exists: `SessionReport.models` describes the native parent-session
+generations while `AgentRun.model` describes the child run's own model — different
+usage domains that must not be joined merely because a name matches. A future
+milestone that aggregates real child-model usage may add its own target.
 
 ### 9.5 Table-local state
 
@@ -1194,8 +1286,8 @@ approach; no Inspector-specific string hack beyond it is acceptable.
 
 | Surface | Change | Compatibility |
 | --- | --- | --- |
-| `SessionReport` | additive: `agents[].timestamp/model/thinking/failure/originToolId`; `tools[].timestamp` and `errors[].timestamp` already existed | additive; old consumers ignore new keys |
-| `HistoryReport` / `GlobalReport` | additive: `coverage?` (`inspected`/`available`/`unavailable`/`sessionRatio`/`complete`/`discoveryLimited`/`reasons`), `sessions[].reason?`, `sessions[].usageByDate?` | additive; a capped discovery yields `sessionRatio: null` by contract |
+| `SessionReport` | additive: `agents[].observedAt/model/thinking/failure/evidenceToolId`; `tools[].timestamp` and `errors[].timestamp` already existed | additive; old consumers ignore new keys |
+| `HistoryReport` / `GlobalReport` | additive: `coverage?` (`inspected`/`available`/`unavailable`/`sessionRatio`/`complete`/`discoveryLimited`/`reasons`), `sessions[].reason?`, `sessions[].usageByDate?`, `sessions[].usageByDateTruncated?` | additive; a capped discovery yields `sessionRatio: null`, and an empty inspection set is never `complete` |
 | `InspectorBundle` | additive: `current.sameReportProjection`, per-date model rows, daily composition, per-section `capabilities`, `modelsTruncated`/`dailyTruncated` flags | internal to the generated document; `schemaVersion` stays `1` (R3) |
 | Command surface | unchanged (`ui`/`tui`/`json`, options, rejection of `report`) | unchanged |
 | Older generated reports | render with conservative wording (`completeness unknown`, `Unavailable`) | never crash, never fabricate |
@@ -1218,8 +1310,9 @@ release slice).
   `src/ui/html.ts` (coverage panel + wording), tests + fixtures.
 - **Contract delta:** `CoverageSummary`, `CoverageReason`,
   `HistoricalSession.reason`.
-- **Acceptance:** §3.4 (1-8), including the capped case where `sessionRatio`
-  must be `null` and no percentage or `N / N` fraction may render.
+- **Acceptance:** §3.4 (1-9), including the **empty inspection set** and the
+  **capped discovery** cases, where `sessionRatio` must be `null` and no
+  percentage or `N / N` fraction may render.
 - **Size gate:** document-size delta measured and recorded against the pre-slice
   baseline (coverage adds counts and short tokens only; no absolute ceiling).
 
@@ -1229,9 +1322,10 @@ release slice).
   `sameReportProjection`), `src/ui/html.ts` (one server projection + one client
   range filter over canonical rows), i18n catalog, tests.
 - **Contract delta:** `DatedModelRow`, composition in `DailyRow`,
-  `current.sameReportProjection`, history `usageByDate`; range semantics per §5
-  (clamping removed) and session membership per §5.6.
-- **Acceptance:** §5.5 (1-9), §5.6, §4.5 (1-5).
+  `current.sameReportProjection`, history `usageByDate`/`usageByDateTruncated`;
+  range semantics per §5 (clamping removed), session membership per §5.6, and
+  logical-call attribution per §5.7.
+- **Acceptance:** §5.5 (1-10), §5.6, §5.7, §4.5 (1-5).
 - **Size gate:** **relative** regression gate measured on the reference fixture —
   document growth ≤ +15 % versus the baseline captured before the slice, with
   before/after bytes and the fixture path recorded in the slice report. No
@@ -1239,9 +1333,9 @@ release slice).
 
 ### P1-C — Projection integrity
 
-- **Files:** `src/integrations/subagents.ts` (`timestamp`, `model`, `thinking`,
-  `failure`, `originToolId`), `src/ui/html.ts` (one projection, pass-through of
-  role/artifacts/timestamps), tests + fixtures.
+- **Files:** `src/integrations/subagents.ts` (`observedAt`, `model`, `thinking`,
+  `failure`, `evidenceToolId`), `src/ui/html.ts` (one projection, pass-through of
+  role/artifacts/observedAt), tests + fixtures.
 - **Contract delta:** §6.3 rows 1-5, 7-10.
 - **Acceptance:** §6.4 (1-4).
 
@@ -1292,13 +1386,13 @@ Semantic assertions over snapshots; every new behavior gets a failing-first test
 
 | Area | File | Cases |
 | --- | --- | --- |
-| Coverage | `tests/unit/history-reports.test.ts`, `tests/unit/index-report-command.test.ts` | 5 of 27 inspected (uncapped) partial; all available; none available; sessions dir unreadable; **discovery cap ⇒ `sessionRatio === null`, `complete === false`, `206 sessions inspected · additional sessions not inspected`, no percentage and no `206 / 206`**; `coverage`-absent report; unavailable sessions contribute no usage; Known vs Total wording; **selected history session detail has no coverage qualifier** |
-| Range | `tests/unit/html-bundle.test.ts`, `tests/unit/bundle.test.ts` (+ new `tests/unit/report-range.test.ts`) | 7D vs 14D differ on every range-aware widget (models, tools, agents, errors, composition, chart) by filtering canonical rows; inclusive UTC boundaries; custom validation failure keeps state; range outside data → empty state; scope change preserves range; truncation notice; **aggregate session membership by in-range records (§5.6)**; **custom-range hash round-trip and lone/inverted-pair fallback** |
+| Coverage | `tests/unit/history-reports.test.ts`, `tests/unit/index-report-command.test.ts` | 5 of 27 inspected (uncapped) partial; all available; none available; **empty inspection set ⇒ `complete === false`, `sessionRatio === null`, `No tracked sessions`, usage `Unavailable`**; sessions dir unreadable; **discovery cap ⇒ `sessionRatio === null`, `complete === false`, `206 sessions inspected · additional sessions not inspected`, no percentage and no `206 / 206`**; `coverage`-absent report; unavailable sessions contribute no usage; Known vs Total wording; **selected history session detail has no coverage qualifier** |
+| Range | `tests/unit/html-bundle.test.ts`, `tests/unit/bundle.test.ts` (+ new `tests/unit/report-range.test.ts`) | 7D vs 14D differ on every range-aware widget (models, tools, agents, errors, composition, chart) by filtering canonical rows; inclusive UTC boundaries; custom validation failure keeps state; range outside data → empty state; scope change preserves range; truncation notice; **aggregate session membership by in-range records (§5.6)**; **custom-range hash round-trip and lone/inverted-pair fallback**; **cross-midnight attribution regression (§5.7)**: call day carries the tool usage, next day carries the error, totals and composition stay consistent; **>366-day session fixture**: `usageByDateTruncated`, an old Custom range renders `Known` + `history-daily-truncated` (never zero), a recent range reconciles exactly with the detail view |
 | Scope | `tests/unit/current-ui.test.ts`, `tests/unit/index-current-ui.test.ts` | linear session with `sameReportProjection === true` and the exact note wording; branched Active≠Tree; sibling exclusion; child usage never added; labels contain no descendant claim |
-| Agents | `tests/unit/subagents.test.ts`, `tests/unit/html-bundle.test.ts` | activity calls ≠ run count; failed-run cost; partial child usage; parent resolution (in-scope / tree-only / unknown); role/model/thinking present only when validated; **one result publishing several runs ⇒ one-to-many `Related child run(s)`**; `originToolId` only from `message.toolCallId`; no raw task/output text |
+| Agents | `tests/unit/subagents.test.ts`, `tests/unit/html-bundle.test.ts` | activity calls ≠ run count; failed-run cost; partial child usage; parent resolution (in-scope / tree-only / unknown); role/model/thinking present only when validated and shown as metadata only (no Models link); **one result publishing several runs ⇒ one-to-many `Related child run(s)`**; `evidenceToolId` only from `message.toolCallId`; `observedAt` from the publishing entry; no raw task/output text |
 | Errors | `tests/unit/error-ledger.test.ts`, `tests/unit/reduce.test.ts` | generation message preserved; tool error joined to tool (name/source/status); tool error without message → Unavailable; no tool-result leak |
 | Tools | `tests/unit/html-bundle.test.ts` (+ new call rows) | summary aggregation; success/failure/interrupted; known vs unavailable usage; timeline timestamps; duration only with live evidence |
-| Navigation | `tests/unit/route.test.ts` (new, pure) + document-structure assertions in `tests/unit/html-bundle.test.ts` | route parse/serialize round-trip incl. custom `from`/`to` pair; canonical parameter order; half-pair fallback; derived view model: active section, active tab, capable tabs, scope, range, entity, notice; **one render when both `hashchange` and `popstate` fire; no focus effect on range-only change**; capability filtering; hash carries no hostile text; per-table state isolation; unsupported tab coercion |
+| Navigation | `tests/unit/route.test.ts` (new, pure) + document-structure assertions in `tests/unit/html-bundle.test.ts` | route parse/serialize round-trip incl. custom `from`/`to` pair; canonical parameter order; half-pair fallback; derived view model: active section, active tab, capable tabs, scope, range, entity, notice; **one render when both `hashchange` and `popstate` fire; no focus effect on range-only change**; capability filtering; hash carries no hostile text; per-table state isolation; unsupported tab coercion; **no Agent → Models navigation target (different usage domains)** |
 | Autocomplete | `tests/unit/command-completions.test.ts`, `tests/unit/command-completion-application.test.ts` | all §10.2 rows via the real provider, including quoted `--output` and cursor-mid-token; prior characters preserved byte-for-byte; options already present filtered; span scanner agrees with the parser tokenizer |
 | Compatibility/privacy | `tests/unit/integration-privacy.test.ts`, `tests/unit/uat-evidence.test.ts` | old reports without new fields; no prompt/output/path/args/result text; new diagnostics bounded; determinism byte-identity |
 
@@ -1330,9 +1424,13 @@ its own justification in the slice report.
 2. Switch to **Full session tree**; note appears only when the projections are
    identical.
 3. Select a **Custom** range; confirm validation, inclusive boundaries, and that
-   scope/tab/sidebar state is untouched.
+   scope/tab/sidebar state is untouched; then check a cross-midnight call (or the
+   cross-midnight fixture) in both adjacent single-day ranges and confirm the tool
+   usage sits on the call day while the error sits on the observation day.
 4. Open **Agents**; confirm `Child runs` ≠ `Agent tool activity`.
-5. Follow an Agent/model/parent reference; confirm range + scope survive.
+5. Follow an Agent → parent reference and confirm range + scope survive; confirm
+   that **no** Agent → Models link exists and that the child's model/thinking are
+   shown only as metadata in the agent detail.
 6. Scroll: confirm the sidebar active item and tab match the content.
 7. Open **Errors**; follow a Tool and an Agent reference.
 8. Press Back/Forward; confirm content **and** active styling restore.
@@ -1382,6 +1480,7 @@ aggregate or expose it; nothing about it is fabricated in the meantime.
 | Inventory invocation counts for commands/prompts | **Unsupported** | No counter evidence exists; skills have counters, commands do not. |
 | Live duration for historical sessions | **Unsupported** | Duration evidence is live-correlation only. |
 | Integration version when the producer publishes none | **Unsupported** | Rendered `Unavailable`, never `0`. |
+| Exact aggregate-row/detail reconciliation for ranges older than a session's retained dated window | **Unsupported (bounded projection)** | The per-session `usageByDate` window holds 366 dates; the omitted portion is reported as partial/`Known` with a truncation diagnostic, never reconstructed. |
 | Child usage completeness when some runs report none | **Known-only** | Shown as `Known … (n of m runs)`; never extrapolated. |
 
 ---
@@ -1416,7 +1515,7 @@ start before §3-§10 are settled, and it changes no contract.)
 | R4 | Agents summary counts child runs only; activity is a separate labelled block | Server-side distinct DTO fields already permit it | Two blocks instead of one |
 | R5 | Routing uses the hash (`#/…`), not `pushState` + path rewriting | Works from `file://`, offline, and inside a single generated document | Long URLs; hash-only deep links |
 | R6 | One range per view identity (current, history:aggregate, history:\<session\>, global) | Prevents a selected session inheriting the aggregate's range | More state in the route; slightly more parsing |
-| R7 | Error/tool → child linkage via `AgentRun.originToolId = "tool:" + message.toolCallId`, rendered as a one-to-many `Related child run(s)` list | The persisted `message.toolCallId` is the canonical id (the reducer builds `tool:<callId>` from it), and one result may publish several runs — a single-child attribution would be a guess | One extra optional field in the agent DTO; the error panel shows a list instead of one link |
+| R7 | Error/tool → child linkage via `AgentRun.evidenceToolId = "tool:" + message.toolCallId`, rendered as a one-to-many `Related child run(s)` list | The persisted `message.toolCallId` is the canonical id (the reducer builds `tool:<callId>` from it); the publishing result is not necessarily the launching call, and one result may publish several runs | One extra optional field in the agent DTO; the error panel shows a list instead of one link |
 | R8 | Section capabilities are computed server-side from the data contract | Single source of truth; no hand-maintained client matrix | Capability list must be updated with DTO changes |
 | R9 | Inventory is never range-filtered | It is environment state, not session activity | A user filtering by range still sees full inventory (labelled) |
 | R10 | `model`/`thinking` are exposed as optional, producer-validated fields | Real evidence exists for the pinned producer; absent elsewhere | Fields appear only for 0.59.0-shaped payloads |
@@ -1424,6 +1523,9 @@ start before §3-§10 are settled, and it changes no contract.)
 | R12 | A capped discovery makes `sessionRatio` `null` and forbids any percentage or `N / N` rendering | The workspace denominator is unknown; a ratio over the capped set would assert unmeasured coverage | The capped case shows counts instead of a percentage |
 | R13 | Inactive view ranges and inactive table settings are ephemeral caches, not deep-link state | The route must be the single authority; two sources of truth recreate the original active-state bug | Reopening a deep link resets other views' ranges/table settings to defaults |
 | R14 | Aggregate range membership requires at least one in-range observed record, not span overlap | Span intersection is not usage in the period | A session that brackets a range without activity inside it is excluded from that range's rows |
+| R15 | Range attribution is by **logical call** (§5.7): tool usage/cost on `Tool.timestamp`, tool errors on `ErrorRecord.timestamp`, child runs on `AgentRun.observedAt` | The two-rule alternative (attributing everything to result arrival) would make tool cost move between days whenever a result crosses midnight | A cross-midnight call splits its usage and its error across two days, by design |
+| R16 | Per-session `usageByDate` is capped at 366 dates, with `usageByDateTruncated` and a `Known` qualifier for older ranges | Keeps the aggregate bounded without ever faking completeness or zero | Ranges older than the retained window show partial/`Known` per-session figures rather than exact ones |
+| R17 | No Agent → Models navigation target, even when `AgentRun.model` matches a parent-session model | Native parent generations and child-run usage are different domains; a name match is not evidence of identity | Child model/thinking stay agent-detail metadata; a future child-model breakdown can add a real target |
 
 ---
 
