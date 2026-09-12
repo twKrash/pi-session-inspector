@@ -1,7 +1,6 @@
 import type { Scope, SessionEntry } from "../core/events.ts";
-
-const TRACKING_START_TYPE = "session-inspector:tracking-start";
-const TRACKING_START_SCHEMA_VERSION = 1;
+import { buildGraphNodes } from "./graph.ts";
+import { isTrackingMarkerRecord, resolveScope } from "./scope.ts";
 
 /** Selects entries after tracking began, preserving Pi's native tree positions. */
 export function selectScope(
@@ -9,24 +8,21 @@ export function selectScope(
   leafId: string | null,
   scope: Scope,
 ): SessionEntry[] {
-  const boundary = entries.findIndex(isTrackingStartMarker);
-  const postBoundaryEntries =
-    boundary === -1 ? entries : entries.slice(boundary + 1);
-
-  if (scope === "tree") return [...postBoundaryEntries];
-  if (leafId === null) return [];
+  const resolution = resolveScope(
+    entries,
+    buildGraphNodes(entries),
+    leafId,
+    scope,
+  );
+  if (resolution.state === "unavailable") return [];
 
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  const postBoundarySet = new Set(postBoundaryEntries);
-  const path: SessionEntry[] = [];
-  const visited = new Set<string>();
-  let next = byId.get(leafId);
-  while (next && !visited.has(next.id)) {
-    if (postBoundarySet.has(next)) path.push(next);
-    visited.add(next.id);
-    next = next.parentId === null ? undefined : byId.get(next.parentId);
+  const selected: SessionEntry[] = [];
+  for (const id of resolution.entryIds) {
+    const entry = byId.get(id);
+    if (entry !== undefined) selected.push(entry);
   }
-  return path.reverse();
+  return selected;
 }
 
 export function hasTrackingStartMarker(
@@ -36,14 +32,5 @@ export function hasTrackingStartMarker(
 }
 
 function isTrackingStartMarker(entry: SessionEntry): boolean {
-  return (
-    entry.type === "custom" &&
-    entry.customType === TRACKING_START_TYPE &&
-    isRecord(entry.data) &&
-    entry.data.schemaVersion === TRACKING_START_SCHEMA_VERSION
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return isTrackingMarkerRecord(entry);
 }

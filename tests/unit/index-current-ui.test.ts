@@ -93,6 +93,7 @@ test("projects persisted Pi-entry integration evidence in the production loader"
     file,
     [
       '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"custom","id":"tracking-marker","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
       '{"type":"custom","id":"context-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"ctx_status","data":{"schemaVersion":1,"active":true}}',
     ].join("\n"),
   );

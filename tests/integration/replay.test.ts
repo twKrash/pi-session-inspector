@@ -121,13 +121,13 @@ test("uses the earliest marker for tree scope despite later duplicates", () => {
 
 test("ignores malformed tracking markers", () => {
   const session = parseSessionJsonl(trackingBoundaryFixture);
+  // Only the malformed marker is present, so no valid boundary exists. The
+  // scope is unavailable rather than falling back to every entry.
   const malformedOnlyEntries = session.entries.slice(0, 4);
 
   assert.deepEqual(
-    selectScope(malformedOnlyEntries, "pre-boundary", "tree").map(
-      (entry) => entry.id,
-    ),
-    ["old-root", "old-parent", "malformed-marker", "pre-boundary"],
+    selectScope(malformedOnlyEntries, "pre-boundary", "tree"),
+    [],
   );
 });
 
