@@ -76,6 +76,25 @@ test("loads a durable current session report and leaves ephemeral sessions unava
     undefined,
   );
 
+  // A marker whose id cannot anchor a boundary (empty here, an over-bound id
+  // would resolve identically) must make the report unavailable, not all-zero.
+  await writeFile(
+    file,
+    [
+      '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"custom","id":"","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
+      '{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","provider":"acme","model":"alpha","usage":{"totalTokens":7,"cost":{"total":0.01}}}}',
+    ].join("\n"),
+  );
+  assert.equal(
+    await loadCurrentSessionReport(file, "active", { leafId: "entry-1" }),
+    undefined,
+  );
+  assert.equal(
+    await loadCurrentSessionReport(file, "tree", { leafId: null }),
+    undefined,
+  );
+
   await writeFile(file, '{"type":"message"}\n');
   assert.equal(
     await loadCurrentSessionReport(file, "active", { leafId: null }),
@@ -137,6 +156,7 @@ test("renders an unknown known-integration version as Unsupported in the product
     file,
     [
       '{"type":"session","version":3,"id":"fixture-session"}',
+      '{"type":"custom","id":"tracking-marker","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
       '{"type":"message","id":"rtk-1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"details":{"rtkCompaction":{"schemaVersion":99,"sourceChars":100,"compactedChars":50,"sourceLines":10,"compactedLines":5,"truncated":false}}}}',
     ].join("\n"),
   );
@@ -426,6 +446,7 @@ test("opens /ledger directly on the lazy Ledger tab", async () => {
   );
   const handlerRef: { current?: CommandHandler } = {};
   registerCommand(handlerRef);
+  let ledgerRendered: string[] | undefined;
   assert.ok(handlerRef.current);
   await handlerRef.current("tui ledger", {
     mode: "tui",
@@ -439,14 +460,14 @@ test("opens /ledger directly on the lazy Ledger tab", async () => {
           undefined as never,
           () => {},
         );
-        assert.ok(
-          component
-            .render(120)
-            .some((line) => line.includes("Ledger events: 1")),
-        );
+        ledgerRendered = component.render(120);
       },
     },
   } as unknown as ExtensionCommandContext);
+
+  // Asserted after the handler resolves so a throw inside the swallowed
+  // `custom` callback can no longer make this test pass vacuously.
+  assert.ok(ledgerRendered?.some((line) => line.includes("Ledger events: 1")));
 });
 
 test("rejects non-current command arguments without opening the current view", async () => {
