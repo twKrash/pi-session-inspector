@@ -311,7 +311,7 @@ test("json current, history and global export deterministically and never open",
   }
 });
 
-test("a report load refreshes the inventory snapshot only when the producer changed", async () => {
+test("a report load reuses unchanged inventory payload but advances its observation time", async () => {
   const commands: unknown[] = [
     {
       name: "ponytail",
@@ -344,23 +344,37 @@ test("a report load refreshes the inventory snapshot only when the producer chan
     const output = join(harness.directory, "report.json");
     const names = (bytes: string) =>
       (JSON.parse(bytes).commands as { name: string }[]).map((row) => row.name);
+    // Payload identity excludes the observation time, which is expected to
+    // advance on every successful observation.
+    const payload = (bytes: string): unknown => {
+      const parsed = JSON.parse(bytes) as Record<string, unknown>;
+      delete parsed.observedAt;
+      return parsed;
+    };
     const run = () =>
       harness.handler()(
         `json --scope tree --output ${JSON.stringify(output)}`,
         harness.context({ mode: "interactive" }),
       );
 
-    // The first report load captures the current producer rows.
+    // The first report load captures the current producer rows and stamps the
+    // successful observation time.
     await run();
     const firstBytes = await readFile(snapshotPath, "utf8");
     assert.deepEqual(names(firstBytes), ["ponytail"]);
-    const first = await stat(snapshotPath);
+    const firstObservedAt = JSON.parse(firstBytes).observedAt as string;
+    assert.equal(typeof firstObservedAt, "string");
 
-    // An unchanged producer hashes equal: the next load writes nothing.
+    // An unchanged producer reuses the payload bytes, but a byte-equivalent
+    // observation must still advance `observedAt` (spec §14.2.1).
     await sleep(20);
     await run();
-    assert.equal(await readFile(snapshotPath, "utf8"), firstBytes);
-    assert.equal((await stat(snapshotPath)).mtimeMs, first.mtimeMs);
+    const secondBytes = await readFile(snapshotPath, "utf8");
+    assert.deepEqual(payload(secondBytes), payload(firstBytes));
+    const secondObservedAt = JSON.parse(secondBytes).observedAt as string;
+    assert.notEqual(secondObservedAt, firstObservedAt);
+    assert.ok(Date.parse(secondObservedAt) >= Date.parse(firstObservedAt));
+    const second = await stat(snapshotPath);
 
     // A late runtime registration changes the hash: one atomic rewrite.
     commands.push({
@@ -371,10 +385,10 @@ test("a report load refreshes the inventory snapshot only when the producer chan
     await sleep(20);
     await run();
     const changedBytes = await readFile(snapshotPath, "utf8");
-    assert.notEqual(changedBytes, firstBytes);
+    assert.notEqual(payload(changedBytes), payload(secondBytes));
     assert.deepEqual(names(changedBytes), ["ponytail", "caveman"]);
     const changed = await stat(snapshotPath);
-    assert.ok(changed.mtimeMs > first.mtimeMs);
+    assert.ok(changed.mtimeMs >= second.mtimeMs);
 
     // The refreshed snapshot feeds presence and the report injection...
     const report = JSON.parse(await readFile(output, "utf8"));
@@ -389,19 +403,21 @@ test("a report load refreshes the inventory snapshot only when the producer chan
       "present",
     );
 
-    // ...and the next identical load is a no-write again, so the change
-    // produced exactly one rewrite.
+    // ...and the next identical payload is reused while its observation time
+    // advances, so the payload changed exactly once.
     await sleep(20);
     await run();
-    assert.equal(await readFile(snapshotPath, "utf8"), changedBytes);
-    assert.equal((await stat(snapshotPath)).mtimeMs, changed.mtimeMs);
+    const finalBytes = await readFile(snapshotPath, "utf8");
+    assert.deepEqual(payload(finalBytes), payload(changedBytes));
+    assert.deepEqual(names(finalBytes), ["ponytail", "caveman"]);
 
     // An unreadable producer keeps the last readable snapshot: no wipe, no
     // fabricated zero inventory, and the report still sees the last snapshot.
     failing = true;
     await run();
-    assert.equal(await readFile(snapshotPath, "utf8"), changedBytes);
-    assert.deepEqual(names(changedBytes), ["ponytail", "caveman"]);
+    const failedBytes = await readFile(snapshotPath, "utf8");
+    assert.deepEqual(payload(failedBytes), payload(changedBytes));
+    assert.deepEqual(names(failedBytes), ["ponytail", "caveman"]);
   } finally {
     await harness.cleanup();
   }

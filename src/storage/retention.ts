@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { parseWalRecord } from "./recovery.js";
 import { readCheckpoint, writeCheckpoint } from "./checkpoint.js";
 import { isMaintenanceLeaseHeld, type MaintenanceLease } from "./lease.js";
+import { readInventorySnapshot } from "./inventory-snapshot.ts";
 
 const DATE_SEGMENT = /^(\d{4}-\d{2}-\d{2})(?:\.\d{4})?\.jsonl$/;
 const MAX_WAL_LINE_BYTES = 64 * 1024;
@@ -85,9 +86,12 @@ export async function pruneExpiredWalSegments({
 }
 
 /**
- * Deletes `inventory.json` only when it is a regular file whose mtime date is
- * strictly before the cutoff, re-verifying size/mtime/dev/ino immediately
- * before unlink so a concurrent refresh aborts the deletion.
+ * Deletes `inventory.json` only when its latest successful observation
+ * (`observedAt`) is strictly before the cutoff day, re-verifying
+ * size/mtime/dev/ino immediately before unlink so a concurrent refresh aborts
+ * the deletion. mtime is never a freshness or retention input. A missing or
+ * invalid `observedAt` carries no freshness evidence, so the snapshot is kept
+ * rather than guessed at.
  */
 async function pruneExpiredInventory({
   directory,
@@ -102,7 +106,10 @@ async function pruneExpiredInventory({
   try {
     const before = await stat(path);
     if (!before.isFile()) return 0;
-    if (before.mtime.toISOString().slice(0, 10) >= cutoff) return 0;
+    const observedAt = (await readInventorySnapshot(directory))?.observedAt;
+    if (observedAt === undefined) return 0;
+    const observedDay = observationDay(observedAt);
+    if (observedDay === undefined || observedDay >= cutoff) return 0;
     const after = await stat(path);
     if (
       after.size !== before.size ||
@@ -116,6 +123,13 @@ async function pruneExpiredInventory({
   } catch {
     return 0;
   }
+}
+
+/** UTC calendar day of a validated observation instant. */
+function observationDay(observedAt: string): string | undefined {
+  const milliseconds = Date.parse(observedAt);
+  if (Number.isNaN(milliseconds)) return undefined;
+  return new Date(milliseconds).toISOString().slice(0, 10);
 }
 
 async function pruneWriter({

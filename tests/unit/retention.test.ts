@@ -1351,18 +1351,25 @@ test("cold-detail notice reaches JSON and HTML while native data stays available
   }
 });
 
-test("expires an aged inventory snapshot while keeping a current one and persists its counts", async () => {
-  const { maintainSession } = await import("../../src/storage/maintenance.ts");
-  const root = await mkdtemp(join(tmpdir(), "inspector-retention-"));
-  const directory = join(root, "sessions", "session-1");
-  const source = join(root, "pi.jsonl");
-  const snapshot = JSON.stringify({
+function inventorySnapshot(observedAt?: string): string {
+  return JSON.stringify({
     schemaVersion: 1,
+    ...(observedAt === undefined ? {} : { observedAt }),
     commands: [],
     skills: [],
     resources: [],
     toolSources: {},
   });
+}
+
+test("expires an aged inventory snapshot while keeping a current one and persists its counts", async () => {
+  const { maintainSession } = await import("../../src/storage/maintenance.ts");
+  const root = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  const directory = join(root, "sessions", "session-1");
+  const source = join(root, "pi.jsonl");
+  // `directoryNow` is 2026-09-21, so the cutoff day is 2026-09-08.
+  const agedSnapshot = inventorySnapshot("2026-09-07T12:00:00.000Z");
+  const currentSnapshot = inventorySnapshot("2026-09-20T12:00:00.000Z");
   try {
     await mkdir(directory, { recursive: true });
     await writeFile(
@@ -1374,8 +1381,10 @@ test("expires an aged inventory snapshot while keeping a current one and persist
       ].join("\n"),
     );
     const inventory = join(directory, "inventory.json");
-    await writeFile(inventory, snapshot);
-    await setModifiedTime(inventory, "2026-09-07T12:00:00.000Z");
+    // The observation is aged but the mtime is deliberately recent: only
+    // `observedAt` may authorize expiry.
+    await writeFile(inventory, agedSnapshot);
+    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
 
     assert.equal(
       (
@@ -1396,9 +1405,10 @@ test("expires an aged inventory snapshot while keeping a current one and persist
       { commands: 3, skills: 1 },
     );
 
-    // A snapshot inside the retention window survives the identical pass.
-    await writeFile(inventory, snapshot);
-    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
+    // A snapshot whose observation is inside the retention window survives the
+    // identical pass even with an aged mtime.
+    await writeFile(inventory, currentSnapshot);
+    await setModifiedTime(inventory, "2026-09-01T12:00:00.000Z");
     assert.equal(
       (
         await maintainSession({
@@ -1415,7 +1425,8 @@ test("expires an aged inventory snapshot while keeping a current one and persist
     assert.equal((await readdir(directory)).includes("inventory.json"), true);
 
     // The deletion is returned in the existing maintenance count.
-    await setModifiedTime(inventory, "2026-09-07T12:00:00.000Z");
+    await writeFile(inventory, agedSnapshot);
+    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
     const lease = await acquireLease(directory);
     assert.equal(
       await pruneExpiredWalSegments({
@@ -1436,11 +1447,12 @@ test("expires an aged inventory snapshot even when no checkpoint exists", async 
   const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
   try {
     const inventory = join(directory, "inventory.json");
-    await writeFile(inventory, "{}");
     const lease = await acquireLease(directory);
 
     // No checkpoint: the inventory prune must still run and expire the file.
-    await setModifiedTime(inventory, "2026-09-07T12:00:00.000Z");
+    // The recent mtime proves retention reads `observedAt`, not mtime.
+    await writeFile(inventory, inventorySnapshot("2026-09-07T12:00:00.000Z"));
+    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
     assert.equal(
       await pruneExpiredWalSegments({
         directory,
@@ -1452,9 +1464,10 @@ test("expires an aged inventory snapshot even when no checkpoint exists", async 
     );
     assert.equal((await readdir(directory)).includes("inventory.json"), false);
 
-    // A snapshot inside the retention window survives the identical pass.
-    await writeFile(inventory, "{}");
-    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
+    // A snapshot inside the retention window survives the identical pass even
+    // with an aged mtime.
+    await writeFile(inventory, inventorySnapshot("2026-09-20T12:00:00.000Z"));
+    await setModifiedTime(inventory, "2026-09-01T12:00:00.000Z");
     assert.equal(
       await pruneExpiredWalSegments({
         directory,
@@ -1465,6 +1478,94 @@ test("expires an aged inventory snapshot even when no checkpoint exists", async 
       0,
     );
     assert.equal((await readdir(directory)).includes("inventory.json"), true);
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("keeps an inventory snapshot with no observedAt regardless of mtime", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const inventory = join(directory, "inventory.json");
+    // A legacy snapshot carries no freshness evidence; retention keeps it
+    // rather than guessing from mtime.
+    await writeFile(inventory, inventorySnapshot());
+    await setModifiedTime(inventory, "2026-09-01T12:00:00.000Z");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      0,
+    );
+    assert.equal((await readdir(directory)).includes("inventory.json"), true);
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("keeps an inventory snapshot whose observedAt is invalid", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const inventory = join(directory, "inventory.json");
+    await writeFile(inventory, inventorySnapshot("not-a-time"));
+    await setModifiedTime(inventory, "2026-09-01T12:00:00.000Z");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      0,
+    );
+    assert.equal((await readdir(directory)).includes("inventory.json"), true);
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("a retention cutoff between two observations keeps the snapshot", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const inventory = join(directory, "inventory.json");
+    // Cutoff day 2026-09-12; the latest successful observation (T2) is that
+    // same day, so it is not strictly before the cutoff and must be kept even
+    // though the file mtime is aged.
+    const now = () => new Date("2026-09-25T12:00:00.000Z");
+    await writeFile(inventory, inventorySnapshot("2026-09-12T11:00:00.000Z"));
+    await setModifiedTime(inventory, "2026-09-01T12:00:00.000Z");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now,
+        validate: async () => true,
+      }),
+      0,
+    );
+    assert.equal((await readdir(directory)).includes("inventory.json"), true);
+
+    // The day before the cutoff is strictly before it and expires.
+    await writeFile(inventory, inventorySnapshot("2026-09-11T11:00:00.000Z"));
+    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now,
+        validate: async () => true,
+      }),
+      1,
+    );
     await lease.release();
   } finally {
     await rm(directory, { force: true, recursive: true });
