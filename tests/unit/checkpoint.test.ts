@@ -281,6 +281,159 @@ test("accepts validated folded aggregates and rejects unsafe ones", async () => 
   }
 });
 
+test("resource counts extend in place and evidence is a single sibling", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-"));
+  try {
+    const lease = await acquireLease(directory);
+    const withEvidence: Checkpoint = {
+      schemaVersion: 1,
+      cursors: { pi: sourceCursor(0), wal: {} },
+      aggregates: {
+        totalTokens: 0,
+        totalCost: 0,
+        generations: 0,
+        tools: 0,
+        compactions: 0,
+        resourceCounts: {
+          commands: 3,
+          skills: 2,
+          resources: 1,
+          toolSources: 4,
+          observedAt: "2026-09-12T10:00:00.000Z",
+        },
+      },
+      evidence: {
+        checkpointedAt: "2026-09-12T10:00:01.000Z",
+        detailCoverage: {
+          walDetailExpiredBefore: "2026-09-01T00:00:00.000Z",
+          inventoryDetailExpiredAt: "2026-09-02T00:00:00.000Z",
+        },
+        usageCoverage: {
+          generations: "complete",
+          toolResults: "partial",
+          compactions: "unavailable",
+          branchSummaries: "partial",
+        },
+      },
+    };
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: withEvidence, lease }),
+      true,
+    );
+
+    const read = await readCheckpoint({ directory });
+    assert.deepEqual(
+      read?.aggregates.resourceCounts,
+      withEvidence.aggregates.resourceCounts,
+    );
+    assert.equal(read?.evidence?.checkpointedAt, "2026-09-12T10:00:01.000Z");
+    assert.deepEqual(
+      read?.evidence?.detailCoverage,
+      withEvidence.evidence?.detailCoverage,
+    );
+    assert.deepEqual(
+      read?.evidence?.usageCoverage,
+      withEvidence.evidence?.usageCoverage,
+    );
+    // Exactly one physical resource-count location and one metadata object.
+    assert.equal("evidence" in (read?.aggregates ?? {}), false);
+    assert.equal("resourceCounts" in (read?.evidence ?? {}), false);
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("legacy checkpoint without evidence still parses", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-"));
+  try {
+    const legacy = {
+      schemaVersion: 1,
+      cursors: { pi: sourceCursor(1), wal: {} },
+      aggregates: {
+        totalTokens: 0,
+        totalCost: 0,
+        generations: 0,
+        tools: 0,
+        compactions: 0,
+        resourceCounts: { commands: 1, skills: 1 },
+      },
+    };
+    await writeFile(join(directory, "checkpoint.json"), JSON.stringify(legacy));
+    const read = await readCheckpoint({ directory });
+    assert.equal(read?.evidence, undefined);
+    assert.deepEqual(read?.aggregates.resourceCounts, {
+      commands: 1,
+      skills: 1,
+    });
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("rejects present-but-invalid evidence and extended resource counts", async () => {
+  for (const aggregates of [
+    { resourceCounts: { commands: 1, skills: 1, resources: -1 } },
+    { resourceCounts: { commands: 1, skills: 1, toolSources: 1.5 } },
+    { resourceCounts: { commands: 1, skills: 1, observedAt: "whenever" } },
+    { resourceCounts: { commands: 1, skills: 1, observedAt: 42 } },
+  ]) {
+    await assertCheckpointRejected({ aggregates });
+  }
+
+  for (const evidence of [
+    { checkpointedAt: "not-a-time" },
+    { checkpointedAt: 42 },
+    { detailCoverage: { walDetailExpiredBefore: 42 } },
+    { detailCoverage: { inventoryDetailExpiredAt: "whenever" } },
+    {
+      usageCoverage: {
+        generations: "guessed",
+        toolResults: "complete",
+        compactions: "complete",
+        branchSummaries: "complete",
+      },
+    },
+    { usageCoverage: { generations: "complete" } },
+  ]) {
+    await assertCheckpointRejected({ evidence });
+  }
+});
+
+async function assertCheckpointRejected({
+  aggregates,
+  evidence,
+}: {
+  aggregates?: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
+}): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-bad-"));
+  const lease = await acquireLease(directory);
+  try {
+    const candidate = {
+      schemaVersion: 1,
+      cursors: { pi: sourceCursor(1), wal: {} },
+      aggregates: {
+        totalTokens: 0,
+        totalCost: 0,
+        generations: 0,
+        tools: 0,
+        compactions: 0,
+        ...aggregates,
+      },
+      ...(evidence === undefined ? {} : { evidence }),
+    };
+    assert.equal(
+      await writeCheckpoint({ directory, lease, checkpoint: candidate }),
+      false,
+      `expected rejection for ${JSON.stringify({ aggregates, evidence })}`,
+    );
+  } finally {
+    await lease.release();
+    await rm(directory, { force: true, recursive: true });
+  }
+}
+
 test("reads legacy and folded checkpoint fixtures", async () => {
   const cases = [
     {

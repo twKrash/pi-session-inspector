@@ -316,6 +316,63 @@ test("requires active tracking marker evidence before sealing or pruning", async
   }
 });
 
+test("stamps checkpoint materialization and usage coverage with a bounded resource observation time", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  try {
+    const sessionId = "session-1";
+    const sessionFile = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(sessionFile, `${trackingMarkerLine}\n`);
+
+    assert.equal(
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile,
+          writerId: "m1",
+          inventoryCounts: {
+            commands: 3,
+            skills: 1,
+            resources: 2,
+            toolSources: 4,
+            observedAt: "2026-09-12T10:00:00.000Z",
+          },
+          now: () => new Date("2026-09-12T10:00:05.000Z"),
+        })
+      ).status,
+      "available",
+    );
+
+    const checkpoint = await readCheckpoint({ directory });
+    assert.equal(
+      checkpoint?.evidence?.checkpointedAt,
+      "2026-09-12T10:00:05.000Z",
+    );
+    assert.deepEqual(checkpoint?.evidence?.usageCoverage, {
+      generations: "complete",
+      toolResults: "complete",
+      compactions: "complete",
+      branchSummaries: "complete",
+    });
+    assert.deepEqual(checkpoint?.aggregates.resourceCounts, {
+      commands: 3,
+      skills: 1,
+      resources: 2,
+      toolSources: 4,
+      observedAt: "2026-09-12T10:00:00.000Z",
+    });
+    // The inventory observation time is never the checkpoint write time.
+    assert.notEqual(
+      checkpoint?.aggregates.resourceCounts?.observedAt,
+      checkpoint?.evidence?.checkpointedAt,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("maintenance rereads Pi source and WAL under its lease before publishing a checkpoint", async () => {
   const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
   try {
@@ -342,6 +399,7 @@ test("maintenance rereads Pi source and WAL under its lease before publishing a 
           sessionId,
           sessionFile: source,
           writerId: "maintenance-1",
+          now: () => new Date("2026-09-07T12:00:00.000Z"),
         })
       ).status,
       "available",
@@ -373,6 +431,15 @@ test("maintenance rereads Pi source and WAL under its lease before publishing a 
           generations: 1,
           tools: 0,
           compactions: 0,
+        },
+        evidence: {
+          checkpointedAt: "2026-09-07T12:00:00.000Z",
+          usageCoverage: {
+            generations: "complete",
+            toolResults: "complete",
+            compactions: "complete",
+            branchSummaries: "complete",
+          },
         },
       },
     );

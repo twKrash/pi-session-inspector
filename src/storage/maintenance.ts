@@ -14,6 +14,7 @@ import { acquireMaintenanceLease } from "./lease.js";
 import { recoverSession, type RecoveredRunningRecord } from "./recovery.js";
 import {
   type Checkpoint,
+  type CheckpointResourceCounts,
   readCheckpoint,
   writeCheckpoint,
 } from "./checkpoint.js";
@@ -50,7 +51,7 @@ export async function maintainSession({
   sessionFile: string;
   writerId: string;
   /** Current sanitized inventory counts; omitted preserves any stored value. */
-  inventoryCounts?: { commands: number; skills: number };
+  inventoryCounts?: CheckpointResourceCounts;
   now?: () => Date;
 }): Promise<MaintenanceResult> {
   const directory = join(root, "sessions", sessionId);
@@ -119,12 +120,11 @@ export async function maintainSession({
           ...foldedAggregateFields(folded),
           ...(resourceCounts === undefined
             ? {}
-            : {
-                resourceCounts: {
-                  commands: resourceCounts.commands,
-                  skills: resourceCounts.skills,
-                },
-              }),
+            : { resourceCounts: serializeResourceCounts(resourceCounts) }),
+        },
+        evidence: {
+          checkpointedAt: now().toISOString(),
+          usageCoverage: usageCoverageFromReduced(reduced),
         },
       },
     });
@@ -151,6 +151,46 @@ export async function maintainSession({
 
 function unavailableMaintenance(): MaintenanceResult {
   return { status: "unavailable", durationEvidence: "unavailable" };
+}
+
+/**
+ * Copies only the keys the caller actually observed. `observedAt` is the
+ * inventory snapshot's observation time and is never fabricated from the
+ * checkpoint write time; an absent optional key stays absent.
+ */
+function serializeResourceCounts(
+  counts: CheckpointResourceCounts,
+): CheckpointResourceCounts {
+  return {
+    commands: counts.commands,
+    skills: counts.skills,
+    ...(counts.resources === undefined ? {} : { resources: counts.resources }),
+    ...(counts.toolSources === undefined
+      ? {}
+      : { toolSources: counts.toolSources }),
+    ...(counts.observedAt === undefined
+      ? {}
+      : { observedAt: counts.observedAt }),
+  };
+}
+
+/**
+ * Pi JSONL replay over tree scope is authoritative and complete for the four
+ * native usage buckets (spec §10.2, §14.1 rule 7), so a successful reduction
+ * saw every generation, tool result, compaction, and branch summary. Partiality
+ * from missing per-owner usage is a richer L1 concern and never fabricated
+ * here.
+ */
+function usageCoverageFromReduced(
+  reduced: ReturnType<typeof reduceEntries>,
+): NonNullable<Checkpoint["evidence"]>["usageCoverage"] {
+  void reduced;
+  return {
+    generations: "complete",
+    toolResults: "complete",
+    compactions: "complete",
+    branchSummaries: "complete",
+  };
 }
 
 /**

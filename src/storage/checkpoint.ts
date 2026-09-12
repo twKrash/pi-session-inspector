@@ -21,11 +21,52 @@ const MAX_TOTAL_COST = Number.MAX_SAFE_INTEGER;
 const MAX_AGGREGATE_COUNT = Number.MAX_SAFE_INTEGER;
 const ASCII_TOKEN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
+// Bounded ISO-8601 instant; observation/materialization times are never
+// free-form producer strings.
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const MAX_TIMESTAMP_LENGTH = 35;
+const USAGE_COVERAGE_STATES = new Set(["complete", "partial", "unavailable"]);
 
 export type PiSourceCursor = {
   lineCount: number;
   /** SHA-256 of complete Pi JSONL lines; raw Pi content is never persisted. */
   revision: string;
+};
+
+/** Bounded usage-bucket coverage states carried by `Checkpoint.evidence`. */
+export type UsageCoverageState = "complete" | "partial" | "unavailable";
+
+/**
+ * Extended in place; never duplicated elsewhere. `commands`/`skills` stay
+ * required when present; `resources`/`toolSources`/`observedAt` are additive.
+ * `observedAt` is the inventory snapshot's observation time, never the
+ * checkpoint write time.
+ */
+export type CheckpointResourceCounts = {
+  commands: number;
+  skills: number;
+  resources?: number;
+  toolSources?: number;
+  observedAt?: string;
+};
+
+/**
+ * The single additive metadata sibling on a checkpoint. No second metadata
+ * object exists; `resourceCounts` is never mirrored into it.
+ */
+export type CheckpointEvidence = {
+  checkpointedAt?: string;
+  detailCoverage?: {
+    walDetailExpiredBefore?: string;
+    inventoryDetailExpiredAt?: string;
+  };
+  usageCoverage?: {
+    generations: UsageCoverageState;
+    toolResults: UsageCoverageState;
+    compactions: UsageCoverageState;
+    branchSummaries: UsageCoverageState;
+  };
 };
 
 export type Checkpoint = {
@@ -49,11 +90,13 @@ export type Checkpoint = {
     skillOverflowInvocations?: number;
     presence?: { permission?: boolean };
     /** Owned by inventory maintenance; carried across counter folds unchanged. */
-    resourceCounts?: { commands: number; skills: number };
+    resourceCounts?: CheckpointResourceCounts;
   };
   /** Cursors whose analyzer-owned detail was safely expired after sealing. */
   sealedWal?: Record<string, number>;
   sealingVersion?: 1;
+  /** Single additive metadata sibling; no other metadata object exists. */
+  evidence?: CheckpointEvidence;
 };
 
 /**
@@ -230,6 +273,15 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
       return undefined;
     }
 
+    // The single additive metadata sibling. Absent keys stay omitted; a
+    // present-but-invalid declared key rejects the whole checkpoint so health
+    // is never reported from a value that cannot be trusted.
+    const evidence =
+      value.evidence === undefined ? undefined : parseEvidence(value.evidence);
+    if (value.evidence !== undefined && evidence === undefined) {
+      return undefined;
+    }
+
     return {
       schemaVersion: 1,
       cursors: {
@@ -254,6 +306,7 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
       },
       ...(sealedWal === undefined ? {} : { sealedWal }),
       ...(value.sealingVersion === 1 ? { sealingVersion: 1 } : {}),
+      ...(evidence === undefined ? {} : { evidence }),
     };
   } catch {
     return undefined;
@@ -317,7 +370,7 @@ function parsePresence(value: unknown): { permission?: boolean } | undefined {
 
 function parseResourceCounts(
   value: unknown,
-): { commands: number; skills: number } | undefined {
+): CheckpointResourceCounts | undefined {
   if (!isPlainRecord(value) || !hasRequiredKeys(value, ["commands", "skills"]))
     return undefined;
   if (
@@ -325,7 +378,114 @@ function parseResourceCounts(
     !isSafeCount(value.skills, MAX_FOLDED_COUNT)
   )
     return undefined;
-  return { commands: value.commands, skills: value.skills };
+  // Additive optional keys: absent is omitted, present-but-invalid rejects.
+  const resources = value.resources;
+  const toolSources = value.toolSources;
+  const observedAt = value.observedAt;
+  if (
+    (resources !== undefined && !isSafeCount(resources, MAX_FOLDED_COUNT)) ||
+    (toolSources !== undefined &&
+      !isSafeCount(toolSources, MAX_FOLDED_COUNT)) ||
+    (observedAt !== undefined && !isBoundedTimestamp(observedAt))
+  ) {
+    return undefined;
+  }
+  return {
+    commands: value.commands,
+    skills: value.skills,
+    ...(resources === undefined ? {} : { resources }),
+    ...(toolSources === undefined ? {} : { toolSources }),
+    ...(observedAt === undefined ? {} : { observedAt }),
+  };
+}
+
+/**
+ * Reconstructs only the declared additive evidence keys. Unknown keys are
+ * ignored (readers tolerate future additions); a declared key with an invalid
+ * value rejects the checkpoint.
+ */
+function parseEvidence(value: unknown): CheckpointEvidence | undefined {
+  if (!isPlainRecord(value)) return undefined;
+
+  const checkpointedAt = value.checkpointedAt;
+  if (checkpointedAt !== undefined && !isBoundedTimestamp(checkpointedAt)) {
+    return undefined;
+  }
+
+  let detailCoverage: CheckpointEvidence["detailCoverage"];
+  if (value.detailCoverage !== undefined) {
+    if (!isPlainRecord(value.detailCoverage)) return undefined;
+    const walDetailExpiredBefore = value.detailCoverage.walDetailExpiredBefore;
+    const inventoryDetailExpiredAt =
+      value.detailCoverage.inventoryDetailExpiredAt;
+    if (
+      (walDetailExpiredBefore !== undefined &&
+        !isBoundedTimestamp(walDetailExpiredBefore)) ||
+      (inventoryDetailExpiredAt !== undefined &&
+        !isBoundedTimestamp(inventoryDetailExpiredAt))
+    ) {
+      return undefined;
+    }
+    detailCoverage = {
+      ...(walDetailExpiredBefore === undefined
+        ? {}
+        : { walDetailExpiredBefore }),
+      ...(inventoryDetailExpiredAt === undefined
+        ? {}
+        : { inventoryDetailExpiredAt }),
+    };
+  }
+
+  let usageCoverage: CheckpointEvidence["usageCoverage"];
+  if (value.usageCoverage !== undefined) {
+    if (
+      !isPlainRecord(value.usageCoverage) ||
+      !hasRequiredKeys(value.usageCoverage, [
+        "generations",
+        "toolResults",
+        "compactions",
+        "branchSummaries",
+      ])
+    ) {
+      return undefined;
+    }
+    const { generations, toolResults, compactions, branchSummaries } =
+      value.usageCoverage;
+    if (
+      !isUsageCoverageState(generations) ||
+      !isUsageCoverageState(toolResults) ||
+      !isUsageCoverageState(compactions) ||
+      !isUsageCoverageState(branchSummaries)
+    ) {
+      return undefined;
+    }
+    usageCoverage = {
+      generations,
+      toolResults,
+      compactions,
+      branchSummaries,
+    };
+  }
+
+  return {
+    ...(checkpointedAt === undefined ? {} : { checkpointedAt }),
+    ...(detailCoverage === undefined ? {} : { detailCoverage }),
+    ...(usageCoverage === undefined ? {} : { usageCoverage }),
+  };
+}
+
+function isBoundedTimestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_TIMESTAMP_LENGTH &&
+    ISO_INSTANT.test(value) &&
+    !Number.isNaN(Date.parse(value))
+  );
+}
+
+function isUsageCoverageState(value: unknown): value is UsageCoverageState {
+  return typeof value === "string" && USAGE_COVERAGE_STATES.has(value);
 }
 
 function isCounterKey(value: string): boolean {
