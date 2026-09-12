@@ -141,6 +141,13 @@ for the pinned producer, and duration does **not**. `outputState`, `exitCode`
 and `processSignal` give a bounded, structured failure *classification* (not a
 free-text reason). These are projection changes, not new persistence.
 
+Provenance and cardinality (verified in `src/integrations/subagents.ts`): the
+result → run join is keyed by the **persisted tool-result `message.toolCallId`**
+(`collectResult`), which is the same id the reducer turns into `tool:<callId>`.
+One tool result may publish **several** child runs (`details.results[]` and
+`details.completions[]` are both iterated), so tool → child is **one-to-many**;
+the DTO exposes no field that could imply a unique child.
+
 ### 1.7 Navigation
 
 - The client holds one mutable `state` object
@@ -195,14 +202,14 @@ a mode, a target, or an option.
 
 | # | Requested change | Class | Notes |
 | --- | --- | --- | --- |
-| A1 | Coverage DTO (discovered/available/unavailable/ratio/reasons) | deterministic report derivation | `discoverHistory` + `scanHistory` already compute availability and diagnostics; only per-session reasons and assembly are new |
+| A1 | Coverage DTO (inspected/available/unavailable/ratio/reasons) | deterministic report derivation | `discoverHistory` + `scanHistory` already compute availability and diagnostics; only per-session reasons and assembly are new. Unknown denominators from the discovery cap are handled explicitly (§3.2) |
 | A2 | Per-session bounded unavailable reason | deterministic report derivation | new enum field on `HistoricalSession`; no persistence |
-| A3 | Discovery-truncation surfacing | deterministic report derivation | `history-limit-reached` already exists |
+| A3 | Discovery-truncation surfacing | deterministic report derivation | `history-limit-reached` already exists; the cap also disables the ratio (§3.2) |
 | A4 | "Known usage" wording + never-zero for unavailable | renderer-only | HTML/TUI labels + i18n |
 | A5 | Per-day coverage | **unsupported** | dates of unreadable sessions are unknown (§15) |
-| B1 | One range-filtered projection shared by all tabs | deterministic report derivation + renderer | needs dated rows carried into the browser payload (§5.4) |
+| B1 | One range-filtered projection shared by all tabs | deterministic report derivation + renderer | per-date rows only for aggregates (models, composition); tools/agents/errors filter their canonical rows (§5.4) |
 | B2 | Explicit range contract (presets, UTC, inclusive, custom, persistence, truncation) | renderer-only + contract doc | some validation semantics change (see §5.3) |
-| B3 | Scope labels/descriptions + "same for this session" | renderer-only + one derived flag | `sameProjection` computed at bundle time |
+| B3 | Scope labels/descriptions + "same report data" note | renderer-only + one derived flag | `sameReportProjection` computed at bundle time; the copy claims report equality only (§4.3) |
 | C1 | Browser-facing canonical DTO (one projection) | renderer-only | single projection function; delete per-tab ad-hoc shaping |
 | C2 | Tool timestamp in browser rows | renderer-only | value already in `Tool.timestamp` |
 | C3 | Agent role + artifact availability in browser rows | renderer-only | values already in `AgentRun` |
@@ -212,6 +219,7 @@ a mode, a target, or an option.
 | D1 | Agents summary = child runs, not `agentActivity.calls` | renderer-only | both values already in the payload |
 | D2 | Agent tool activity shown separately | renderer-only | `agentActivity` already in the payload |
 | D3 | Parent/child navigation + "outside selected scope" | deterministic report derivation + renderer | `parentId` resolution against the selected scope |
+| D4 | Error/tool → child-run relation | deterministic report derivation + renderer | `originToolId` from the persisted tool-result `message.toolCallId`; the relation is one-to-many (§7.5) |
 | E1 | Tool↔error deterministic join | renderer-only | ids already identical |
 | E2 | Error message for tool errors | **unsupported** | no safe structured field (§1.5) |
 | F1 | Tools summary (calls/succeeded/failed/interrupted/known usage/last used) | deterministic derivation in the projection | all derivable from `report.tools` |
@@ -226,6 +234,7 @@ a mode, a target, or an option.
 | H5 | Back/Forward + deep links | renderer-only | hash routing |
 | I1 | Autocomplete replaces only the current token | renderer-only + one contract fix | `value` becomes the full rewritten argument string (§10) |
 | I2 | Autocomplete regression at the Pi boundary | test-only | drives the real `CombinedAutocompleteProvider` |
+| K1 | Global/History per-model/tool/agent breakdown tabs | **deferred (out of scope)** | full `SessionReport`s are available during the scan; this milestone deliberately does not aggregate and expose them (§9.3, §15) |
 | J1 | Table alignment/wrapping rules | renderer-only | remove global `nowrap`/`last-child` rules |
 | J2 | Decorative dashboards | **rejected** | YAGNI; drill-down instead |
 
@@ -244,7 +253,7 @@ testable against fixtures.
 Both `HistoryReport` and `GlobalReport` gain one optional field:
 
 ```ts
-/** Bounded reasons a discovered session could not be replayed. */
+/** Bounded reasons an inspected session could not be replayed. */
 export type CoverageReason =
   | "no-manifest"          // neither metadata nor pending manifest was readable
   | "manifest-unavailable" // manifest exists, source file is missing/unresolvable
@@ -253,15 +262,19 @@ export type CoverageReason =
   | "replay-failed";       // reducer/adapters threw for this session
 
 export type CoverageSummary = {
-  /** Sessions discovery found (before any availability resolution). */
-  discovered: number;
+  /** Sessions discovery inspected (the capped set; see §3.2). */
+  inspected: number;
   available: number;
   unavailable: number;
-  /** available / discovered; null when discovered === 0. Sessions, never usage. */
+  /**
+   * `available / inspected`, rounded to 4 decimals. **null** when `inspected`
+   * is 0 **or** when discovery was capped, because a capped set has an unknown
+   * workspace denominator. Sessions, never usage.
+   */
   sessionRatio: number | null;
-  /** True only when every discovered session replayed. */
+  /** True only when every inspected session replayed **and** discovery was not capped. */
   complete: boolean;
-  /** True when discovery stopped at MAX_HISTORY_SESSIONS. */
+  /** True when discovery stopped at MAX_HISTORY_SESSIONS: more sessions exist, uninspected. */
   discoveryLimited: boolean;
   /** Bounded reason counts; keys with zero occurrences are omitted. */
   reasons: Readonly<Partial<Record<CoverageReason, number>>>;
@@ -285,16 +298,22 @@ yet) renderers must show "Unavailable", never a guessed reason.
 
 ### 3.2 Derivation rules (all read-time, no persistence)
 
-1. `discovered` = number of rows returned by `discoverHistory()` (i.e. after the
-   206 cap). `discoveryLimited` = the `history-limit-reached` diagnostic is
-   present. `available` = rows that replayed; `unavailable = discovered -
-   available`, so the three counts always add up and a renderer can never show a
-   fraction that does not close.
-2. `complete` = `unavailable === 0 && !discoveryLimited && availability === "available"`.
-   Truncated discovery is *not* complete even when every retained session replayed.
-3. `sessionRatio` = `available / discovered` rounded to 4 decimals; `null` when
-   `discovered === 0`. It is a **session** ratio and is only ever rendered next
-   to a session fraction, never next to a currency amount.
+1. `inspected` = number of rows returned by `discoverHistory()` — the **capped**
+   set (at most `MAX_HISTORY_SESSIONS = 206`). `discoveryLimited` = the
+   `history-limit-reached` diagnostic is present, which means further session
+   directories exist that discovery never examined. `available` = rows that
+   replayed; `unavailable = inspected - available`, so the three counts always
+   add up and a renderer can never show a fraction that does not close.
+2. `complete` = `unavailable === 0 && !discoveryLimited && availability ===
+   "available"`. A capped discovery is *not* complete even when every inspected
+   session replayed, and the capped set may never be rendered as
+   `206 / 206 sessions` or as any workspace-wide claim.
+3. `sessionRatio` = `available / inspected` rounded to 4 decimals, and **null**
+   when `inspected === 0` **or** `discoveryLimited === true`. A ratio over a
+   capped denominator would assert workspace coverage that was never measured, so
+   the UI omits the percentage entirely and states the counts instead. The ratio
+   is a **session** ratio and is only ever rendered next to a session fraction,
+   never next to a currency amount.
 4. `reasons` is built from the per-session reason tags; the report-level
    `diagnostics` array is retained unchanged for backwards compatibility.
 5. When report `availability === "unavailable"` (the sessions directory itself is
@@ -315,9 +334,10 @@ yet) renderers must show "Unavailable", never a guessed reason.
 | --- | --- | --- |
 | `coverage` absent (older report / aggregate unavailable) | `Native cost — completeness unknown` | `Sessions: Unavailable` |
 | `coverage.complete === true` | `Native cost` / `Total tokens` | `27 / 27 sessions` |
-| `coverage.complete === false` | **`Known native cost`** / **`Known tokens`** | `5 / 27 sessions · 22 unavailable` |
-| `available === 0` | `Unavailable` (not `$0.00`) | `0 / 27 sessions · 27 unavailable` |
-| `available === 0` **and** `discovered === 0` | `Unavailable` | `No tracked sessions` |
+| `coverage.complete === false`, discovery not capped | **`Known native cost`** / **`Known tokens`** | `5 / 27 sessions · 22 unavailable` |
+| `coverage.discoveryLimited === true` | **`Known native cost`** / **`Known tokens`** | `206 sessions inspected · additional sessions not inspected` (no percentage, never `206 / 206`) |
+| `available === 0`, discovery not capped | `Unavailable` (not `$0.00`) | `0 / 27 sessions · 27 unavailable` |
+| `available === 0` **and** `inspected === 0` | `Unavailable` | `No tracked sessions` |
 
 Additional rules:
 
@@ -328,10 +348,13 @@ Additional rules:
 - Unavailable sessions contribute **nothing** to `usage`, `dates`, charts, or
   any count other than the coverage line itself. They are never rendered as a
   zero-cost row.
-- The coverage panel is present in every section that can be partial
-  (history aggregate, history session detail, global) and carries the bounded
-  diagnostics (`manifest-unavailable`, …) as plain tokens, plus
-  `discovery-limited` when discovery hit the cap.
+- The coverage panel belongs to the **aggregate** sections only (history
+  aggregate, global). It carries the bounded diagnostics (`manifest-unavailable`,
+  …) as plain tokens, plus `discovery-limited` when discovery hit the cap.
+- A **selected history session's detail carries no coverage panel and no `Known`
+  qualifier**: that session replayed successfully, so its own figures are
+  complete for that session. Workspace coverage qualifies aggregates, never one
+  replayable session's own metrics.
 - Per-day coverage is **not** rendered. When `coverage.complete === false`, the
   chart and daily tables carry the overall notice (one line), because the dates
   of unavailable sessions are unknown.
@@ -341,20 +364,28 @@ Additional rules:
 
 ### 3.4 Acceptance criteria
 
-1. 5 available / 27 discovered ⇒ `coverage.complete === false`, session line
-   `5 / 27 sessions · 22 unavailable`, cost label `Known native cost`, and the
-   five replayed sessions' usage exactly equals the rendered sum (no filler).
-2. All available ⇒ `complete === true`, labels `Native cost` / `Total tokens`,
-   session line `27 / 27 sessions`, no coverage warning.
-3. Zero available with a non-empty discovery ⇒ cost shows `Unavailable`, session
-   line `0 / N sessions · N unavailable`, no `$0.00` anywhere.
+1. 5 available of 27 inspected (uncapped) ⇒ `coverage.complete === false`,
+   session line `5 / 27 sessions · 22 unavailable`, cost label
+   `Known native cost`, and the five replayed sessions' usage exactly equals the
+   rendered sum (no filler).
+2. All available and uncapped ⇒ `complete === true`, labels `Native cost` /
+   `Total tokens`, session line `27 / 27 sessions`, no coverage warning.
+3. Zero available with a non-empty, uncapped discovery ⇒ cost shows
+   `Unavailable`, session line `0 / N sessions · N unavailable`, no `$0.00`
+   anywhere.
 4. Sessions directory unreadable ⇒ `availability: "unavailable"`, no `coverage`
    key, every aggregate metric `Unavailable`.
-5. Discovery capped at 206 while 300 directories exist ⇒ `discoveryLimited`,
-   `complete === false`, notice `discovery-limited`, and no claim of totals.
+5. Discovery capped at 206 while further directories exist ⇒
+   `discoveryLimited === true`, `complete === false`,
+   **`sessionRatio === null`**, session line
+   `206 sessions inspected · additional sessions not inspected`, cost label
+   `Known native cost`; nowhere may a `206 / 206 sessions` fraction or a
+   percentage be rendered, and even an all-available capped set stays incomplete.
 6. A `coverage`-less report (older file) renders the `completeness unknown`
    variants, not `Total`.
-7. Byte-identical regeneration of the same inputs (determinism unchanged).
+7. A selected history session's detail shows that session's own figures with no
+   coverage panel and no `Known` qualifier.
+8. Byte-identical regeneration of the same inputs (determinism unchanged).
 
 ---
 
@@ -378,7 +409,7 @@ Active is **not** "active and its children". Nothing in the UI may imply that.
 - ADR 0006 remains the normative scope definition; the design only renames the
   labels and adds the identical-projection indication.
 
-### 4.3 Identical projections
+### 4.3 Identical report projections
 
 `InspectorBundle.current` gains one derived flag:
 
@@ -386,8 +417,12 @@ Active is **not** "active and its children". Nothing in the UI may imply that.
 current: {
   active: CurrentView;
   tree: CurrentView;
-  /** True when both views produce byte-identical reports (linear session). */
-  sameProjection: boolean;
+  /**
+   * True when both views produce byte-identical report payloads. This is a
+   * statement about the report projection ONLY — it is not evidence that the
+   * active path contains every tracked entry.
+   */
+  sameReportProjection: boolean;
 };
 ```
 
@@ -395,13 +430,15 @@ Computed at bundle time by comparing the two views' canonical JSON payloads
 (the same serializer used for the document, so the comparison is not a second
 definition of equality). When `true`:
 
-- both scope buttons remain enabled (scope is still a real control for other
-  sessions and after further work), but a concise note appears:
-  `Same data for this session: the selected path covers every tracked entry.`;
-- no copy anywhere claims that switching scope changes the numbers.
+- both scope buttons remain enabled (scope stays a real control for other
+  sessions and for later work), and a concise note appears, worded as exactly
+  what was compared: `Active path and Full session tree produce the same report
+  data for this session.`;
+- no copy claims entry-set equality, and no copy claims anything about another
+  session's projections.
 
-When `false`, the note is absent. This is renderer-visible only; no report field
-changes.
+When `false`, the note is absent. The flag is renderer-visible only; no report
+field changes.
 
 ### 4.4 Scope application
 
@@ -419,11 +456,12 @@ must:
 
 ### 4.5 Acceptance criteria
 
-1. Linear session ⇒ `sameProjection === true`, note rendered, both buttons
-   enabled, `active` and `tree` report payloads byte-identical.
-2. Branched session with a sibling branch ⇒ `sameProjection === false`, active
-   totals exclude the sibling's usage, tree totals include it, and neither total
-   includes child-run usage.
+1. Linear session ⇒ `sameReportProjection === true`, the note renders with the
+   exact wording above, both buttons stay enabled, and the two report payloads
+   are byte-identical.
+2. Branched session with a sibling branch ⇒ `sameReportProjection === false`, the
+   note is absent, active totals exclude the sibling's usage, tree totals include
+   it, and neither total includes child-run usage.
 3. Scope label copy contains no claim about children/descendants.
 4. Changing scope on `models` with a 7D range selected keeps the 7D range and the
    `models` tab selected.
@@ -451,6 +489,8 @@ must:
 - Invalid custom range: the dialog stays open and shows
   `From must be on or before To.`; **no** navigation, scope, tab, or session
   state is modified.
+- A custom range is serialized as a validated `from`/`to` pair (§9.1); a lone,
+  unparsable, or inverted pair is never partially applied.
 - Existing silent clamping to the observed min/max is **removed**. A range that
   extends beyond the observed data is accepted and produces the empty-state
   message for the affected widgets; clamping user input without a message is
@@ -478,10 +518,10 @@ its own data.
 | current | Integrations | nothing (no counter source carries per-date rows today) — the Activity column is a session-scope value labelled `Session total` | detection/telemetry state, version, activity counters = environment facts, labelled `Session total · current environment`, never "in range" |
 | current | Commands/Skills/Resources | nothing — inventory is environment data and explicit skill-invocation counters are session-scope aggregates | inventory rows and invocation counters, labelled `Session total` |
 | current | Ledger | unchanged (bounded diagnostic rows) | — |
-| history (aggregate) | Overview metrics, chart, session rows | usage, sessions, days; a session row is in range when its span intersects the range | inventory counts (environment) |
-| history (session) | all tabs | identical to `current` | — |
+| history (aggregate) | Overview metrics, chart, session rows | usage, sessions, days; a session row is in range only when it has at least one range-relevant observed record inside the range (§5.6) | inventory counts (environment) |
+| history (session) | all tabs | identical to `current` (no coverage qualifier, §3.3) | — |
 | global | Overview metrics, chart, session rows | usage, sessions, days | inventory counts (environment) |
-| global/history | Models/Tools/Agents/Errors tabs | not supported by the aggregate DTO ⇒ tabs are absent (§9), not rendered full-period | — |
+| global/history | Models/Tools/Agents/Errors tabs | **deferred (out of scope)**: full `SessionReport`s exist during the scan, but this milestone does not aggregate and expose those tabs for multi-session sections (§9.3, §15) | — |
 
 Two rules make this enforceable:
 
@@ -501,9 +541,11 @@ type RangeState = { preset: 7 | 14 | 30 | null; from: string; to: string };
   `history:aggregate`, `history:<sessionId>`, `global`. The existing
   `periods[section]` keying is replaced by this finer identity so that a selected
   history session does not inherit the aggregate's range and vice versa.
-  Remembered ranges for other view identities live in memory for the document's
-  lifetime; the route serializes the range of the **active** view identity only,
-  so a deep link always reproduces the view it points at.
+  Ranges remembered for other view identities — and, likewise, all per-table
+  settings of inactive views (§9.5) — are **ephemeral caches** held in memory for
+  the document's lifetime. They are explicitly *not* part of deep-link
+  reproducibility: the route carries the range of the **active** view identity
+  only, so a deep link reproduces exactly the view it points at and nothing else.
 - The active range is **part of the navigation state** (§9) and therefore
   serialized into the URL hash. Changing tab, scope, section, or following an
   internal link preserves it. Selecting a different history session restores
@@ -513,32 +555,35 @@ type RangeState = { preset: 7 | 14 | 30 | null; from: string; to: string };
 
 ### 5.4 Implementation shape (why this is derivation, not new persistence)
 
-The browser needs dated rows to filter honestly. Today it receives only
-`daily: DailyRow[]` plus undated aggregate rows. The design extends the **bundle
-payload** (not the report DTO) with one dated projection per current view,
-bounded exactly like `daily`:
+The canonical browser projection already carries per-row timestamps for tools,
+agents and errors (§6), so those tabs filter **their own canonical rows**
+directly — one row per call/run/error, no dated duplicate. Only the two values
+that exist solely as aggregates need a per-date form: model summaries and the
+usage composition.
 
 ```ts
-type DatedModelRow  = { date: string; provider: string; model: string; generations: number; totalTokens: number; cost: number };
-type DatedToolRow   = { date: string; name: string; source?: string; status: Tool["status"]; calls: number; totalTokens?: number; cost?: number };
-type DatedAgentRow  = { date: string; id: string; parentId?: string; agent?: string; status: AgentRun["status"]; confidence: Confidence; artifacts?: "available" | "missing"; model?: string; thinking?: string; failure?: AgentFailure; usage?: SafeUsage };
-type DatedErrorRow  = { date: string; id: string; kind: ErrorKind; confidence: Confidence; toolName?: string; toolSource?: string; agentId?: string };
+// Models: ModelSummary is an aggregate, so it needs a dated form.
+type DatedModelRow = { date: string; provider: string; model: string; generations: number; totalTokens: number; cost: number };
+// Daily rows (already in the payload) gain the four composition parts.
 type DailyRow = { /* existing */ date, sessions, totalTokens, cost, generations, tools;
                   composition: { generations: SafeUsage; toolResults: SafeUsage; compactions: SafeUsage; branchSummaries: SafeUsage } };
 ```
 
 Rules:
 
-- Every array is capped (`MAX_DAILY_ROWS = 366` dates) and carries a
-  `truncated` flag when capped; capped output is visibly marked, never silently
-  short.
-- Nothing here is persisted. These rows are derived at bundle time from the
-  already-replayed `SessionReport` (each `Generation`, `Tool`, `AgentRun`,
-  `ErrorRecord` carries or can carry a timestamp) and live only inside the
-  generated document.
-- The per-row duplication is bounded: an extra ≤366 × (models) row set, with
-  per-date row counts further capped by the existing `MAX_*` limits. The
-  measured size ceiling is part of the slice acceptance (§11, P0-B).
+- Tools, Agents and Errors are filtered from their canonical rows in the client;
+  parallel dated copies for them are explicitly rejected (one source of truth).
+- `DatedModelRow` is capped at `MAX_DAILY_ROWS = 366` dates × at most 64 model
+  rows per date and carries a `modelsTruncated` flag; `DailyRow` keeps its
+  existing cap and `dailyTruncated` flag. Capped output is visibly marked, never
+  silently short.
+- Nothing here is persisted: the rows are derived at bundle time from the
+  already-replayed `SessionReport` and live only inside the generated document.
+- Growth is bounded by (366 × 64) model rows plus one composition object per day.
+  Slice P0-B gates on a **measured relative** document-size delta against a
+  baseline captured before the slice (reference fixture, ≤ +15 %), not on an
+  arbitrary absolute ceiling; the measurement, the fixture path, and the before/
+  after bytes are recorded in the slice report.
 
 ### 5.5 Acceptance criteria
 
@@ -556,6 +601,29 @@ Rules:
    and back restores it (§9 tests).
 7. `dailyTruncated` ⇒ the truncation notice is visible whenever the selected
    range reaches before the retained window.
+8. A history session whose span covers the range but which has **no** observed
+   record inside it is excluded from that range's rows and totals; a session with
+   at least one in-range record is included (§5.6).
+9. A custom range round-trips: serialize → reload → identical selection and
+   identical rendered numbers; an invalid or half pair falls back to the view
+   default with the notice (§9.1).
+
+### 5.6 Session membership in aggregate ranges
+
+- A history session belongs to a selected range **only** when it has at least one
+  range-relevant observed record or event whose UTC date lies inside the range.
+  `generations`, `tools`, `compactions` and `errors` all count as observed
+  records. Span intersection alone is not membership: a session whose first/last
+  records bracket the range may have no usage inside it.
+- The history entry projection therefore carries bounded per-session evidence for
+  this decision: `usageByDate: { date, totalTokens, cost, generations, tools }[]`
+  (≤ 366 dates, truncation-flagged), derived from the already-replayed report. The
+  row's cost/tokens for a range are the sum over its in-range dates, so a
+  range-filtered session row and that session's own detail view agree exactly.
+- Sessions with **no dated evidence** — which includes every unavailable session —
+  cannot be attributed to any range. They are listed in a separate
+  `Unavailable · dates unknown` group, are never counted in range totals, and are
+  never rendered as `$0`.
 
 ---
 
@@ -570,7 +638,7 @@ Rules:
 | reducer | `src/core/reduce.ts` | `ReducedSession`: `generations`, `tools`, `compactions`, `errors` | none |
 | report | `src/core/reports.ts` | `SessionReport`, `HistoryReport`, `GlobalReport` — the **machine contract** (`json` writes these verbatim) | agents lack timestamp/model/thinking/failure; nothing else |
 | bundle | `src/ui/bundle.ts` | `InspectorBundle` — the **browser contract** | per-section projections lose fields (below) |
-| browser | `src/ui/html.ts` client | reads the projection only | `AgentRun.agent`, `AgentRun.artifacts`, `Tool.timestamp`, all model dates, all per-date composition |
+| browser | `src/ui/html.ts` client | reads the projection only | `AgentRun.agent`, `AgentRun.artifacts`, `Tool.timestamp`, per-date model rows, per-date composition |
 
 ### 6.2 Rules
 
@@ -599,18 +667,26 @@ Rules:
 | `AgentRow` drops `agent`, `artifacts` | pass through validated values (renderer) | P1-C |
 | `AgentRow` has no timestamp | `AgentRun.timestamp` derived from the publishing entry (derivation) | P1-C |
 | `ToolRow` drops `timestamp` | pass through (renderer) | P1-C |
-| Models cannot be range-filtered | per-date model rows in the bundle projection (derivation) | P0-B |
+| Models cannot be range-filtered | per-date model rows in the browser projection (derivation) | P0-B |
 | Composition cannot be range-filtered | per-date composition in `DailyRow` (derivation) | P0-B |
-| Agents cannot be range-filtered | per-date agent rows (derivation) + `AgentRun.timestamp` | P0-B |
+| Agents cannot be range-filtered | `AgentRun.timestamp` (derivation); the canonical agent row is filtered directly, no dated copy | P0-B |
+| Tools/errors cannot be range-filtered | `Tool.timestamp` and `ErrorRecord.timestamp` pass through (renderer) | P1-C |
 | `AgentRun` has no model/thinking | `model?`, `thinking?` validated from `results[]` (derivation, producer-version dependent) | P1-C |
 | `AgentRun` has no bounded failure class | `failure?: AgentFailure` from validated enums (derivation) | P1-C |
-| Errors cannot link to an agent | `AgentRun.toolCallId` (opaque) from `details.toolCallId` (derivation) | P1-D |
+| Errors cannot link to a child run | `AgentRun.originToolId = "tool:" + message.toolCallId` (derivation; one-to-many) | P1-D |
 | Child usage completeness unknown | `childUsage` counts (`runsWithUsage` / `runsTotal`) in the agent projection (derivation) | P1-D |
 
 Every derivation above is computed from already-persisted producer payloads,
 validated with the existing bounded-validator style, and optional in the DTO.
 Where the producer is absent or of an unknown version, the field is absent and
 the UI shows `Unavailable`.
+
+The child-run origin is the **persisted tool-result `message.toolCallId`** — the
+id the reducer already turns into `tool:<callId>` and the id the subagent adapter
+already joins results by. `details.toolCallId` is **not** used: it is
+producer-internal and is not the canonical call id. Because one result may
+publish several runs, the relation is **one-to-many** and is never collapsed
+into a single attributed child (§7.5).
 
 ### 6.4 Acceptance criteria
 
@@ -705,16 +781,19 @@ Presentation priority:
    and status. The raw `tool:call_…` id moves to the details panel.
 2. **Generation errors**: keep the existing bounded, redacted `errorMessage` when
    present; show model/provider when the generation is known.
-3. **Agent relation**: when the error's tool id equals an agent run's
-   `toolCallId`, offer `Related agent run` navigation. Otherwise no agent is
-   shown (never inferred from timestamps).
+3. **Related child run(s)**: every child run whose `originToolId` equals the
+   failed tool's id is a *candidate*. The relation is **one-to-many** — a single
+   `subagent`/`subagent_wait` result can publish several child runs — so the panel
+   lists them under `Related child run(s)` and **never** names one of them as the
+   cause. Zero candidates ⇒ the section is omitted entirely (never inferred from
+   timestamps, never padded with an unrelated run).
 4. **Message**: tool errors have no safe structured message (§1.5) ⇒
    `Message: Unavailable`. No text is ever taken from `content`, tool output,
    arguments, or child output.
 
 Error detail panel adds: error kind, confidence, UTC timestamp, tool name,
-tool source, tool status, related tool link, related agent link (when
-deterministic), and the bounded message or `Unavailable`.
+tool source, tool status, related tool link, the `Related child run(s)` list
+(when the origin is known), and the bounded message or `Unavailable`.
 
 ### 7.6 Tools
 
@@ -749,6 +828,12 @@ adjacent timestamps.
 6. Parent resolution: in-scope → link; tree-only → `outside selected scope`;
    unknown → `Unavailable`.
 7. Tools summary totals equal the sum of its call rows for the same range.
+8. One `subagent` tool result publishing three child runs, with a failure on that
+   call ⇒ the error detail lists **all three** under `Related child run(s)` and
+   attributes the failure to none of them.
+9. `originToolId` is present only when the persisted tool result carried a
+   non-empty `message.toolCallId`; otherwise it is absent, with no fallback to
+   any other id.
 
 ---
 
@@ -835,29 +920,45 @@ type InspectorRoute = {
   tab: Tab;                       // capability-checked per section
   session?: string;               // history only, opaque sessionId
   scope: Scope;                   // current only; ignored elsewhere
-  range: RangeState;              // resolved per view identity (§5.3)
+  range: RangeState;              // ACTIVE view identity only (§5.3)
   entity?: EntityRef;             // drill-down target
-  table?: { query?: string; sort?: string }; // per (section, tab)
+  table?: { query?: string; sort?: string }; // ACTIVE table only (§9.5)
 };
 ```
 
-Serialization (hash only, no query string, no server):
+Serialization (hash only, no query string, no server). Canonical parameter
+order — the order every serializer emits, so one route has exactly one string:
+`scope, preset, from, to, session, entity, q, sort`.
 
 ```text
 #/current/tools?scope=tree&preset=7&entity=tool%3Atool%3Acall_abc&q=bash&sort=cost
+#/current/tools?scope=tree&from=2026-09-01&to=2026-09-12
 #/history/overview?session=<sessionId>&preset=14
 #/global/overview?preset=30
 ```
 
-Rules:
+Range serialization rules:
 
-- Deterministic key order (`section/tab` path, then a fixed parameter order);
-  omitted parameters mean defaults.
+- A preset range serializes `preset=<7|14|30>` only; `from`/`to` are derived from
+  the view's observed dates on parse (deterministic, never the machine clock).
+- A custom range (`preset === null`) serializes **both** validated dates as a
+  pair: `from=YYYY-MM-DD&to=YYYY-MM-DD`.
+- `from` and `to` are honoured only as a valid pair. A lone `from`, a lone `to`,
+  an unparsable date, or a pair with `from > to` is not applied at all: the view
+  falls back to its own default range and renders
+  `Range could not be restored; showing the default range.` There is no partial
+  application, and the invalid value is never echoed back into the hash.
+- `preset` and the `from`/`to` pair are mutually exclusive; `preset` wins when
+  both are present (deterministic precedence).
+
+Other rules:
+
+- Omitted parameters mean defaults.
 - Only bounded values: enum tokens, ISO dates, numeric presets, and ids that
   already exist in the projection. Text from tool arguments/results/prompts can
   never reach the hash (validated against the projection's id set on parse; an
   unknown id is dropped, never echoed).
-- Parsing is total: any unknown section/tab/option degrades to the section
+- Parsing is total: any unknown section/tab/option/date degrades to the section
   default and renders a one-line notice (`That view isn't available here.`),
   never an empty page and never a thrown error.
 
@@ -871,8 +972,15 @@ Rules:
 - Click handlers **only** mutate the route and call `navigate(route, {push:true})`.
   No handler touches `aria-pressed`, `classList`, or another control's state.
   This is the structural fix for the reported active-state bug (§1.7).
-- `hashchange`/`popstate` → parse → render without pushing (Back/Forward and
-  `location.reload()` both work).
+- One event path, no duplicate renders: a single `applyLocation()` is bound to
+  **both** `hashchange` and `popstate`. It canonicalizes the current hash, and if
+  the canonical route equals the last applied route it returns **without
+  rendering** — so a browser that fires both events for one navigation produces
+  exactly one render. Bursts are coalesced to at most one render per event-loop
+  turn.
+- Focus and scroll effects fire only when the applied route actually changes
+  `section`, `tab`, `session` or `entity`; a range-only or table-only change
+  re-renders content without stealing focus or moving the scroll position.
 - Keyboard: sidebar/tabs are anchors (`<a href="#/…">`) so Enter, middle-click,
   and copy-link all work; arrow-key tab navigation follows the existing
   `role="tablist"` semantics; focus moves to the section `h1` on section change
@@ -887,9 +995,9 @@ not hand-maintained in the client:
 | --- | --- | --- |
 | current (view available) | all tabs: overview, models, tools, environment (commands/skills/resources), agents, integrations, errors, ledger | full `SessionReport` present |
 | current (view unavailable) | none — single `Unavailable` panel with the bounded diagnostic | no report |
-| history (aggregate) | overview (+ chart, session list) | aggregate DTO carries usage/dates/session rows only |
+| history (aggregate) | overview (+ chart, session list) | per-model/tool/agent breakdowns are **deferred** in this milestone (§15), so the aggregate section offers only what it computes |
 | history (session selected) | all tabs | full `SessionReport` present |
-| global | overview (+ chart) | aggregate DTO carries usage/dates only |
+| global | overview (+ chart) | per-model/tool/agent breakdowns are **deferred** in this milestone (§15) |
 
 The client renders only capable tabs, and route validation coerces an
 unsupported tab to the section default with the notice above. Tabs are never
@@ -915,11 +1023,15 @@ highlighting plus a visible focus ring (existing `focus-visible` outline).
 
 ### 9.5 Table-local state
 
-- Search/sort/metric live in `route.table` keyed by `(section, tab)`, so two
-  tables never share one query.
-- Section change clears the table state of the section being left; tab change
-  preserves each tab's own state; Back restores the previous table state because
-  it is part of the route.
+- `route.table` is the **active** table's state. Being part of the route, it is
+  serialized, restored by Back/Forward, and reproduced by a deep link.
+- Settings for inactive tables live in an **ephemeral cache** keyed by
+  `(section, tab)`: switching away saves the leaving table's state there and
+  restores the entering table's state into the route. The cache is explicitly not
+  part of deep-link reproducibility and dies with the document — the same rule as
+  the inactive range memories (§5.3).
+- Two tables never share one query: a section change clears that section's cached
+  entry, and each tab keeps its own state.
 
 ### 9.6 Acceptance criteria
 
@@ -934,6 +1046,13 @@ highlighting plus a visible focus ring (existing `focus-visible` outline).
 5. Two tables keep separate queries; switching tabs and returning restores each.
 6. The hash never contains text originating from prompts, arguments, results, or
    paths (privacy test with hostile values in the projection).
+7. A custom-range deep link (`from`+`to`) restores exactly that range after a
+   reload; an invalid, lone, or inverted endpoint falls back to the view default
+   with the notice and is never partially applied.
+8. A hash-only navigation that fires both `hashchange` and `popstate` performs
+   exactly one render, and a range-only change performs no focus effect (asserted
+   on the derived view model, §13).
+9. A selected history session's detail shows no workspace coverage panel.
 
 ---
 
@@ -941,34 +1060,56 @@ highlighting plus a visible focus ring (existing `focus-visible` outline).
 
 ### 10.1 Contract
 
-`completeInspectorCommand(argumentPrefix)` keeps its signature; the **item
-values change**:
+`completeInspectorCommand(argumentPrefix)` keeps its signature and its grammar
+decisions (same tables, same acceptance rules); what changes is how the
+replacement text is built.
 
 ```ts
 type AutocompleteItem = { value: string; label: string; description?: string };
-// value = the FULL replacement argument text: preceding tokens verbatim,
-//         current token replaced by the chosen completion, single spaces.
+// value = the FULL replacement argument text up to the cursor: every preceding
+//         character byte-identical (whitespace and quoting included), with only
+//         the current raw token span replaced by the chosen completion.
 // label = the token alone (readable in the popup).
 ```
 
-Rebuild rule: `value = [...tokensBefore, replacement].join(" ")`, where
-`tokensBefore` are the tokens before the token being completed, exactly as
-tokenized (quotes preserved by `tokenizeInspectorArgs`). No synthetic trailing
-space (Ruling R2). Because Pi replaces `[cursor - prefix.length, cursor)` with
-`item.value` and `prefix` is the whole argument text, this preserves every
-preceding argument by construction.
+Rebuild rule — **raw spans, never a token re-join**:
+
+1. Scan the raw argument prefix into span-carrying tokens
+   `{ raw, start, end, quoted }`, where `start`/`end` index the original string and
+   a quoted token's span includes its quotes.
+2. Find the token containing the cursor; when the prefix ends in whitespace, the
+   current span is the empty span at the end.
+3. `value = prefix.slice(0, span.start) + replacement + prefix.slice(span.end)`.
+
+Why spans and not tokens: `tokenizeInspectorArgs()` strips quotes, so any rebuild
+that joins tokens re-serializes the argument text. `--output "/tmp/my report.json"`
+would come back as `--output /tmp/my report.json` — the quotes are gone, and for a
+value containing a space the parsed meaning changes as well. Span replacement
+copies preceding characters instead of re-serializing them, so corruption is
+impossible by construction. Text after the cursor is Pi's own
+`adjustedAfterCursor` region and is not part of `value` (§10.3).
+
+The span-aware scanner and the existing parser tokenizer share one scanning core
+so grammar decisions cannot drift; the parser keeps its current quote-stripping
+behavior, and a test asserts both agree on token boundaries for the corpus in
+§10.2. No synthetic trailing space (Ruling R2).
 
 ### 10.2 Required behavior (the acceptance set)
 
-| Input (cursor at end) | Selected item | Resulting line |
+In the table `␠` marks a literal trailing space in the typed input.
+
+| Input (cursor at end unless stated) | Selected item | Resulting line |
 | --- | --- | --- |
-| `/session-ins` | `ui` | `/session-ins ui` |
-| `/session-ins ui` | `--theme` | `/session-ins ui --theme` |
+| `/session-ins␠` | `ui` | `/session-ins ui` |
+| `/session-ins ui␠` | `--theme` | `/session-ins ui --theme` |
 | `/session-ins ui --th` | `--theme` | `/session-ins ui --theme` |
 | `/session-ins ui --theme d` | `dark` | `/session-ins ui --theme dark` |
 | `/session-ins ui --theme dark --` | `--scope` | `/session-ins ui --theme dark --scope` |
 | `/session-ins json history --sc` | `--scope` | `/session-ins json history --scope` |
 | `/session-ins json history --scope tr` | `tree` | `/session-ins json history --scope tree` |
+| `/session-ins ui --output "/tmp/my report.json" --th` | `--theme` | `/session-ins ui --output "/tmp/my report.json" --theme` |
+| `/session-ins ui --output "/tmp/my report.json"␠` | `--theme` | `/session-ins ui --output "/tmp/my report.json" --theme` |
+| `/session-ins ui --the\|me` (cursor after `--the`) | `--theme` | `/session-ins ui --theme`, cursor after `--theme` |
 
 Additional rules:
 
@@ -978,6 +1119,8 @@ Additional rules:
 - Suggestion sets are never fabricated for an unparsable stream (`null`).
 - A trailing space offers the next token's candidates; an empty token at the end
   of a value option offers that option's values.
+- Every returned `value` is the rewritten raw prefix (§10.1); a bare token value
+  is returned only when the raw prefix has no preceding content.
 
 ### 10.3 Boundary verification (the part unit tests cannot prove)
 
@@ -994,8 +1137,17 @@ provider:
 This test fails loudly if Pi changes the replacement contract, which is exactly
 the guarantee today's tests lack. If `@earendil-works/pi-tui` is not currently a
 runtime/dev dependency of the package, adding it as a devDependency is an
-explicit prerequisite of slice P1-I (verified at implementation time; today the
+explicit prerequisite of slice P1-G (verified at implementation time; today the
 type import already resolves).
+
+Additional boundary cases driven through the same real provider:
+
+1. **Cursor mid-token**: `applyCompletion` with the cursor inside the token
+   (`/session-ins ui --the|me`); the assertion covers the resulting line **and**
+   that the text after the cursor is preserved byte-for-byte with no duplicated
+   remainder.
+2. **Quoted argument preservation**: the quoted `--output` rows of §10.2 keep
+   their quotes and embedded space verbatim.
 
 Framework limitation note: Pi's provider API exposes no per-item replacement
 range, so an extension cannot "replace only the token" other than by rewriting
@@ -1004,12 +1156,16 @@ approach; no Inspector-specific string hack beyond it is acceptable.
 
 ### 10.4 Acceptance criteria
 
-1. All seven rows of §10.2 pass through the real provider.
+1. All rows of §10.2 pass through the real provider, including the quoted-argument
+   and cursor-mid-token rows.
 2. Existing suggestion-set tests keep passing (they document intent).
 3. Cursor-position coverage: completing with the cursor mid-argument leaves the
-   text after the cursor intact (`adjustedAfterCursor` semantics preserved).
-4. No completion path ever returns a bare token value (asserted for every
-   non-empty `tokensBefore` case).
+   text after the cursor intact (`adjustedAfterCursor` semantics preserved) and
+   never duplicates the remainder of the current token.
+4. No completion path ever returns a bare token value when the raw prefix has
+   preceding content (asserted for every non-empty preceding-span case).
+5. A quoted prior argument survives completion byte-for-byte, and the span-aware
+   scanner agrees with the parser tokenizer on token boundaries.
 
 ---
 
@@ -1038,9 +1194,9 @@ approach; no Inspector-specific string hack beyond it is acceptable.
 
 | Surface | Change | Compatibility |
 | --- | --- | --- |
-| `SessionReport` | additive: `agents[].timestamp/model/thinking/failure/toolCallId`, `tools[].timestamp` already existed in DTO | additive; old consumers ignore new keys |
-| `HistoryReport` / `GlobalReport` | additive: `coverage?`, `sessions[].reason?` | additive |
-| `InspectorBundle` | additive: `current.sameProjection`, extra dated rows, `capabilities` | internal to the generated document; `schemaVersion` stays `1` (R3) |
+| `SessionReport` | additive: `agents[].timestamp/model/thinking/failure/originToolId`; `tools[].timestamp` and `errors[].timestamp` already existed | additive; old consumers ignore new keys |
+| `HistoryReport` / `GlobalReport` | additive: `coverage?` (`inspected`/`available`/`unavailable`/`sessionRatio`/`complete`/`discoveryLimited`/`reasons`), `sessions[].reason?`, `sessions[].usageByDate?` | additive; a capped discovery yields `sessionRatio: null` by contract |
+| `InspectorBundle` | additive: `current.sameReportProjection`, per-date model rows, daily composition, per-section `capabilities`, `modelsTruncated`/`dailyTruncated` flags | internal to the generated document; `schemaVersion` stays `1` (R3) |
 | Command surface | unchanged (`ui`/`tui`/`json`, options, rejection of `report`) | unchanged |
 | Older generated reports | render with conservative wording (`completeness unknown`, `Unavailable`) | never crash, never fabricate |
 | Determinism | no clock reads; canonical ordering; byte-identical regeneration | preserved; asserted in tests |
@@ -1051,46 +1207,50 @@ approach; no Inspector-specific string hack beyond it is acceptable.
 
 Each slice ends with: focused tests, `npm run format:check && npm run lint &&
 npm run typecheck`, `npm test`, and a spec-compliance + code-quality review.
-Version bumps follow the repository rule (one version per release, in the docs
-slice).
+Version bumps follow the repository rule (one version per release, in the
+release slice).
 
 ### P0-A — Coverage correctness
 
-- **Files:** `src/storage/history.ts`, `src/ui/load-history.ts`,
+- **Files:** `src/storage/history.ts` (per-session reason + cap signal),
+  `src/ui/load-history.ts` (coverage assembly, shared by history and global),
   `src/core/reports.ts` (validation of the new optional fields),
-  `src/ui/html.ts` (coverage panel + wording), `src/ui/current-tui.ts` (no change
-  expected: TUI has no history/global sections), tests + fixtures.
+  `src/ui/html.ts` (coverage panel + wording), tests + fixtures.
 - **Contract delta:** `CoverageSummary`, `CoverageReason`,
   `HistoricalSession.reason`.
-- **Acceptance:** §3.4 (1-7).
-- **Size gate:** bundle payload growth for a 27-session workspace stays under
-  5 % (measured, recorded in the slice report).
+- **Acceptance:** §3.4 (1-8), including the capped case where `sessionRatio`
+  must be `null` and no percentage or `N / N` fraction may render.
+- **Size gate:** document-size delta measured and recorded against the pre-slice
+  baseline (coverage adds counts and short tokens only; no absolute ceiling).
 
 ### P0-B — Range correctness and scope labels
 
-- **Files:** `src/ui/bundle.ts` (dated rows, caps, `sameProjection`),
-  `src/ui/html.ts` (server projections + client routing of range through one
-  filter), `src/core/redact.ts` (unchanged), i18n catalog, tests.
-- **Contract delta:** dated rows in the bundle payload; `current.sameProjection`;
-  range semantics per §5 (clamping removed).
-- **Acceptance:** §5.5 (1-7) and §4.5 (1-5).
-- **Size gate:** generated document stays under 512 KiB for the reference
-  workspace; per-date arrays capped and truncation-flagged.
+- **Files:** `src/ui/bundle.ts` (per-date model rows, daily composition,
+  `sameReportProjection`), `src/ui/html.ts` (one server projection + one client
+  range filter over canonical rows), i18n catalog, tests.
+- **Contract delta:** `DatedModelRow`, composition in `DailyRow`,
+  `current.sameReportProjection`, history `usageByDate`; range semantics per §5
+  (clamping removed) and session membership per §5.6.
+- **Acceptance:** §5.5 (1-9), §5.6, §4.5 (1-5).
+- **Size gate:** **relative** regression gate measured on the reference fixture —
+  document growth ≤ +15 % versus the baseline captured before the slice, with
+  before/after bytes and the fixture path recorded in the slice report. No
+  arbitrary absolute ceiling.
 
 ### P1-C — Projection integrity
 
 - **Files:** `src/integrations/subagents.ts` (`timestamp`, `model`, `thinking`,
-  `failure`), `src/ui/html.ts` (one projection, pass-through of role/artifacts/
-  timestamps), tests + fixtures.
-- **Contract delta:** §6.3 rows 1-3, 7-9.
+  `failure`, `originToolId`), `src/ui/html.ts` (one projection, pass-through of
+  role/artifacts/timestamps), tests + fixtures.
+- **Contract delta:** §6.3 rows 1-5, 7-10.
 - **Acceptance:** §6.4 (1-4).
 
 ### P1-D — Agents, errors, tools semantics
 
 - **Files:** `src/ui/html.ts` (client tabs + detail panels),
-  `src/integrations/subagents.ts` (`toolCallId`, child-usage counts), tests.
-- **Contract delta:** §7.1-7.6 rendering; no further DTO change.
-- **Acceptance:** §7.7 (1-7).
+  `src/integrations/subagents.ts` (child-usage counts), tests.
+- **Contract delta:** §7.1-7.6 rendering; one-to-many `Related child run(s)`.
+- **Acceptance:** §7.7 (1-9).
 
 ### P1-E — Environment and integrations semantics
 
@@ -1100,13 +1260,18 @@ slice).
 
 ### P1-F — Navigation and routing
 
-- **Files:** `src/ui/html.ts` (route model, hash serialization, capability-driven
-  nav, cross-navigation), tests.
-- **Acceptance:** §9.6 (1-6).
+- **Files:** `src/ui/html.ts` (route consumption, capability-driven nav,
+  cross-navigation), `src/ui/route.ts` (new: pure parse/serialize/derive), tests.
+- **Acceptance:** §9.6 (1-9), including one-render dedup and the custom-range
+  round-trip.
+- **Test requirement:** route → rendered active state, supported tabs, and
+  navigation context must be proven automatically (§13); manual UAT is not the
+  coverage for those behaviors.
 
 ### P1-G — Autocomplete application fix
 
-- **Files:** `src/commands/completions.ts` (full-text values),
+- **Files:** `src/commands/grammar.ts` (span-aware scanner shared with the
+  tokenizer), `src/commands/completions.ts` (raw-prefix values),
   `tests/unit/command-completions.test.ts` (intent), new
   `tests/unit/command-completion-application.test.ts` (boundary),
   `package.json` (devDependency, if required).
@@ -1127,20 +1292,35 @@ Semantic assertions over snapshots; every new behavior gets a failing-first test
 
 | Area | File | Cases |
 | --- | --- | --- |
-| Coverage | `tests/unit/history-reports.test.ts`, `tests/unit/index-report-command.test.ts` | 5/27 partial; all available; none available; sessions dir unreadable; discovery cap; `coverage`-absent report; unavailable sessions contribute no usage; Known vs Total wording |
-| Range | `tests/unit/html-bundle.test.ts`, `tests/unit/bundle.test.ts` (+ new `tests/unit/report-range.test.ts`) | 7D vs 14D differ on every range-aware widget; inclusive UTC boundaries; custom validation failure keeps state; range outside data → empty state; scope change preserves range; truncation notice |
-| Scope | `tests/unit/current-ui.test.ts`, `tests/unit/index-current-ui.test.ts` | linear Active==Tree with `sameProjection`; branched Active≠Tree; sibling exclusion; child usage never added; labels contain no descendant claim |
-| Agents | `tests/unit/subagents.test.ts`, `tests/unit/html-bundle.test.ts` | activity calls ≠ run count; failed-run cost; partial child usage; parent resolution (in-scope / tree-only / unknown); role/model/thinking present only when validated; no raw task/output text |
+| Coverage | `tests/unit/history-reports.test.ts`, `tests/unit/index-report-command.test.ts` | 5 of 27 inspected (uncapped) partial; all available; none available; sessions dir unreadable; **discovery cap ⇒ `sessionRatio === null`, `complete === false`, `206 sessions inspected · additional sessions not inspected`, no percentage and no `206 / 206`**; `coverage`-absent report; unavailable sessions contribute no usage; Known vs Total wording; **selected history session detail has no coverage qualifier** |
+| Range | `tests/unit/html-bundle.test.ts`, `tests/unit/bundle.test.ts` (+ new `tests/unit/report-range.test.ts`) | 7D vs 14D differ on every range-aware widget (models, tools, agents, errors, composition, chart) by filtering canonical rows; inclusive UTC boundaries; custom validation failure keeps state; range outside data → empty state; scope change preserves range; truncation notice; **aggregate session membership by in-range records (§5.6)**; **custom-range hash round-trip and lone/inverted-pair fallback** |
+| Scope | `tests/unit/current-ui.test.ts`, `tests/unit/index-current-ui.test.ts` | linear session with `sameReportProjection === true` and the exact note wording; branched Active≠Tree; sibling exclusion; child usage never added; labels contain no descendant claim |
+| Agents | `tests/unit/subagents.test.ts`, `tests/unit/html-bundle.test.ts` | activity calls ≠ run count; failed-run cost; partial child usage; parent resolution (in-scope / tree-only / unknown); role/model/thinking present only when validated; **one result publishing several runs ⇒ one-to-many `Related child run(s)`**; `originToolId` only from `message.toolCallId`; no raw task/output text |
 | Errors | `tests/unit/error-ledger.test.ts`, `tests/unit/reduce.test.ts` | generation message preserved; tool error joined to tool (name/source/status); tool error without message → Unavailable; no tool-result leak |
 | Tools | `tests/unit/html-bundle.test.ts` (+ new call rows) | summary aggregation; success/failure/interrupted; known vs unavailable usage; timeline timestamps; duration only with live evidence |
-| Navigation | `tests/unit/html-navigation.test.ts` (new) | route parse/serialize round-trip; capability filtering; `sameProjection` note; hash carries no hostile text; per-table state isolation; unsupported tab coercion |
-| Autocomplete | `tests/unit/command-completions.test.ts`, `tests/unit/command-completion-application.test.ts` | all §10.2 rows via the real provider; prior tokens preserved; options already present filtered; cursor mid-argument |
+| Navigation | `tests/unit/route.test.ts` (new, pure) + document-structure assertions in `tests/unit/html-bundle.test.ts` | route parse/serialize round-trip incl. custom `from`/`to` pair; canonical parameter order; half-pair fallback; derived view model: active section, active tab, capable tabs, scope, range, entity, notice; **one render when both `hashchange` and `popstate` fire; no focus effect on range-only change**; capability filtering; hash carries no hostile text; per-table state isolation; unsupported tab coercion |
+| Autocomplete | `tests/unit/command-completions.test.ts`, `tests/unit/command-completion-application.test.ts` | all §10.2 rows via the real provider, including quoted `--output` and cursor-mid-token; prior characters preserved byte-for-byte; options already present filtered; span scanner agrees with the parser tokenizer |
 | Compatibility/privacy | `tests/unit/integration-privacy.test.ts`, `tests/unit/uat-evidence.test.ts` | old reports without new fields; no prompt/output/path/args/result text; new diagnostics bounded; determinism byte-identity |
 
-Client-side routing and rendering are exercised through a DOM-free harness:
-the generated document is parsed for its payload + capability table, and the
-route functions are covered by extracting them into a small testable module
-rather than by executing the browser script (no jsdom dependency — Ruling R11).
+Client-side routing and rendered active state are proven automatically with the
+lightest harness that can do it (R11). Manual UAT is a complement, never the
+coverage.
+
+1. **Pure route tests (primary).** Parsing, serialization, capability filtering
+   and the derived view model live in `src/ui/route.ts` and are unit-tested
+   directly. The derived view model exposes exactly the state that drives
+   rendering — active section, active tab, visible (capable) tabs, scope,
+   resolved range, entity, notice — so route → active state is asserted in a
+   test, which is precisely what today's suite cannot do.
+2. **Document-structure assertions.** The generated document is parsed as text to
+   assert (a) the capability table it embeds and (b) that no active-state
+   attribute (`aria-current`, `aria-selected`, `aria-pressed`) is hardcoded in
+   the initial markup — every one of them must be produced by the render path.
+
+A real DOM implementation is **not a precondition and not a prohibition**: if a
+later slice finds a behavior these two layers cannot express, the smallest
+available DOM implementation may be added as a devDependency at that point, with
+its own justification in the slice report.
 
 ---
 
@@ -1160,7 +1340,9 @@ rather than by executing the browser script (no jsdom dependency — Ruling R11)
 10. `/session-inspector json history` → open the file; confirm `coverage` and
     per-session `reason` values, and that usage only sums available sessions.
 11. `/session-inspector ui` → History and Global: confirm `Known native cost` /
-    `5 / 27 sessions` wording when partial, and that Global exposes Overview only.
+    `5 / 27 sessions` wording when partial, `206 sessions inspected · additional
+    sessions not inspected` when the discovery cap was hit (with no percentage),
+    and that Global exposes Overview only.
 12. Confirm no tab leads to a guaranteed-`Unavailable` page.
 13. Type `/session-ins ui --theme d` + TAB: confirm `/session-ins ui --theme dark`
     (prior tokens preserved); repeat for each row of §10.2.
@@ -1168,10 +1350,23 @@ rather than by executing the browser script (no jsdom dependency — Ruling R11)
     with zero network requests (no CDN, no fonts, no fetch/XHR).
 15. `/session-inspector tui` and `/session-inspector tui ledger`: confirm the TUI
     still renders both tabs and the scope switch.
+16. Open a History session detail: confirm that session's own figures appear with
+    **no** coverage panel and **no** `Known` qualifier.
+17. Type `/session-ins ui --output "/tmp/my report.json" --th` + TAB: confirm
+    `/session-ins ui --output "/tmp/my report.json" --theme` (quotes and embedded
+    space preserved); repeat with the cursor inside the option token.
+18. Copy the hash of a **Custom** range, open it in a new tab, and confirm the
+    same range and the same numbers; then truncate the hash to `from` only and
+    confirm the default range plus the restoration notice.
 
 ---
 
-## 15. Explicit unsupported-data list
+## 15. Explicit data-support list: unsupported and deferred
+
+Two different verdicts are recorded here. **Unsupported** means no safe evidence
+exists, so the value can only ever render `Unavailable`. **Deferred (out of
+scope)** means the evidence exists but this milestone deliberately does not
+aggregate or expose it; nothing about it is fabricated in the meantime.
 
 | Requested capability | Verdict | Reason |
 | --- | --- | --- |
@@ -1183,7 +1378,7 @@ rather than by executing the browser script (no jsdom dependency — Ruling R11)
 | Agent free-text failure reason | **Unsupported** | Producer exposes only bounded enums (`state`, `success`, `exitCode`, `processSignal`, `outputState`). |
 | Agent model / thinking level | **Supported, conditional** | Present in `results[]` for the pinned producer; validated, optional, `Unavailable` when the producer is unknown/absent. |
 | Agent task description / summary | **Unsupported** | Prompt text; privacy boundary. |
-| Global/History per-model, per-tool, per-agent breakdowns | **Unsupported** | The aggregate DTO carries usage and dates only; the tabs are not offered rather than shown full-period. |
+| Global/History per-model, per-tool, per-agent breakdowns | **Deferred (out of scope)** | Every scanned session is replayed into a full `SessionReport`, so the evidence exists; this milestone does not aggregate it across sessions and therefore offers no such tabs (§9.3). A later milestone can add them without new persistence. |
 | Inventory invocation counts for commands/prompts | **Unsupported** | No counter evidence exists; skills have counters, commands do not. |
 | Live duration for historical sessions | **Unsupported** | Duration evidence is live-correlation only. |
 | Integration version when the producer publishes none | **Unsupported** | Rendered `Unavailable`, never `0`. |
@@ -1221,11 +1416,14 @@ start before §3-§10 are settled, and it changes no contract.)
 | R4 | Agents summary counts child runs only; activity is a separate labelled block | Server-side distinct DTO fields already permit it | Two blocks instead of one |
 | R5 | Routing uses the hash (`#/…`), not `pushState` + path rewriting | Works from `file://`, offline, and inside a single generated document | Long URLs; hash-only deep links |
 | R6 | One range per view identity (current, history:aggregate, history:\<session\>, global) | Prevents a selected session inheriting the aggregate's range | More state in the route; slightly more parsing |
-| R7 | Error → Agent linkage uses `AgentRun.toolCallId` (derived from `details.toolCallId`) | Only deterministic linkage; no timestamp guessing | One extra optional field in the agent DTO |
+| R7 | Error/tool → child linkage via `AgentRun.originToolId = "tool:" + message.toolCallId`, rendered as a one-to-many `Related child run(s)` list | The persisted `message.toolCallId` is the canonical id (the reducer builds `tool:<callId>` from it), and one result may publish several runs — a single-child attribution would be a guess | One extra optional field in the agent DTO; the error panel shows a list instead of one link |
 | R8 | Section capabilities are computed server-side from the data contract | Single source of truth; no hand-maintained client matrix | Capability list must be updated with DTO changes |
 | R9 | Inventory is never range-filtered | It is environment state, not session activity | A user filtering by range still sees full inventory (labelled) |
 | R10 | `model`/`thinking` are exposed as optional, producer-validated fields | Real evidence exists for the pinned producer; absent elsewhere | Fields appear only for 0.59.0-shaped payloads |
-| R11 | No jsdom; route logic is extracted into a testable module | Avoids a heavy test dependency and flaky DOM emulation | Route tests cover logic, not pixel behavior (UAT covers that) |
+| R11 | Automatic proof of route → rendered active state via pure view-model tests plus document-structure assertions; a DOM is optional, not a precondition | The original active-state bug must not rest on manual UAT, and pure tests are the lightest harness that proves it | If those layers cannot express a behavior, a small DOM devDependency must be added later with justification |
+| R12 | A capped discovery makes `sessionRatio` `null` and forbids any percentage or `N / N` rendering | The workspace denominator is unknown; a ratio over the capped set would assert unmeasured coverage | The capped case shows counts instead of a percentage |
+| R13 | Inactive view ranges and inactive table settings are ephemeral caches, not deep-link state | The route must be the single authority; two sources of truth recreate the original active-state bug | Reopening a deep link resets other views' ranges/table settings to defaults |
+| R14 | Aggregate range membership requires at least one in-range observed record, not span overlap | Span intersection is not usage in the period | A session that brackets a range without activity inside it is excluded from that range's rows |
 
 ---
 
