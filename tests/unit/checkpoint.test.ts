@@ -335,9 +335,29 @@ test("resource counts extend in place and evidence is a single sibling", async (
       read?.evidence?.usageCoverage,
       withEvidence.evidence?.usageCoverage,
     );
-    // Exactly one physical resource-count location and one metadata object.
-    assert.equal("evidence" in (read?.aggregates ?? {}), false);
-    assert.equal("resourceCounts" in (read?.evidence ?? {}), false);
+    // The raw persisted bytes, not the reconstructed read, must pin exactly one
+    // physical resource-count location and one metadata object.
+    const raw = JSON.parse(
+      await readFile(join(directory, "checkpoint.json"), "utf8"),
+    ) as {
+      aggregates: Record<string, unknown>;
+      evidence: Record<string, unknown>;
+    };
+    assert.deepEqual(
+      Object.keys(raw.evidence).filter(
+        (key) =>
+          !["checkpointedAt", "detailCoverage", "usageCoverage"].includes(key),
+      ),
+      [],
+    );
+    assert.equal(Object.hasOwn(raw.aggregates, "resourceCounts"), true);
+    assert.deepEqual(
+      raw.aggregates.resourceCounts,
+      withEvidence.aggregates.resourceCounts,
+    );
+    // `resourceCounts` appears exactly once in the serialized state, i.e. only
+    // under `aggregates` and never mirrored into `evidence`.
+    assert.equal(JSON.stringify(raw).match(/"resourceCounts"/g)?.length, 1);
     await lease.release();
   } finally {
     await rm(directory, { force: true, recursive: true });
@@ -374,7 +394,9 @@ test("legacy checkpoint without evidence still parses", async () => {
 test("rejects present-but-invalid evidence and extended resource counts", async () => {
   for (const aggregates of [
     { resourceCounts: { commands: 1, skills: 1, resources: -1 } },
+    { resourceCounts: { commands: 1, skills: 1, resources: 1_000_000_001 } },
     { resourceCounts: { commands: 1, skills: 1, toolSources: 1.5 } },
+    { resourceCounts: { commands: 1, skills: 1, toolSources: 1_000_000_001 } },
     { resourceCounts: { commands: 1, skills: 1, observedAt: "whenever" } },
     { resourceCounts: { commands: 1, skills: 1, observedAt: 42 } },
   ]) {
