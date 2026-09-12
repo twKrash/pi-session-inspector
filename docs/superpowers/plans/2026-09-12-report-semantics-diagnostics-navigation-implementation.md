@@ -61,6 +61,7 @@ Verified at `910a665` → `81f65b7` (v0.8.0, evidence foundation). Only facts a 
 - **No test helper named in this plan exists yet** unless the target test file already imports
   it. Each task defines the helpers it uses in its own test file as part of step 1.
 - **Baseline suite:** 588 tests pass (`npm ci && npm test`).
+
 ## Global constraints
 
 - Pi JSONL is authority. Never write Pi session data (tracking marker is the only exception),
