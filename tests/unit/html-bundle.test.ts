@@ -9,12 +9,23 @@ import {
 } from "../../src/ui/bundle.ts";
 import {
   aggregateUsageLabels,
+  ENGLISH_CATALOG,
+  inlineModuleSource,
   renderInspectorBundle,
+  toolCalls,
+  toolDuration,
+  toolSummary,
+  type ToolCallRow,
+  type ToolSummaryRow,
 } from "../../src/ui/html.ts";
 import {
   bundleInput,
   currentModelWithAgents,
+  currentModelWithHostileToolArguments,
+  currentModelWithPartialToolUsage,
+  currentModelWithTools,
   embedOf,
+  hostileToolArgumentEntries,
   modelWithActivityAndRuns,
   modelWithOrphanChild,
   modelWithOrphanChildAndParent,
@@ -568,6 +579,171 @@ test("a parent outside the selected projection is labelled, not linked", async (
     html,
     /Parent: outside selected scope|agents\.parentOutsideScope/,
   );
+});
+
+/** The tool rows the document projects for its initially shown view. */
+function toolPayload(html: string): ToolCallRow[] {
+  const data = embedOf(html);
+  return (data.current.active as { report: { tools: ToolCallRow[] } }).report
+    .tools;
+}
+
+/** The catalog sentence the browser renders for one summary row. */
+function usageFraction(row: ToolSummaryRow): string {
+  return ENGLISH_CATALOG["tools.usageFraction"]
+    .replace("{withUsage}", String(row.withUsage))
+    .replace("{total}", String(row.calls));
+}
+
+test("tools summary aggregates and the calls view keeps real timestamps", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithTools(),
+    }),
+  );
+  assert.match(html, /tools\.summary|Tools summary/);
+  assert.match(html, /2026-03-01T10:00:00\.000Z/);
+  assert.match(html, /tools\.lastUsed|Last used/);
+
+  // Both views read the one projection: the summary groups the same calls the
+  // timeline lists, one row per tool name, sorted by name, with the maximum
+  // persisted call timestamp as last used.
+  const rows = toolPayload(html);
+  const summary = toolSummary({ tools: rows });
+  assert.deepEqual(
+    summary.map((row) => [
+      row.name,
+      row.calls,
+      row.succeeded,
+      row.failed,
+      row.interrupted,
+      row.lastUsed,
+    ]),
+    [
+      ["bash", 1, 0, 1, 0, "2026-02-01T23:59:00.000Z"],
+      ["read", 1, 1, 0, 0, "2026-03-01T10:00:00.000Z"],
+    ],
+  );
+  // The first known source label of a name survives, even when only a later
+  // call of that name attributed one.
+  assert.equal(
+    toolSummary({
+      tools: [
+        {
+          name: "read",
+          status: "succeeded",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          usage: null,
+        },
+        {
+          name: "read",
+          source: "extension",
+          status: "succeeded",
+          timestamp: "2026-02-01T10:00:01.000Z",
+          usage: null,
+        },
+      ],
+    })[0].source,
+    "extension",
+  );
+  // Newest first, from the persisted call timestamps only.
+  assert.deepEqual(
+    toolCalls({ tools: rows }, null).map((row) => row.timestamp),
+    ["2026-03-01T10:00:00.000Z", "2026-02-01T23:59:00.000Z"],
+  );
+  // Selecting a summary row narrows the calls view to that tool name; `null` is
+  // the cleared state the clear-filter control restores.
+  assert.deepEqual(
+    toolCalls({ tools: rows }, "bash").map((row) => row.name),
+    ["bash"],
+  );
+
+  // Duration is live-correlated evidence only: without supported timing a row
+  // renders Unavailable, and no value is ever estimated from call timestamps.
+  assert.equal(toolDuration({ durationLabel: "42 ms" }, "unavailable"), null);
+  assert.equal(toolDuration({ durationLabel: "42 ms" }, "supported"), "42 ms");
+  assert.equal(toolDuration({ durationLabel: null }, "supported"), null);
+
+  // The document runs this same derivation: the copied source is callable with
+  // no module scope, so the browser cannot drift from the tested function.
+  assert.equal(inlineModuleSource().includes("const toolSummary="), true);
+  const inlined = new Function(
+    `${inlineModuleSource()}\nreturn {toolSummary};`,
+  )() as { toolSummary: typeof toolSummary };
+  assert.deepEqual(inlined.toolSummary({ tools: rows }), summary);
+});
+
+test("partial tool usage is stated, never extrapolated", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithPartialToolUsage(),
+    }),
+  );
+  const [row] = toolSummary({ tools: toolPayload(html) });
+  // The known value is the usage the one reporting call persisted, never that
+  // value projected onto the whole call set.
+  assert.deepEqual(
+    [
+      row.name,
+      row.calls,
+      row.succeeded,
+      row.failed,
+      row.interrupted,
+      row.tokens,
+      row.cost,
+      row.withUsage,
+    ],
+    ["read", 3, 2, 1, 0, 180, 0.04, 1],
+  );
+  assert.equal(usageFraction(row), "1 of 3 calls reported usage");
+  assert.match(html, /Known tokens/);
+  // The browser states that sentence from the catalog key over the rows it
+  // renders, and a call set whose calls reported no usage is Unavailable.
+  assert.match(html, /tr\("tools\.usageFraction",\{withUsage:/);
+  assert.match(html, /withUsage===0\?tr\("evidence\.unavailable"\)/);
+  // Two of the three calls persisted no usage, so both render Unavailable.
+  assert.equal(
+    toolCalls({ tools: toolPayload(html) }, null).filter(
+      (call) => call.usage === null,
+    ).length,
+    2,
+  );
+});
+
+test("tool tables never render arguments or result bodies", async () => {
+  const html = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithHostileToolArguments(),
+    }),
+  );
+  assert.equal(/SECRET_ARGUMENT|SECRET_RESULT/.test(html), false);
+
+  // The persisted entries really carry both sentinels, so the absence above is
+  // the projection dropping them and not the scenario failing to plant them.
+  const entries = JSON.stringify(hostileToolArgumentEntries());
+  assert.equal(entries.includes("SECRET_ARGUMENT"), true);
+  assert.equal(entries.includes("SECRET_RESULT"), true);
+
+  // The scenario still renders its call, so the absence above is not vacuous,
+  // and the row carries named bounded fields only: a persisted argument or
+  // result body has no path into either tools view.
+  const rows = toolPayload(html);
+  assert.deepEqual(
+    toolSummary({ tools: rows }).map((row) => row.name),
+    ["read"],
+  );
+  assert.deepEqual(Object.keys(rows[0]).sort(), [
+    "durationLabel",
+    "durationMs",
+    "id",
+    "name",
+    "status",
+    "timestamp",
+    "usage",
+  ]);
 });
 
 test("the agents panel reads the rows it renders, never a stored fraction", () => {

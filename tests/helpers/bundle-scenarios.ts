@@ -82,6 +82,13 @@ type Call = {
   resultAt?: string;
   isError?: boolean;
   usage?: ProducerUsage;
+  /**
+   * Hostile producer argument payload and result body, planted exactly as Pi
+   * persists them. Neither is a pinned output: they exist so a privacy test can
+   * prove no tool view ever reads a field outside the bounded row set.
+   */
+  input?: unknown;
+  resultText?: string;
 };
 
 /** One assistant tool call plus its persisted result, as Pi records them. */
@@ -98,7 +105,14 @@ function callEntries(calls: readonly Call[]): SessionEntry[] {
           role: "assistant",
           provider: "acme",
           model: "alpha",
-          content: [{ type: "toolCall", id: call.callId, name: call.name }],
+          content: [
+            {
+              type: "toolCall",
+              id: call.callId,
+              name: call.name,
+              ...(call.input === undefined ? {} : { input: call.input }),
+            },
+          ],
         },
       },
       {
@@ -111,7 +125,10 @@ function callEntries(calls: readonly Call[]): SessionEntry[] {
           toolCallId: call.callId,
           toolName: call.name,
           isError: call.isError === true,
-          content: [],
+          content:
+            call.resultText === undefined
+              ? []
+              : [{ type: "text", text: call.resultText }],
           ...(call.usage === undefined ? {} : { usage: call.usage }),
         },
       },
@@ -166,7 +183,9 @@ function modelOf(
 
 /**
  * Native tool calls only: one succeeded call carrying usage and one failed call
- * whose persisted error record joins it by the canonical tool id.
+ * whose persisted error record joins it by the canonical tool id. The read call
+ * sits on a later UTC day than every other scenario's call, so a tools test can
+ * pin the summary's last-used instant against the persisted timestamp.
  */
 export function currentModelWithTools(): CurrentTuiModel {
   return modelOf(
@@ -175,8 +194,8 @@ export function currentModelWithTools(): CurrentTuiModel {
         {
           callId: "call_read",
           name: "read",
-          calledAt: "2026-02-01T10:00:00.000Z",
-          resultAt: "2026-02-01T10:00:01.000Z",
+          calledAt: "2026-03-01T10:00:00.000Z",
+          resultAt: "2026-03-01T10:00:01.000Z",
           usage: { totalTokens: 180, cost: { total: 0.04 } },
         },
         {
@@ -191,6 +210,73 @@ export function currentModelWithTools(): CurrentTuiModel {
     ),
     "tree",
   );
+}
+
+/**
+ * One tool name called three times where only the first call persisted usage:
+ * the summary must state `1 of 3` instead of extrapolating the one known value
+ * to the whole call set.
+ */
+export function currentModelWithPartialToolUsage(): CurrentTuiModel {
+  return modelOf(
+    reportWith(
+      [
+        {
+          callId: "call_read_1",
+          name: "read",
+          calledAt: "2026-02-01T10:00:00.000Z",
+          resultAt: "2026-02-01T10:00:01.000Z",
+          usage: { totalTokens: 180, cost: { total: 0.04 } },
+        },
+        {
+          callId: "call_read_2",
+          name: "read",
+          calledAt: "2026-02-01T10:00:05.000Z",
+          resultAt: "2026-02-01T10:00:06.000Z",
+        },
+        {
+          callId: "call_read_3",
+          name: "read",
+          calledAt: "2026-02-01T10:00:09.000Z",
+          resultAt: "2026-02-01T10:00:10.000Z",
+          isError: true,
+        },
+      ],
+      [],
+    ),
+    "tree",
+  );
+}
+
+/**
+ * The persisted call whose argument payload and result body both carry hostile
+ * sentinels. It is one record so the model and the raw entries cannot drift.
+ */
+const HOSTILE_CALL: Call = {
+  callId: "call_read",
+  name: "read",
+  input: {
+    path: "/home/dev/SECRET_ARGUMENT/notes.md",
+    command: "cat SECRET_ARGUMENT",
+  },
+  resultText: "SECRET_RESULT: file body",
+};
+
+/**
+ * One call whose persisted argument payload and result body carry hostile
+ * sentinels: the tool rows are built from named bounded fields only, so neither
+ * sentinel can reach any tools view.
+ */
+export function currentModelWithHostileToolArguments(): CurrentTuiModel {
+  return modelOf(reportWith([HOSTILE_CALL], []), "tree");
+}
+
+/**
+ * The same scenario's raw persisted entries, so a privacy test can prove the
+ * sentinels were planted and the projection is what dropped them.
+ */
+export function hostileToolArgumentEntries(): SessionEntry[] {
+  return callEntries([HOSTILE_CALL]);
 }
 
 /**

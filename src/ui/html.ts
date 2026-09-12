@@ -158,6 +158,15 @@ export const ENGLISH_CATALOG = {
   "tools.note":
     "Tokens and cost appear only when a matching tool result persisted usage.",
   "tools.none": "No native tool calls recorded.",
+  "tools.summary": "Tools summary",
+  "tools.calls": "Calls timeline",
+  "tools.lastUsed": "Last used",
+  "tools.usageFraction": "{withUsage} of {total} calls reported usage",
+  "tools.filteredBy": "Filtered by {tool}",
+  "tools.clearFilter": "Show all tools",
+  "tools.succeeded": "Succeeded",
+  "tools.failed": "Failed",
+  "tools.interrupted": "Interrupted",
   "tools.bars.note": "Call count by tool",
   "bars.empty": "No observations in the selected scope.",
   "agents.note":
@@ -373,8 +382,12 @@ type ModelRow = {
   cacheWriteTokens?: number;
 };
 type BarRow = { label: string; value: string; percent: number };
-type ToolRow = {
-  id: string;
+/**
+ * The bounded call fields both tools views read (design §7.6). The derivation is
+ * typed to exactly these names, so a persisted argument payload or result body
+ * has no path into either view even when a producer planted one.
+ */
+export type ToolCallRow = {
   name: string;
   /** Sanitized inventory source label; absent when no source was attributed. */
   source?: string;
@@ -384,6 +397,13 @@ type ToolRow = {
    * time attribution for a tool row, so usage stays on the call day.
    */
   timestamp: string;
+  /** Persisted usage, or `null` when the matching result carried none. */
+  usage: { totalTokens: number; cost: number } | null;
+};
+
+/** The projected call row: the shared fields plus the table-only ones. */
+type ToolRow = Omit<ToolCallRow, "usage"> & {
+  id: string;
   usage: SafeUsage | null;
   durationMs: number | null;
   durationLabel: string | null;
@@ -491,11 +511,12 @@ type HistoryEntry = {
 };
 
 /**
- * The range module's browser half, inlined into the generated document so the
- * client and the tests run exactly the same source: there is one range filter,
- * and it cannot drift from the module the unit tests import. Each entry is
- * emitted as `const <name>=<source>;` so the script defines the very bindings
- * the tests import. Task 14 extends this list with the route functions.
+ * The document's pure browser half, inlined into the generated document so the
+ * client and the tests run exactly the same source: there is one range filter
+ * and one tools derivation, and neither can drift from the functions the unit
+ * tests import. Each entry is emitted as `const <name>=<source>;` so the script
+ * defines the very bindings the tests exercise. Task 14 extends this list with
+ * the route functions.
  *
  * Every listed function is self-contained (`src/ui/range.ts` documents why:
  * no module scope, no clock, no named nested helper, hence no `__name`).
@@ -510,6 +531,9 @@ const INLINED_FUNCTIONS = [
   parseRangeQuery,
   filterView,
   historyRowRange,
+  toolSummary,
+  toolCalls,
+  toolDuration,
 ] as const;
 
 /**
@@ -1152,6 +1176,110 @@ function toolRows(report: SessionReport): ToolRow[] {
   }));
 }
 
+/** One tool name's grouped calls: the summary view's row (design §7.6). */
+export type ToolSummaryRow = {
+  name: string;
+  /** The first known inventory source label of this name; absent when none. */
+  source?: string;
+  calls: number;
+  succeeded: number;
+  failed: number;
+  interrupted: number;
+  /** Known usage: the sum over this name's usage-bearing calls only. */
+  tokens: number;
+  cost: number;
+  /** How many of `calls` persisted usage; `0` makes tokens/cost Unavailable. */
+  withUsage: number;
+  /** The maximum persisted call timestamp; fixed-width UTC sorts by string. */
+  lastUsed: string;
+};
+
+/**
+ * The summary view: `view.tools` grouped by tool name, one row per name, sorted
+ * by name (design §7.6). `calls` is the set the caller selected, so a range
+ * filter narrows the summary and its counts together; `lastUsed` is the maximum
+ * persisted call timestamp of that selected set (range-filtered like the counts,
+ * §5.2) and `source` the first known label of that name, which is a static
+ * inventory fact and not a range figure. A call with no persisted usage
+ * contributes to `calls` and never to `tokens`, `cost`, or `withUsage`.
+ */
+export function toolSummary(view: {
+  tools?: readonly ToolCallRow[];
+}): ToolSummaryRow[] {
+  const grouped = new Map<string, ToolSummaryRow>();
+  for (const row of view.tools ?? []) {
+    const group = grouped.get(row.name) ?? {
+      name: row.name,
+      calls: 0,
+      succeeded: 0,
+      failed: 0,
+      interrupted: 0,
+      tokens: 0,
+      cost: 0,
+      withUsage: 0,
+      lastUsed: row.timestamp,
+    };
+    grouped.set(row.name, group);
+    group.calls += 1;
+    if (row.status === "succeeded") group.succeeded += 1;
+    else if (row.status === "failed") group.failed += 1;
+    else group.interrupted += 1;
+    if (group.source === undefined && row.source !== undefined) {
+      group.source = row.source;
+    }
+    if (row.usage !== null && row.usage !== undefined) {
+      group.withUsage += 1;
+      group.tokens += row.usage.totalTokens;
+      group.cost =
+        Math.round((group.cost + row.usage.cost) * 1_000_000_000_000) /
+        1_000_000_000_000;
+    }
+    if (row.timestamp > group.lastUsed) group.lastUsed = row.timestamp;
+  }
+  return [...grouped.values()].sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+}
+
+/**
+ * The calls/timeline view: one row per call, newest first by its own persisted
+ * timestamp, narrowed to `filter` when a summary row selected a tool name and to
+ * every call when the filter is `null`. Equal timestamps keep source order.
+ */
+export function toolCalls<T extends ToolCallRow>(
+  view: { tools?: readonly T[] },
+  filter: string | null,
+): T[] {
+  const rows = view.tools ?? [];
+  const selected =
+    filter === null || filter === undefined
+      ? rows
+      : rows.filter((row) => row.name === filter);
+  return selected
+    .slice()
+    .sort((left, right) =>
+      left.timestamp < right.timestamp
+        ? 1
+        : left.timestamp > right.timestamp
+          ? -1
+          : 0,
+    );
+}
+
+/**
+ * The live duration a call row may render, or `null` for Unavailable. Duration
+ * is live-correlated evidence only: without `durationEvidence === "supported"`
+ * no value is shown, so it is never estimated from this call's timestamp or a
+ * neighbouring one (design §7.6).
+ */
+export function toolDuration(
+  row: { durationLabel: string | null },
+  durationEvidence: EvidenceState,
+): string | null {
+  if (durationEvidence !== "supported") return null;
+  return row.durationLabel ?? null;
+}
+
 /**
  * Every `AgentRun` field reaches the browser row, and an absent optional field
  * is `null`: never `""` and never a placeholder entity (spec §6.2).
@@ -1640,12 +1768,17 @@ const state={section:"current",scope:data.initialScope,tab:"overview",session:nu
 // One unresolved range intent per view identity: "current" is shared by both
 // scopes, history is split between its aggregate and each session.
 const rangeIntents={};
+// One selected tool name per view identity: that identity's calls view narrows
+// to it and the clear-filter control returns every call. A filter is per-table
+// state of the view it was chosen in, never a figure another view inherits.
+const toolFilters={};
 const currentView=()=>data.current[state.scope];
 const currentReport=()=>{const view=currentView();return view&&view.availability==="available"?view.report:null;};
 const historySessions=()=>data.history.sessions||[];
 const selectedSession=()=>state.section==="history"&&state.session!==null?historySessions()[state.session]:null;
 const viewIdentity=()=>state.section==="history"?(state.session===null?"history:aggregate":"history:"+historySessions()[state.session].sessionId):state.section;
 const activeIntent=()=>rangeIntents[viewIdentity()];
+const activeToolFilter=()=>toolFilters[viewIdentity()]||null;
 const activeDaily=()=>{if(state.section==="current")return (currentView()&&currentView().daily)||[];if(state.section==="global")return data.global.daily||[];const session=selectedSession();if(session)return session.availability==="available"?(session.usageByDate||[]).map(row=>({...row,sessions:1})):[];return data.history.daily||[];};
 const activeRange=()=>resolveRange(activeIntent(),activeDaily().map(row=>row.date),viewIdentity()==="current"?"current":"aggregate");
 const period=()=>activeRange()||{preset:null,from:"",to:""};
@@ -1745,7 +1878,27 @@ function integrationsPanel(view,title){const wrap=el("div",""),integrations=view
 // rows outside the range are a range statement.
 function modelRangeRows(rows){const groups={},order=[];rows.forEach(row=>{const key=row.provider+"\u0000"+row.model,g=groups[key]||{provider:row.provider,model:row.model,generations:0,totalTokens:0,cost:0};if(!groups[key])order.push(key);groups[key]=g;g.generations+=row.generations||0;g.totalTokens+=row.totalTokens||0;g.cost+=row.cost||0});return order.sort().map(key=>{const g=groups[key];g.cost=Math.round(g.cost*1e12)/1e12;return g});}
 function modelsPanel(view,title,source){if(source===undefined)return view.models.length===0?emptyCard(title,tr("models.none"),"evidence.native"):table(title,tr("models.note")+ALL_DATES,[tr("table.provider"),tr("table.model"),tr("table.generations"),tr("table.input"),tr("table.output"),tr("table.cacheRead"),tr("table.cacheWrite"),tr("table.tokens"),tr("table.cost")],view.models.map(row=>[row.provider,row.model,number(row.generations),numberOrUnavailable(row.inputTokens),numberOrUnavailable(row.outputTokens),numberOrUnavailable(row.cacheReadTokens),numberOrUnavailable(row.cacheWriteTokens),number(row.totalTokens),money(row.cost)]));const filtered=filteredView(view,source),rows=filtered?modelRangeRows(filtered.models):[],section=rows.length===0?(source.datedModels.length===0?unavailableSection(title,tr("models.none")):emptyCard(title,tr("chart.empty"),"evidence.unavailable")):table(title,tr("models.note"),[tr("table.provider"),tr("table.model"),tr("table.generations"),tr("table.tokens"),tr("table.cost")],rows.map(row=>[row.provider,row.model,number(row.generations),number(row.totalTokens),money(row.cost)]));if(source.modelsTruncated)section.append(el("div","footnote",tr("models.truncated")));return section;}
-function detail(view,title,source){if(state.tab==="models")return modelsPanel(view,title,source);if(state.tab==="tools"){const filtered=filteredView(view),tools=filtered?filtered.tools:view.tools;if(tools.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("tools.none"),"evidence.native");return table(title,tr("tools.note")+(filtered?"":ALL_DATES),[tr("table.tool"),tr("table.source"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.duration")],tools.map(row=>[row.name,orUnavailable(row.source),row.status,row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),row.durationLabel===null?tr("evidence.unavailable"):row.durationLabel+" · "+tr("evidence.live")]));}if(state.tab==="commands"){const commands=view.commands;if(!commands||commands.items.length===0)return emptyCard(title,commands&&commands.count!==null?tr("commands.count",{count:number(commands.count)}):tr("unavailable.commands"),"evidence.unavailable");return table(title,tr("commands.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.description")],commands.items.map(row=>[row.name,orUnavailable(row.sourceLabel||row.source||null),row.scope,row.origin,orUnavailable(row.description)]));}if(state.tab==="agents")return agentsPanel(view,title);if(state.tab==="skills")return skillsPanel(view,title);if(state.tab==="integrations")return integrationsPanel(view,title);if(state.tab==="errors"){const filtered=filteredView(view),errors=filtered?filtered.errors:view.errors;if(errors.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("errors.none"),"evidence.native");return table(title,tr("errors.note")+(filtered?"":ALL_DATES),[tr("table.id"),tr("table.kind"),tr("table.timestamp"),tr("table.message"),tr("table.confidence")],errors.map(row=>[row.id,row.kind,row.timestamp,orUnavailable(row.message),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}return unavailableSection(title,tr("unavailable.copy"));}
+// The Tools tab renders two views over one projection: the summary groups the
+// same in-range call rows the calls timeline lists, so both move with the range
+// and the summary totals always equal the sum of its own call rows (design
+// §7.6, §7.7-7). A summary row's tool name is the anchor that narrows the calls
+// view; the clear-filter control returns that view to every call. One table()
+// call per panel keeps one search/sort pair, so the calls timeline renders
+// through the plain table helper inside the same card style.
+const TOOL_STATUS_BUCKETS=["succeeded","failed","interrupted"];
+// Known usage only: a set whose calls reported no usage states Unavailable,
+// never a fabricated zero, and a partial set keeps its Known qualifier.
+function toolValueCell(value,key,row){if(row.withUsage===0)return tr("evidence.unavailable");if(row.withUsage<row.calls)return knownValue(value,key);return value;}
+function toolSummaryMetrics(summary){const calls=summary.reduce((sum,row)=>sum+row.calls,0),withUsage=summary.reduce((sum,row)=>sum+row.withUsage,0),tokens=summary.reduce((sum,row)=>sum+row.tokens,0),cost=Math.round(summary.reduce((sum,row)=>sum+row.cost,0)*1e12)/1e12,fraction=tr("tools.usageFraction",{withUsage:withUsage,total:calls}),metrics=el("div","metrics");metrics.append(metric(tr("table.calls"),number(calls),tr("metric.tools.note")));TOOL_STATUS_BUCKETS.forEach(status=>{const count=summary.reduce((sum,row)=>sum+row[status],0);if(count>0)metrics.append(metric(tr("tools."+status),number(count),tr("metric.tools.note")));});metrics.append(metric(tr("metric.knownTokens"),withUsage===0?tr("evidence.unavailable"):number(tokens),fraction),metric(tr("metric.knownCost"),withUsage===0?tr("evidence.unavailable"):money(cost),fraction));return metrics;}
+function toolFilterAnchor(name){const button=el("button","",name);button.dataset.toolFilter=name;button.setAttribute("aria-label",tr("tools.filteredBy",{tool:name}));return button;}
+function toolSummaryCells(row){return [toolFilterAnchor(row.name),number(row.calls),number(row.succeeded),number(row.failed),number(row.interrupted),toolValueCell(number(row.tokens),"metric.knownTokens",row),toolValueCell(money(row.cost),"metric.knownCost",row),row.lastUsed,orUnavailable(row.source)];}
+// Duration is live-correlated evidence only, never estimated from timestamps.
+function toolDurationCell(row,evidence){const label=toolDuration(row,evidence);return label===null?tr("evidence.unavailable"):label+" · "+tr("evidence.live");}
+function toolCallCells(rows,evidence){return rows.map(row=>[row.timestamp,row.name,orUnavailable(row.source),badge(tr("tools."+row.status),row.status==="succeeded"?"":"warn"),row.usage?number(row.usage.totalTokens):tr("evidence.unavailable"),row.usage?money(row.usage.cost):tr("evidence.unavailable"),toolDurationCell(row,evidence)]);}
+function toolFilterBar(filter){const bar=el("div","toolbar"),clear=el("button","",tr("tools.clearFilter"));clear.dataset.clearFilter="true";bar.append(el("span","muted",tr("tools.filteredBy",{tool:filter})),clear);return bar;}
+function toolCallsCard(rows,filtered,evidence,filter){const section=card(tr("tools.calls"),tr("tools.note")+(filtered?"":ALL_DATES));if(filter!==null)section.append(toolFilterBar(filter));return simpleTable(section,[tr("table.timestamp"),tr("table.tool"),tr("table.source"),tr("table.status"),tr("table.tokens"),tr("table.cost"),tr("table.duration")],toolCallCells(rows,evidence));}
+function toolsPanel(view,title,filtered,context){const summary=toolSummary(context);if(summary.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("tools.none"),"evidence.native");const filter=activeToolFilter(),calls=toolCalls(context,filter),wrap=el("div",""),summarySection=table(tr("tools.summary"),tr("tools.note")+(filtered?"":ALL_DATES),[tr("table.tool"),tr("table.calls"),tr("tools.succeeded"),tr("tools.failed"),tr("tools.interrupted"),tr("table.tokens"),tr("table.cost"),tr("tools.lastUsed"),tr("table.source")],summary.map(toolSummaryCells),toolSummaryMetrics(summary)),callsSection=calls.length===0?emptyCard(tr("tools.calls"),tr("chart.empty"),"evidence.unavailable"):toolCallsCard(calls,filtered,view.durationEvidence,filter);if(filter!==null&&calls.length===0)callsSection.append(toolFilterBar(filter));wrap.append(summarySection,callsSection);return wrap;}
+function detail(view,title,source){if(state.tab==="models")return modelsPanel(view,title,source);if(state.tab==="tools"){const filtered=filteredView(view);return toolsPanel(view,title,filtered,filtered||view);}if(state.tab==="commands"){const commands=view.commands;if(!commands||commands.items.length===0)return emptyCard(title,commands&&commands.count!==null?tr("commands.count",{count:number(commands.count)}):tr("unavailable.commands"),"evidence.unavailable");return table(title,tr("commands.note"),[tr("table.name"),tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.description")],commands.items.map(row=>[row.name,orUnavailable(row.sourceLabel||row.source||null),row.scope,row.origin,orUnavailable(row.description)]));}if(state.tab==="agents")return agentsPanel(view,title);if(state.tab==="skills")return skillsPanel(view,title);if(state.tab==="integrations")return integrationsPanel(view,title);if(state.tab==="errors"){const filtered=filteredView(view),errors=filtered?filtered.errors:view.errors;if(errors.length===0)return emptyCard(title,filtered?tr("chart.empty"):tr("errors.none"),"evidence.native");return table(title,tr("errors.note")+(filtered?"":ALL_DATES),[tr("table.id"),tr("table.kind"),tr("table.timestamp"),tr("table.message"),tr("table.confidence")],errors.map(row=>[row.id,row.kind,row.timestamp,orUnavailable(row.message),badge(tr("evidence."+row.confidence),confidenceTone(row.confidence))]));}if(state.tab==="ledger"){if(view.ledger.length===0)return emptyCard(title,tr("empty.ledger"),"evidence.unavailable");return table(title,tr("ledger.materialized"),[tr("table.timestamp"),tr("table.id"),tr("table.category"),tr("table.action"),tr("table.confidence")],view.ledger.map(item=>[item.timestamp,item.id,item.kind,item.status,item.confidence]));}return unavailableSection(title,tr("unavailable.copy"));}
 function sessionCell(entry){const cell=document.createElement("div");cell.append(el("span","mono",entry.sessionId));cell.append(el("small","",entry.firstDate?(entry.firstDate+(entry.lastDate&&entry.lastDate!==entry.firstDate?" → "+entry.lastDate:"")):tr("evidence.unavailable")));return cell;}
 function openButton(index){const button=el("button","",tr("table.open"));button.dataset.session=String(index);button.setAttribute("aria-label",tr("table.open")+" "+historySessions()[index].sessionId);return button;}
 function historyRowCells(item,group){const entry=item.entry,verdict=item.verdict,partial=group==="member"&&verdict.partial,member=group==="member";return [sessionCell(entry),orUnavailable(entry.durationLabel),member?(partial?knownValue(number(verdict.totalTokens),"metric.knownTokens"):number(verdict.totalTokens)):tr("evidence.unavailable"),entry.generationCount===null?tr("evidence.unavailable"):number(entry.generationCount),entry.agentCount===null?tr("evidence.unavailable"):number(entry.agentCount),entry.status?badge(tr(entry.status.key),entry.status.tone):tr("evidence.unavailable"),member?(partial?knownValue(money(verdict.cost),"metric.knownCost"):money(verdict.cost)):tr("evidence.unavailable"),entry.view?openButton(item.index):""];}
@@ -1765,7 +1918,7 @@ const tabsNode=q("tabs");TABS.forEach(tab=>{const button=el("button","",tr("tab.
 scopeButtons.forEach(button=>button.addEventListener("click",()=>{if(button.disabled)return;state.scope=button.dataset.scope;state.resetScroll=true;render();}));
 document.addEventListener("input",event=>{if(event.target.id!=="search")return;state.query=event.target.value;render();});
 document.addEventListener("change",event=>{if(event.target.id==="sort"){state.sort=event.target.value;render();}else if(event.target.id==="chart-metric"){state.metric=event.target.value;render();const select=q("chart-metric");if(select)select.focus();}});
-document.addEventListener("click",event=>{const button=event.target&&event.target.closest?event.target.closest("button"):null;if(!button)return;if(button.dataset.back!==undefined){state.session=null;state.tab="overview";state.resetScroll=true;render();}else if(button.dataset.session!==undefined){state.session=Number(button.dataset.session);state.tab="overview";state.resetScroll=true;render();}});
+document.addEventListener("click",event=>{const button=event.target&&event.target.closest?event.target.closest("button"):null;if(!button)return;if(button.dataset.back!==undefined){state.session=null;state.tab="overview";state.resetScroll=true;render();}else if(button.dataset.session!==undefined){state.session=Number(button.dataset.session);state.tab="overview";state.resetScroll=true;render();}else if(button.dataset.toolFilter!==undefined){toolFilters[viewIdentity()]=button.dataset.toolFilter;render();}else if(button.dataset.clearFilter!==undefined){toolFilters[viewIdentity()]=null;render();}});
 [].slice.call(document.querySelectorAll("[data-days]")).forEach(button=>button.addEventListener("click",()=>{rangeIntents[viewIdentity()]={kind:"preset",preset:Number(button.dataset.days)};render();}));
 q("custom-range").addEventListener("click",()=>{const range=activeRange();q("date-from").value=range?range.from:"";q("date-to").value=range?range.to:"";q("date-error").textContent="";q("date-dialog").showModal();});
 q("date-cancel").addEventListener("click",()=>q("date-dialog").close());
