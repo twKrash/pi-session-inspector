@@ -113,6 +113,62 @@ test("an unattributable native line marks the window partial, never zero", () =>
   assert.ok(dates.reduce((sum, row) => sum + row.totalTokens, 0) > 0);
 });
 
+test("an overflowed session never dates its unaggregatable usage as zero", () => {
+  const session = canonicalOfSource(overflowSource());
+  // The fixture must reach the real L1 overflow verdict, never a relaxed one.
+  assert.equal(session.usage.state, "unavailable");
+  assert.equal(
+    session.usage.lines.filter((line) => line.domain === "native-session")
+      .length,
+    2,
+  );
+  const { dates, truncated } = sessionDatedUsage(session);
+  // The bounded lines stay dated as activity only; an unaggregatable spend is
+  // never republished as a zero and the window is never called complete.
+  assert.equal(truncated, true);
+  assert.deepEqual(
+    dates.map((row) => [row.date, row.totalTokens, row.cost, row.generations]),
+    [["2026-09-12", 0, 0, 2]],
+  );
+  for (const row of dates) {
+    assert.deepEqual(row.composition, {
+      generations: { totalTokens: 0, cost: 0 },
+      toolResults: { totalTokens: 0, cost: 0 },
+      compactions: { totalTokens: 0, cost: 0 },
+      branchSummaries: { totalTokens: 0, cost: 0 },
+    });
+  }
+});
+
+test("an unavailable usage summary with no native line is not truncation", () => {
+  const session = canonicalOf(FIXTURE);
+  if (session.usage.state !== "known") throw new Error("expected known usage");
+  const { truncated } = sessionDatedUsage({
+    ...session,
+    usage: {
+      state: "unavailable",
+      reason: "overflow",
+      lines: [],
+      coverage: session.usage.coverage,
+    },
+  });
+  assert.equal(truncated, false);
+});
+
+test("sub-micro line costs reconcile exactly with the report", () => {
+  const source = tinyCostSource();
+  const { dates, truncated } = sessionDatedUsage(canonicalOfSource(source));
+  const report = reportOfSource(source);
+  assert.equal(truncated, false);
+  // The case is only meaningful while the spend stays above zero.
+  assert.ok((report.usage?.cost ?? 0) > 0);
+  assert.equal(dates[0]?.cost, report.usage?.cost);
+  assert.equal(
+    dates.reduce((sum, row) => sum + row.cost, 0),
+    report.usage?.cost,
+  );
+});
+
 test("the retained window is capped and flagged", async () => {
   const history = await loadHistoryReports(
     await longSessionOptions({ days: 400 }),
@@ -137,6 +193,106 @@ test("a short session is exact and not truncated", async () => {
     session.report.usage?.totalTokens,
   );
 });
+
+/**
+ * The same production L1 contract as {@link canonicalOf}, from an inline
+ * source, so a case never needs a manifest of its own.
+ */
+function canonicalOfSource(source: string): CanonicalSession {
+  const parsed = parseSessionJsonl(source);
+  const built = buildCanonicalSession({
+    parsed,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(built.state, "ready");
+  if (built.state !== "ready") throw new Error("unreachable");
+  return built.session;
+}
+
+/** The report the loaders would project from the same inline source. */
+function reportOfSource(source: string): SessionReport {
+  const parsed = parseSessionJsonl(source);
+  return toSessionReport(reduceEntries(parsed.id ?? "fixture", parsed.entries));
+}
+
+/** The tracking marker every inline source needs to be a tracked session. */
+function inlineMarker(): string {
+  return JSON.stringify({
+    type: "custom",
+    id: "marker",
+    parentId: null,
+    timestamp: "2026-09-12T09:59:00.000Z",
+    customType: "session-inspector:tracking-start",
+    data: { schemaVersion: 1 },
+  });
+}
+
+/** One assistant generation line carrying the given usage. */
+function inlineGeneration(input: {
+  id: string;
+  parentId: string;
+  timestamp: string;
+  usage: unknown;
+}): string {
+  return JSON.stringify({
+    type: "message",
+    id: input.id,
+    parentId: input.parentId,
+    timestamp: input.timestamp,
+    message: {
+      role: "assistant",
+      provider: "acme",
+      model: "alpha",
+      content: [],
+      usage: input.usage,
+    },
+  });
+}
+
+/**
+ * Two generations whose one-day costs are only representable below 1e-6 per
+ * line, so a coarser per-date rounding cannot reconcile with the report.
+ */
+function tinyCostSource(): string {
+  return `${[
+    JSON.stringify({ type: "session", version: 3, id: "tiny-cost-inline" }),
+    inlineMarker(),
+    inlineGeneration({
+      id: "t1",
+      parentId: "marker",
+      timestamp: "2026-09-12T10:00:00.000Z",
+      usage: { totalTokens: 1, cost: { total: 0.0000004 } },
+    }),
+    inlineGeneration({
+      id: "t2",
+      parentId: "t1",
+      timestamp: "2026-09-12T10:01:00.000Z",
+      usage: { totalTokens: 1, cost: { total: 0.0000004 } },
+    }),
+  ].join("\n")}\n`;
+}
+
+/** Two generations that overflow the canonical aggregate on one day. */
+function overflowSource(): string {
+  return `${[
+    JSON.stringify({ type: "session", version: 3, id: "overflow-inline" }),
+    inlineMarker(),
+    inlineGeneration({
+      id: "big-1",
+      parentId: "marker",
+      timestamp: "2026-09-12T10:00:00.000Z",
+      usage: { totalTokens: Number.MAX_SAFE_INTEGER, cost: { total: 0 } },
+    }),
+    inlineGeneration({
+      id: "big-2",
+      parentId: "big-1",
+      timestamp: "2026-09-12T10:01:00.000Z",
+      usage: { totalTokens: Number.MAX_SAFE_INTEGER, cost: { total: 0 } },
+    }),
+  ].join("\n")}\n`;
+}
 
 /** The one session id the long-window loader cases use. */
 const LONG_SESSION_ID = "22222222-2222-4222-8222-222222222222";
