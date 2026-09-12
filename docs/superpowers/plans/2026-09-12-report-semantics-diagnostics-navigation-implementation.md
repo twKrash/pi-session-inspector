@@ -85,8 +85,13 @@ must run in order.
   `modelForMany` does not; `longSessionOptions`, `optionsWithSource`,
   `optionsWithUnmarkedSource`, `headerFor`, `validSource`, `dailyRow`, `usageRow`,
   `datedModel`, `toolRow`, `bundleWithTruncatedHistory`, `embedOf`,
-  `embedCapabilitiesOf` are all new. Each task that uses one defines it in its own
-  test file (or in a helper file it creates) as part of its first step.
+  `embedCapabilitiesOf`, and every `modelWith*`/`currentModelWith*` fixture used by
+  Tasks 11-15 (`modelWithInventory`, `currentModelWithAgents`,
+  `modelWithToolError`, `modelWithErrorAndThreeChildren`,
+  `modelWithGenerationError`, `modelWithHostileToolResult`, …) are all new. Each
+  task that uses one defines it in its own test file (or in a helper file it
+  creates) as part of its first step; reuse the existing `reportFor`-style builder
+  in each file rather than inventing a second one.
 - `renderHtml(HtmlReport)`/`projectReport` is the **legacy single-section adapter**
   with no production caller; `src/index.ts` renders through
   `renderInspectorBundle`. Its current-view daily rows stay report-derived
@@ -126,11 +131,11 @@ function buildSessionCoverage(input: {
   discoveryLimited: boolean;
   sessions: readonly { availability: "available" | "unavailable"; reason?: CoverageReason }[];
 }): SessionCoverage | undefined;
-/** Total reason→bounded-code mapping (spec §3.1.1, R20); asserted by a table test. */
-const COVERAGE_REASON_CODES: Readonly<Record<CoverageReason, readonly string[]>>;
+/** Total reason→bounded-code mapping (spec §3.1.1, R20); totality is enforced by
+ *  this type, so a missing reason or an unknown code fails `npm run typecheck`. */
+const COVERAGE_REASON_CODES: Readonly<Record<CoverageReason, readonly (HistoryDiagnostic | EvidenceDiagnosticCode)[]>>;
 
 // Task 2: src/ui/load-history.ts (HistoryReport/GlobalReport gain `coverage?: SessionCoverage`)
-
 // DONE ON MAIN (v0.8.0) — do not re-implement: `src/core/events.ts` already
 // exports this exact AgentRun (with observedAt, evidenceToolId, model, thinking,
 // failure), `src/integrations/subagents.ts` already fills every field from
@@ -146,11 +151,13 @@ type SubagentEvidence = { activity: AgentToolActivity; runs: readonly AgentRun[]
 // and on the report DTO (src/core/reports.ts):
 //   agentUsage: { runsTotal: number; runsWithUsage: number };
 
-// Task 2/5: src/ui/load-history.ts
-/** Deterministic source-read classification; the reason a session could not replay. */
+// Task 5: src/ui/load-history.ts (+ src/ui/dated-usage.ts, src/ui/current.ts,
+// src/ui/load-current.ts) — the dated projection and the scan/history fields it
+// adds. `session` is the canonical build, never the report.
+/** Deterministic source-read classification (Task 2); the reason a session could not replay. */
 function sourceReadFailure(parsed: { id?: unknown; hasMalformedJson?: unknown; hasSessionHeader?: unknown }, sessionId: string): CoverageReason | undefined;
-/** Replay seam so a reducer/adapter failure is testable as `replay-failed`. */
-type LoadHistoryOptions = { /* existing */ replay?: (entries: readonly SessionEntry[], sessionId: string) => SessionReport };
+/** Replay seam so a provider/builder/projection failure is testable as `replay-failed`. */
+type LoadHistoryOptions = { /* existing */ replay?: (input: HistoryReplayInput) => SessionReport };
 /**
  * Per-date evidence, grouped from the canonical builder's own attribution
  * (`CanonicalUsageLine.attributedAt`/`domain`/`bucket`) — never re-walked from
@@ -223,7 +230,7 @@ function deriveView(route: InspectorRoute, capabilities: Readonly<Record<string,
   { activeSection: string; activeTab: string; visibleTabs: readonly string[]; scope: Scope; range?: RangeState; entity?: EntityRef; notice?: string; focusTarget: string };
 
 // Task 19: src/commands/grammar.ts
-type RawToken = { raw: string; start: number; end: number; quoted: boolean };
+type RawToken = { raw: string; text: string; start: number; end: number; quoted: boolean };
 function scanInspectorArgs(prefix: string): { tokens: RawToken[]; trailingWhitespace: boolean } | undefined;
 function tokenizeInspectorArgs(prefix: string): { tokens: string[]; trailingWhitespace: boolean } | undefined; // existing, now derived from scanInspectorArgs
 ```
@@ -657,7 +664,6 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
       } catch {
         return { availability: "unavailable", sessionId, reason: "replay-failed" };
       }
-      const dated = sessionDatedUsage(session);
       return { availability: "available", sessionId, report };
     }),
   );
@@ -1693,6 +1699,19 @@ export type DailyRow = {
 };
 
 /**
+ * `SafeUsage` has **two** definitions on `main` today (`src/ui/html.ts:289` as
+ * `NonNullable<SessionReport["usage"]>`, and the narrow `{ totalTokens; cost }`
+ * shape the dated rows use). This task removes the ambiguity: define it **once**
+ * in `src/ui/dated-usage.ts` (the narrow shape) and have `html.ts` import it
+ * instead of declaring its own alias. `DailyRow` moves here; `bundle.ts`
+ * re-exports both so `src/ui/html.ts:4` and any other existing importer keep
+ * resolving:
+ *
+ *   // src/ui/bundle.ts
+ *   export type { DailyRow, SafeUsage } from "./daily.ts";
+ */
+
+/**
  * Sums per-session dated rows by date (spec §5.4/R19). Each contribution is one
  * `HistoricalSession.usageByDate` or one current view's `usageByDate`; a session
  * that cannot be dated contributes nothing (`unavailable != 0`). `sessions`
@@ -2111,7 +2130,12 @@ git commit -m "feat: add the pure range module with pair validation and UTC pres
 
 **Interfaces:**
 
-- Consumes: `src/ui/range.ts` (Task 8), `usageByDate`/`usageByDateTruncated` (Task 5), canonical date fields (Task 11).
+- Consumes: `src/ui/range.ts` (Task 8) and `usageByDate`/`usageByDateTruncated`
+  (Task 5). The canonical row timestamps the client filters on
+  (`Tool.timestamp`, `AgentRun.observedAt`, `ErrorRecord.timestamp`) reach the
+  projection in **Task 11**; this task lands the one filter and the membership
+  rule, and Task 11 is where the tools/agents/errors tabs start carrying the
+  fields it filters.
 - Produces: browser-side `filterView(view, range)` and `historyRowRange(entry, range)` (both from `src/ui/range.ts`), catalog keys `range.truncated`, `history.dailyTruncated`, `range.restored`.
 
 > **Retargeted for v0.8.0.** The rule this task replaces is
@@ -3506,7 +3530,7 @@ git commit -m "feat: add cross-navigation links with entity focus and context pr
 **Interfaces:**
 
 - Consumes: existing grammar tables.
-- Produces: `RawToken`, `scanInspectorArgs`; `tokenizeInspectorArgs` rewritten on top of it; completion `value`s become rewritten raw prefixes.
+- Produces: `RawToken` (with `raw` + parser-equivalent `text`), `scanInspectorArgs`; `tokenizeInspectorArgs` rewritten as a projection of it; completion `value`s become rewritten raw prefixes.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3555,15 +3579,18 @@ Expected: FAIL — `scanInspectorArgs` is not exported and values are bare token
 
 ```ts
 // src/commands/grammar.ts
-export type RawToken = { raw: string; start: number; end: number; quoted: boolean };
+export type RawToken = { raw: string; text: string; start: number; end: number; quoted: boolean };
 
 /**
  * One scanner serves both the parser and the completer: completions need the
- * original character spans, and a second scanner would let the two drift. It keeps
- * the parser's current quote rules EXACTLY — both `"` and `'` open a quoted token
- * (verified in `src/commands/grammar.ts:82-105`), the quotes are part of the raw
- * span, and there is no escape processing. Returns undefined for an unterminated
- * quote.
+ * original character spans, and a second scanner would let the two drift. It
+ * reproduces the parser's current tokenization EXACTLY (verified against
+ * `src/commands/grammar.ts:82-113`): whitespace splits tokens, both `"` and `'`
+ * toggle quoting anywhere inside a token (so `--output="/tmp/a b"` is ONE token),
+ * quote characters are not part of `text`, and there is no escape processing.
+ * `raw` is the original span (used for replacement), `text` the parser-equivalent
+ * value (used for matching), `quoted` whether the token contained a quoted region.
+ * Returns undefined for an unterminated quote.
  */
 export function scanInspectorArgs(prefix: string): { tokens: RawToken[]; trailingWhitespace: boolean } | undefined {
   const tokens: RawToken[] = [];
@@ -3578,40 +3605,59 @@ export function scanInspectorArgs(prefix: string): { tokens: RawToken[]; trailin
     }
     trailingWhitespace = false;
     const start = index;
-    let raw = "";
-    if (character === '"' || character === "'") {
-      const end = prefix.indexOf(character, index + 1);
-      if (end < 0) return undefined;
-      raw = prefix.slice(index, end + 1);
-      index = end + 1;
-    } else {
-      while (index < prefix.length && !/\s/.test(prefix[index] as string)) index += 1;
-      raw = prefix.slice(start, index);
+    let text = "";
+    let quote: string | undefined;
+    let quoted = false;
+    while (index < prefix.length) {
+      const current = prefix[index] as string;
+      if (quote !== undefined) {
+        if (current === quote) quote = undefined;
+        else text += current;
+        index += 1;
+        continue;
+      }
+      if (current === '"' || current === "'") {
+        quote = current;
+        quoted = true;
+        index += 1;
+        continue;
+      }
+      if (/\s/.test(current)) break;
+      text += current;
+      index += 1;
     }
-    tokens.push({ raw, start, end: index, quoted: raw.length >= 2 && (raw.startsWith('"') || raw.startsWith("'")) });
+    if (quote !== undefined) return undefined; // unterminated quote
+    tokens.push({ raw: prefix.slice(start, index), text, start, end: index, quoted });
   }
   return { tokens, trailingWhitespace: prefix.length > 0 && trailingWhitespace };
 }
 
+/** The tokenizer is now a projection of the scanner, so the two cannot drift. */
 export function tokenizeInspectorArgs(prefix: string): { tokens: string[]; trailingWhitespace: boolean } | undefined {
   const scanned = scanInspectorArgs(prefix);
   if (scanned === undefined) return undefined;
   return {
-    tokens: scanned.tokens.map((token) => (token.quoted ? token.raw.slice(1, -1) : token.raw)),
+    tokens: scanned.tokens.map((token) => token.text),
     trailingWhitespace: scanned.trailingWhitespace,
   };
 }
 ```
 
-Add both quote characters to the grammar test so the scanner cannot silently drop
-single-quote support:
+Add the parity cases to the grammar test so a future scanner edit cannot silently
+change parsing:
 
 ```ts
-test("single-quoted arguments keep the parser's current behaviour", () => {
-  const scanned = scanInspectorArgs("json history --output '/tmp/a b.json'");
-  assert.equal(scanned?.tokens.at(-1)?.raw, "'/tmp/a b.json'");
-  assert.equal(scanned?.tokens.at(-1)?.quoted, true);
-  assert.deepEqual(tokenizeInspectorArgs("json history --output '/tmp/a b.json'")?.tokens, ["json", "history", "--output", "/tmp/a b.json"]);
+test("the scanner keeps the parser's quote behaviour exactly", () => {
+  const single = scanInspectorArgs("json history --output '/tmp/a b.json'");
+  assert.equal(single?.tokens.at(-1)?.raw, "'/tmp/a b.json'");
+  assert.equal(single?.tokens.at(-1)?.text, "/tmp/a b.json");
+  assert.equal(single?.tokens.at(-1)?.quoted, true);
+  // A quote toggles anywhere inside a token: still ONE token, quote removed.
+  const midToken = scanInspectorArgs('ui --output="/tmp/a b.json" --th');
+  assert.deepEqual(midToken?.tokens.map((token) => token.text), ["ui", "--output=/tmp/a b.json", "--th"]);
+  assert.equal(midToken?.tokens[1]?.raw, '--output="/tmp/a b.json"');
+  assert.deepEqual(tokenizeInspectorArgs('ui --output="/tmp/a b.json" --th')?.tokens, ["ui", "--output=/tmp/a b.json", "--th"]);
+  assert.equal(scanInspectorArgs('ui --output="/tmp/a b.json'), undefined); // unterminated
 });
 ```
 
@@ -4029,11 +4075,13 @@ git commit -m "test: extend the privacy corpus, add coverage and long-session fi
 
 **Placeholder scan.** No `TBD`/`TODO`/"similar to Task N"; every step carries runnable code, an exact command, or an exact checklist item. Four steps intentionally require a measured or environment-dependent value rather than a fixed number: Task 5's oldest retained date in `longSessionOptions`, the document-size measurement of P0-B, Task 20's installed `pi-tui` version, and Task 23's header refresh; each states exactly what to record.
 
-**Type consistency.** `CoverageReason` (Task 1) and `SessionCoverage`/`buildSessionCoverage` (Task 2) are used verbatim in Tasks 3, 23 — the older names `CoverageSummary`/`buildCoverage` are gone (spec R18). `AgentRun.observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` already exist on `main` (Task 4 retired) and are consumed by Tasks 11, 12, 14, 18 and the fixtures. `RangeState` (Task 8) is the only range type in Tasks 9, 16, 17. `InspectorRoute`/`deriveView` (Task 16) are consumed by Tasks 17-18 and asserted in `tests/unit/html-navigation.test.ts`. `scanInspectorArgs` (Task 19) is the only span source used by completions in Tasks 19-20. `capabilities` is produced by Task 6 (`CAPABILITIES`) and consumed by Tasks 15-18. `sessionDatedUsage` (Task 5, in `src/ui/dated-usage.ts`) is the only function that turns timestamps into dates; `buildDailyRows` (Task 6, in `src/ui/daily.ts`) only folds its output, and `DateUsageRow`/`DatedModelRow`/`SafeUsage` are defined once there.
+**Type consistency.** `CoverageReason` (Task 1) and `SessionCoverage`/`buildSessionCoverage` (Task 2) are used verbatim in Tasks 3, 23 — the older names `CoverageSummary`/`buildCoverage` are gone (spec R18). `AgentRun.observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` already exist on `main` (Task 4 retired) and are consumed by Tasks 11, 12, 14, 18 and the fixtures. `RangeState` (Task 8) is the only range type in Tasks 9, 16, 17. `InspectorRoute`/`deriveView` (Task 16) are consumed by Tasks 17-18 and asserted in `tests/unit/html-navigation.test.ts`. `scanInspectorArgs` (Task 19) is the only span source used by completions in Tasks 19-20. `capabilities` is produced by Task 6 (`CAPABILITIES`) and consumed by Tasks 15-18. `sessionDatedUsage` (Task 5, in `src/ui/dated-usage.ts`) is the only function that turns timestamps into dates; `buildDailyRows` (Task 6, in `src/ui/daily.ts`) only folds its output. `SafeUsage`, `DateUsageRow`, `DatedModelRow` and `DailyRow` each have exactly one definition (Tasks 5/6), re-exported from `src/ui/bundle.ts` where an existing importer needs them.
 
 **Re-baseline amendments (v2).** Applied on top of the six review amendments below: (a) Tasks 4 and 10 are retired — `main` already derives agent `observedAt`/`evidenceToolId`/`model`/`thinking`/`failure` and validates them (`910a665`), and Task 10 is reduced to the child-usage fraction; (b) the coverage aggregate is `SessionCoverage` in `src/core/session-coverage.ts` with a total reason→code mapping (spec R18/R20); (c) Task 2's reason plumbing now names all five real `scanHistory` failure paths instead of the two the pre-merge plan assumed; (d) Task 5 groups dates from `CanonicalUsageLine.attributedAt` and the truncation flag also covers `usage.dated === "partial"`, so `SessionReport` is an assertion target rather than a second attribution source (spec R19); (e) Task 6 adds `src/ui/daily.ts` as the single date-bucketing builder and the server-side capability table; (f) the file anchors were re-pointed at the real v0.8.0 code (`sessionView`/`toolRows`/`agentRows` in `html.ts`, error rows in `sessionView`, no `tests/unit/helpers/` directory, `pi-tui` already installed); (g) version is 0.9.0 and the ADR is 0017.
 
 **Review pass on the re-baselined docs (13 findings, all fixed).** A fresh read-only reviewer compared the amended docs against `main` and found: (1) Task 2 read `dated.rows` before Task 5 defined `dates` and (2) referenced a module Task 5 had not created → the dated fields now move entirely into Task 5 (`SessionScan`/`HistoricalSession`); (3) `model.datedUsage` had no producer and no fixture → Task 5 extends `createCurrentTuiModel` with an optional projection, and Task 6 states that the fixture helpers must pass one (absent projection = absent keys, never zero); (4) `modelForMany` did not exist → Task 6 now says to create it; (5) Task 14 contradicted itself about `errorRows` living in `bundle.ts` → kept in `html.ts`; (6) Task 6's "no timestamp walk left" ignored three `buildDailyActivityRows` call sites → the legacy current-view sites are named and documented as spec §5.4's one exception with a new §15 deferral, while the production history/global branch moves to the fold; (7) Task 19's scanner dropped single-quote support and invented `""` unescaping → both quote characters are scanned with the parser's exact current semantics and a grammar test covers it, and the undefined `replacementTarget` helper was replaced by an explicit `current` parameter; (8)/(9)/(12) undefined test helpers and a missing `discoveryLimited` declaration/promotion reasons → each task now declares its helpers, `COVERAGE_REASON_CODES` totality is enforced by its type plus one key test (no non-existent runtime code lists), and the two promotion sites are labelled; (10) "five distinct points" was not a literal count → "seven return sites, five causes" in both docs; (11) `filterView`/`historyRowRange` were assigned to the wrong task in the shared interfaces → both now belong to Task 9; (13) a mislabelled helper comment in Task 17.
+
+**Second review pass (6 findings, all fixed).** The same reviewer verified the fixes and found residuals: (1) a stale `const dated = sessionDatedUsage(session)` left in Task 2's `scanHistory` snippet (forward reference) → removed; (2) `SafeUsage` was duplicated (a wide alias in `src/ui/html.ts:289`, a narrow shape in the dated rows) while the notes claimed one definition → `SafeUsage`/`DailyRow` now have exactly one home and `bundle.ts` re-exports them for existing importers; (3) the scanner comment overclaimed parity while only treating a leading quote as an opener → the scanner now reproduces the parser's toggle-anywhere behaviour exactly and exposes both `raw` (span) and `text` (parser value), with a mid-token-quote parity test; (4) `DailyRow`'s relocation had no import update → the re-export is stated; (5) Task 9 forward-referenced Task 11 for row timestamps → the Interfaces note now says Task 11 is where those fields reach the projection and where those tabs' filtering is proven; (6) the fixture-helper list missed every `modelWith*`/`currentModelWith*` helper → the top facts list names them and each task defines its own.
 
 **Amendments after plan review (all six applied).** (1) Task 5 now implements the full logical-call attribution — generation, tool-result (on the CALL date), compaction and branch-summary usage — with composition-complete rows plus observation-only `tools`/`errors` counters, a mixed-usage fixture, and `sum(usageByDate) === the same range projection of SessionReport.usage`. (2) Task 9 decides truncation BEFORE returning: member-true rows whose range reaches into omitted history carry the exact known subtotal with `partial: true` (labels say `Known`), fully retained ranges stay exact, and ranges entirely inside the omitted period return unavailable rather than zero — all three cases tested. (3) The 1970 sentinel is gone: a preset is an unresolved `RangeIntent` resolved against the active view's observed dates (`resolveRange` returns `undefined` when nothing was observed), custom ranges parse to exact resolved pairs, and Task 16 adds the preset deep-link/reload regression plus a no-`1970` assertion. (4) Task 2 produces every declared `CoverageReason` on a real path — `session-unreadable` for malformed JSON, missing/invalid header, id mismatch, and `replay-failed` from an injectable replay seam — with focused tests and reason-count assertions. (5) Task 4's join is an explicit `Map<callId, { message, observedAt }>`; a result that cannot be deterministically joined publishes no run, and the contradictory test was replaced by skipped-behaviour tests. (6) Task 3 separates value availability from coverage availability: a legacy aggregate shows its usage with a completeness-unknown qualifier, while `Unavailable` is reserved for a genuinely unavailable value (or an empty inspection set), with a regression distinguishing the two.
 
