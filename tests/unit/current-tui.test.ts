@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
-import type { SessionReport } from "../../src/core/reports.ts";
+import {
+  type SessionReport,
+  unavailableEvidenceHealth,
+} from "../../src/core/reports.ts";
 import { createCurrentTuiComponent } from "../../src/ui/current-tui.ts";
 import {
   CURRENT_TABS,
@@ -46,6 +49,7 @@ const report: SessionReport = {
   },
   resources: { state: "unavailable", items: [] },
   errors: [],
+  evidenceHealth: unavailableEvidenceHealth(),
 };
 
 const theme = { fg: (_color: string, text: string) => text };

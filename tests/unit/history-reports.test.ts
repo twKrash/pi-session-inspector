@@ -9,6 +9,7 @@ import {
   loadHistoryReports,
 } from "../../src/ui/load-history.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
+import { unavailableEvidenceHealth } from "../../src/core/reports.ts";
 import { renderJson } from "../../src/ui/json.ts";
 
 const maintenance = {
@@ -112,6 +113,7 @@ test("replays manifest-discovered history through the shared session report pipe
             },
             integrations: [],
             durationEvidence: "unavailable",
+            evidenceHealth: unavailableEvidenceHealth(),
             ...unavailableInventory,
             errors: [],
           },
@@ -284,6 +286,7 @@ test("preserves branch-summary usage once through history and global reports", a
         },
         integrations: [],
         durationEvidence: "unavailable",
+        evidenceHealth: unavailableEvidenceHealth(),
         ...unavailableInventory,
       },
     });

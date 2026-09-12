@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Scope } from "../../src/core/events.ts";
-import type { SessionReport } from "../../src/core/reports.ts";
+import {
+  type SessionReport,
+  unavailableEvidenceHealth,
+} from "../../src/core/reports.ts";
 import {
   createCurrentTuiModel,
   type CurrentTuiModel,
@@ -74,6 +77,7 @@ function reportFor(scope: Scope, dates: readonly string[]): SessionReport {
       otherInvocations: null,
     },
     resources: { state: "unavailable", items: [] },
+    evidenceHealth: unavailableEvidenceHealth(),
   };
 }
 

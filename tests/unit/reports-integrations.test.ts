@@ -7,6 +7,8 @@ import { readSubagentEvidence as readSubagentEvidenceWithSession } from "../../s
 import { MAX_COUNTER_KEYS } from "../../src/core/live-counter-fold.ts";
 import { isAllowedIntegrationCounter } from "../../src/core/integration-counter-allowlists.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
+import { buildEvidenceHealth } from "../../src/core/evidence-health.ts";
+import type { CanonicalRetainedAggregates } from "../../src/core/retained-aggregates.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
 const SESSION_ID = "session-reports-test";
@@ -680,4 +682,340 @@ test("projects bounded exit-code failure details and drops out-of-range ones", (
   });
   assert.deepEqual(report.agents[1]?.failure, { reason: "exit-nonzero" });
   assert.deepEqual(report.agents[2]?.failure, { reason: "exit-nonzero" });
+});
+
+// --- Task 14: canonical health and retained aggregates on the report DTO ---
+
+/** A valid health built through the canonical builder, not a hand-rolled shape. */
+function sampleHealth() {
+  return buildEvidenceHealth({
+    core: "supported",
+    sources: [
+      {
+        source: "inspector-wal",
+        authority: "live",
+        state: "supported",
+        schemaVersion: 1,
+        recordsSeen: 3,
+        factsAccepted: 2,
+        recordsRejected: 1,
+        detail: "full",
+      },
+      {
+        source: "pi-jsonl",
+        authority: "native",
+        state: "partial",
+        schemaVersion: 3,
+        recordsSeen: 5,
+        factsAccepted: 4,
+        recordsRejected: 1,
+        detail: "full",
+      },
+    ],
+    joins: {
+      toolCalls: 1,
+      toolResults: 1,
+      matchedToolResults: 1,
+      matchedLiveToolTimings: 1,
+      agentRuns: 1,
+      knownAgentParents: 1,
+    },
+    usage: {
+      nativeLines: 1,
+      childLines: 0,
+      compositionReconciled: true,
+      dated: "supported",
+    },
+    aggregates: {
+      detail: "aggregate-only",
+      integrationCounters: 1,
+      skillInvocations: { names: 1, overflow: 0, retainedInvocations: 1 },
+      permissionPresence: "supported",
+      resources: "supported",
+    },
+    diagnostics: [],
+  });
+}
+
+const aggregateBoundary = {
+  foldedThrough: { "writer-a": 4 },
+  sealedThrough: {},
+};
+
+function sampleAggregates(): CanonicalRetainedAggregates {
+  return {
+    schemaVersion: 1,
+    boundary: {
+      detail: "aggregate-only",
+      foldedThrough: { "writer-a": 4 },
+      sealedThrough: {},
+      checkpointedAt: {
+        state: "known",
+        at: "2026-09-07T00:00:00.000Z",
+        basis: "checkpoint-observer",
+      },
+    },
+    integration: {
+      permission: {
+        value: { decisions: 2 },
+        state: "aggregate-only",
+        boundary: aggregateBoundary,
+      },
+    },
+    skillInvocations: {
+      named: {
+        value: { demo: 3 },
+        state: "aggregate-only",
+        boundary: aggregateBoundary,
+      },
+    },
+    permissionPresence: {
+      value: true,
+      state: "aggregate-only",
+      boundary: aggregateBoundary,
+    },
+  };
+}
+
+test("report exposes bounded health and labels aggregate-only counts", () => {
+  const report = toSessionReport(parent, {
+    evidenceHealth: sampleHealth(),
+    retainedAggregates: sampleAggregates(),
+  });
+
+  assert.equal(report.evidenceHealth.aggregates.detail, "aggregate-only");
+  assert.equal(JSON.stringify(report).includes("req-"), false);
+  // Fixed source order, regardless of input order.
+  assert.equal(
+    report.evidenceHealth.sources.map((source) => source.source).join(),
+    "pi-jsonl,inspector-wal",
+  );
+  assert.equal(report.retainedAggregates?.boundary.detail, "aggregate-only");
+  assert.equal(
+    report.retainedAggregates?.integration?.permission?.value.decisions,
+    2,
+  );
+  assert.equal(
+    report.retainedAggregates?.skillInvocations?.named?.value.demo,
+    3,
+  );
+});
+
+test("emits an unavailable health shape when no health is supplied", () => {
+  const report = toSessionReport(parent);
+
+  assert.equal(report.evidenceHealth.schemaVersion, 1);
+  assert.equal(report.evidenceHealth.core, "unavailable");
+  assert.deepEqual(report.evidenceHealth.sources, []);
+  assert.deepEqual(report.evidenceHealth.joins, {
+    toolCalls: 0,
+    toolResults: 0,
+    matchedToolResults: 0,
+    matchedLiveToolTimings: 0,
+    agentRuns: 0,
+    knownAgentParents: 0,
+  });
+  assert.equal(report.evidenceHealth.usage.dated, "unavailable");
+  assert.equal(report.evidenceHealth.aggregates.detail, "expired");
+  assert.deepEqual(report.evidenceHealth.diagnostics, []);
+  assert.equal(report.retainedAggregates, undefined);
+  // Every renderer sees the same shape, even with no evidence at all.
+  assert.deepEqual(report.evidenceHealth, {
+    schemaVersion: 1,
+    core: "unavailable",
+    sources: [],
+    joins: {
+      toolCalls: 0,
+      toolResults: 0,
+      matchedToolResults: 0,
+      matchedLiveToolTimings: 0,
+      agentRuns: 0,
+      knownAgentParents: 0,
+    },
+    usage: {
+      nativeLines: 0,
+      childLines: 0,
+      compositionReconciled: false,
+      dated: "unavailable",
+    },
+    aggregates: {
+      detail: "expired",
+      integrationCounters: 0,
+      skillInvocations: { names: 0, overflow: 0, retainedInvocations: 0 },
+      permissionPresence: "unavailable",
+      resources: "unavailable",
+    },
+    diagnostics: [],
+  });
+});
+
+test("re-validates forged health so no out-of-enum or unbounded value survives", () => {
+  const sentinel = "req-private-health".repeat(8);
+  const forged = {
+    schemaVersion: 1,
+    core: "hacked",
+    sources: [
+      {
+        source: "evil-source",
+        authority: "native",
+        state: "supported",
+        recordsSeen: 1,
+        factsAccepted: 1,
+        recordsRejected: 0,
+        detail: "full",
+      },
+      {
+        source: "pi-jsonl",
+        authority: "native",
+        state: "supported",
+        schemaVersion: 3,
+        recordsSeen: Number.POSITIVE_INFINITY,
+        factsAccepted: -5,
+        recordsRejected: 1,
+        detail: "full",
+      },
+      {
+        source: "inspector-wal",
+        authority: "live",
+        state: "partial",
+        schemaVersion: 1,
+        recordsSeen: 2,
+        factsAccepted: 1,
+        recordsRejected: 0,
+        detail: "full",
+        observedAt: sentinel,
+      },
+    ],
+    joins: {
+      toolCalls: -1,
+      toolResults: "5",
+      matchedToolResults: 1,
+      matchedLiveToolTimings: 1,
+      agentRuns: 1,
+      knownAgentParents: 1,
+    },
+    usage: {
+      nativeLines: 1,
+      childLines: 0,
+      compositionReconciled: "yes",
+      dated: "bogus",
+    },
+    aggregates: {
+      detail: "bogus",
+      integrationCounters: 1,
+      skillInvocations: { names: 1, overflow: 0, retainedInvocations: 1 },
+      permissionPresence: "hacked",
+      resources: "expired",
+    },
+    diagnostics: [
+      {
+        code: "hacked-code",
+        severity: "fatal",
+        count: 1,
+        source: "pi-jsonl",
+      },
+      {
+        code: "unknown-entry",
+        severity: "warning",
+        count: 2,
+        source: "pi-jsonl",
+      },
+    ],
+  } as never;
+
+  const report = toSessionReport(parent, { evidenceHealth: forged });
+
+  assert.equal(report.evidenceHealth.core, "unavailable");
+  assert.deepEqual(
+    report.evidenceHealth.sources.map((source) => source.source),
+    ["pi-jsonl", "inspector-wal"],
+  );
+  assert.equal(
+    report.evidenceHealth.sources.find((s) => s.source === "pi-jsonl")
+      ?.recordsSeen,
+    0,
+  );
+  assert.equal(report.evidenceHealth.usage.compositionReconciled, false);
+  assert.equal(report.evidenceHealth.usage.dated, "unavailable");
+  assert.equal(report.evidenceHealth.aggregates.detail, "expired");
+  assert.equal(
+    report.evidenceHealth.aggregates.permissionPresence,
+    "unavailable",
+  );
+  assert.deepEqual(
+    report.evidenceHealth.diagnostics.map((row) => row.code),
+    ["unknown-entry"],
+  );
+  assert.equal(JSON.stringify(report).includes(sentinel), false);
+});
+
+test("re-validates forged retained aggregates to canonical keys and bounds", () => {
+  const sentinel = "req-private-aggregate".repeat(8);
+  const forged = {
+    schemaVersion: 1,
+    boundary: {
+      detail: "aggregate-only",
+      foldedThrough: { "writer-a": 4 },
+      sealedThrough: {},
+      checkpointedAt: { state: "known", at: sentinel, basis: "bogus" },
+    },
+    integration: {
+      permission: {
+        value: { decisions: 2, [sentinel]: 9 },
+        state: "aggregate-only",
+        boundary: aggregateBoundary,
+      },
+      "evil-integration": {
+        value: { calls: 1 },
+        state: "aggregate-only",
+        boundary: aggregateBoundary,
+      },
+    },
+    skillInvocations: {
+      named: {
+        value: { demo: 3, [sentinel]: 1 },
+        state: "aggregate-only",
+        boundary: aggregateBoundary,
+      },
+    },
+  } as never;
+
+  const report = toSessionReport(parent, { retainedAggregates: forged });
+
+  assert.equal(report.retainedAggregates?.boundary.detail, "aggregate-only");
+  assert.equal(
+    report.retainedAggregates?.integration?.permission?.value.decisions,
+    2,
+  );
+  assert.equal(
+    (report.retainedAggregates?.integration as Record<string, unknown>)?.[
+      "evil-integration"
+    ],
+    undefined,
+  );
+  assert.equal(
+    report.retainedAggregates?.skillInvocations?.named?.value.demo,
+    3,
+  );
+  assert.equal(
+    report.retainedAggregates?.boundary.checkpointedAt.state,
+    "unavailable",
+  );
+  assert.equal(JSON.stringify(report).includes(sentinel), false);
+});
+
+test("drops a whole retained aggregate when the boundary is forged", () => {
+  const report = toSessionReport(parent, {
+    retainedAggregates: {
+      schemaVersion: 1,
+      boundary: {
+        detail: "aggregate-only",
+        foldedThrough: { "writer-a": "NaN" },
+        sealedThrough: {},
+        checkpointedAt: { state: "unavailable" },
+      },
+    } as never,
+  });
+
+  assert.equal(report.retainedAggregates, undefined);
 });

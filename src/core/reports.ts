@@ -17,7 +17,29 @@ import {
   type SkillRow,
 } from "../integrations/inventory.ts";
 import { boundedDescription } from "./redact.ts";
-import { boundedProducerLabel } from "./evidence.ts";
+import {
+  boundedProducerLabel,
+  type EvidenceAuthority,
+  type EvidenceSource,
+  type TimeEvidence,
+} from "./evidence.ts";
+import {
+  buildEvidenceHealth,
+  defaultDiagnosticSeverity,
+  EVIDENCE_SOURCE_ORDER,
+  MAX_EVIDENCE_COUNT,
+  type EvidenceDiagnostic,
+  type EvidenceDiagnosticCode,
+  type EvidenceDiagnosticSeverity,
+  type EvidenceHealthState,
+  type SessionEvidenceHealth,
+  type SourceEvidenceHealth,
+} from "./evidence-health.ts";
+import {
+  isIntegrationKey as isCanonicalIntegrationKey,
+  type AggregateValue,
+  type CanonicalRetainedAggregates,
+} from "./retained-aggregates.ts";
 import {
   isAgentLabel,
   isProcessSignal,
@@ -117,6 +139,92 @@ const INTEGRATION_ORDER: readonly IntegrationKey[] = [
   "lens",
 ];
 
+// Canonical health is a bounded, closed-enum DTO. The report projection
+// re-validates every member rather than trusting the builder, so forged health
+// can never publish an out-of-enum value, an unbounded count, or producer text.
+const HEALTH_STATES = new Set<EvidenceHealthState>([
+  "supported",
+  "partial",
+  "unavailable",
+  "unsupported",
+  "expired",
+]);
+const EVIDENCE_AUTHORITIES = new Set<EvidenceAuthority>([
+  "native",
+  "live",
+  "cooperative",
+  "observed",
+  "derived",
+]);
+const EVIDENCE_SOURCES = new Set<EvidenceSource>(EVIDENCE_SOURCE_ORDER);
+const SOURCE_DETAILS = new Set<SourceEvidenceHealth["detail"]>([
+  "full",
+  "aggregate-only",
+  "not-observed",
+  "unsupported",
+]);
+const DIAGNOSTIC_SEVERITIES = new Set<EvidenceDiagnosticSeverity>([
+  "info",
+  "warning",
+  "error",
+]);
+const DIAGNOSTIC_CODES = new Set<EvidenceDiagnosticCode>([
+  "source-not-found",
+  "source-format-unsupported",
+  "source-malformed",
+  "unknown-entry",
+  "duplicate-entry-id",
+  "missing-entry-parent",
+  "tracking-marker-missing",
+  "tracking-marker-duplicate",
+  "active-leaf-unavailable",
+  "tool-call-id-duplicate",
+  "tool-result-orphan",
+  "tool-result-duplicate",
+  "usage-invalid",
+  "usage-overflow",
+  "usage-reconciliation-mismatch",
+  "wal-record-legacy",
+  "wal-record-invalid",
+  "wal-sequence-gap",
+  "wal-detail-expired",
+  "live-correlation-missing",
+  "inventory-observation-time-missing",
+  "aggregate-supplement-applied",
+  "aggregate-only-fallback",
+  "checkpoint-aggregate-invalid",
+  "parent-session-unavailable",
+  "integration-contract-unsupported",
+  "cooperative-evidence-conflict",
+  "archive-unavailable",
+  "archive-invalid",
+  "clock-regression",
+]);
+const AGGREGATE_DETAILS = new Set<
+  CanonicalRetainedAggregates["boundary"]["detail"]
+>(["full", "aggregate-only", "expired"]);
+const RETAINED_RESOURCE_STATES = new Set<
+  NonNullable<CanonicalRetainedAggregates["resources"]>["state"]
+>(["observed", "aggregate-only"]);
+const TIME_BASES = new Set<Extract<TimeEvidence, { state: "known" }>["basis"]>([
+  "pi-session-header",
+  "pi-entry",
+  "pi-publication-entry",
+  "wal-observer",
+  "inventory-observer",
+  "current-observer",
+  "checkpoint-observer",
+]);
+// Aggregate value maps share the checkpoint counter-key grammar.
+const RETAINED_COUNTER_KEY = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+// Boundary cursors carry a bounded writer token, never a path or free text.
+const WRITER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const ISO_INSTANT_OR_DATE =
+  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/;
+const MAX_TIMESTAMP_LENGTH = 35;
+const MAX_HEALTH_SOURCES = EVIDENCE_SOURCE_ORDER.length;
+const MAX_HEALTH_DIAGNOSTICS = 256;
+
 export type ModelSummary = {
   provider: string;
   model: string;
@@ -156,6 +264,10 @@ export type SessionReportEvidence = {
    */
   resourceCounts?: { commands: number; skills: number };
   duration?: DurationEvidence;
+  /** Canonical bounded health; re-validated before it reaches the report. */
+  evidenceHealth?: SessionEvidenceHealth;
+  /** Canonical checkpoint-surviving aggregates, if a boundary exists. */
+  retainedAggregates?: CanonicalRetainedAggregates;
 };
 
 /** Inventory rows are always a bounded, sanitized projection of a snapshot. */
@@ -200,6 +312,14 @@ export type SessionReport = {
   commands: CommandInventory;
   skills: SkillInventory;
   resources: ResourceInventory;
+  /**
+   * Canonical bounded evidence health. Always present: when no health is
+   * supplied the report carries an `unavailable` shape so every renderer sees
+   * the same DTO, and `unavailable` never degrades to a fabricated zero.
+   */
+  evidenceHealth: SessionEvidenceHealth;
+  /** Canonical checkpoint-surviving aggregates; absent when none exist. */
+  retainedAggregates?: CanonicalRetainedAggregates;
 };
 
 export function toSessionReport(
@@ -247,6 +367,10 @@ export function toSessionReport(
     commands: projectCommands(inventory, projectedEvidence.resourceCounts),
     skills: projectSkills(inventory, projectedEvidence.counters),
     resources: projectResources(inventory),
+    evidenceHealth: projectedEvidence.health,
+    ...(projectedEvidence.retainedAggregates === undefined
+      ? {}
+      : { retainedAggregates: projectedEvidence.retainedAggregates }),
     models: [...models.values()].sort(
       (a, b) =>
         a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
@@ -264,6 +388,8 @@ type ProjectedEvidence = {
   inventory: InventorySnapshot | undefined;
   resourceCounts: { commands: number; skills: number } | undefined;
   counters: ProjectedCounters | undefined;
+  health: SessionEvidenceHealth;
+  retainedAggregates: CanonicalRetainedAggregates | undefined;
 };
 
 function projectEvidence(evidence: unknown): ProjectedEvidence {
@@ -289,6 +415,8 @@ function projectEvidence(evidence: unknown): ProjectedEvidence {
       inventory: projectInventory(input.inventory),
       resourceCounts: projectResourceCounts(input.resourceCounts),
       counters,
+      health: projectEvidenceHealth(input.evidenceHealth),
+      retainedAggregates: projectRetainedAggregates(input.retainedAggregates),
     };
   } catch {
     return unavailableEvidence();
@@ -1144,5 +1272,501 @@ function unavailableEvidence(): ProjectedEvidence {
     inventory: undefined,
     resourceCounts: undefined,
     counters: undefined,
+    health: unavailableEvidenceHealth(),
+    retainedAggregates: undefined,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Canonical evidence health projection
+// ---------------------------------------------------------------------------
+
+/**
+ * The shape every renderer sees when no health was supplied. It is a complete,
+ * bounded DTO with `unavailable`/`expired` states, never an omitted field and
+ * never a fabricated zero.
+ */
+export function unavailableEvidenceHealth(): SessionEvidenceHealth {
+  return {
+    schemaVersion: 1,
+    core: "unavailable",
+    sources: [],
+    joins: {
+      toolCalls: 0,
+      toolResults: 0,
+      matchedToolResults: 0,
+      matchedLiveToolTimings: 0,
+      agentRuns: 0,
+      knownAgentParents: 0,
+    },
+    usage: {
+      nativeLines: 0,
+      childLines: 0,
+      compositionReconciled: false,
+      dated: "unavailable",
+    },
+    aggregates: {
+      detail: "expired",
+      integrationCounters: 0,
+      skillInvocations: { names: 0, overflow: 0, retainedInvocations: 0 },
+      permissionPresence: "unavailable",
+      resources: "unavailable",
+    },
+    diagnostics: [],
+  };
+}
+
+/**
+ * Re-validates the canonical health so a forged value can never publish an
+ * out-of-enum state, an unbounded count, an unknown source/code, or producer
+ * text. Valid rows are normalized through `buildEvidenceHealth`, so the report
+ * keeps the fixed source order, saturating counts, and sorted diagnostics.
+ */
+function projectEvidenceHealth(value: unknown): SessionEvidenceHealth {
+  try {
+    const input = snapshotRecord(value);
+    if (input === undefined || input.schemaVersion !== 1) {
+      return unavailableEvidenceHealth();
+    }
+    return buildEvidenceHealth({
+      // A forged `core` degrades to `unavailable`; valid members are still
+      // projected rather than discarding the whole bounded health.
+      core: isHealthState(input.core) ? input.core : "unavailable",
+      sources: projectHealthSources(input.sources),
+      joins: projectHealthJoins(input.joins),
+      usage: projectHealthUsage(input.usage),
+      aggregates: projectHealthAggregates(input.aggregates),
+      diagnostics: projectHealthDiagnostics(input.diagnostics),
+    });
+  } catch {
+    return unavailableEvidenceHealth();
+  }
+}
+
+function projectHealthSources(value: unknown): SourceEvidenceHealth[] {
+  if (!Array.isArray(value)) return [];
+  const rows: SourceEvidenceHealth[] = [];
+  for (const item of value.slice(0, MAX_HEALTH_SOURCES * 2)) {
+    const row = snapshotRecord(item);
+    if (row === undefined) continue;
+    if (
+      !isEvidenceSource(row.source) ||
+      !isEvidenceAuthority(row.authority) ||
+      !isHealthState(row.state) ||
+      !isSourceDetail(row.detail)
+    ) {
+      continue;
+    }
+    rows.push({
+      source: row.source,
+      authority: row.authority,
+      state: row.state,
+      ...(isPositiveVersion(row.schemaVersion)
+        ? { schemaVersion: row.schemaVersion }
+        : {}),
+      recordsSeen: boundedHealthCount(row.recordsSeen),
+      factsAccepted: boundedHealthCount(row.factsAccepted),
+      recordsRejected: boundedHealthCount(row.recordsRejected),
+      detail: row.detail,
+      // Time fields are re-checked by `buildEvidenceHealth`; only strings pass.
+      ...(typeof row.observedAt === "string"
+        ? { observedAt: row.observedAt }
+        : {}),
+      ...(typeof row.expiredBefore === "string"
+        ? { expiredBefore: row.expiredBefore }
+        : {}),
+    });
+  }
+  return rows;
+}
+
+function projectHealthJoins(value: unknown): SessionEvidenceHealth["joins"] {
+  const input = snapshotRecord(value);
+  return {
+    toolCalls: boundedHealthCount(input?.toolCalls),
+    toolResults: boundedHealthCount(input?.toolResults),
+    matchedToolResults: boundedHealthCount(input?.matchedToolResults),
+    matchedLiveToolTimings: boundedHealthCount(input?.matchedLiveToolTimings),
+    agentRuns: boundedHealthCount(input?.agentRuns),
+    knownAgentParents: boundedHealthCount(input?.knownAgentParents),
+  };
+}
+
+function projectHealthUsage(value: unknown): SessionEvidenceHealth["usage"] {
+  const input = snapshotRecord(value);
+  return {
+    nativeLines: boundedHealthCount(input?.nativeLines),
+    childLines: boundedHealthCount(input?.childLines),
+    compositionReconciled: input?.compositionReconciled === true,
+    dated: isHealthState(input?.dated) ? input.dated : "unavailable",
+  };
+}
+
+function projectHealthAggregates(
+  value: unknown,
+): SessionEvidenceHealth["aggregates"] {
+  const input = snapshotRecord(value);
+  const skills = snapshotRecord(input?.skillInvocations);
+  return {
+    detail:
+      typeof input?.detail === "string" &&
+      AGGREGATE_DETAILS.has(
+        input.detail as CanonicalRetainedAggregates["boundary"]["detail"],
+      )
+        ? (input.detail as CanonicalRetainedAggregates["boundary"]["detail"])
+        : "expired",
+    integrationCounters: boundedHealthCount(input?.integrationCounters),
+    skillInvocations: {
+      names: boundedHealthCount(skills?.names),
+      overflow: boundedHealthCount(skills?.overflow),
+      retainedInvocations: boundedHealthCount(skills?.retainedInvocations),
+    },
+    permissionPresence: isHealthState(input?.permissionPresence)
+      ? input.permissionPresence
+      : "unavailable",
+    resources: isHealthState(input?.resources)
+      ? input.resources
+      : "unavailable",
+  };
+}
+
+function projectHealthDiagnostics(value: unknown): EvidenceDiagnostic[] {
+  if (!Array.isArray(value)) return [];
+  const rows: EvidenceDiagnostic[] = [];
+  for (const item of value.slice(0, MAX_HEALTH_DIAGNOSTICS)) {
+    const row = snapshotRecord(item);
+    if (row === undefined) continue;
+    if (!isDiagnosticCode(row.code) || !isEvidenceSource(row.source)) continue;
+    rows.push({
+      code: row.code,
+      severity: isDiagnosticSeverity(row.severity)
+        ? row.severity
+        : defaultDiagnosticSeverity(row.code),
+      count: Math.max(1, boundedHealthCount(row.count)),
+      source: row.source,
+    });
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Canonical retained aggregates projection
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-validates the canonical checkpoint-surviving aggregates. A forged
+ * boundary (non-token cursor, unknown detail) drops the whole aggregate, since
+ * a repaired boundary would silently move the exact fold/seal point. Inner
+ * values are re-checked to canonical integration/skill keys and bounded counts.
+ */
+function projectRetainedAggregates(
+  value: unknown,
+): CanonicalRetainedAggregates | undefined {
+  try {
+    const input = snapshotRecord(value);
+    if (input === undefined || input.schemaVersion !== 1) return undefined;
+    const boundaryRow = snapshotRecord(input.boundary);
+    if (
+      boundaryRow === undefined ||
+      typeof boundaryRow.detail !== "string" ||
+      !AGGREGATE_DETAILS.has(
+        boundaryRow.detail as CanonicalRetainedAggregates["boundary"]["detail"],
+      )
+    ) {
+      return undefined;
+    }
+    const foldedThrough = projectSequenceMap(boundaryRow.foldedThrough);
+    const sealedThrough = projectSequenceMap(boundaryRow.sealedThrough);
+    if (foldedThrough === undefined || sealedThrough === undefined) {
+      return undefined;
+    }
+    const detailExpiredBefore = boundedInstant(boundaryRow.detailExpiredBefore);
+    const valueBoundary: AggregateValue<unknown>["boundary"] = {
+      foldedThrough,
+      sealedThrough,
+    };
+    const aggregates: CanonicalRetainedAggregates = {
+      schemaVersion: 1,
+      boundary: {
+        detail:
+          boundaryRow.detail as CanonicalRetainedAggregates["boundary"]["detail"],
+        foldedThrough,
+        sealedThrough,
+        checkpointedAt: projectTimeEvidence(boundaryRow.checkpointedAt),
+        ...(detailExpiredBefore === undefined ? {} : { detailExpiredBefore }),
+      },
+    };
+    const integration = projectRetainedIntegration(
+      input.integration,
+      valueBoundary,
+    );
+    if (integration !== undefined) aggregates.integration = integration;
+    const skillInvocations = projectRetainedSkills(
+      input.skillInvocations,
+      valueBoundary,
+    );
+    if (skillInvocations !== undefined) {
+      aggregates.skillInvocations = skillInvocations;
+    }
+    const permissionPresence = projectRetainedPermission(
+      input.permissionPresence,
+      valueBoundary,
+    );
+    if (permissionPresence !== undefined) {
+      aggregates.permissionPresence = permissionPresence;
+    }
+    const resources = projectRetainedResources(input.resources);
+    if (resources !== undefined) aggregates.resources = resources;
+    return aggregates;
+  } catch {
+    return undefined;
+  }
+}
+
+function projectSequenceMap(
+  value: unknown,
+): Record<string, number> | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined) return undefined;
+  const sequences: Record<string, number> = {};
+  for (const key of Object.keys(input)) {
+    if (!WRITER_ID.test(key)) return undefined;
+    const cursor = input[key];
+    if (
+      typeof cursor !== "number" ||
+      !Number.isSafeInteger(cursor) ||
+      cursor < 0
+    ) {
+      return undefined;
+    }
+    sequences[key] = cursor;
+  }
+  return sequences;
+}
+
+function projectRetainedIntegration(
+  value: unknown,
+  boundary: AggregateValue<unknown>["boundary"],
+): CanonicalRetainedAggregates["integration"] | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined) return undefined;
+  const projected: Partial<
+    Record<IntegrationKey, AggregateValue<Record<string, number>>>
+  > = {};
+  for (const key of Object.keys(input).sort()) {
+    if (!isCanonicalIntegrationKey(key)) continue;
+    const row = snapshotRecord(input[key]);
+    if (row === undefined || row.state !== "aggregate-only") continue;
+    const counters = projectRetainedCounterMap(row.value);
+    if (counters === undefined) continue;
+    projected[key] = { value: counters, state: "aggregate-only", boundary };
+  }
+  return Object.keys(projected).length === 0 ? undefined : projected;
+}
+
+function projectRetainedCounterMap(
+  value: unknown,
+): Record<string, number> | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined) return undefined;
+  const keys = Object.keys(input).sort();
+  if (keys.length > MAX_COUNTER_KEYS) return undefined;
+  const counters: Record<string, number> = {};
+  for (const key of keys) {
+    if (!RETAINED_COUNTER_KEY.test(key)) continue;
+    const count = input[key];
+    if (!isFoldedCount(count)) continue;
+    counters[key] = count;
+  }
+  return Object.keys(counters).length === 0 ? undefined : counters;
+}
+
+function projectRetainedSkills(
+  value: unknown,
+  boundary: AggregateValue<unknown>["boundary"],
+): CanonicalRetainedAggregates["skillInvocations"] | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined) return undefined;
+  const named = projectRetainedNamedSkills(input.named, boundary);
+  const overflow = projectRetainedOverflow(input.overflow, boundary);
+  if (named === undefined && overflow === undefined) return undefined;
+  return {
+    ...(named === undefined ? {} : { named }),
+    ...(overflow === undefined ? {} : { overflow }),
+  };
+}
+
+function projectRetainedNamedSkills(
+  value: unknown,
+  boundary: AggregateValue<unknown>["boundary"],
+): AggregateValue<Record<string, number>> | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined || input.state !== "aggregate-only") return undefined;
+  const rows = snapshotRecord(input.value);
+  if (rows === undefined) return undefined;
+  const named: Record<string, number> = {};
+  for (const name of Object.keys(rows).sort()) {
+    if (Object.keys(named).length >= MAX_SKILL_KEYS) break;
+    const count = rows[name];
+    if (!SKILL_NAME_PATTERN.test(name) || !isFoldedCount(count)) continue;
+    named[name] = count;
+  }
+  if (Object.keys(named).length === 0) return undefined;
+  return { value: named, state: "aggregate-only", boundary };
+}
+
+function projectRetainedOverflow(
+  value: unknown,
+  boundary: AggregateValue<unknown>["boundary"],
+): AggregateValue<number> | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined || input.state !== "aggregate-only") return undefined;
+  if (!isFoldedCount(input.value)) return undefined;
+  return { value: input.value, state: "aggregate-only", boundary };
+}
+
+function projectRetainedPermission(
+  value: unknown,
+  boundary: AggregateValue<unknown>["boundary"],
+): AggregateValue<true> | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined || input.state !== "aggregate-only") return undefined;
+  if (input.value !== true) return undefined;
+  return { value: true, state: "aggregate-only", boundary };
+}
+
+function projectRetainedResources(
+  value: unknown,
+): CanonicalRetainedAggregates["resources"] | undefined {
+  const input = snapshotRecord(value);
+  if (input === undefined) return undefined;
+  if (
+    typeof input.state !== "string" ||
+    !RETAINED_RESOURCE_STATES.has(
+      input.state as NonNullable<
+        CanonicalRetainedAggregates["resources"]
+      >["state"],
+    )
+  ) {
+    return undefined;
+  }
+  const counts = snapshotRecord(input.counts);
+  if (
+    counts === undefined ||
+    !isFoldedCount(counts.commands) ||
+    !isFoldedCount(counts.skills)
+  ) {
+    return undefined;
+  }
+  const resources = isFoldedCount(counts.resources)
+    ? counts.resources
+    : undefined;
+  const toolSources = isFoldedCount(counts.toolSources)
+    ? counts.toolSources
+    : undefined;
+  return {
+    counts: {
+      commands: counts.commands,
+      skills: counts.skills,
+      ...(resources === undefined ? {} : { resources }),
+      ...(toolSources === undefined ? {} : { toolSources }),
+    },
+    state: input.state as NonNullable<
+      CanonicalRetainedAggregates["resources"]
+    >["state"],
+    observedAt: projectTimeEvidence(input.observedAt),
+  };
+}
+
+function projectTimeEvidence(value: unknown): TimeEvidence {
+  const input = snapshotRecord(value);
+  if (
+    input === undefined ||
+    input.state !== "known" ||
+    typeof input.basis !== "string" ||
+    !TIME_BASES.has(
+      input.basis as Extract<TimeEvidence, { state: "known" }>["basis"],
+    )
+  ) {
+    return { state: "unavailable" };
+  }
+  const at = boundedInstant(input.at);
+  if (at === undefined) return { state: "unavailable" };
+  return {
+    state: "known",
+    at,
+    basis: input.basis as Extract<TimeEvidence, { state: "known" }>["basis"],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared health/aggregate validators
+// ---------------------------------------------------------------------------
+
+/** A bounded non-negative count; anything else normalizes to zero. */
+function boundedHealthCount(value: unknown): number {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_EVIDENCE_COUNT
+    ? value
+    : 0;
+}
+
+function isPositiveVersion(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function isHealthState(value: unknown): value is EvidenceHealthState {
+  return (
+    typeof value === "string" && HEALTH_STATES.has(value as EvidenceHealthState)
+  );
+}
+
+function isEvidenceAuthority(value: unknown): value is EvidenceAuthority {
+  return (
+    typeof value === "string" &&
+    EVIDENCE_AUTHORITIES.has(value as EvidenceAuthority)
+  );
+}
+
+function isEvidenceSource(value: unknown): value is EvidenceSource {
+  return (
+    typeof value === "string" && EVIDENCE_SOURCES.has(value as EvidenceSource)
+  );
+}
+
+function isSourceDetail(
+  value: unknown,
+): value is SourceEvidenceHealth["detail"] {
+  return (
+    typeof value === "string" &&
+    SOURCE_DETAILS.has(value as SourceEvidenceHealth["detail"])
+  );
+}
+
+function isDiagnosticCode(value: unknown): value is EvidenceDiagnosticCode {
+  return (
+    typeof value === "string" &&
+    DIAGNOSTIC_CODES.has(value as EvidenceDiagnosticCode)
+  );
+}
+
+function isDiagnosticSeverity(
+  value: unknown,
+): value is EvidenceDiagnosticSeverity {
+  return (
+    typeof value === "string" &&
+    DIAGNOSTIC_SEVERITIES.has(value as EvidenceDiagnosticSeverity)
+  );
+}
+
+function boundedInstant(value: unknown): string | undefined {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_TIMESTAMP_LENGTH &&
+    ISO_INSTANT_OR_DATE.test(value) &&
+    !Number.isNaN(Date.parse(value))
+    ? value
+    : undefined;
 }

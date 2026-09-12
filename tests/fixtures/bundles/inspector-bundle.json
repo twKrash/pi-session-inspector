@@ -84,7 +84,38 @@
           "invocationCount": null,
           "otherInvocations": null
         },
-        "resources": { "state": "unavailable", "items": [] }
+        "resources": { "state": "unavailable", "items": [] },
+        "evidenceHealth": {
+          "schemaVersion": 1,
+          "core": "unavailable",
+          "sources": [],
+          "joins": {
+            "toolCalls": 0,
+            "toolResults": 0,
+            "matchedToolResults": 0,
+            "matchedLiveToolTimings": 0,
+            "agentRuns": 0,
+            "knownAgentParents": 0
+          },
+          "usage": {
+            "nativeLines": 0,
+            "childLines": 0,
+            "compositionReconciled": false,
+            "dated": "unavailable"
+          },
+          "aggregates": {
+            "detail": "expired",
+            "integrationCounters": 0,
+            "skillInvocations": {
+              "names": 0,
+              "overflow": 0,
+              "retainedInvocations": 0
+            },
+            "permissionPresence": "unavailable",
+            "resources": "unavailable"
+          },
+          "diagnostics": []
+        }
       }
     },
     "tree": {
@@ -303,6 +334,37 @@
               "tools": 0
             }
           ]
+        },
+        "evidenceHealth": {
+          "schemaVersion": 1,
+          "core": "unavailable",
+          "sources": [],
+          "joins": {
+            "toolCalls": 0,
+            "toolResults": 0,
+            "matchedToolResults": 0,
+            "matchedLiveToolTimings": 0,
+            "agentRuns": 0,
+            "knownAgentParents": 0
+          },
+          "usage": {
+            "nativeLines": 0,
+            "childLines": 0,
+            "compositionReconciled": false,
+            "dated": "unavailable"
+          },
+          "aggregates": {
+            "detail": "expired",
+            "integrationCounters": 0,
+            "skillInvocations": {
+              "names": 0,
+              "overflow": 0,
+              "retainedInvocations": 0
+            },
+            "permissionPresence": "unavailable",
+            "resources": "unavailable"
+          },
+          "diagnostics": []
         }
       }
     }
@@ -379,7 +441,38 @@
             "invocationCount": null,
             "otherInvocations": null
           },
-          "resources": { "state": "unavailable", "items": [] }
+          "resources": { "state": "unavailable", "items": [] },
+          "evidenceHealth": {
+            "schemaVersion": 1,
+            "core": "unavailable",
+            "sources": [],
+            "joins": {
+              "toolCalls": 0,
+              "toolResults": 0,
+              "matchedToolResults": 0,
+              "matchedLiveToolTimings": 0,
+              "agentRuns": 0,
+              "knownAgentParents": 0
+            },
+            "usage": {
+              "nativeLines": 0,
+              "childLines": 0,
+              "compositionReconciled": false,
+              "dated": "unavailable"
+            },
+            "aggregates": {
+              "detail": "expired",
+              "integrationCounters": 0,
+              "skillInvocations": {
+                "names": 0,
+                "overflow": 0,
+                "retainedInvocations": 0
+              },
+              "permissionPresence": "unavailable",
+              "resources": "unavailable"
+            },
+            "diagnostics": []
+          }
         }
       },
       { "availability": "unavailable", "sessionId": "session-b" }
