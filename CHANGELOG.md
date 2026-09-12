@@ -4,6 +4,39 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.8.0]
+
+Evidence Foundation: every report now comes from one canonical session pipeline, so current, history, global, TUI, HTML, and JSON cannot disagree about scope, counters, or joins.
+
+### Added
+
+- **Canonical session pipeline.** Source adapters produce validated L0 evidence, one L1 canonical session reconciles the entry graph, call/result joins, child runs, usage, and retained aggregates, and L2 emits the bounded DTOs rendered by TUI, HTML, and JSON. Loaders no longer re-derive scope or re-fold checkpoint counters.
+- **Evidence health** (`evidenceHealth`, always present on a report): bounded per-source state, join counts, usage/dated coverage, aggregate detail state (`full`/`aggregate-only`/`expired`), and code-only diagnostics. Unavailable, unsupported, partial, and expired never render as zero.
+- **Retained aggregates** (`retainedAggregates`, present only with a checkpoint boundary): the exact fold/seal cursor maps, the instant before which pruned WAL detail no longer exists (`detailExpiredBefore`), and only the aggregate values that survived pruning, labelled `aggregate-only`.
+- **Richer agent rows:** `observedAt` (publication time of the result that observed the run, never a run start/end), `evidenceToolId` (the canonical `tool:<toolCallId>` that published it), bounded `model`/`thinking`, and a bounded `failure` reason with an exit code or signal token.
+- Explicit `/skill:<name>` invocations are first-class evidence while their WAL detail is retained; after pruning the exact named and overflow counts survive as labelled aggregate-only values and never fabricate invocation rows.
+- Hardened parent-session resolution (approved-root containment, symlink and regular-file checks, bounded v3 header read; every failure is `unavailable` with no path leakage) and one domain-separated opaque-ID helper for live-tool, permission-request, and subagent-run identities.
+
+### Changed
+
+- Public subagent agent IDs keep the `subagent-<64hex>` shape but change value: the digest is now session-scoped instead of process-global. All links are regenerated from the same report; generation/tool/compaction ID values are unchanged.
+- Checkpoint `aggregates.resourceCounts` is extended in place with `resources`, `toolSources`, and `observedAt`, and one additive `evidence` object records materialization time, usage coverage, and detail coverage. Inventory snapshots now carry `observedAt` (the latest successful observation; mtime is never evidence time).
+- Skill invocation counts are projected from the L1 effective counters with an explicit `retained`/`aggregate-only`/`unavailable` state instead of being re-folded per loader.
+
+### Fixed
+
+- Inventory `observedAt` is consistent everywhere it appears: the snapshot file, the in-memory mirror handed to the builder, and `aggregates.resourceCounts.observedAt` carry the same observation instant, and `inventory-observation-time-missing` now fires only when no observation instant genuinely exists.
+- Current/history/global reconcile retained atomic telemetry against the checkpoint fold/seal boundary exactly once, so folded, retained, and pruned contributions can no longer double count or contradict their own health.
+
+### Migration
+
+- A 0.8.0 checkpoint adds the extended `resourceCounts` keys and the `evidence` object; `schemaVersion` stays `1`. Older readers ignore them and their next maintenance write drops them, degrading affected totals to `unavailable` (never `0`); Pi data is untouched.
+- A checkpoint sealed by an older version can never gain `walDetailExpiredBefore` (or `inventoryDetailExpiredAt`): those fields are written only by the prune path, in the same write that publishes a new seal and only when a prune actually removed detail. Pre-0.8.0 sealed sessions keep reporting WAL detail as `expired` without an exact instant rather than a backfilled one.
+
+### Security
+
+- Permission telemetry may now carry exactly one hashed producer identity, `attribution.request` = `permission-request-<canonicalOpaqueDigest("permission-request", sessionId, rawRequestId)>`. It is additive envelope metadata only: never folded, never a join key, never paired with a decision, and the raw request ID, its preimage, and every other producer field (`origin`, `value`, `matchedPattern`, `agentName`, `forwarding`) remain prohibited. ADR 0016 partially supersedes ADR 0014 for this one form; the v1 spec was amended in the same change.
+
 ## [0.7.0]
 
 ### Added
