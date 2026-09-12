@@ -18,6 +18,7 @@ import {
   renderHtml,
   sessionSpanMs,
 } from "../../src/ui/html.ts";
+import type { DateUsageRow } from "../../src/ui/dated-usage.ts";
 
 const zeroUsage = { totalTokens: 0, cost: 0 };
 
@@ -243,6 +244,46 @@ const richCurrent: HtmlReport = {
   scope: "tree",
 };
 
+/** One dated row in the shape the loader's projection produces. */
+function datedRow(
+  date: string,
+  totalTokens: number,
+  cost: number,
+  generations: number,
+  tools: number,
+  composition: DateUsageRow["composition"],
+): DateUsageRow {
+  return {
+    date,
+    totalTokens,
+    cost,
+    generations,
+    tools,
+    errors: 0,
+    composition,
+  };
+}
+
+/**
+ * The dated rows `richReport`'s own records produce: generation and tool usage
+ * on their own days, the 2026-09-07 compaction, and the zero-usage branch
+ * summary. The history aggregate folds exactly these rows (R19).
+ */
+const richUsageByDate: DateUsageRow[] = [
+  datedRow("2026-09-06", 10, 0.005, 1, 1, {
+    generations: { totalTokens: 10, cost: 0.005 },
+    toolResults: { ...zeroUsage },
+    compactions: { ...zeroUsage },
+    branchSummaries: { ...zeroUsage },
+  }),
+  datedRow("2026-09-07", 32, 0.005, 1, 1, {
+    generations: { totalTokens: 20, cost: 0.005 },
+    toolResults: { totalTokens: 10, cost: 0 },
+    compactions: { totalTokens: 2, cost: 0 },
+    branchSummaries: { ...zeroUsage },
+  }),
+];
+
 function historyReport(session: SessionReport = richReport): HtmlReport {
   return {
     kind: "history",
@@ -252,7 +293,7 @@ function historyReport(session: SessionReport = richReport): HtmlReport {
         {
           availability: "available",
           sessionId: session.sessionId,
-          usageByDate: [],
+          usageByDate: richUsageByDate,
           usageByDateTruncated: false,
           report: session,
         },
@@ -499,6 +540,12 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
       cost: 0.005,
       generations: 1,
       tools: 1,
+      composition: {
+        generations: { totalTokens: 10, cost: 0.005 },
+        toolResults: { totalTokens: 0, cost: 0 },
+        compactions: { totalTokens: 0, cost: 0 },
+        branchSummaries: { totalTokens: 0, cost: 0 },
+      },
     },
     {
       date: "2026-09-07",
@@ -507,6 +554,12 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
       cost: 0.005,
       generations: 1,
       tools: 1,
+      composition: {
+        generations: { totalTokens: 20, cost: 0.005 },
+        toolResults: { totalTokens: 10, cost: 0 },
+        compactions: { totalTokens: 2, cost: 0 },
+        branchSummaries: { totalTokens: 0, cost: 0 },
+      },
     },
   ]);
 
@@ -538,6 +591,74 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
     /data\.(report\.)?(generations|tools|compactions)\b/.test(script),
     false,
   );
+});
+
+test("a partial session keeps the history and global aggregates partial", () => {
+  const complete = embedded(renderHtml(historyReport()));
+  assert.equal(complete.history.dailyTruncated, false);
+  assert.equal(
+    embedded(renderHtml(globalReport())).global.dailyTruncated,
+    false,
+  );
+
+  // One complete session plus one whose window cannot represent its spend: the
+  // aggregate is partial even though the partial session contributes no row,
+  // and the complete session's own rows stay untouched.
+  const mixed: Extract<HtmlReport, { kind: "history" }> = {
+    kind: "history",
+    report: {
+      availability: "available",
+      sessions: [
+        {
+          availability: "available",
+          sessionId: "session-rich",
+          usageByDate: richUsageByDate,
+          usageByDateTruncated: false,
+          report: richReport,
+        },
+        {
+          availability: "available",
+          sessionId: "session-partial",
+          usageByDate: [],
+          usageByDateTruncated: true,
+          report: richReport,
+        },
+      ],
+      diagnostics: [],
+    },
+  };
+  const mixedData = embedded(renderHtml(mixed));
+  assert.equal(mixedData.history.dailyTruncated, true);
+  assert.deepEqual(
+    mixedData.history.daily,
+    buildDailyActivityRows([richReport]),
+  );
+
+  const partialHistory = historyReport();
+  if (partialHistory.kind !== "history") {
+    throw new Error("the history fixture must be a history report");
+  }
+  const session = partialHistory.report.sessions[0];
+  if (session?.availability !== "available") {
+    throw new Error("the history fixture must carry an available session");
+  }
+  session.usageByDateTruncated = true;
+  assert.equal(
+    embedded(renderHtml(partialHistory)).history.dailyTruncated,
+    true,
+  );
+
+  const partialGlobal = globalReport();
+  if (partialGlobal.kind !== "global") {
+    throw new Error("the global fixture must be a global report");
+  }
+  // The loader sets this on every available global row; the collapsed global
+  // session type hides it, so the fixture carries it as the loader would.
+  const globalSession = partialGlobal.report.sessions[0] as {
+    usageByDateTruncated?: boolean;
+  };
+  globalSession.usageByDateTruncated = true;
+  assert.equal(embedded(renderHtml(partialGlobal)).global.dailyTruncated, true);
 });
 
 test("renders the daily activity line chart for every report kind", () => {

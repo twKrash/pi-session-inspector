@@ -4,6 +4,8 @@ import type { L0Evidence } from "../core/evidence.ts";
 import type { SubagentEvidence } from "../integrations/subagents.ts";
 import type { SessionReport } from "../core/reports.ts";
 import type { CurrentTuiModel } from "./current.ts";
+import { buildDailyRows, type DailyRow } from "./daily.ts";
+import type { DatedModelRow, DateUsageRow } from "./dated-usage.ts";
 import { loadCurrentSessionReport } from "./load-current.ts";
 import {
   loadGlobalReport,
@@ -14,27 +16,54 @@ import {
 } from "./load-history.ts";
 import type { SessionObservation } from "./observation.ts";
 
-/** Bounded offline range row for one calendar date of one current view. */
-export type DailyRow = {
-  date: string;
-  sessions: number;
-  totalTokens: number;
-  cost: number;
-  generations: number;
-  tools: number;
+// The one daily-row shape every surface charts (spec §5.4).
+export type { DailyRow } from "./daily.ts";
+
+/**
+ * The tabs each section can render (spec §15). `environment` replaces the
+ * separate commands/skills tabs; a multi-session aggregate exposes overview
+ * only until its breakdowns are defined.
+ */
+export const CAPABILITIES: Readonly<
+  Record<"current" | "history" | "global", readonly string[]>
+> = {
+  current: [
+    "overview",
+    "models",
+    "tools",
+    "environment",
+    "agents",
+    "integrations",
+    "errors",
+    "ledger",
+  ],
+  history: ["overview"],
+  global: ["overview"],
 };
+
+/** A view that failed to replay can render no tab at all. */
+const NO_CAPABILITIES: readonly string[] = [];
 
 /**
  * One precomputed current view. `report` is the only home for report-derived
- * tables; `daily` carries the offline range rows. A view that failed to replay
- * is `unavailable` with a bounded diagnostic code, never fabricated zeros.
+ * tables; `usageByDate` and `datedModels` carry the view's own dated projection
+ * and `daily` the folded range rows. A view that failed to replay is
+ * `unavailable` with a bounded diagnostic code, never fabricated zeros, and a
+ * view whose projection is absent carries no dated key at all.
  */
 export type CurrentView = {
   availability: "available" | "unavailable";
   diagnostic?: string;
   report?: SessionReport;
+  /** The bounded per-date rows the session's own usage lines produced. */
+  usageByDate?: readonly DateUsageRow[];
+  /** Per-date model rows; capped at MAX_MODELS_PER_DATE and flagged. */
+  datedModels?: readonly DatedModelRow[];
+  modelsTruncated?: boolean;
   daily?: readonly DailyRow[];
   dailyTruncated?: boolean;
+  /** The tabs this view can render; an unavailable view renders none. */
+  capabilities?: readonly string[];
 };
 
 /** One self-contained, offline document's worth of report-level DTOs. */
@@ -42,7 +71,16 @@ export type InspectorBundle = {
   schemaVersion: 1;
   theme: "light" | "dark";
   initialScope: Scope;
-  current: { active: CurrentView; tree: CurrentView };
+  current: {
+    active: CurrentView;
+    tree: CurrentView;
+    /**
+     * True when both views carry the same report projection (spec §4.3). It is
+     * a statement about report data only, never about entry sets: `false` means
+     * the views differ, not that one of them is wrong.
+     */
+    sameReportProjection: boolean;
+  };
   history: HistoryReport;
   global: GlobalReport;
 };
@@ -99,8 +137,6 @@ export type InspectorBundleInput = {
   loadGlobal?: GlobalLoader;
 };
 
-/** Daily rows beyond this bound are dropped and marked truncated. */
-const MAX_DAILY_ROWS = 366;
 /** Bounded code, never free text or a raw error message. */
 const CURRENT_UNAVAILABLE = "current-unavailable";
 
@@ -132,7 +168,11 @@ export async function loadInspectorBundle(
     schemaVersion: 1,
     theme: input.theme,
     initialScope: input.initialScope,
-    current: { active, tree },
+    current: {
+      active,
+      tree,
+      sameReportProjection: sameReportProjection(active, tree),
+    },
     history,
     global,
   };
@@ -146,86 +186,89 @@ async function currentView(
   try {
     model = await loadCurrent(scope);
   } catch {
-    return { availability: "unavailable", diagnostic: CURRENT_UNAVAILABLE };
+    return noCurrentView();
   }
   if (model === undefined) {
-    return { availability: "unavailable", diagnostic: CURRENT_UNAVAILABLE };
+    return noCurrentView();
   }
-  const { rows, truncated } = dailyRows(model.report);
+  const { report } = model;
+  const projection = model.datedUsage;
+  // The view's daily rows are the fold of the very projection the session
+  // published, so no timestamp is read twice and a partial window stays partial.
+  const daily =
+    projection === undefined
+      ? undefined
+      : buildDailyRows([
+          {
+            sessionId: report.sessionId,
+            rows: projection.dates,
+            truncated: projection.truncated,
+          },
+        ]);
   return {
     availability: "available",
-    report: model.report,
-    daily: rows,
-    dailyTruncated: truncated,
+    report,
+    ...(projection === undefined
+      ? {}
+      : {
+          usageByDate: projection.dates,
+          datedModels: projection.models,
+          modelsTruncated: projection.modelsTruncated,
+        }),
+    ...(daily === undefined
+      ? {}
+      : { daily: daily.rows, dailyTruncated: daily.truncated }),
+    capabilities: CAPABILITIES.current,
+  };
+}
+
+/** A view that could not be replayed: one bounded code, no rows, no tabs. */
+function noCurrentView(): CurrentView {
+  return {
+    availability: "unavailable",
+    diagnostic: CURRENT_UNAVAILABLE,
+    capabilities: NO_CAPABILITIES,
   };
 }
 
 /**
- * Projects one date-keyed row per date present in the report's own dated
- * evidence (generations, tools, compactions). `sessions` is always 1 per
- * date because a current view covers exactly one session. Only the most
- * recent `MAX_DAILY_ROWS` dates are kept so range presets anchored on the
- * newest date remain complete.
+ * True when both views carry the same report projection (spec §4.3): the same
+ * availability, the same diagnostic when unavailable, and byte-identical
+ * `report`, `daily` and `datedModels` data. The capability table is view wiring,
+ * not report data, and object identity is never the claim.
  */
-function dailyRows(report: SessionReport): {
-  rows: DailyRow[];
-  truncated: boolean;
-} {
-  const byDate = new Map<string, DailyRow>();
-  const rowFor = (date: string): DailyRow => {
-    const existing = byDate.get(date);
-    if (existing !== undefined) return existing;
-    const row: DailyRow = {
-      date,
-      sessions: 1,
-      totalTokens: 0,
-      cost: 0,
-      generations: 0,
-      tools: 0,
-    };
-    byDate.set(date, row);
-    return row;
-  };
-
-  for (const generation of report.generations) {
-    const date = dayOf(generation.timestamp);
-    if (date === undefined) continue;
-    const row = rowFor(date);
-    row.generations += 1;
-    row.totalTokens += generation.usage.totalTokens;
-    row.cost += generation.usage.cost;
-  }
-  for (const tool of report.tools) {
-    const date = dayOf(tool.timestamp);
-    if (date === undefined) continue;
-    const row = rowFor(date);
-    row.tools += 1;
-    if (tool.usage !== undefined) {
-      row.totalTokens += tool.usage.totalTokens;
-      row.cost += tool.usage.cost;
-    }
-  }
-  for (const compaction of report.compactions) {
-    const date = dayOf(compaction.timestamp);
-    if (date === undefined) continue;
-    const row = rowFor(date);
-    row.totalTokens += compaction.usage.totalTokens;
-    row.cost += compaction.usage.cost;
-  }
-
-  const all = [...byDate.values()].sort((left, right) =>
-    left.date.localeCompare(right.date),
-  );
-  const truncated = all.length > MAX_DAILY_ROWS;
-  return {
-    rows: truncated ? all.slice(all.length - MAX_DAILY_ROWS) : all,
-    truncated,
-  };
+function sameReportProjection(active: CurrentView, tree: CurrentView): boolean {
+  if (active.availability !== tree.availability) return false;
+  if (active.diagnostic !== tree.diagnostic) return false;
+  return canonicalViewData(active) === canonicalViewData(tree);
 }
 
-function dayOf(timestamp: string): string | undefined {
-  const date = timestamp.slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined;
+function canonicalViewData(view: CurrentView): string {
+  return canonical({
+    report: view.report ?? null,
+    daily: view.daily ?? null,
+    datedModels: view.datedModels ?? null,
+  });
+}
+
+/**
+ * Stable serialization for the comparison above: object keys sorted, arrays in
+ * their documented order, `undefined` entries dropped. Two views with the same
+ * data always compare equal, whatever order their keys were built in.
+ */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonical).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 async function historySection(

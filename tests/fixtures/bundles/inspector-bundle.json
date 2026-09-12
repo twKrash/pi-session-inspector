@@ -375,6 +375,37 @@
       {
         "availability": "available",
         "sessionId": "session-a",
+        "usageByDate": [
+          {
+            "date": "2026-02-01",
+            "totalTokens": 400,
+            "cost": 0.08,
+            "generations": 1,
+            "tools": 0,
+            "errors": 0,
+            "composition": {
+              "generations": { "totalTokens": 400, "cost": 0.08 },
+              "toolResults": { "totalTokens": 0, "cost": 0 },
+              "compactions": { "totalTokens": 0, "cost": 0 },
+              "branchSummaries": { "totalTokens": 0, "cost": 0 }
+            }
+          },
+          {
+            "date": "2026-02-02",
+            "totalTokens": 800,
+            "cost": 0.16,
+            "generations": 1,
+            "tools": 1,
+            "errors": 0,
+            "composition": {
+              "generations": { "totalTokens": 600, "cost": 0.12 },
+              "toolResults": { "totalTokens": 180, "cost": 0.04 },
+              "compactions": { "totalTokens": 20, "cost": 0 },
+              "branchSummaries": { "totalTokens": 0, "cost": 0 }
+            }
+          }
+        ],
+        "usageByDateTruncated": false,
         "report": {
           "sessionId": "session-a",
           "usage": { "totalTokens": 1200, "cost": 0.24 },
@@ -482,7 +513,7 @@
   "global": {
     "availability": "available",
     "sessions": [
-      { "availability": "available", "sessionId": "session-a" },
+      { "availability": "available", "sessionId": "session-a", "usageByDateTruncated": false },
       { "availability": "unavailable", "sessionId": "session-b" }
     ],
     "usage": { "totalTokens": 1200, "cost": 0.24 },

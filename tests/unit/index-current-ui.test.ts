@@ -122,6 +122,7 @@ test("overflow usage remains unavailable through the bundle and JSON production 
       current: {
         active: { availability: "available", report, daily: [] },
         tree: { availability: "available", report, daily: [] },
+        sameReportProjection: true,
       },
       history: { availability: "unavailable", sessions: [], diagnostics: [] },
       global: {

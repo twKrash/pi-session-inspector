@@ -3,6 +3,7 @@ import { buildLedger, type LedgerItem } from "../core/ledger.ts";
 import type { SessionReport } from "../core/reports.ts";
 import type { SessionCoverage } from "../core/session-coverage.ts";
 import type { CurrentView, DailyRow, InspectorBundle } from "./bundle.ts";
+import { buildDailyRows, type DailyContribution } from "./daily.ts";
 import type { GlobalReport, HistoryReport } from "./load-history.ts";
 
 export const ENGLISH_CATALOG = {
@@ -29,8 +30,12 @@ export const ENGLISH_CATALOG = {
   "theme.dark": "Dark theme",
   "theme.light": "Light theme",
   "scope.label": "Entry scope",
-  "scope.active": "Active ancestry",
-  "scope.tree": "Full tree",
+  "scope.active": "Active path",
+  "scope.tree": "Full session tree",
+  "scope.active.note": "Selected entry and its parent ancestry",
+  "scope.tree.note": "All tracked branches in this session",
+  "scope.sameReport":
+    "Active path and Full session tree produce the same report data for this session.",
   "scope.fixed": "History & Global use full tree.",
   "range.label": "Date range",
   "range.last": "Last {days} days",
@@ -509,20 +514,17 @@ const CURRENT_UNAVAILABLE_VIEW: CurrentView = {
  */
 function bundlePayloadFromReport(input: HtmlReport): Record<string, unknown> {
   const currentReport = input.kind === "current" ? input.report : undefined;
+  // The legacy adapter has no canonical session, so its current-view rows keep
+  // the pre-attribution bucketing (spec §5.4, the one documented exception).
   const currentView = (report: SessionReport): CurrentView => ({
     availability: "available",
     report,
-    daily: buildDailyActivityRows([report]).map((row) => ({
-      date: row.date,
-      sessions: row.sessions,
-      totalTokens: row.totalTokens,
-      cost: row.cost,
-      generations: row.generations ?? 0,
-      tools: row.tools ?? 0,
-    })),
+    daily: buildDailyActivityRows([report]),
     dailyTruncated: false,
   });
-  const current: InspectorBundle["current"] =
+  // This adapter emits no same-projection flag: it always renders one report
+  // kind, so one of its two views is the explicit unavailable view.
+  const current: { active: CurrentView; tree: CurrentView } =
     currentReport === undefined
       ? { active: CURRENT_UNAVAILABLE_VIEW, tree: CURRENT_UNAVAILABLE_VIEW }
       : input.kind === "current" && input.scope === "tree"
@@ -757,12 +759,15 @@ function safeUsage(usage: NonNullable<SessionReport["usage"]>): SafeUsage {
 }
 
 /**
- * Builds the daily rows every report kind charts and filters. The browser
- * consumes these rows verbatim and never walks raw report records.
+ * The legacy pre-attribution bucketing of raw report records (spec §5.4, the
+ * one documented exception): it dates records itself instead of folding the
+ * session's own dated projection, and only the no-production-caller
+ * single-section adapter still calls it. The bundle path uses
+ * `buildDailyRows` over the published projection.
  */
 export function buildDailyActivityRows(
   reports: readonly SessionReport[],
-): DailyActivityRow[] {
+): DailyRow[] {
   const rows = new Map<string, DailyAccumulator>();
   const at = (date: string): DailyAccumulator => {
     const existing = rows.get(date);
@@ -774,6 +779,12 @@ export function buildDailyActivityRows(
       cost: 0,
       generations: 0,
       tools: 0,
+      composition: {
+        generations: { totalTokens: 0, cost: 0 },
+        toolResults: { totalTokens: 0, cost: 0 },
+        compactions: { totalTokens: 0, cost: 0 },
+        branchSummaries: { totalTokens: 0, cost: 0 },
+      },
     };
     rows.set(date, created);
     return created;
@@ -785,7 +796,7 @@ export function buildDailyActivityRows(
       const row = at(date);
       row.sessionIds.add(report.sessionId);
       row.generations += 1;
-      addDailyUsage(row, generation.usage);
+      addDailyUsage(row, generation.usage, "generations");
     }
     for (const tool of report.tools) {
       const date = utcDate(tool.timestamp);
@@ -793,14 +804,21 @@ export function buildDailyActivityRows(
       const row = at(date);
       row.sessionIds.add(report.sessionId);
       row.tools += 1;
-      if (tool.usage !== undefined) addDailyUsage(row, tool.usage);
+      if (tool.usage !== undefined)
+        addDailyUsage(row, tool.usage, "toolResults");
     }
     for (const compaction of report.compactions) {
       const date = utcDate(compaction.timestamp);
       if (date === undefined) continue;
       const row = at(date);
       row.sessionIds.add(report.sessionId);
-      addDailyUsage(row, compaction.usage);
+      addDailyUsage(
+        row,
+        compaction.usage,
+        compaction.kind === "branch_summary"
+          ? "branchSummaries"
+          : "compactions",
+      );
     }
   }
   return [...rows.values()]
@@ -812,6 +830,7 @@ export function buildDailyActivityRows(
       cost: row.cost,
       generations: row.generations,
       tools: row.tools,
+      composition: row.composition,
     }));
 }
 
@@ -822,11 +841,20 @@ type DailyAccumulator = {
   cost: number;
   generations: number;
   tools: number;
+  composition: DailyRow["composition"];
 };
 
-function addDailyUsage(row: DailyAccumulator, usage: SafeUsage): void {
+function addDailyUsage(
+  row: DailyAccumulator,
+  usage: SafeUsage,
+  part: keyof DailyRow["composition"],
+): void {
   row.totalTokens += usage.totalTokens;
   row.cost = roundCost(row.cost + usage.cost);
+  row.composition[part].totalTokens += usage.totalTokens;
+  row.composition[part].cost = roundCost(
+    row.composition[part].cost + usage.cost,
+  );
 }
 
 /**
@@ -1349,10 +1377,23 @@ function projectReport(input: HtmlReport): Record<string, unknown> {
     };
   }
   if (input.kind === "history") {
-    const reports = input.report.sessions.flatMap((session) =>
-      session.availability === "available" ? [session.report] : [],
+    // R19: the aggregate folds the sessions' own dated rows. It never walks a
+    // session timestamp and it never looks complete while a contributing
+    // window is partial (spec §5.4).
+    const contributions: DailyContribution[] = input.report.sessions.flatMap(
+      (session) =>
+        session.availability === "available"
+          ? [
+              {
+                sessionId: session.sessionId,
+                rows: session.usageByDate,
+                truncated: session.usageByDateTruncated,
+              },
+            ]
+          : [],
     );
-    const daily = buildDailyActivityRows(reports);
+    const folded = buildDailyRows(contributions);
+    const daily = folded.rows;
     return {
       kind: "history",
       availability: input.report.availability,
@@ -1367,6 +1408,7 @@ function projectReport(input: HtmlReport): Record<string, unknown> {
       period: defaultReportPeriod("history", daily),
       latestDate: latestDate(daily),
       daily,
+      dailyTruncated: folded.truncated,
       chartMetrics: SESSION_CHART_METRICS,
       evidence: historyEvidenceRows(input.report),
       sessions: input.report.sessions.map(historyEntry),
@@ -1378,6 +1420,13 @@ function projectReport(input: HtmlReport): Record<string, unknown> {
     totalTokens: row.usage.totalTokens,
     cost: row.usage.cost,
   }));
+  // The loader folds the sessions' own dated rows into `dates`; a session whose
+  // window cannot represent its spend still makes the aggregate partial.
+  const dailyTruncated = input.report.sessions.some(
+    (session) =>
+      "usageByDateTruncated" in session &&
+      session.usageByDateTruncated === true,
+  );
   return {
     kind: "global",
     availability: input.report.availability,
@@ -1392,6 +1441,7 @@ function projectReport(input: HtmlReport): Record<string, unknown> {
     period: defaultReportPeriod("global", daily),
     latestDate: latestDate(daily),
     daily,
+    dailyTruncated,
     chartMetrics: GLOBAL_CHART_METRICS,
     evidence: globalEvidenceRows(input.report),
     usage: safeUsage(input.report.usage),

@@ -353,6 +353,7 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
         daily: [],
         dailyTruncated: false,
       },
+      sameReportProjection: false,
     },
     history: { availability: "unavailable", sessions: [], diagnostics: [] },
     global: {
