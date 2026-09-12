@@ -7,6 +7,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -1607,6 +1608,298 @@ test("keeps an inventory snapshot whose observedAt is invalid", async () => {
       0,
     );
     assert.equal((await readdir(directory)).includes("inventory.json"), true);
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// --- Task 17: retention records the exact expiration boundary ---
+
+test("pruning records the exact WAL expiration boundary once detail is gone", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    const path = join(shard, "2026-09-01.jsonl");
+    await writeFile(path, record(1, "2026-09-01T12:34:56.789Z"));
+    await writeFile(`${path}.closed`, "1\n");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: checkpoint(1), lease }),
+      true,
+    );
+
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      1,
+    );
+    // The boundary is the newest pruned record's own instant, never the
+    // retention cutoff day (2026-09-08 here) and never the file mtime.
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.detailCoverage
+        ?.walDetailExpiredBefore,
+      "2026-09-01T12:34:56.789Z",
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("kept WAL detail leaves the expiration boundary unset", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    const path = join(shard, "2026-09-20.jsonl");
+    await writeFile(path, record(1, "2026-09-20T12:00:00.000Z"));
+    await writeFile(`${path}.closed`, "1\n");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: checkpoint(1), lease }),
+      true,
+    );
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      0,
+    );
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.detailCoverage,
+      undefined,
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("a session with no pruning keeps the detail-coverage boundary absent", async () => {
+  const fresh = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    assert.equal(
+      (await readCheckpoint({ directory: fresh }))?.evidence?.detailCoverage,
+      undefined,
+    );
+  } finally {
+    await rm(fresh, { force: true, recursive: true });
+  }
+});
+
+test("the WAL expiration boundary is monotonic across passes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    const first = join(shard, "2026-09-01.jsonl");
+    await writeFile(first, record(1, "2026-09-01T12:00:00.000Z"));
+    await writeFile(`${first}.closed`, "1\n");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: checkpoint(1), lease }),
+      true,
+    );
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      1,
+    );
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.detailCoverage
+        ?.walDetailExpiredBefore,
+      "2026-09-01T12:00:00.000Z",
+    );
+
+    // A later pass prunes an *older* record (a writer clock rollback): the
+    // boundary must stay at the maximum instant already published.
+    const second = join(shard, "2026-09-02.jsonl");
+    await writeFile(second, record(2, "2026-09-01T09:00:00.000Z"));
+    await writeFile(`${second}.closed`, "1\n");
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      1,
+    );
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.detailCoverage
+        ?.walDetailExpiredBefore,
+      "2026-09-01T12:00:00.000Z",
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("an aborted prune leaves the WAL expiration boundary unset", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    const path = join(shard, "2026-09-01.jsonl");
+    await writeFile(path, record(1, "2026-09-01T12:00:00.000Z"));
+    await writeFile(`${path}.closed`, "1\n");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: checkpoint(1), lease }),
+      true,
+    );
+
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => false,
+      }),
+      0,
+    );
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.detailCoverage,
+      undefined,
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("inventory pruning records the pruned snapshot's own observation instant", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const inventory = join(directory, "inventory.json");
+    await writeFile(inventory, inventorySnapshot("2026-09-07T12:00:00.000Z"));
+    await setModifiedTime(inventory, "2026-09-20T12:00:00.000Z");
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: checkpoint(0), lease }),
+      true,
+    );
+
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      1,
+    );
+    assert.equal((await readdir(directory)).includes("inventory.json"), false);
+    const coverage = (await readCheckpoint({ directory }))?.evidence
+      ?.detailCoverage;
+    assert.equal(
+      coverage?.inventoryDetailExpiredAt,
+      "2026-09-07T12:00:00.000Z",
+    );
+    assert.equal(coverage?.walDetailExpiredBefore, undefined);
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("a kept inventory snapshot leaves its expiration boundary unset", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const inventory = join(directory, "inventory.json");
+    await writeFile(inventory, inventorySnapshot("2026-09-20T12:00:00.000Z"));
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: checkpoint(0), lease }),
+      true,
+    );
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      0,
+    );
+    assert.equal(
+      (await readCheckpoint({ directory }))?.evidence?.detailCoverage,
+      undefined,
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("re-running retention with no new pruning never rewrites the checkpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-retention-"));
+  try {
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    const path = join(shard, "2026-09-01.jsonl");
+    await writeFile(path, record(1, "2026-09-01T12:00:00.000Z"));
+    await writeFile(`${path}.closed`, "1\n");
+    const inventory = join(directory, "inventory.json");
+    await writeFile(inventory, inventorySnapshot("2026-09-07T12:00:00.000Z"));
+    const lease = await acquireLease(directory);
+    assert.equal(
+      await writeCheckpoint({ directory, checkpoint: checkpoint(1), lease }),
+      true,
+    );
+
+    // One WAL segment plus one inventory snapshot are pruned in this pass.
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      2,
+    );
+    const checkpointPath = join(directory, "checkpoint.json");
+    const bytes = await readFile(checkpointPath, "utf8");
+    const written = await stat(checkpointPath);
+    assert.equal(
+      bytes.includes('"walDetailExpiredBefore":"2026-09-01T12:00:00.000Z"'),
+      true,
+    );
+    assert.equal(
+      bytes.includes('"inventoryDetailExpiredAt":"2026-09-07T12:00:00.000Z"'),
+      true,
+    );
+
+    // Nothing new is prunable: the checkpoint must keep both its bytes and its
+    // inode (a rewrite publishes a new temp file, so `ino` catches a same-ms
+    // rewrite that `mtimeMs` alone would miss).
+    assert.equal(
+      await pruneExpiredWalSegments({
+        directory,
+        lease,
+        now: () => directoryNow,
+        validate: async () => true,
+      }),
+      0,
+    );
+    assert.equal(await readFile(checkpointPath, "utf8"), bytes);
+    const after = await stat(checkpointPath);
+    assert.equal(after.ino, written.ino);
+    assert.equal(after.mtimeMs, written.mtimeMs);
     await lease.release();
   } finally {
     await rm(directory, { force: true, recursive: true });

@@ -84,6 +84,12 @@ type LiveSessionState = {
   live?: LiveWalRegistration;
   ready: boolean;
   inventory?: InventorySnapshot;
+  /**
+   * The observation instant of `inventory`, captured once per successful
+   * observation (spec §14.2). Threaded into checkpoint `resourceCounts` so the
+   * counts' observation time is never the checkpoint write clock (R52).
+   */
+  inventoryObservedAt?: string;
   inventoryNames: ReadonlySet<string>;
 };
 const liveSessions = new Map<string, LiveSessionState>();
@@ -102,6 +108,7 @@ function liveSession(sessionId: string): LiveSessionState {
 function rememberInventory(
   inventory: InventorySnapshot,
   scope: { root: string; sessionId: string },
+  observedAt: string,
 ): void {
   // The persisted bound is applied once, at capture: every consumer of the
   // in-memory snapshot (reports, presence, counter allowlists) then sees the
@@ -109,6 +116,9 @@ function rememberInventory(
   const bounded = boundInventorySnapshot(inventory);
   const state = liveSession(scope.sessionId);
   state.inventory = bounded;
+  // The counts and their observation time stay paired in one state update, so
+  // maintenance can never stamp the counts with another observation's clock.
+  state.inventoryObservedAt = observedAt;
   state.inventoryNames = new Set(bounded.skills.map((skill) => skill.name));
   liveInventoryScope = scope;
 }
@@ -163,15 +173,21 @@ export function registerTracking(
         const snapshot = readSessionInventory(api);
         if (snapshot === undefined) {
           liveSession(input.sessionId).inventory = undefined;
+          liveSession(input.sessionId).inventoryObservedAt = undefined;
           liveSession(input.sessionId).inventoryNames = new Set<string>();
         } else {
-          rememberInventory(snapshot, scope);
+          // R52: the observation instant is captured once and shared by the
+          // persisted snapshot and the in-memory counts, so checkpoint
+          // `resourceCounts.observedAt` is this snapshot's own observation
+          // time, never a later maintenance write clock.
+          const observedAt = new Date().toISOString();
+          rememberInventory(snapshot, scope, observedAt);
           // R37: the session-start capture is a successful observation, so it
           // carries the observation time the retention/§14.2 contract needs.
           void refreshInventorySnapshot({
             directory: join(input.root, "sessions", input.sessionId),
             snapshot,
-            observedAt: new Date().toISOString(),
+            observedAt,
           }).catch(() => undefined);
         }
         // Promotions are idempotent per session: a second `session_start` for
@@ -210,7 +226,9 @@ function scheduleProductionMaintenance({
   sessionId: string;
   sessionFile: string;
 }): void {
-  const inventory = liveSessions.get(sessionId)?.inventory;
+  const state = liveSessions.get(sessionId);
+  const inventory = state?.inventory;
+  const observedAt = state?.inventoryObservedAt;
   scheduleMaintenance({
     root,
     sessionId,
@@ -222,6 +240,9 @@ function scheduleProductionMaintenance({
           inventoryCounts: {
             commands: inventory.commands.length,
             skills: inventory.skills.length,
+            // R52: the snapshot's own observation time or nothing - never the
+            // maintenance/checkpoint write time.
+            ...(observedAt === undefined ? {} : { observedAt }),
           },
         }),
   });
@@ -315,12 +336,16 @@ async function refreshReportInventory(
   scope: { root: string; sessionId: string },
 ): Promise<void> {
   try {
+    // One instant serves both the persisted snapshot and the in-memory counts,
+    // so the observation time and the rows it produced never disagree (R52).
+    const observedAt = new Date().toISOString();
     const snapshot = await refreshSessionInventory({
       api,
       root: scope.root,
       sessionId: scope.sessionId,
+      now: () => new Date(observedAt),
     });
-    if (snapshot !== undefined) rememberInventory(snapshot, scope);
+    if (snapshot !== undefined) rememberInventory(snapshot, scope, observedAt);
   } catch {
     // Inventory refresh must never affect reports or Pi.
   }
@@ -686,15 +711,18 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
         if (event.reason !== "reload") return;
         const scope = liveInventoryScope;
         if (scope === undefined) return;
+        const observedAt = new Date().toISOString();
         void refreshSessionInventory({
           api: pi,
           root: scope.root,
           sessionId: scope.sessionId,
+          now: () => new Date(observedAt),
         })
           .then((snapshot) => {
             // A failed refresh keeps the last readable snapshot rather than
             // substituting an empty one.
-            if (snapshot !== undefined) rememberInventory(snapshot, scope);
+            if (snapshot !== undefined)
+              rememberInventory(snapshot, scope, observedAt);
           })
           .catch(() => undefined);
       } catch {

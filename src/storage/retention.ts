@@ -3,7 +3,11 @@ import { opendir, open, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { parseWalRecord } from "./recovery.js";
-import { readCheckpoint, writeCheckpoint } from "./checkpoint.js";
+import {
+  readCheckpoint,
+  writeCheckpoint,
+  type Checkpoint,
+} from "./checkpoint.js";
 import { isMaintenanceLeaseHeld, type MaintenanceLease } from "./lease.js";
 import { readInventorySnapshot } from "./inventory-snapshot.ts";
 
@@ -42,16 +46,41 @@ export async function pruneExpiredWalSegments({
   const cutoff = cutoffDate(now());
   if (cutoff === undefined) return 0;
 
+  // Read before the inventory prune so a successful inventory unlink can
+  // publish its own observation boundary into the checkpoint it already owns.
+  const checkpoint = await readCheckpoint({ directory });
+
   // Inventory expiry does not require a checkpoint: a session whose WAL was
   // never checkpointed must still let its aged `inventory.json` expire.
   let deleted = 0;
   try {
-    deleted += await pruneExpiredInventory({ directory, cutoff, remove });
+    const expiredAt = await pruneExpiredInventory({
+      directory,
+      cutoff,
+      remove,
+    });
+    if (expiredAt !== undefined) {
+      deleted += 1;
+      if (checkpoint !== undefined) {
+        const boundary = maxInstant(
+          checkpoint.evidence?.detailCoverage?.inventoryDetailExpiredAt,
+          expiredAt,
+        );
+        if (
+          checkpoint.evidence?.detailCoverage?.inventoryDetailExpiredAt !==
+          boundary
+        ) {
+          const next = withInventoryBoundary(checkpoint, boundary);
+          if (await writeCheckpoint({ directory, lease, checkpoint: next })) {
+            Object.assign(checkpoint, next);
+          }
+        }
+      }
+    }
   } catch {
     // Inventory expiry is observer-only and never blocks WAL maintenance.
   }
 
-  const checkpoint = await readCheckpoint({ directory });
   if (checkpoint === undefined) return deleted;
 
   let writers: Dir;
@@ -91,7 +120,9 @@ export async function pruneExpiredWalSegments({
  * size/mtime/dev/ino immediately before unlink so a concurrent refresh aborts
  * the deletion. mtime is never a freshness or retention input. A missing or
  * invalid `observedAt` carries no freshness evidence, so the snapshot is kept
- * rather than guessed at.
+ * rather than guessed at. Returns the pruned snapshot's own observation
+ * instant on an actual unlink, `undefined` otherwise; that instant - never the
+ * cutoff day, mtime, or process clock - is the recorded expiration boundary.
  */
 async function pruneExpiredInventory({
   directory,
@@ -101,15 +132,15 @@ async function pruneExpiredInventory({
   directory: string;
   cutoff: string;
   remove: (path: string) => Promise<void>;
-}): Promise<number> {
+}): Promise<string | undefined> {
   const path = join(directory, INVENTORY_FILE_NAME);
   try {
     const before = await stat(path);
-    if (!before.isFile()) return 0;
+    if (!before.isFile()) return undefined;
     const observedAt = (await readInventorySnapshot(directory))?.observedAt;
-    if (observedAt === undefined) return 0;
+    if (observedAt === undefined) return undefined;
     const observedDay = observationDay(observedAt);
-    if (observedDay === undefined || observedDay >= cutoff) return 0;
+    if (observedDay === undefined || observedDay >= cutoff) return undefined;
     const after = await stat(path);
     if (
       after.size !== before.size ||
@@ -117,12 +148,42 @@ async function pruneExpiredInventory({
       after.dev !== before.dev ||
       after.ino !== before.ino
     )
-      return 0;
+      return undefined;
     await remove(path);
-    return 1;
+    return observedAt;
   } catch {
-    return 0;
+    return undefined;
   }
+}
+
+/**
+ * The later of a stored boundary and a newly pruned instant. Boundaries are
+ * monotonic across passes: a writer clock rollback must never regress the
+ * published expiration boundary.
+ */
+function maxInstant(stored: string | undefined, incoming: string): string {
+  if (stored === undefined) return incoming;
+  return Date.parse(stored) >= Date.parse(incoming) ? stored : incoming;
+}
+
+/**
+ * Adds only the inventory detail boundary, preserving every other checkpoint
+ * field so a boundary write never erases another component's evidence.
+ */
+function withInventoryBoundary(
+  checkpoint: Checkpoint,
+  boundary: string,
+): Checkpoint {
+  return {
+    ...checkpoint,
+    evidence: {
+      ...checkpoint.evidence,
+      detailCoverage: {
+        ...checkpoint.evidence?.detailCoverage,
+        inventoryDetailExpiredAt: boundary,
+      },
+    },
+  };
 }
 
 /** UTC calendar day of a validated observation instant. */
@@ -192,7 +253,15 @@ async function pruneWriter({
       // checkpoint cursor, authorizes missing detail. Never undo publication:
       // unlink may succeed before reporting an error or the process may exit.
       const last = Math.max(sealed, segment.lastSequence);
-      const next = {
+      // The exact expiration boundary is the newest record in the prefix the
+      // seal covers; it publishes in the same write as the seal so a reader can
+      // never observe a sealed prefix without its boundary. Monotonic across
+      // passes: never the cutoff day, mtime, or the process clock.
+      const boundary = maxInstant(
+        checkpoint.evidence?.detailCoverage?.walDetailExpiredBefore,
+        segment.newestTimestamp,
+      );
+      const next: Checkpoint = {
         ...checkpoint,
         cursors: {
           ...checkpoint.cursors,
@@ -206,10 +275,30 @@ async function pruneWriter({
           ...(checkpoint.sealingVersion === 1 ? checkpoint.sealedWal : {}),
           [writerId]: last,
         },
+        evidence: {
+          ...checkpoint.evidence,
+          detailCoverage: {
+            ...checkpoint.evidence?.detailCoverage,
+            walDetailExpiredBefore: boundary,
+          },
+        },
       };
-      if (!(await writeCheckpoint({ directory, lease, checkpoint: next })))
-        break;
-      Object.assign(checkpoint, next);
+      // A repeat pass over an already-sealed, already-recorded segment must not
+      // rewrite the checkpoint; only a genuinely new seal/boundary does.
+      const sealChanged =
+        (checkpoint.sealingVersion === 1
+          ? checkpoint.sealedWal?.[writerId]
+          : undefined) !== last;
+      const cursorChanged =
+        (checkpoint.cursors.wal[writerId] ?? 0) !== Math.max(cursor, last);
+      const boundaryChanged =
+        checkpoint.evidence?.detailCoverage?.walDetailExpiredBefore !==
+        boundary;
+      if (sealChanged || cursorChanged || boundaryChanged) {
+        if (!(await writeCheckpoint({ directory, lease, checkpoint: next })))
+          break;
+        Object.assign(checkpoint, next);
+      }
       if (!(await validate())) break;
       // Mtime-only quiescence can be invalidated by a delayed append or a path
       // swap. Recheck the exact size/time/identity immediately before unlink so
@@ -361,9 +450,13 @@ async function firstSequence(
 async function readSegmentBoundary(
   path: string,
   writerId: string,
-): Promise<{ newestDate: string; lastSequence: number } | undefined> {
+): Promise<
+  | { newestDate: string; newestTimestamp: string; lastSequence: number }
+  | undefined
+> {
   let partial = Buffer.alloc(0);
   let newestDate = "";
+  let newestTimestamp: string | undefined;
   let lastSequence: number | undefined;
   for await (const chunk of createReadStream(path)) {
     const data = Buffer.concat([partial, chunk]);
@@ -384,15 +477,25 @@ async function readSegmentBoundary(
       )
         return undefined;
       lastSequence = record.writerSequence;
-      const date = new Date(record.timestamp).toISOString().slice(0, 10);
+      const instant = new Date(record.timestamp).toISOString();
+      const date = instant.slice(0, 10);
       if (date > newestDate) newestDate = date;
+      // The exact newest record instant, tracked separately from its day so a
+      // same-day clock rollback still surfaces the true maximum.
+      if (
+        newestTimestamp === undefined ||
+        Date.parse(instant) > Date.parse(newestTimestamp)
+      )
+        newestTimestamp = instant;
     }
     partial = data.subarray(start);
     if (partial.length > MAX_WAL_LINE_BYTES) return undefined;
   }
-  return partial.length > 0 || lastSequence === undefined
+  return partial.length > 0 ||
+    lastSequence === undefined ||
+    newestTimestamp === undefined
     ? undefined
-    : { newestDate, lastSequence };
+    : { newestDate, newestTimestamp, lastSequence };
 }
 
 function cutoffDate(now: Date): string | undefined {

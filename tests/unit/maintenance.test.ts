@@ -601,3 +601,95 @@ test("malformed durable WAL is not reported maintained when no validated prefix 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("production session start stamps resource counts with the inventory observation time", async () => {
+  const { registerTracking } = await import("../../src/index.ts");
+  const directory = await mkdtemp(join(tmpdir(), "inspector-maintenance-"));
+  const sessionId = "session-r52";
+  const nativeDirectory = join(directory, "native");
+  const sessionFile = join(nativeDirectory, "session.jsonl");
+  const root = join(directory, "session-inspector", "v1");
+  const inspectorDirectory = join(root, "sessions", sessionId);
+  try {
+    await mkdir(nativeDirectory, { recursive: true });
+    await mkdir(inspectorDirectory, { recursive: true });
+    await writeFile(sessionFile, `${trackingMarkerLine}\n`);
+
+    let handler:
+      | ((event: unknown, context: unknown) => Promise<void>)
+      | undefined;
+    registerTracking(
+      {
+        on: (
+          _event: string,
+          registered: (event: unknown, context: unknown) => Promise<void>,
+        ) => {
+          handler = registered;
+        },
+        appendEntry: () => {},
+        getCommands: () => [
+          {
+            name: "ponytail",
+            source: "extension",
+            sourceInfo: {
+              source: "local",
+              scope: "user",
+              origin: "top-level",
+            },
+          },
+        ],
+        getAllTools: () => [],
+      } as unknown as Parameters<typeof registerTracking>[0],
+      {
+        agentDir: directory,
+        track: async () => true,
+        setupSessionWal: async () => {},
+      },
+    );
+    assert.ok(handler);
+    const startedAt = Date.now();
+    await handler(
+      {},
+      {
+        sessionManager: {
+          getSessionId: () => sessionId,
+          getSessionFile: () => sessionFile,
+          getSessionDir: () => nativeDirectory,
+        },
+      },
+    );
+
+    // Production scheduling is detached; poll for the persisted observation
+    // and the checkpoint write it feeds.
+    const snapshotPath = join(inspectorDirectory, "inventory.json");
+    let snapshot: { observedAt?: unknown } | undefined;
+    let checkpoint = await readCheckpoint({ directory: inspectorDirectory });
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try {
+        snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as {
+          observedAt?: unknown;
+        };
+      } catch {
+        snapshot = undefined;
+      }
+      checkpoint = await readCheckpoint({ directory: inspectorDirectory });
+      if (
+        typeof snapshot?.observedAt === "string" &&
+        typeof checkpoint?.aggregates.resourceCounts?.observedAt === "string"
+      )
+        break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(snapshot, "the session-start capture must persist its snapshot");
+    assert.ok(checkpoint, "production maintenance must publish a checkpoint");
+    const observedAt = checkpoint.aggregates.resourceCounts?.observedAt;
+    // R52: the checkpoint carries the snapshot's own observation instant, not
+    // the later maintenance/checkpoint write clock and never mtime.
+    assert.equal(observedAt, snapshot.observedAt);
+    const at = Date.parse(observedAt as string);
+    assert.equal(Number.isNaN(at), false);
+    assert.ok(at >= startedAt && at <= Date.now());
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
