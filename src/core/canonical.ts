@@ -46,7 +46,7 @@ import {
   type FoldedCounters,
 } from "./live-counter-fold.ts";
 import { canonicalOpaqueDigest } from "./opaque-id.ts";
-import { reduceEntries } from "./reduce.ts";
+import { readUsage, reduceEntries } from "./reduce.ts";
 import { boundedDescription, secretLikeValue } from "./redact.ts";
 import {
   buildRetainedAggregates,
@@ -691,6 +691,13 @@ function buildUsage(
   const presence = readUsagePresence(entries);
   const lines: CanonicalUsageLine[] = [];
 
+  // Spec §7.2 gate 8: a present-but-invalid usage record is rejected, its
+  // owner fact is preserved, and the affected bucket is marked partial. Emit a
+  // single bounded diagnostic whose count reflects the rejected owners.
+  if (presence.invalidUsage.size > 0) {
+    diagnostics.add("pi-jsonl", "usage-invalid", presence.invalidUsage.size);
+  }
+
   for (const generation of reduced.generations) {
     const entryId = generation.id.replace(/^generation:/, "");
     // Spec §10.2: missing usage never creates a zero-valued line.
@@ -864,11 +871,17 @@ type UsagePresence = {
   branchSummariesWithUsage: Set<string>;
   toolCalls: Set<string>;
   toolCallsWithUsage: Set<string>;
+  /** `${bucket}\u0000${ownerId}` where usage is present but fails `readUsage`. */
+  invalidUsage: Set<string>;
 };
 
 /**
  * Exact owner/usage presence read from the scoped entries, so a missing usage
- * value makes a bucket partial instead of contributing a fabricated zero.
+ * value makes a bucket partial instead of contributing a fabricated zero. The
+ * `*WithUsage` sets hold only owners whose record passes the reducer's own
+ * validator, so a present-but-invalid record can never fabricate a zero line or
+ * claim completeness; it is tracked separately in `invalidUsage` (spec §7.2
+ * gate 8).
  */
 function readUsagePresence(entries: readonly SessionEntry[]): UsagePresence {
   const presence: UsagePresence = {
@@ -880,32 +893,57 @@ function readUsagePresence(entries: readonly SessionEntry[]): UsagePresence {
     branchSummariesWithUsage: new Set(),
     toolCalls: new Set(),
     toolCallsWithUsage: new Set(),
+    invalidUsage: new Set(),
   };
   for (const entry of entries) {
     if (entry.type === "message" && isRecord(entry.message)) {
       const message = entry.message;
       if (message.role === "assistant") {
         presence.generations.add(entry.id);
-        if (isRecord(message.usage))
-          presence.generationsWithUsage.add(entry.id);
+        trackUsage(presence, "generation", entry.id, message.usage);
       } else if (message.role === "toolResult") {
         const callId = message.toolCallId;
         if (typeof callId === "string" && callId.length > 0) {
           presence.toolCalls.add(callId);
-          if (isRecord(message.usage)) presence.toolCallsWithUsage.add(callId);
+          trackUsage(presence, "tool-result", callId, message.usage);
         }
       }
     } else if (entry.type === "compaction") {
       presence.compactions.add(entry.id);
-      if (isRecord(entry.usage)) presence.compactionsWithUsage.add(entry.id);
+      trackUsage(presence, "compaction", entry.id, entry.usage);
     } else if (entry.type === "branch_summary") {
       presence.branchSummaries.add(entry.id);
-      if (isRecord(entry.usage)) {
-        presence.branchSummariesWithUsage.add(entry.id);
-      }
+      trackUsage(presence, "branch-summary", entry.id, entry.usage);
     }
   }
   return presence;
+}
+
+/**
+ * Structural presence is kept for the owner set; only a validated read enters
+ * the `WithUsage` set. A structurally present record the reducer rejects is
+ * recorded in `invalidUsage` for the bounded diagnostic.
+ */
+function trackUsage(
+  presence: UsagePresence,
+  bucket: UsageBucket,
+  ownerId: string,
+  value: unknown,
+): void {
+  if (!isRecord(value)) return;
+  if (readUsage(value) === undefined) {
+    presence.invalidUsage.add(`${bucket}\u0000${ownerId}`);
+    return;
+  }
+  const target =
+    bucket === "generation"
+      ? presence.generationsWithUsage
+      : bucket === "tool-result"
+        ? presence.toolCallsWithUsage
+        : bucket === "compaction"
+          ? presence.compactionsWithUsage
+          : presence.branchSummariesWithUsage;
+  target.add(ownerId);
 }
 
 function safeAdd(left: Usage, right: Usage): Usage | undefined {

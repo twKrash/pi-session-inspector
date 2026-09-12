@@ -208,9 +208,10 @@ export function addUsage(left: Usage, right: Usage): Usage {
 
 /**
  * A missing, malformed, or out-of-range usage record stays absent so unknown
- * never becomes a fabricated zero.
+ * never becomes a fabricated zero. Exported so canonical presence checks share
+ * the exact reducer validation (spec §7.2 gate 8).
  */
-function readUsage(value: unknown): Usage | undefined {
+export function readUsage(value: unknown): Usage | undefined {
   if (!isRecord(value) || !isRecord(value.cost)) return undefined;
   if (!isBoundedTokens(value.totalTokens) || !isBoundedCost(value.cost.total)) {
     return undefined;

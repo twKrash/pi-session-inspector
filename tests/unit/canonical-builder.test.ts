@@ -650,6 +650,132 @@ test("P2.3: a pattern-valid but non-canonical integration key is never republish
 });
 
 // ---------------------------------------------------------------------------
+// Round 3 fix tests (usage-invalid)
+// ---------------------------------------------------------------------------
+
+/** An assistant whose `usage` record is structurally present but invalid. */
+const INVALID_USAGE_ASSISTANT = {
+  type: "message",
+  id: "gen-invalid",
+  parentId: "marker",
+  timestamp: "2026-09-12T10:01:30.000Z",
+  message: {
+    role: "assistant",
+    provider: "openai",
+    model: "gpt",
+    usage: {},
+  },
+};
+
+test("R3a: a present-but-invalid usage emits no line and never changes the total", () => {
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT, INVALID_USAGE_ASSISTANT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  // The owner fact itself is preserved (spec §7.2 gate 8).
+  assert.equal(session.generations.length, 2);
+  assert.equal(session.usage.state, "known");
+  assert.equal(session.usage.lines.length, 1);
+  assert.equal(
+    session.usage.lines.some(
+      (line) => line.ownerId === "generation:gen-invalid",
+    ),
+    false,
+  );
+  assert.equal(
+    session.usage.state === "known" ? session.usage.known.totalTokens : -1,
+    100,
+  );
+});
+
+test("R3b: a present-but-invalid usage marks its bucket coverage partial", () => {
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT, INVALID_USAGE_ASSISTANT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  const coverage = session.usage.coverage.generation;
+  assert.equal(coverage.state, "partial");
+  assert.equal(coverage.owners, 2);
+  // Only the reducer-validated usage counts as ownersWithUsage.
+  assert.equal(coverage.ownersWithUsage, 1);
+});
+
+test("R3c: health carries a bounded usage-invalid diagnostic for the rejected classes", () => {
+  const invalidCompaction = {
+    type: "compaction",
+    id: "comp-invalid",
+    parentId: "gen-invalid",
+    timestamp: "2026-09-12T10:01:40.000Z",
+    summary: "bounded",
+    usage: {},
+  };
+  const callerWithTool = {
+    type: "message",
+    id: "gen-call-2",
+    parentId: "marker",
+    timestamp: "2026-09-12T10:01:50.000Z",
+    message: {
+      role: "assistant",
+      provider: "openai",
+      model: "gpt",
+      content: [{ type: "toolCall", id: "call_2", name: "bash" }],
+    },
+  };
+  const invalidToolResult = {
+    type: "message",
+    id: "res-2",
+    parentId: "gen-call-2",
+    timestamp: "2026-09-12T10:01:55.000Z",
+    message: {
+      role: "toolResult",
+      toolCallId: "call_2",
+      toolName: "bash",
+      isError: false,
+      usage: { totalTokens: "x", cost: { total: 0 } },
+    },
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([
+      MARKER,
+      ASSISTANT,
+      TOOL_RESULT,
+      INVALID_USAGE_ASSISTANT,
+      invalidCompaction,
+      callerWithTool,
+      invalidToolResult,
+    ]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(result.state, "ready");
+  const session = result.state === "ready" ? result.session : undefined;
+  assert.ok(session);
+  const health = projectEvidenceHealth(session);
+  const diagnostic = health.diagnostics.find(
+    (entry) => entry.code === "usage-invalid",
+  );
+  assert.ok(diagnostic);
+  assert.equal(diagnostic.source, "pi-jsonl");
+  assert.equal(diagnostic.severity, "warning");
+  assert.equal(diagnostic.count, 3);
+  // Every rejected class also reads partial, so completeness is never claimed.
+  assert.equal(session.usage.coverage.generation.state, "partial");
+  assert.equal(session.usage.coverage.compaction.state, "partial");
+  assert.equal(session.usage.coverage["tool-result"].state, "partial");
+});
+
+// ---------------------------------------------------------------------------
 // Round 2 fix tests
 // ---------------------------------------------------------------------------
 
