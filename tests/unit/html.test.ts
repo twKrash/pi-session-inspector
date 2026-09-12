@@ -252,6 +252,8 @@ function historyReport(session: SessionReport = richReport): HtmlReport {
         {
           availability: "available",
           sessionId: session.sessionId,
+          usageByDate: [],
+          usageByDateTruncated: false,
           report: session,
         },
         { availability: "unavailable", sessionId: "session-missing" },

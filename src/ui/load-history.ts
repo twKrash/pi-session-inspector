@@ -27,6 +27,7 @@ import {
   type CoverageReason,
   type HistoryDiagnostic,
 } from "../storage/history.ts";
+import { sessionDatedUsage, type DateUsageRow } from "./dated-usage.ts";
 import type { SessionObservation } from "./observation.ts";
 import {
   countersFrom,
@@ -80,7 +81,18 @@ export type SessionEvidenceProvider = (
 ) => Promise<HistorySessionEvidence | undefined>;
 
 export type HistoricalSession =
-  | { availability: "available"; sessionId: string; report: SessionReport }
+  | {
+      availability: "available";
+      sessionId: string;
+      /**
+       * Bounded per-session dated evidence (spec §5.6), projected from the
+       * builder's own attribution: the newest `MAX_DATED_DATES` observed dates.
+       */
+      usageByDate: readonly DateUsageRow[];
+      /** True when `usageByDate` cannot represent the session's whole native usage. */
+      usageByDateTruncated: boolean;
+      report: SessionReport;
+    }
   | {
       availability: "unavailable";
       sessionId: string;
@@ -141,7 +153,13 @@ type LoadHistoryOptions = {
  * replayed exactly once and every global value comes from the same report.
  */
 type SessionScan =
-  | { availability: "available"; sessionId: string; report: SessionReport }
+  | {
+      availability: "available";
+      sessionId: string;
+      usageByDate: readonly DateUsageRow[];
+      usageByDateTruncated: boolean;
+      report: SessionReport;
+    }
   | { availability: "unavailable"; sessionId: string; reason: CoverageReason };
 
 /** One session's report inputs; the same values the builder received. */
@@ -339,6 +357,9 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
           return {
             availability: "available",
             sessionId,
+            // R19: the one dated projection of the canonical session reaches
+            // the DTO here; nothing downstream re-walks report timestamps.
+            ...datedFields(session),
             report: (options.replay ?? defaultReplay)({
               session,
               entries,
@@ -423,6 +444,8 @@ function toHistoricalSession(session: SessionScan): HistoricalSession {
     ? {
         availability: "available",
         sessionId: session.sessionId,
+        usageByDate: session.usageByDate,
+        usageByDateTruncated: session.usageByDateTruncated,
         report: session.report,
       }
     : {
@@ -440,16 +463,17 @@ export async function loadGlobalReport(
   const rows = new Map<string, { sessionIds: Set<string>; usage: Usage }>();
   for (const session of history.sessions) {
     if (session.availability !== "available") continue;
-    for (const event of usageEvents(session.report)) {
-      const date = event.timestamp.slice(0, 10);
-      if (!isDate(date) || !inRange(date, options.dateRange)) continue;
-      const row = rows.get(date) ?? {
-        sessionIds: new Set(),
+    // R19: the aggregate folds the very rows the session's own projection
+    // produced; no report timestamp is walked a second time.
+    for (const dated of session.usageByDate) {
+      if (!inRange(dated.date, options.dateRange)) continue;
+      const row = rows.get(dated.date) ?? {
+        sessionIds: new Set<string>(),
         usage: zeroUsage(),
       };
       row.sessionIds.add(session.sessionId);
-      row.usage = addUsage(row.usage, event.usage);
-      rows.set(date, row);
+      row.usage = addUsage(row.usage, datedUsage(dated));
+      rows.set(dated.date, row);
     }
   }
   const dates = [...rows]
@@ -507,18 +531,19 @@ function globalInventory(
   return { commands, skills, resources };
 }
 
-function usageEvents(
-  report: SessionReport,
-): Array<{ timestamp: string; usage: Usage }> {
-  return [
-    ...report.generations,
-    ...report.tools.flatMap((tool) =>
-      tool.usage === undefined
-        ? []
-        : [{ timestamp: tool.timestamp, usage: tool.usage }],
-    ),
-    ...report.compactions,
-  ];
+/**
+ * The date rows the canonical session projects, with the truncation verdict R16
+ * pairs with them. Both loaders and every renderer read this one projection.
+ */
+function datedFields(session: CanonicalSession): {
+  usageByDate: readonly DateUsageRow[];
+  usageByDateTruncated: boolean;
+} {
+  const dated = sessionDatedUsage(session);
+  return {
+    usageByDate: dated.dates,
+    usageByDateTruncated: dated.truncated,
+  };
 }
 
 function inRange(date: string, range: DateRange | undefined): boolean {
@@ -527,8 +552,26 @@ function inRange(date: string, range: DateRange | undefined): boolean {
   );
 }
 
-function isDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+/**
+ * The usage one dated row carries. The optional producer token breakdown is
+ * re-folded here so an aggregate keeps exactly the fields the deleted
+ * per-record fold kept, while the dates still come from the one projection.
+ */
+function datedUsage(row: DateUsageRow): Usage {
+  return {
+    totalTokens: row.totalTokens,
+    cost: row.cost,
+    ...(row.inputTokens === undefined ? {} : { inputTokens: row.inputTokens }),
+    ...(row.outputTokens === undefined
+      ? {}
+      : { outputTokens: row.outputTokens }),
+    ...(row.cacheReadTokens === undefined
+      ? {}
+      : { cacheReadTokens: row.cacheReadTokens }),
+    ...(row.cacheWriteTokens === undefined
+      ? {}
+      : { cacheWriteTokens: row.cacheWriteTokens }),
+  };
 }
 
 function zeroUsage(): Usage {

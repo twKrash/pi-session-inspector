@@ -14,6 +14,7 @@ import {
 } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
+import { sessionDatedUsage } from "./dated-usage.ts";
 import { countersFrom, usageFrom } from "./l2-projection.ts";
 import type { SessionObservation } from "./observation.ts";
 
@@ -133,6 +134,9 @@ export async function loadCurrentSessionReport(
         duration: durationEvidence(session.tools),
       }),
       scope,
+      // R19: the already-built canonical session is projected once; no extra
+      // parse, no extra build, no walk of the report's timestamps.
+      sessionDatedUsage(session),
     );
   } catch {
     return undefined;

@@ -1,5 +1,6 @@
 import type { Scope } from "../core/events.ts";
 import type { SessionReport } from "../core/reports.ts";
+import type { DatedModelRow, DateUsageRow } from "./dated-usage.ts";
 
 export const CURRENT_TABS = [
   "overview",
@@ -30,14 +31,31 @@ export type CurrentTuiModel = {
   scope: Scope;
   unavailable: "unavailable";
   ledger: undefined;
+  /**
+   * The one dated projection of the same canonical session (spec §5.4, R19).
+   * Absent means "not attached", never a fabricated empty window.
+   */
+  datedUsage?: {
+    dates: DateUsageRow[];
+    models: DatedModelRow[];
+    truncated: boolean;
+    modelsTruncated: boolean;
+  };
 };
 
 /** Creates bounded layout-independent content; ledger projection remains lazy. */
 export function createCurrentTuiModel(
   report: SessionReport,
   scope: Scope,
+  datedUsage?: CurrentTuiModel["datedUsage"],
 ): CurrentTuiModel {
-  return { report, scope, unavailable: "unavailable", ledger: undefined };
+  return {
+    report,
+    scope,
+    unavailable: "unavailable",
+    ledger: undefined,
+    ...(datedUsage === undefined ? {} : { datedUsage }),
+  };
 }
 
 export function reduceCurrentTui(

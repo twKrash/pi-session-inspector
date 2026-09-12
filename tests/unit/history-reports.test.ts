@@ -570,6 +570,37 @@ test("replays manifest-discovered history through the shared session report pipe
         {
           availability: "available",
           sessionId: "history-session",
+          usageByDate: [
+            {
+              date: "2026-02-01",
+              totalTokens: 10,
+              cost: 0.1,
+              generations: 1,
+              tools: 0,
+              errors: 0,
+              composition: {
+                generations: { totalTokens: 10, cost: 0.1 },
+                toolResults: { totalTokens: 0, cost: 0 },
+                compactions: { totalTokens: 0, cost: 0 },
+                branchSummaries: { totalTokens: 0, cost: 0 },
+              },
+            },
+            {
+              date: "2026-02-02",
+              totalTokens: 20,
+              cost: 0.2,
+              generations: 1,
+              tools: 0,
+              errors: 0,
+              composition: {
+                generations: { totalTokens: 20, cost: 0.2 },
+                toolResults: { totalTokens: 0, cost: 0 },
+                compactions: { totalTokens: 0, cost: 0 },
+                branchSummaries: { totalTokens: 0, cost: 0 },
+              },
+            },
+          ],
+          usageByDateTruncated: false,
           report: {
             sessionId: "history-session",
             usage: { totalTokens: 30, cost: 0.3 },
@@ -783,6 +814,23 @@ test("preserves branch-summary usage once through history and global reports", a
     assert.deepEqual(history.sessions[0], {
       availability: "available",
       sessionId: "history-session",
+      usageByDate: [
+        {
+          date: "2026-02-02",
+          totalTokens: 17,
+          cost: 0.17,
+          generations: 0,
+          tools: 0,
+          errors: 0,
+          composition: {
+            generations: { totalTokens: 0, cost: 0 },
+            toolResults: { totalTokens: 0, cost: 0 },
+            compactions: { totalTokens: 0, cost: 0 },
+            branchSummaries: { totalTokens: 17, cost: 0.17 },
+          },
+        },
+      ],
+      usageByDateTruncated: false,
       report: {
         sessionId: "history-session",
         usage: { totalTokens: 17, cost: 0.17 },
