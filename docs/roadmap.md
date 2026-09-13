@@ -1,9 +1,9 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `0.9.0`
+**Current release:** `0.9.2`
 
-**Current state:** M0–M7 and the follow-up evidence/report milestones are
-shipped. M8 is not started.
+**Current state:** M0–M7, the follow-up evidence/report milestones, and
+Pre-M8.1–Pre-M8.2 are complete. M8 is not started.
 
 **Next gate:** complete the Pre-M8 readiness sequence below before starting M8.
 

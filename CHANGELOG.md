@@ -4,6 +4,15 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.9.2]
+
+- Pre-M8.2 static inventory cleanup: validated Knip dispositions, removed stale internal exports/types, and retained intentional report/type contracts.
+- Developer workflow: tracked pre-commit hook runs Knip automatically; repository installs configure `.githooks/` without adding a hook dependency.
+
+## [0.9.1]
+
+- Pre-M8.1 repository and documentation hygiene: promoted durable milestone history, removed obsolete tracked execution artifacts, and clarified the pre-M8 release path.
+
 ## [0.9.0]
 
 - Coverage: session coverage with bounded per-session reasons, capped-discovery honesty, and `Known`/`Unavailable` wording instead of unqualified totals.
