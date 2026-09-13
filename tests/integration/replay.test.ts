@@ -6,8 +6,10 @@ import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { selectScope } from "../../src/pi/sessions.ts";
-import { renderHtml } from "../../src/ui/html.ts";
+import { CAPABILITIES } from "../../src/ui/bundle.ts";
 import { renderJson } from "../../src/ui/json.ts";
+import { renderSnapshot } from "../../src/ui/snapshot.ts";
+import { projectCurrentView } from "../../src/ui/ui-projection.ts";
 
 const fixture = readFileSync(
   "tests/fixtures/pi/0.85.1/branching.jsonl",
@@ -69,7 +71,7 @@ test("counts persisted branch-summary usage exactly once", () => {
   ]);
 });
 
-test("redacts and bounds producer provider, model, and tool names in JSON and HTML", () => {
+test("redacts and bounds producer provider, model, and tool names in JSON and snapshot HTML", () => {
   const secret = "provider-secret-token-should-not-appear";
   const unbounded = "x".repeat(1024);
   const report = toSessionReport(
@@ -90,12 +92,30 @@ test("redacts and bounds producer provider, model, and tool names in JSON and HT
     ]),
   );
   const json = renderJson(report);
-  const html = renderHtml({ kind: "current", report, scope: "tree" });
+  // The same resolved current projection the snapshot command renders: the
+  // bounded report rows are all the static document may carry.
+  const html = renderSnapshot({
+    kind: "current",
+    schemaVersion: 1,
+    theme: "light",
+    projection: projectCurrentView(
+      {
+        availability: "available",
+        report,
+        capabilities: CAPABILITIES.current,
+      },
+      "tree",
+    ),
+  });
 
   assert.equal(json.includes(secret), false);
   assert.equal(json.includes(unbounded), false);
   assert.equal(html.includes(secret), false);
   assert.equal(html.includes(unbounded), false);
+  // The snapshot is static, self-contained and still identifies its target.
+  assert.equal(html.includes("<script"), false);
+  assert.equal(html.includes("fetch("), false);
+  assert.equal(html.includes("Pi Session Inspector"), true);
 });
 
 test("returns no active selection when Pi has no active leaf", () => {

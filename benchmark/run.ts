@@ -3,13 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
+import { buildCanonicalSession } from "../src/core/canonical.ts";
 import { reduceEntries } from "../src/core/reduce.ts";
 import { toSessionReport } from "../src/core/reports.ts";
-import { parseSessionJsonl } from "../src/pi/adapter.ts";
+import { parseSessionJsonl, type ParsedSession } from "../src/pi/adapter.ts";
 import { selectScope } from "../src/pi/sessions.ts";
 import { readCheckpoint } from "../src/storage/checkpoint.ts";
-import { renderHtml } from "../src/ui/html.ts";
+import { CAPABILITIES, type CurrentView } from "../src/ui/bundle.ts";
+import { buildDailyRows } from "../src/ui/daily.ts";
+import { sessionDatedUsage } from "../src/ui/dated-usage.ts";
 import { renderJson } from "../src/ui/json.ts";
+import { renderSnapshot } from "../src/ui/snapshot.ts";
+import { projectCurrentView } from "../src/ui/ui-projection.ts";
 import {
   CORPUS_RECORDS,
   CORPUS_TARGET_BYTES,
@@ -59,6 +64,51 @@ function replaySessionFile(source: string): string {
   const session = parseSessionJsonl(source);
   const entries = selectScope(session.entries, null, "tree");
   return renderJson(toSessionReport(reduceEntries(session.id, entries)));
+}
+
+/**
+ * The resolved current target the HTML measurement renders: the corpus session's
+ * own dated projection, folded exactly like the bundle loader folds it, so the
+ * snapshot carries real daily, model, tool, agent, error and ledger rows instead
+ * of an unresolved range.
+ */
+function snapshotView(parsed: ParsedSession): CurrentView | undefined {
+  const built = buildCanonicalSession({
+    parsed,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  if (built.state !== "ready") return undefined;
+  const session = built.session;
+  const dated = sessionDatedUsage(session);
+  const daily = buildDailyRows([
+    {
+      sessionId: session.sessionId,
+      rows: dated.dates,
+      truncated: dated.truncated,
+    },
+  ]);
+  return {
+    availability: "available",
+    report: toSessionReport(session),
+    capabilities: CAPABILITIES.current,
+    usageByDate: dated.dates,
+    datedModels: dated.models,
+    modelsTruncated: dated.modelsTruncated,
+    daily: daily.rows,
+    dailyTruncated: daily.truncated,
+  };
+}
+
+/** Builds one resolved snapshot document from the projected target. */
+function snapshotDocument(view: CurrentView): string {
+  return renderSnapshot({
+    kind: "current",
+    schemaVersion: 1,
+    theme: "light",
+    projection: projectCurrentView(view, "tree"),
+  });
 }
 
 async function main(): Promise<void> {
@@ -135,14 +185,14 @@ async function main(): Promise<void> {
 
     const htmlSamples: number[] = [];
     let htmlBytes = 0;
-    const report = JSON.parse(first);
+    const view = snapshotView(parseSessionJsonl(smallSource));
+    if (view === undefined) {
+      throw new Error("corpus session could not be projected");
+    }
     for (let index = 0; index < warmSamples; index += 1) {
       htmlSamples.push(
         await time(() => {
-          htmlBytes = Buffer.byteLength(
-            renderHtml({ kind: "current", report, scope: "tree" }),
-            "utf8",
-          );
+          htmlBytes = Buffer.byteLength(snapshotDocument(view), "utf8");
         }),
       );
     }
