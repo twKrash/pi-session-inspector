@@ -17,6 +17,7 @@ test("offers only valid completions for the current token", () => {
   assert.deepEqual(labels("tui "), ["current", "ledger"]);
   assert.deepEqual(labels("json "), ["current", "history", "global"]);
   assert.deepEqual(labels("ui -"), ["--scope", "--theme", "--no-open"]);
+  assert.equal(completeInspectorCommand("snapshot --"), null);
   assert.deepEqual(labels("snapshot current -"), [
     "--scope",
     "--preset",
@@ -28,6 +29,26 @@ test("offers only valid completions for the current token", () => {
   ]);
   assert.deepEqual(labels("json -"), ["--scope", "--output"]);
   assert.deepEqual(labels("snapshot current --preset "), ["7", "14", "30"]);
+  assert.deepEqual(labels("snapshot current --preset 7 --"), [
+    "--scope",
+    "--theme",
+    "--output",
+    "--no-open",
+  ]);
+  assert.deepEqual(labels("snapshot current --from 2026-01-01 --"), [
+    "--scope",
+    "--to",
+    "--theme",
+    "--output",
+    "--no-open",
+  ]);
+  assert.deepEqual(labels("snapshot current --to 2026-01-02 --"), [
+    "--scope",
+    "--from",
+    "--theme",
+    "--output",
+    "--no-open",
+  ]);
   assert.deepEqual(labels("snapshot current --theme "), ["dark", "light"]);
   assert.deepEqual(labels("ui --theme "), ["dark", "light"]);
   assert.deepEqual(labels("ui --scope "), ["active", "tree"]);

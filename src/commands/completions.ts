@@ -30,7 +30,9 @@ const HELP_TOKENS = new Set(["help", "--help", "-h"]);
 function optionsFor(
   mode: InspectorMode,
   target: InspectorTarget | undefined,
+  usedOptions: ReadonlySet<string> = new Set(),
 ): readonly string[] {
+  const hasCustomRange = usedOptions.has("--from") || usedOptions.has("--to");
   return INSPECTOR_OPTIONS[mode].filter(
     (option) =>
       !(
@@ -40,7 +42,9 @@ function optionsFor(
       !(
         target === "session" &&
         ["--scope", "--preset", "--from", "--to"].includes(option)
-      ),
+      ) &&
+      !(usedOptions.has("--preset") && ["--from", "--to"].includes(option)) &&
+      !(hasCustomRange && option === "--preset"),
   );
 }
 
@@ -126,14 +130,19 @@ export function completeInspectorCommand(
     const token = tokens[index] as string;
     if (token.startsWith("-")) {
       if (pendingValue) return null;
-      if (!optionsFor(typedMode, chosenTarget).includes(token)) return null;
+      if (!optionsFor(typedMode, chosenTarget, usedOptions).includes(token))
+        return null;
       usedOptions.add(token);
       if (INSPECTOR_OPTION_ARITY[token] === "value") pendingValue = token;
       continue;
     }
     if (pendingValue) {
       const choices = valueChoices(pendingValue);
-      if (pendingValue === "--output") {
+      if (
+        pendingValue === "--output" ||
+        pendingValue === "--from" ||
+        pendingValue === "--to"
+      ) {
         if (token.length === 0) return null;
       } else if (!choices || !choices.includes(token)) {
         return null;
@@ -167,8 +176,10 @@ export function completeInspectorCommand(
     !sessionIdChosen
   )
     return null;
+  if (typedMode === "snapshot" && !targetChosen && current.startsWith("-"))
+    return null;
   // Options already present are never offered again (§10.2).
-  const options = optionsFor(typedMode, chosenTarget).filter(
+  const options = optionsFor(typedMode, chosenTarget, usedOptions).filter(
     (option) => !usedOptions.has(option),
   );
   if (current.startsWith("-")) return items(options, current, prefix, span);
