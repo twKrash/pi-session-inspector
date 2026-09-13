@@ -290,6 +290,12 @@ export type CommandInventory = {
 export type SkillInventory = {
   state: EvidenceState;
   items: readonly SkillRow[];
+  /**
+   * Inventory availability only: how many INVENTORY skill rows exist, taken
+   * before any counter-only row is appended, so a counted name the snapshot no
+   * longer lists can never inflate it. `null` means no snapshot, never zero.
+   */
+  count: number | null;
   invocationState: EvidenceState;
   invocationCount: number | null;
   otherInvocations: number | null;
@@ -1249,6 +1255,10 @@ function projectSkills(
 
   const items: SkillRow[] = [];
   const seen = new Set<string>();
+  // Availability is counted before the counter-only rows are appended: a
+  // counted name the snapshot does not list is activity, not a skill that is
+  // available, so it can never inflate this figure.
+  const count = inventory === undefined ? null : inventory.skills.length;
   if (inventory !== undefined) {
     for (const row of inventory.skills) {
       seen.add(row.name);
@@ -1269,6 +1279,7 @@ function projectSkills(
     // `state` reports inventory availability only; counted names survive expiry.
     state: inventory !== undefined ? "supported" : "unavailable",
     items,
+    count,
     invocationState: hasInvocations ? "supported" : "unavailable",
     invocationCount: hasInvocations
       ? counted.reduce((sum, name) => sum + invocations[name], 0) +

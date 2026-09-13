@@ -654,6 +654,70 @@ export function modelWithInventory(): CurrentTuiModel {
 }
 
 /**
+ * The counted-name case behind the environment line: the folded counters name a
+ * skill the inventory snapshot does not carry (`retired-mode`), so the skills
+ * table has one row more than the inventory it came from. Availability is the
+ * inventory's own count; the counter-only name is activity.
+ */
+export function modelWithCounterOnlySkill(): CurrentTuiModel {
+  return modelOf(
+    reportWith([CHILD_CALL], [], undefined, {
+      inventory: counterOnlySkillInventory,
+      counters: counterOnlySkillCounters,
+    }),
+    "tree",
+  );
+}
+
+/**
+ * The same counters with the inventory snapshot gone (expired detail): the
+ * counted names survive as rows while availability is genuinely unknown, so no
+ * rendered row may stand in for a count.
+ */
+export function modelWithCounterOnlySkillAfterExpiry(): CurrentTuiModel {
+  return modelOf(
+    reportWith([CHILD_CALL], [], undefined, {
+      counters: counterOnlySkillCounters,
+    }),
+    "tree",
+  );
+}
+
+/** Two inventory skill rows, neither of them the counter-only name. */
+const counterOnlySkillInventory: InventorySnapshot = {
+  schemaVersion: 1,
+  commands: [],
+  skills: [
+    {
+      name: "council-mode",
+      sourceLabel: "npm:pi-skills",
+      scope: "user",
+      origin: "package",
+    },
+    {
+      name: "guard-mode",
+      sourceLabel: "npm:pi-skills",
+      scope: "user",
+      origin: "package",
+    },
+  ],
+  resources: [],
+  toolSources: {},
+};
+
+/**
+ * One invocation of an inventory name, five of a name the inventory does not
+ * carry, and one whose name exceeded the counter cap.
+ */
+const counterOnlySkillCounters: NonNullable<SessionReportEvidence["counters"]> =
+  {
+    counters: {},
+    skillInvocations: { "council-mode": 2, "retired-mode": 5 },
+    otherInvocations: 1,
+    presence: { permission: false },
+  };
+
+/**
  * Design §8.2's four independent columns: a definite detection with supported
  * telemetry (including an observed `false` counter, shown verbatim), an unknown
  * detection with supported telemetry, and rows whose telemetry is unsupported

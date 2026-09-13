@@ -29,6 +29,7 @@ const unavailableInventory = {
   skills: {
     state: "unavailable",
     items: [],
+    count: null,
     invocationState: "unavailable",
     invocationCount: null,
     otherInvocations: null,

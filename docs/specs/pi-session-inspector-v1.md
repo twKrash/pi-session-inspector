@@ -131,6 +131,7 @@ type SessionReport = {
   skills: {
     state: EvidenceState;                            // inventory availability only
     items: readonly SkillRow[];                      // inventory names ∪ retained invocation names
+    count: number | null;                            // INVENTORY skill rows only, counted before any retained invocation name is appended, so activity never inflates availability; `null` means no snapshot
     invocationState: EvidenceState;                  // projected from L1 `effectiveCounters`/retained skill facts, never re-folded in L2; state vocabulary (`supported`/`unavailable`) unchanged
     invocationCount: number | null;                  // exact: sum(counts) + otherInvocations
     otherInvocations: number | null;                 // exact overflow beyond the 64-name cap

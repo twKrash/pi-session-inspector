@@ -90,6 +90,7 @@ function reportFor(dates: readonly string[]): SessionReport {
     skills: {
       state: "unavailable",
       items: [],
+      count: null,
       invocationState: "unavailable",
       invocationCount: null,
       otherInvocations: null,

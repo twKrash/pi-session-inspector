@@ -30,6 +30,7 @@ import {
   hostileToolArgumentEntries,
   modelWithActivityAndRuns,
   modelWithAbsentDetectedTelemetry,
+  modelWithCounterOnlySkill,
   modelWithErrorAndThreeChildren,
   modelWithGenerationError,
   modelWithIntegrations,
@@ -964,7 +965,12 @@ test("inventory projects as environment state, never as activity", async () => {
     embedOf(html).current.active as {
       report: {
         commands: { state: string; count: number | null; items: unknown[] };
-        skills: { state: string; invocationCount: number | null };
+        skills: {
+          state: string;
+          invocationCount: number | null;
+          count: number | null;
+          items: unknown[];
+        };
         resources: { state: string; items: unknown[] };
       };
     }
@@ -976,11 +982,34 @@ test("inventory projects as environment state, never as activity", async () => {
       report.commands.count,
       report.commands.items.length,
       report.skills.state,
+      report.skills.count,
       report.skills.invocationCount,
       report.resources.state,
       report.resources.items.length,
     ],
-    ["supported", 119, 119, "supported", 3, "supported", 11],
+    ["supported", 119, 119, "supported", 42, 3, "supported", 11],
+  );
+
+  // The folded counters can name a skill the snapshot does not carry: that name
+  // is one more row in `items` while the projected count stays the inventory's
+  // own rows, so availability can never be inflated by activity.
+  const counted = renderInspectorBundle(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithCounterOnlySkill(),
+    }),
+  );
+  const countedSkills = (
+    embedOf(counted).current.active as {
+      report: {
+        skills: { count: number | null; items: { name: string }[] };
+      };
+    }
+  ).report.skills;
+  assert.deepEqual([countedSkills.count, countedSkills.items.length], [2, 3]);
+  assert.equal(
+    countedSkills.items.some((row) => row.name === "retired-mode"),
+    true,
   );
 
   // The browser groups the inventory under one Environment entry: commands and

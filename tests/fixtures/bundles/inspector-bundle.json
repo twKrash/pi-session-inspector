@@ -81,6 +81,7 @@
         "skills": {
           "state": "unavailable",
           "items": [],
+          "count": null,
           "invocationState": "unavailable",
           "invocationCount": null,
           "otherInvocations": null
@@ -310,6 +311,7 @@
             },
             { "name": "deploy", "sourceLabel": "other" }
           ],
+          "count": 2,
           "invocationState": "supported",
           "invocationCount": 3,
           "otherInvocations": 1
@@ -471,6 +473,7 @@
           "skills": {
             "state": "unavailable",
             "items": [],
+            "count": null,
             "invocationState": "unavailable",
             "invocationCount": null,
             "otherInvocations": null

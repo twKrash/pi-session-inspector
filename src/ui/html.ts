@@ -1959,15 +1959,21 @@ function skillsPanel(view,title){const skills=view.skills;if(!skills)return unav
 function resourcesCard(resources){if(!resources||resources.state!=="supported"||resources.items.length===0)return unavailableSection(tr("panel.resources"),tr("resources.unavailable"));return simpleTable(card(tr("panel.resources"),tr("resources.note")),[tr("table.source"),tr("table.scope"),tr("table.origin"),tr("table.commands"),tr("table.skills"),tr("table.prompts"),tr("table.tools")],resources.items.map(row=>[row.sourceLabel,row.scope,row.origin,number(row.commands),number(row.skills),number(row.prompts),number(row.tools)]));}
 // The availability count of one inventory (design §8.1): its own persisted count
 // when the DTO carries one, else its rows. An unsupported inventory with neither
-// is Unavailable, and a folded counter that outlived its inventory is never read
-// as availability.
+// is Unavailable. Commands and resources have no activity-only rows, so their row
+// count is availability; skills does, and reads skillsCount instead.
 function inventoryCount(inventory,items){if(!inventory)return null;if(inventory.count!==null&&inventory.count!==undefined)return inventory.count;if(inventory.state!=="supported")return null;return (items||[]).length;}
-function inventoryLine(label,inventory,items,observed){const count=inventoryCount(inventory,items);return el("div","metric",label+" "+tr("env.available",{count:count===null?tr("evidence.unavailable"):number(count)})+" · "+observed);}
+// Skills availability is the inventory's own count of INVENTORY rows, taken
+// before any counter-only name was appended, so a counted name the snapshot does
+// not list can never inflate it (design §8.3-3). A missing count (no snapshot, or
+// a payload without the field) is Unavailable — never the rendered row count,
+// which is activity.
+function skillsCount(skills){return skills&&typeof skills.count==="number"?skills.count:null;}
+function inventoryLine(label,count,observed){return el("div","metric",label+" "+tr("env.available",{count:count===null?tr("evidence.unavailable"):number(count)})+" · "+observed);}
 // The environment summary: availability is inventory state and, for skills only,
 // the explicit folded invocation counters are the invocation figure. No inventory
 // count is ever presented as activity, and no line is range-filtered or labelled
 // with the selected range.
-function environmentSummary(view){const lines=el("div","metrics"),commands=view.commands,skills=view.skills,resources=view.resources;lines.append(inventoryLine(tr("env.commands"),commands,commands&&commands.items,tr("env.observed",{value:tr("evidence.unavailable")})));const observed=skills&&skills.invocationState==="supported"&&skills.invocationCount!==null&&skills.invocationCount!==undefined?tr("env.invocationsObserved",{count:number(skills.invocationCount)}):tr("env.invocationsUnavailable");lines.append(inventoryLine(tr("env.skills"),skills,skills&&skills.items,observed));const sources=inventoryCount(resources,resources&&resources.items);lines.append(el("div","metric",tr("env.resources")+" "+tr("env.sources",{count:sources===null?tr("evidence.unavailable"):number(sources)})));return lines;}
+function environmentSummary(view){const lines=el("div","metrics"),commands=view.commands,skills=view.skills,resources=view.resources;lines.append(inventoryLine(tr("env.commands"),inventoryCount(commands,commands&&commands.items),tr("env.observed",{value:tr("evidence.unavailable")})));const observed=skills&&skills.invocationState==="supported"&&skills.invocationCount!==null&&skills.invocationCount!==undefined?tr("env.invocationsObserved",{count:number(skills.invocationCount)}):tr("env.invocationsUnavailable");lines.append(inventoryLine(tr("env.skills"),skillsCount(skills),observed));const sources=inventoryCount(resources,resources&&resources.items);lines.append(el("div","metric",tr("env.resources")+" "+tr("env.sources",{count:sources===null?tr("evidence.unavailable"):number(sources)})));return lines;}
 // One Environment panel: the summary lines stay visible while the sub-navigation
 // selects which inventory table is shown, so the inventory is secondary to the
 // diagnostic flow and never a primary tab (§8.1).

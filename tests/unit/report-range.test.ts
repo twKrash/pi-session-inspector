@@ -26,6 +26,8 @@ import {
   currentModelWithPartialToolUsage,
   currentModelWithTools,
   modelWithAbsentDetectedTelemetry,
+  modelWithCounterOnlySkill,
+  modelWithCounterOnlySkillAfterExpiry,
   modelWithErrorAndThreeChildren,
   modelWithGenerationError,
   modelWithIntegrations,
@@ -1715,6 +1717,81 @@ test("inventory renders as environment with no activity claim", async () => {
   assert.deepEqual(
     texts(cardOf(element("view"), texts, "Environment")),
     rendered,
+  );
+});
+
+test("skills availability is the inventory count, never a counter-only name", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithCounterOnlySkill(),
+    }),
+  );
+  const { client, element, texts } = harness;
+  client.state.tab = "environment";
+  client.render();
+  const environment = cardOf(element("view"), texts, "Environment");
+  const rendered = texts(environment);
+
+  // The inventory holds two skills and its counters name one of them twice plus
+  // an absent `retired-mode` five times, so the skills table has three rows. The
+  // availability line is the inventory's two, and the folded counters stay the
+  // one invocation figure: a counter-only name is activity, never availability.
+  assert.equal(
+    has(rendered, "Skills Available: 2 · Explicit invocations observed: 8"),
+    true,
+  );
+  assert.equal(has(rendered, "Skills Available: 3"), false);
+
+  // The counter-only name is still an activity row in the skills inventory, and
+  // the panel-level summary above the table is unchanged by the sub-section.
+  client.state.envTab = "skills";
+  client.render();
+  const retired = texts(rowOf(element("view"), texts, "retired-mode"));
+  assert.equal(has(retired, "retired-mode"), true);
+  assert.equal(has(retired, "5"), true);
+  assert.equal(
+    has(
+      texts(element("view")),
+      "Skills Available: 2 · Explicit invocations observed: 8",
+    ),
+    true,
+  );
+});
+
+test("skills availability is unavailable without an inventory snapshot", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithCounterOnlySkillAfterExpiry(),
+    }),
+  );
+  const { client, element, texts } = harness;
+  client.state.tab = "environment";
+  client.render();
+  const rendered = texts(cardOf(element("view"), texts, "Environment"));
+
+  // No snapshot means no inventory count: the counted names survive as rows, so
+  // the availability line is Unavailable and never their row count.
+  assert.equal(
+    has(
+      rendered,
+      "Skills Available: Unavailable · Explicit invocations observed: 8",
+    ),
+    true,
+  );
+  assert.equal(/Skills Available: \d/.test(rendered.join(" ")), false);
+
+  // The rows are activity that outlived the inventory; they are still listed.
+  client.state.envTab = "skills";
+  client.render();
+  assert.equal(
+    has(texts(rowOf(element("view"), texts, "retired-mode")), "5"),
+    true,
+  );
+  assert.equal(
+    has(texts(rowOf(element("view"), texts, "council-mode")), "2"),
+    true,
   );
 });
 

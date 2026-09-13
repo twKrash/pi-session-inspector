@@ -44,6 +44,7 @@ const report: SessionReport = {
   skills: {
     state: "unavailable",
     items: [],
+    count: null,
     invocationState: "unavailable",
     invocationCount: null,
     otherInvocations: null,
@@ -97,6 +98,7 @@ test("renders inventory, presence, agent activity, and bounded error messages", 
       invocationCount: 2,
       otherInvocations: 0,
       items: [{ name: "council-mode", explicitInvocations: 2 }],
+      count: 1,
     },
     resources: {
       state: "supported",
@@ -149,6 +151,7 @@ test("keeps counted skill names visible after the inventory expires", () => {
       invocationCount: 2,
       otherInvocations: 0,
       items: [{ name: "council-mode", explicitInvocations: 2 }],
+      count: null,
     },
   });
 
@@ -212,6 +215,7 @@ test("renders the + N other invocations footnote only when non-zero", () => {
       invocationCount: 3,
       otherInvocations: 2,
       items: [{ name: "alpha", explicitInvocations: 1 }],
+      count: 1,
     },
   });
   assert.match(
@@ -226,6 +230,7 @@ test("renders the + N other invocations footnote only when non-zero", () => {
       invocationCount: 1,
       otherInvocations: 0,
       items: [{ name: "alpha", explicitInvocations: 1 }],
+      count: 1,
     },
   });
   assert.ok(
