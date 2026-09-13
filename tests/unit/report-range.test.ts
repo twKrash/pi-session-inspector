@@ -10,6 +10,7 @@ import {
   loadInspectorBundle,
   type InspectorBundle,
 } from "../../src/ui/bundle.ts";
+import type { DateUsageRow } from "../../src/ui/dated-usage.ts";
 import {
   inlineModuleSource,
   renderInspectorBundle,
@@ -18,6 +19,7 @@ import {
   filterView,
   parseRangeQuery,
   resolveRange,
+  shiftUtcDay,
   type RangeState,
 } from "../../src/ui/range.ts";
 import {
@@ -1597,6 +1599,101 @@ test("the global headline reads the range verdict the history aggregate reads", 
   const historyInside = element("view");
   assert.equal(metricOf(historyInside, "Native cost") !== undefined, true);
   assert.equal(metricOf(historyInside, "Known native cost"), undefined);
+});
+
+test("the history fold's own cap qualifies a range before its oldest retained date", () => {
+  const bundle = bundleFixture();
+  const template = bundle.history.sessions[0];
+  if (template?.availability !== "available") {
+    throw new Error("the fixture's first history session");
+  }
+  const prototype = template.usageByDate[0];
+  if (prototype === undefined) {
+    throw new Error("the fixture's first history session has no dated row");
+  }
+  const dated = (date: string): DateUsageRow => ({
+    ...prototype,
+    date,
+    totalTokens: 10,
+    cost: 0.01,
+    generations: 1,
+    tools: 0,
+    errors: 0,
+    composition: {
+      generations: { totalTokens: 10, cost: 0.01 },
+      toolResults: { totalTokens: 0, cost: 0 },
+      compactions: { totalTokens: 0, cost: 0 },
+      branchSummaries: { totalTokens: 0, cost: 0 },
+    },
+  });
+  const days = (start: string, count: number): DateUsageRow[] => {
+    const rows: DateUsageRow[] = [];
+    let date: string | undefined = start;
+    while (rows.length < count && date !== undefined) {
+      rows.push(dated(date));
+      date = shiftUtcDay(date, 1);
+    }
+    return rows;
+  };
+  // 366 consecutive days from 2025-01-01 plus 5 from 2026-01-02: 371 distinct
+  // dates, so the history fold keeps only its 366 newest (`MAX_DATED_DATES`)
+  // and drops 2025-01-01..2025-01-05. Neither session is individually truncated,
+  // so only the fold's own cap can qualify a range.
+  bundle.history.sessions = [
+    {
+      ...template,
+      sessionId: "session-a",
+      usageByDate: days("2025-01-01", 366),
+      usageByDateTruncated: false,
+    },
+    {
+      ...template,
+      sessionId: "session-b",
+      usageByDate: days("2026-01-02", 5),
+      usageByDateTruncated: false,
+    },
+  ];
+  // Complete coverage, so the range's own verdict is the only qualifier the
+  // headline can read.
+  bundle.history.coverage = {
+    inspected: 2,
+    available: 2,
+    unavailable: 0,
+    sessionRatio: 1,
+    complete: true,
+    discoveryLimited: false,
+    reasons: {},
+  };
+  // The server renders the notice element only for a capped initial view.
+  bundle.current.tree.dailyTruncated = true;
+  const harness = runClient(bundle);
+  const { client, element } = harness;
+  client.state.tab = "overview";
+  client.state.section = "history";
+  client.state.session = null;
+
+  // The range reaches before the fold's oldest retained date (2025-01-06), so
+  // the aggregate cannot represent the spend: the headline is Known and the
+  // notice states the same verdict.
+  client.state.range = { kind: "custom", from: "2025-01-01", to: "2026-01-06" };
+  client.render();
+  const reached = element("view");
+  assert.equal(metricOf(reached, "Known native cost") !== undefined, true);
+  assert.equal(metricOf(reached, "Native cost"), undefined);
+  assert.equal(metricOf(reached, "Known tokens") !== undefined, true);
+  assert.equal(metricOf(reached, "Total tokens"), undefined);
+  assert.equal(element("range-truncated").hidden, false);
+
+  // A range inside the retained window is exact, so the same headline stays
+  // unqualified and the notice hides.
+  client.state.range = { kind: "custom", from: "2025-06-01", to: "2026-01-06" };
+  client.render();
+  const inside = element("view");
+  assert.equal(metricOf(inside, "Native cost") !== undefined, true);
+  assert.equal(metricOf(inside, "Known native cost"), undefined);
+  assert.equal(metricOf(inside, "Total tokens") !== undefined, true);
+  assert.equal(metricOf(inside, "Known tokens"), undefined);
+  assert.equal(element("range-truncated").hidden, true);
 });
 
 test("the global headline renders Unavailable when the aggregate has no datable rows", () => {
