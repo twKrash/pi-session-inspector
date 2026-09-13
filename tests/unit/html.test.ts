@@ -10,14 +10,13 @@ import {
 } from "../../src/core/reports.ts";
 import {
   buildDailyActivityRows,
-  type DailyActivityRow,
-  defaultReportPeriod,
   ENGLISH_CATALOG,
   formatDuration,
   type HtmlReport,
   renderHtml,
   sessionSpanMs,
 } from "../../src/ui/html.ts";
+import type { DateUsageRow } from "../../src/ui/dated-usage.ts";
 
 const zeroUsage = { totalTokens: 0, cost: 0 };
 
@@ -64,6 +63,7 @@ const report: SessionReport = {
   compactions: [],
   generations: [],
   agents: [],
+  agentUsage: { runsTotal: 0, runsWithUsage: 0 },
   agentEvidence: "unavailable",
   agentActivity: {
     state: "unavailable",
@@ -79,6 +79,7 @@ const report: SessionReport = {
   skills: {
     state: "unavailable",
     items: [],
+    count: null,
     invocationState: "unavailable",
     invocationCount: null,
     otherInvocations: null,
@@ -196,6 +197,7 @@ const richReport: SessionReport = {
       usage: { totalTokens: 7, cost: 0.02 },
     },
   ],
+  agentUsage: { runsTotal: 1, runsWithUsage: 1 },
   agentEvidence: "supported",
   agentActivity: {
     state: "unavailable",
@@ -219,6 +221,7 @@ const richReport: SessionReport = {
   skills: {
     state: "unavailable",
     items: [],
+    count: null,
     invocationState: "unavailable",
     invocationCount: null,
     otherInvocations: null,
@@ -243,6 +246,46 @@ const richCurrent: HtmlReport = {
   scope: "tree",
 };
 
+/** One dated row in the shape the loader's projection produces. */
+function datedRow(
+  date: string,
+  totalTokens: number,
+  cost: number,
+  generations: number,
+  tools: number,
+  composition: DateUsageRow["composition"],
+): DateUsageRow {
+  return {
+    date,
+    totalTokens,
+    cost,
+    generations,
+    tools,
+    errors: 0,
+    composition,
+  };
+}
+
+/**
+ * The dated rows `richReport`'s own records produce: generation and tool usage
+ * on their own days, the 2026-09-07 compaction, and the zero-usage branch
+ * summary. The history aggregate folds exactly these rows (R19).
+ */
+const richUsageByDate: DateUsageRow[] = [
+  datedRow("2026-09-06", 10, 0.005, 1, 1, {
+    generations: { totalTokens: 10, cost: 0.005 },
+    toolResults: { ...zeroUsage },
+    compactions: { ...zeroUsage },
+    branchSummaries: { ...zeroUsage },
+  }),
+  datedRow("2026-09-07", 32, 0.005, 1, 1, {
+    generations: { totalTokens: 20, cost: 0.005 },
+    toolResults: { totalTokens: 10, cost: 0 },
+    compactions: { totalTokens: 2, cost: 0 },
+    branchSummaries: { ...zeroUsage },
+  }),
+];
+
 function historyReport(session: SessionReport = richReport): HtmlReport {
   return {
     kind: "history",
@@ -252,6 +295,10 @@ function historyReport(session: SessionReport = richReport): HtmlReport {
         {
           availability: "available",
           sessionId: session.sessionId,
+          usageByDate: richUsageByDate,
+          usageByDateTruncated: false,
+          datedModels: [],
+          modelsTruncated: false,
           report: session,
         },
         { availability: "unavailable", sessionId: "session-missing" },
@@ -261,13 +308,21 @@ function historyReport(session: SessionReport = richReport): HtmlReport {
   };
 }
 
-function globalReport(): HtmlReport {
+function globalReport({
+  usageByDateTruncated = false,
+}: {
+  usageByDateTruncated?: boolean;
+} = {}): HtmlReport {
   return {
     kind: "global",
     report: {
       availability: "available",
       sessions: [
-        { availability: "available", sessionId: "session-rich" },
+        {
+          availability: "available",
+          sessionId: "session-rich",
+          usageByDateTruncated,
+        },
         { availability: "unavailable", sessionId: "session-missing" },
       ],
       usage: { totalTokens: 84, cost: 0.02 },
@@ -443,48 +498,27 @@ test("embeds deterministic current, history, and global view contracts", () => {
   for (const html of [renderHtml(current), history, global]) {
     const script = scriptOf(html);
     assert.match(script, /selectedDays\(\)/);
-    assert.match(script, /state\.query/);
-    assert.match(script, /state\.sort/);
-    assert.match(script, /state\.metric/);
+    // One active table: its query and sort live in the route (§9.5), and the one
+    // chart metric in the view's own ephemeral settings.
+    assert.match(script, /activeQuery\(\)/);
+    assert.match(script, /activeSort\(\)/);
+    assert.match(script, /activeMetric\(\)/);
   }
 });
 
-test("defaults report ranges to inclusive UTC dates without a machine clock", () => {
-  const daily: DailyActivityRow[] = [
-    { date: "2026-01-01", sessions: 1, totalTokens: 1, cost: 0.01 },
-    { date: "2026-01-20", sessions: 1, totalTokens: 1, cost: 0.01 },
-  ];
+test("projects no server-chosen range and never emits the sentinel date", () => {
+  const html = renderHtml(globalReport());
+  const data = embedded(html);
 
-  assert.deepEqual(defaultReportPeriod("global", daily), {
-    preset: 14,
-    from: "2026-01-07",
-    to: "2026-01-20",
-  });
-  assert.deepEqual(defaultReportPeriod("history", daily), {
-    preset: 14,
-    from: "2026-01-07",
-    to: "2026-01-20",
-  });
-  assert.deepEqual(defaultReportPeriod("current", daily), {
-    preset: null,
-    from: "2026-01-01",
-    to: "2026-01-20",
-  });
-  assert.deepEqual(defaultReportPeriod("global", []), {
-    preset: 14,
-    from: "1970-01-01",
-    to: "1970-01-01",
-  });
+  // The client resolves every range from the section's own dated rows, so the
+  // projection carries neither a chosen period nor a latest date.
+  for (const section of [data.current.tree, data.history, data.global]) {
+    assert.equal("period" in section, false);
+    assert.equal("latestDate" in section, false);
+  }
+  assert.equal(html.includes("1970-01-01"), false);
 
-  const data = embedded(renderHtml(globalReport()));
-  assert.deepEqual(data.global.period, {
-    preset: 14,
-    from: "2026-08-25",
-    to: "2026-09-07",
-  });
-  assert.equal(data.global.latestDate, "2026-09-07");
-
-  const script = scriptOf(renderHtml(globalReport()));
+  const script = scriptOf(html);
   assert.equal(/Date\.now|Math\.random|new Date\(\)/.test(script), false);
 });
 
@@ -497,6 +531,12 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
       cost: 0.005,
       generations: 1,
       tools: 1,
+      composition: {
+        generations: { totalTokens: 10, cost: 0.005 },
+        toolResults: { totalTokens: 0, cost: 0 },
+        compactions: { totalTokens: 0, cost: 0 },
+        branchSummaries: { totalTokens: 0, cost: 0 },
+      },
     },
     {
       date: "2026-09-07",
@@ -505,6 +545,12 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
       cost: 0.005,
       generations: 1,
       tools: 1,
+      composition: {
+        generations: { totalTokens: 20, cost: 0.005 },
+        toolResults: { totalTokens: 10, cost: 0 },
+        compactions: { totalTokens: 2, cost: 0 },
+        branchSummaries: { totalTokens: 0, cost: 0 },
+      },
     },
   ]);
 
@@ -536,6 +582,73 @@ test("computes daily activity rows in TypeScript for every report kind", () => {
     /data\.(report\.)?(generations|tools|compactions)\b/.test(script),
     false,
   );
+});
+
+test("a partial session keeps the history and global aggregates partial", () => {
+  const complete = embedded(renderHtml(historyReport()));
+  assert.equal(complete.history.dailyTruncated, false);
+  // Available global rows that are all exact keep the aggregate exact.
+  assert.equal(
+    embedded(renderHtml(globalReport({ usageByDateTruncated: false }))).global
+      .dailyTruncated,
+    false,
+  );
+
+  // One complete session plus one whose window cannot represent its spend: the
+  // aggregate is partial even though the partial session contributes no row,
+  // and the complete session's own rows stay untouched.
+  const mixed: Extract<HtmlReport, { kind: "history" }> = {
+    kind: "history",
+    report: {
+      availability: "available",
+      sessions: [
+        {
+          availability: "available",
+          sessionId: "session-rich",
+          usageByDate: richUsageByDate,
+          usageByDateTruncated: false,
+          datedModels: [],
+          modelsTruncated: false,
+          report: richReport,
+        },
+        {
+          availability: "available",
+          sessionId: "session-partial",
+          usageByDate: [],
+          usageByDateTruncated: true,
+          datedModels: [],
+          modelsTruncated: false,
+          report: richReport,
+        },
+      ],
+      diagnostics: [],
+    },
+  };
+  const mixedData = embedded(renderHtml(mixed));
+  assert.equal(mixedData.history.dailyTruncated, true);
+  assert.deepEqual(
+    mixedData.history.daily,
+    buildDailyActivityRows([richReport]),
+  );
+
+  const partialHistory = historyReport();
+  if (partialHistory.kind !== "history") {
+    throw new Error("the history fixture must be a history report");
+  }
+  const session = partialHistory.report.sessions[0];
+  if (session?.availability !== "available") {
+    throw new Error("the history fixture must carry an available session");
+  }
+  session.usageByDateTruncated = true;
+  assert.equal(
+    embedded(renderHtml(partialHistory)).history.dailyTruncated,
+    true,
+  );
+
+  // The loader publishes the flag on every available global row, so a partial
+  // one makes the aggregate partial.
+  const partialGlobal = globalReport({ usageByDateTruncated: true });
+  assert.equal(embedded(renderHtml(partialGlobal)).global.dailyTruncated, true);
 });
 
 test("renders the daily activity line chart for every report kind", () => {
@@ -606,6 +719,7 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
       id: "tool:call-a",
       name: "read",
       status: "succeeded",
+      timestamp: "2026-09-07T00:00:01.000Z",
       usage: { totalTokens: 10, cost: 0 },
       durationMs: 42,
       durationLabel: "42 ms",
@@ -614,6 +728,7 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
       id: "tool:call-b",
       name: "bash",
       status: "failed",
+      timestamp: "2026-09-06T23:59:57.000Z",
       usage: null,
       durationMs: null,
       durationLabel: null,
@@ -623,14 +738,35 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
     { label: "bash", value: "1 calls", percent: 50 },
     { label: "read", value: "1 calls", percent: 50 },
   ]);
-  assert.deepEqual(view.errors, richReport.errors);
+  // The error row is the join (design §7.5): its own bounded fields plus the
+  // joined tool's name/source and the publishing result's child runs (none).
+  assert.deepEqual(view.errors, [
+    {
+      id: "tool:call-b",
+      timestamp: "2026-09-06T23:59:57.000Z",
+      kind: "tool-error",
+      confidence: "native",
+      toolName: "bash",
+      toolSource: null,
+      toolStatus: "failed",
+      relatedChildIds: [],
+    },
+  ]);
   assert.deepEqual(view.ledger, buildLedger(richReport));
+  // Every AgentRun field is projected; an absent one is null, never "".
   assert.deepEqual(view.agents, [
     {
       id: "subagent-0123456789abcdef",
       parentId: null,
+      agent: null,
       status: "succeeded",
       confidence: "cooperative",
+      artifacts: null,
+      observedAt: null,
+      evidenceToolId: null,
+      model: null,
+      thinking: null,
+      failure: null,
       usage: { totalTokens: 7, cost: 0.02 },
     },
   ]);
@@ -648,15 +784,14 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
   for (const tab of [
     "models",
     "tools",
-    "commands",
+    "environment",
     "agents",
-    "skills",
     "integrations",
     "errors",
     "ledger",
   ]) {
     assert.equal(
-      script.includes(`state.tab==="${tab}"`),
+      script.includes(`tab==="${tab}"`),
       true,
       `missing tab branch: ${tab}`,
     );
@@ -703,6 +838,7 @@ test("renders a tool result without usage as Unavailable instead of zero", () =>
       id: "tool:call-a",
       name: "read",
       status: "succeeded",
+      timestamp: "2026-09-07T00:00:00.000Z",
       usage: null,
       durationMs: null,
       durationLabel: null,
@@ -892,9 +1028,11 @@ test("renders a history session table with the approved columns and drill-down",
     script,
     /\[tr\("table\.session"\),tr\("table\.duration"\),tr\("table\.tokens"\),tr\("table\.generations"\),tr\("table\.agents"\),tr\("table\.status"\),tr\("table\.cost"\)\]/,
   );
-  assert.match(script, /historySessions\(\)\[state\.session\]/);
+  // A history row's drill-down writes the session id into the route and the
+  // client resolves it by that id, never by an array index.
+  assert.match(script, /selectedSession\(\)/);
   assert.match(script, /dataset\.session/);
-  assert.match(script, /state\.session=null/);
+  assert.match(script, /session:null/);
   // History keeps the shared tab renderer instead of hiding it.
   assert.equal(
     script.includes('tabsNode.hidden=state.range==="history"'),
@@ -909,13 +1047,19 @@ test("preserves scroll position and search focus across re-renders", () => {
   const script = scriptOf(renderHtml(richCurrent));
   assert.match(script, /window\.scrollY/);
   assert.match(script, /window\.scrollTo\(0,scrollY\)/);
-  assert.match(script, /state\.query=event\.target\.value/);
+  // A typed query is the active table's own route state, so Back restores it.
+  assert.match(script, /withTable\(\{query:event\.target\.value\}\)/);
   assert.match(script, /setSelectionRange/);
 });
 
 test("filters presets and custom ranges with inclusive UTC validation", () => {
   const script = scriptOf(renderHtml(historyReport()));
-  assert.match(script, /latestDate\(\)/);
+  // The one derivation resolves the active view's own intent against its own
+  // observed dates, and the old per-section `latestDate()` scan is gone.
+  assert.match(
+    script,
+    /deriveView\(state,stateCapabilities\(state\),rangeDates\(\)\)/,
+  );
   assert.match(script, /from>to/);
   assert.match(script, /tr\("range\.error"\)/);
   assert.match(script, /data-days/);
@@ -968,4 +1112,15 @@ test("ships the English catalog used by report labels", () => {
     "Local does not mean safe to share.",
   );
   assert.equal(ENGLISH_CATALOG["evidence.unavailable"], "Unavailable");
+});
+
+test("a selected history session carries no coverage panel", () => {
+  const document = embedded(renderHtml(historyReport())) as {
+    history: {
+      coverage?: unknown;
+      sessions: { view?: Record<string, unknown> }[];
+    };
+  };
+  assert.equal(document.history.sessions[0]?.view?.coverage, undefined);
+  assert.equal("coverage" in (document.history.sessions[0]?.view ?? {}), false);
 });

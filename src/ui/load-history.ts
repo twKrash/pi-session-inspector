@@ -3,24 +3,35 @@ import { join } from "node:path";
 
 import {
   buildCanonicalSession,
+  type CanonicalSession,
   type RetainedWalRecord,
 } from "../core/canonical.ts";
 import type { L0Evidence } from "../core/evidence.ts";
 import type { Scope, SessionEntry, Usage } from "../core/events.ts";
 import { addUsage, reduceEntries } from "../core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../core/reports.ts";
+import {
+  buildSessionCoverage,
+  type SessionCoverage,
+} from "../core/session-coverage.ts";
 import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
 import {
   readSubagentEvidence,
   type SubagentEvidence,
 } from "../integrations/subagents.ts";
-import { parseSessionJsonl } from "../pi/adapter.ts";
+import { parseSessionJsonl, type ParsedSession } from "../pi/adapter.ts";
 import { hasTrackingStartMarker } from "../pi/sessions.ts";
 import {
   discoverHistory,
   resolveManifestSourceFile,
+  type CoverageReason,
   type HistoryDiagnostic,
 } from "../storage/history.ts";
+import {
+  sessionDatedUsage,
+  type DatedModelRow,
+  type DateUsageRow,
+} from "./dated-usage.ts";
 import type { SessionObservation } from "./observation.ts";
 import {
   countersFrom,
@@ -74,14 +85,58 @@ export type SessionEvidenceProvider = (
 ) => Promise<HistorySessionEvidence | undefined>;
 
 export type HistoricalSession =
-  | { availability: "available"; sessionId: string; report: SessionReport }
-  | { availability: "unavailable"; sessionId: string };
+  | {
+      availability: "available";
+      sessionId: string;
+      /**
+       * Bounded per-session dated evidence (spec §5.6), projected from the
+       * builder's own attribution: the newest `MAX_DATED_DATES` observed dates.
+       */
+      usageByDate: readonly DateUsageRow[];
+      /** True when `usageByDate` cannot represent the session's whole native usage. */
+      usageByDateTruncated: boolean;
+      /**
+       * The same projection's per-date model rows, so a history session detail
+       * ranges its Models tab exactly like the current section (one projection,
+       * no second timestamp walk).
+       */
+      datedModels: readonly DatedModelRow[];
+      /** True when the model cap dropped a row from `datedModels`. */
+      modelsTruncated: boolean;
+      report: SessionReport;
+    }
+  | {
+      availability: "unavailable";
+      sessionId: string;
+      /**
+       * Bounded cause of the unavailable row; never a producer string. Absent
+       * only for older reports, where renderers show "Unavailable".
+       */
+      reason?: CoverageReason;
+    };
 
 export type HistoryReport = {
   availability: "available" | "unavailable";
   sessions: HistoricalSession[];
   diagnostics: HistoryDiagnostic[];
+  coverage?: SessionCoverage;
 };
+
+/**
+ * One global aggregate row: the session's identity plus, for an available
+ * session, whether its dated window can represent its whole native usage. The
+ * per-session dated rows themselves stay on the history report; the aggregate
+ * only needs the partiality of each contribution (spec §5.6, ADR-level honesty
+ * carry-forward: a partial contribution makes the aggregate visibly partial).
+ */
+export type GlobalSessionRow =
+  | {
+      availability: "available";
+      sessionId: string;
+      /** True when this session's dated window cannot represent its whole native usage. */
+      usageByDateTruncated: boolean;
+    }
+  | { availability: "unavailable"; sessionId: string };
 
 export type DateRange = { from?: string; to?: string };
 
@@ -93,10 +148,11 @@ export type DateUsage = {
 
 export type GlobalReport = {
   availability: "available" | "unavailable";
-  sessions: Array<Omit<HistoricalSession, "report">>;
+  sessions: GlobalSessionRow[];
   usage: Usage;
   dates: DateUsage[];
   diagnostics: HistoryDiagnostic[];
+  coverage?: SessionCoverage;
   inventory: {
     commands: number | null;
     skills: number | null;
@@ -116,6 +172,8 @@ type LoadHistoryOptions = {
    * that session is `unavailable`.
    */
   sessionEvidence?: SessionEvidenceProvider;
+  /** Test seam only; production uses `defaultReplay`. */
+  replay?: (input: HistoryReplayInput) => SessionReport;
 };
 
 /**
@@ -123,13 +181,32 @@ type LoadHistoryOptions = {
  * replayed exactly once and every global value comes from the same report.
  */
 type SessionScan =
-  | { availability: "available"; sessionId: string; report: SessionReport }
-  | { availability: "unavailable"; sessionId: string };
+  | {
+      availability: "available";
+      sessionId: string;
+      usageByDate: readonly DateUsageRow[];
+      usageByDateTruncated: boolean;
+      datedModels: readonly DatedModelRow[];
+      modelsTruncated: boolean;
+      report: SessionReport;
+    }
+  | { availability: "unavailable"; sessionId: string; reason: CoverageReason };
+
+/** One session's report inputs; the same values the builder received. */
+export type HistoryReplayInput = {
+  session: CanonicalSession;
+  entries: readonly SessionEntry[];
+  observation: SessionObservation | undefined;
+  subagentEvidence: SubagentEvidence;
+  sealed: boolean;
+};
 
 type HistoryScan = {
   availability: "available" | "unavailable";
   sessions: SessionScan[];
   diagnostics: HistoryDiagnostic[];
+  discoveryLimited: boolean;
+  coverage: SessionCoverage | undefined;
 };
 
 /** No Inspector evidence observed; never a fabricated zero. */
@@ -144,52 +221,88 @@ export async function loadHistoryReports(
     availability: scan.availability,
     sessions: scan.sessions.map(toHistoricalSession),
     diagnostics: scan.diagnostics,
+    ...(scan.coverage === undefined ? {} : { coverage: scan.coverage }),
   };
 }
 
 async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
   if (options.scope !== "tree") {
-    return { availability: "unavailable", sessions: [], diagnostics: [] };
+    return {
+      availability: "unavailable",
+      sessions: [],
+      diagnostics: [],
+      discoveryLimited: false,
+      coverage: undefined,
+    };
   }
   const discovery = await discoverHistory({
     ...options,
-    markerEvidence: async (sessionId, sourceFile) => {
+    // Promotion evidence is the tracking marker itself; whether the source can
+    // be replayed is the loader's re-check below (`sourceReadFailure`).
+    markerEvidence: async (_sessionId, sourceFile) => {
       const source = await resolveManifestSourceFile({
         sourceFile,
         sessionDirectory: options.sessionDirectory(),
       });
       if (source === undefined) return false;
       const parsed = parseSessionJsonl(await readFile(source, "utf8"));
-      return (
-        parsed.id === sessionId &&
-        !parsed.hasMalformedJson &&
-        parsed.hasSessionHeader &&
-        hasTrackingStartMarker(parsed.entries)
-      );
+      return hasTrackingStartMarker(parsed.entries);
     },
   });
   const sessions = await Promise.all(
     discovery.sessions.map(
-      async ({ sessionId, availability, sourceFile }): Promise<SessionScan> => {
+      async ({
+        sessionId,
+        availability,
+        sourceFile,
+        reason,
+      }): Promise<SessionScan> => {
+        // Discovery already named why this manifest never became a session; a
+        // row without a named reason is an unresolvable manifest.
         if (availability !== "available" || sourceFile === undefined) {
-          return { availability: "unavailable", sessionId };
+          return {
+            availability: "unavailable",
+            sessionId,
+            reason: reason ?? "manifest-unavailable",
+          };
         }
+        // (a)+(b) The source read phase: resolution, parse, header/id/marker.
+        // Every failure it can name is one bounded reason, and a source that
+        // changed since discovery is never replayed.
+        let parsed: ParsedSession;
         try {
           const source = await resolveManifestSourceFile({
             sourceFile,
             sessionDirectory: options.sessionDirectory(),
           });
           if (source === undefined)
-            return { availability: "unavailable", sessionId };
-          const parsed = parseSessionJsonl(await readFile(source, "utf8"));
+            return {
+              availability: "unavailable",
+              sessionId,
+              reason: "manifest-unavailable",
+            };
+          parsed = parseSessionJsonl(await readFile(source, "utf8"));
+          const readFailure = sourceReadFailure(parsed, sessionId);
           if (
-            parsed.id !== sessionId ||
-            parsed.hasMalformedJson ||
-            !parsed.hasSessionHeader ||
+            readFailure !== undefined ||
             !hasTrackingStartMarker(parsed.entries)
           ) {
-            return { availability: "unavailable", sessionId };
+            return {
+              availability: "unavailable",
+              sessionId,
+              reason: readFailure ?? "marker-unavailable",
+            };
           }
+        } catch {
+          return {
+            availability: "unavailable",
+            sessionId,
+            reason: "session-unreadable",
+          };
+        }
+        // (c)+(d)+(e) The replay phase: evidence, canonical build, projection.
+        // A failure here degrades exactly this session, never the report.
+        try {
           const directory = join(options.root, "sessions", sessionId);
           // R51: the per-session L0 evidence is injected. A provider that
           // throws or cannot supply this session is an unavailable session,
@@ -204,7 +317,11 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
                   entries: parsed.entries,
                 });
           if (options.sessionEvidence !== undefined && supplied === undefined) {
-            return { availability: "unavailable", sessionId };
+            return {
+              availability: "unavailable",
+              sessionId,
+              reason: "replay-failed",
+            };
           }
           const observation = supplied?.observation;
           const buildInput = {
@@ -228,7 +345,11 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
           // health/availability authority for the session.
           const resolved = buildCanonicalSession(buildInput);
           if (resolved.state !== "ready")
-            return { availability: "unavailable", sessionId };
+            return {
+              availability: "unavailable",
+              sessionId,
+              reason: "replay-failed",
+            };
           // R49: the entry set is the builder's resolution in order, mapped
           // back to parsed entries; an id without a parsed entry (an
           // unknown-semantic node) is skipped instead of fabricating a node.
@@ -253,7 +374,11 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
             subagents: subagentEvidence,
           });
           if (built.state !== "ready")
-            return { availability: "unavailable", sessionId };
+            return {
+              availability: "unavailable",
+              sessionId,
+              reason: "replay-failed",
+            };
           const session = built.session;
           // R47: `expired` keeps its existing meaning — some prune seal exists.
           const sealed = Object.values(
@@ -262,34 +387,96 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
           return {
             availability: "available",
             sessionId,
-            report: toSessionReport(reduceEntries(session.sessionId, entries), {
-              ...(sealed ? { walDetail: "expired" as const } : {}),
-              agents: {
-                state: subagentEvidence.state,
-                runs: subagentEvidence.runs,
-              },
-              agentActivity: subagentEvidence.activity,
-              presence: observation?.presence,
-              ...countersFrom(session),
-              ...usageFrom(session),
-              ...resourceCountsFrom(session),
-              ...(observation?.inventory === undefined
-                ? {}
-                : { inventory: observation.inventory }),
-              integrations: readPiEntryEvidence(entries),
-              // Task 14 fields: canonical health and checkpoint-surviving
-              // aggregates reach L2 as L1 produced them, never re-derived.
-              evidenceHealth: session.health,
-              retainedAggregates: session.retainedAggregates,
+            // R19: the one dated projection of the canonical session reaches
+            // the DTO here; nothing downstream re-walks report timestamps.
+            ...datedFields(session),
+            report: (options.replay ?? defaultReplay)({
+              session,
+              entries,
+              observation,
+              subagentEvidence,
+              sealed,
             }),
           };
         } catch {
-          return { availability: "unavailable", sessionId };
+          // (c)+(e) A provider or report projection that threw is this one
+          // session's replay failure, never a guessed report.
+          return {
+            availability: "unavailable",
+            sessionId,
+            reason: "replay-failed",
+          };
         }
       },
     ),
   );
-  return { ...discovery, sessions };
+  return {
+    availability: discovery.availability,
+    sessions,
+    diagnostics: discovery.diagnostics,
+    discoveryLimited: discovery.discoveryLimited,
+    coverage: buildSessionCoverage({
+      availability: discovery.availability,
+      discoveryLimited: discovery.discoveryLimited,
+      sessions,
+    }),
+  };
+}
+
+/** Deterministic source-read validation; every failure it can name maps to ONE reason. */
+export function sourceReadFailure(
+  parsed: {
+    id?: unknown;
+    hasMalformedJson?: unknown;
+    hasSessionHeader?: unknown;
+  },
+  sessionId: string,
+): CoverageReason | undefined {
+  if (parsed.hasMalformedJson === true) return "session-unreadable";
+  if (parsed.hasSessionHeader !== true) return "session-unreadable";
+  if (parsed.id !== sessionId) return "session-unreadable";
+  return undefined;
+}
+
+/**
+ * The production projection: the L2 report of the builder's resolution. It is
+ * a pure function of the replay inputs, so a failure is bounded to the one
+ * session being replayed.
+ */
+function defaultReplay(input: HistoryReplayInput): SessionReport {
+  return toSessionReport(
+    reduceEntries(input.session.sessionId, input.entries),
+    {
+      ...(input.sealed ? { walDetail: "expired" as const } : {}),
+      agents: {
+        state: input.subagentEvidence.state,
+        runs: input.subagentEvidence.runs,
+      },
+      agentActivity: input.subagentEvidence.activity,
+      presence: input.observation?.presence,
+      ...countersFrom(input.session),
+      ...usageFrom(input.session),
+      ...resourceCountsFrom(input.session),
+      ...(input.observation?.inventory === undefined
+        ? {}
+        : { inventory: input.observation.inventory }),
+      integrations: readPiEntryEvidence(input.entries),
+      // Task 14 fields: canonical health and checkpoint-surviving aggregates
+      // reach L2 as L1 produced them, never re-derived.
+      evidenceHealth: input.session.health,
+      retainedAggregates: input.session.retainedAggregates,
+    },
+  );
+}
+
+function toGlobalSessionRow(session: SessionScan): GlobalSessionRow {
+  return session.availability === "available"
+    ? {
+        availability: "available",
+        sessionId: session.sessionId,
+        usageByDateTruncated: session.usageByDateTruncated,
+      }
+    : { availability: "unavailable", sessionId: session.sessionId };
 }
 
 function toHistoricalSession(session: SessionScan): HistoricalSession {
@@ -297,9 +484,17 @@ function toHistoricalSession(session: SessionScan): HistoricalSession {
     ? {
         availability: "available",
         sessionId: session.sessionId,
+        usageByDate: session.usageByDate,
+        usageByDateTruncated: session.usageByDateTruncated,
+        datedModels: session.datedModels,
+        modelsTruncated: session.modelsTruncated,
         report: session.report,
       }
-    : { availability: "unavailable", sessionId: session.sessionId };
+    : {
+        availability: "unavailable",
+        sessionId: session.sessionId,
+        reason: session.reason,
+      };
 }
 
 /** Folds shared session reports without adding child-agent breakdown usage. */
@@ -310,16 +505,17 @@ export async function loadGlobalReport(
   const rows = new Map<string, { sessionIds: Set<string>; usage: Usage }>();
   for (const session of history.sessions) {
     if (session.availability !== "available") continue;
-    for (const event of usageEvents(session.report)) {
-      const date = event.timestamp.slice(0, 10);
-      if (!isDate(date) || !inRange(date, options.dateRange)) continue;
-      const row = rows.get(date) ?? {
-        sessionIds: new Set(),
+    // R19: the aggregate folds the very rows the session's own projection
+    // produced; no report timestamp is walked a second time.
+    for (const dated of session.usageByDate) {
+      if (!inRange(dated.date, options.dateRange)) continue;
+      const row = rows.get(dated.date) ?? {
+        sessionIds: new Set<string>(),
         usage: zeroUsage(),
       };
       row.sessionIds.add(session.sessionId);
-      row.usage = addUsage(row.usage, event.usage);
-      rows.set(date, row);
+      row.usage = addUsage(row.usage, datedUsage(dated));
+      rows.set(dated.date, row);
     }
   }
   const dates = [...rows]
@@ -331,10 +527,7 @@ export async function loadGlobalReport(
     }));
   return {
     availability: history.availability,
-    sessions: history.sessions.map(({ availability, sessionId }) => ({
-      availability,
-      sessionId,
-    })),
+    sessions: history.sessions.map(toGlobalSessionRow),
     usage: dates.reduce(
       (total, row) => addUsage(total, row.usage),
       zeroUsage(),
@@ -342,6 +535,7 @@ export async function loadGlobalReport(
     dates,
     inventory: globalInventory(history.sessions),
     diagnostics: history.diagnostics,
+    ...(history.coverage === undefined ? {} : { coverage: history.coverage }),
   };
 }
 
@@ -376,18 +570,23 @@ function globalInventory(
   return { commands, skills, resources };
 }
 
-function usageEvents(
-  report: SessionReport,
-): Array<{ timestamp: string; usage: Usage }> {
-  return [
-    ...report.generations,
-    ...report.tools.flatMap((tool) =>
-      tool.usage === undefined
-        ? []
-        : [{ timestamp: tool.timestamp, usage: tool.usage }],
-    ),
-    ...report.compactions,
-  ];
+/**
+ * The date rows the canonical session projects, with the truncation verdict R16
+ * pairs with them. Both loaders and every renderer read this one projection.
+ */
+function datedFields(session: CanonicalSession): {
+  usageByDate: readonly DateUsageRow[];
+  usageByDateTruncated: boolean;
+  datedModels: readonly DatedModelRow[];
+  modelsTruncated: boolean;
+} {
+  const dated = sessionDatedUsage(session);
+  return {
+    usageByDate: dated.dates,
+    usageByDateTruncated: dated.truncated,
+    datedModels: dated.models,
+    modelsTruncated: dated.modelsTruncated,
+  };
 }
 
 function inRange(date: string, range: DateRange | undefined): boolean {
@@ -396,8 +595,26 @@ function inRange(date: string, range: DateRange | undefined): boolean {
   );
 }
 
-function isDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+/**
+ * The usage one dated row carries. The optional producer token breakdown is
+ * re-folded here so an aggregate keeps exactly the fields the deleted
+ * per-record fold kept, while the dates still come from the one projection.
+ */
+function datedUsage(row: DateUsageRow): Usage {
+  return {
+    totalTokens: row.totalTokens,
+    cost: row.cost,
+    ...(row.inputTokens === undefined ? {} : { inputTokens: row.inputTokens }),
+    ...(row.outputTokens === undefined
+      ? {}
+      : { outputTokens: row.outputTokens }),
+    ...(row.cacheReadTokens === undefined
+      ? {}
+      : { cacheReadTokens: row.cacheReadTokens }),
+    ...(row.cacheWriteTokens === undefined
+      ? {}
+      : { cacheWriteTokens: row.cacheWriteTokens }),
+  };
 }
 
 function zeroUsage(): Usage {

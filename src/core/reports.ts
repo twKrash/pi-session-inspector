@@ -290,6 +290,12 @@ export type CommandInventory = {
 export type SkillInventory = {
   state: EvidenceState;
   items: readonly SkillRow[];
+  /**
+   * Inventory availability only: how many INVENTORY skill rows exist, taken
+   * before any counter-only row is appended, so a counted name the snapshot no
+   * longer lists can never inflate it. `null` means no snapshot, never zero.
+   */
+  count: number | null;
   invocationState: EvidenceState;
   invocationCount: number | null;
   otherInvocations: number | null;
@@ -316,6 +322,14 @@ export type SessionReport = {
   generations: ReducedSession["generations"];
   errors: ReducedSession["errors"];
   agents: AgentRun[];
+  /**
+   * Child-usage completeness, derived from the projected run set above: how
+   * many runs reported usage out of how many runs exist. A breakdown fraction
+   * only — never a cost, and never added to a native total. Always present;
+   * an empty run set is `0/0`, which every renderer shows as `Unavailable` and
+   * never as `$0.00`.
+   */
+  agentUsage: { runsTotal: number; runsWithUsage: number };
   agentEvidence: EvidenceState;
   /** Native subagent tool activity; distinct from rich cooperative runs. */
   agentActivity: AgentToolActivity;
@@ -381,6 +395,16 @@ export function toSessionReport(
     if (typeof source === "string") projected.source = source;
     return projected;
   });
+  // The fraction is derived from the run set that was just projected, never
+  // from the adapter's input and never carried as evidence. Both counts are
+  // taken from the same validated rows, so each is a non-negative safe integer
+  // and `runsWithUsage <= runsTotal` holds by construction: no clamp is needed
+  // and none may be invented.
+  const runsTotal = projectedEvidence.agents.length;
+  const runsWithUsage = projectedEvidence.agents.filter(
+    (run) => run.usage !== undefined,
+  ).length;
+  const agentUsage = { runsTotal, runsWithUsage };
   return {
     sessionId,
     // L1 rejected this aggregate (for example overflow). Omit both fields
@@ -394,6 +418,7 @@ export function toSessionReport(
       ? { walDetail: "expired" as const }
       : {}),
     agents: projectedEvidence.agents,
+    agentUsage: agentUsage,
     agentEvidence: projectedEvidence.agentEvidence,
     agentActivity: projectedEvidence.agentActivity,
     integrations: projectedEvidence.integrations,
@@ -1230,6 +1255,10 @@ function projectSkills(
 
   const items: SkillRow[] = [];
   const seen = new Set<string>();
+  // Availability is counted before the counter-only rows are appended: a
+  // counted name the snapshot does not list is activity, not a skill that is
+  // available, so it can never inflate this figure.
+  const count = inventory === undefined ? null : inventory.skills.length;
   if (inventory !== undefined) {
     for (const row of inventory.skills) {
       seen.add(row.name);
@@ -1250,6 +1279,7 @@ function projectSkills(
     // `state` reports inventory availability only; counted names survive expiry.
     state: inventory !== undefined ? "supported" : "unavailable",
     items,
+    count,
     invocationState: hasInvocations ? "supported" : "unavailable",
     invocationCount: hasInvocations
       ? counted.reduce((sum, name) => sum + invocations[name], 0) +

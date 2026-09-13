@@ -1,6 +1,6 @@
 # Pi Session Inspector v1 specification
 
-**Status:** approved design baseline. **Implemented as of `0.8.0`; the Evidence Foundation (canonical session model, L0/L1/L2 pipeline) and the pre-M8 evidence-coverage milestone have landed.**
+**Status:** approved design baseline. **Implemented as of `0.8.0`; the Evidence Foundation (canonical session model, L0/L1/L2 pipeline), the pre-M8 evidence-coverage milestone, and the `0.9.0` report-semantics/diagnostics/navigation milestone have landed.**
 
 ## 1. Product contract
 
@@ -131,6 +131,7 @@ type SessionReport = {
   skills: {
     state: EvidenceState;                            // inventory availability only
     items: readonly SkillRow[];                      // inventory names ∪ retained invocation names
+    count: number | null;                            // INVENTORY skill rows only, counted before any retained invocation name is appended, so activity never inflates availability; `null` means no snapshot
     invocationState: EvidenceState;                  // projected from L1 `effectiveCounters`/retained skill facts, never re-folded in L2; state vocabulary (`supported`/`unavailable`) unchanged
     invocationCount: number | null;                  // exact: sum(counts) + otherInvocations
     otherInvocations: number | null;                 // exact overflow beyond the 64-name cap
@@ -376,3 +377,230 @@ The Evidence Foundation (ADR 0016) is accepted only if all of the following hold
 33. Opaque IDs are deterministic, session-scoped, domain-separated, and computed only through the canonical helper; raw IDs never persist beside them.
 34. Parent-session resolution enforces approved-root containment, regular-file and symlink checks, bounded header read, and v3 header validation; every failure is `unavailable` with no path leakage.
 35. Skill inventory and skill invocation remain separate evidence classes and are never summed together.
+
+## 13. Report semantics
+
+This section states the `0.9.0` report-semantics contracts (design
+`docs/superpowers/specs/2026-09-12-report-semantics-diagnostics-navigation-design.md`,
+ADR 0017). Every addition here is additive: no persisted field, no collector, no
+WAL/checkpoint/retention change, no `schemaVersion` bump, no command-surface
+change, and no Pi mutation beyond the existing tracking marker. The new fields
+live on the report DTOs (`json` writes them verbatim) and inside the generated
+document; they are read-time derivations of already-persisted evidence.
+
+### 13.1 Coverage contract and wording rules
+
+`HistoryReport` and `GlobalReport` gain an optional `coverage` and unavailable
+session rows gain an optional bounded `reason`:
+
+```ts
+type CoverageReason =
+  | "no-manifest"          // neither metadata nor a pending manifest was readable
+  | "manifest-unavailable" // source missing/unresolvable/rejected, lease unavailable, promotion threw
+  | "marker-unavailable"   // source readable, tracking-marker evidence failed
+  | "session-unreadable"   // parse failure, malformed JSON, no header, id mismatch
+  | "replay-failed";       // evidence provider, canonical builder or report projection failed
+
+type SessionCoverage = {
+  inspected: number;       // the capped discovery set; available + unavailable === inspected
+  available: number;
+  unavailable: number;
+  sessionRatio: number | null; // available / inspected (4 decimals); null when inspected === 0 or discoveryLimited
+  complete: boolean;           // inspected > 0 && available === inspected && !discoveryLimited (an unavailable aggregate publishes no coverage at all)
+  discoveryLimited: boolean;   // discovery stopped at MAX_HISTORY_SESSIONS (206): more sessions exist, uninspected
+  reasons: Readonly<Partial<Record<CoverageReason, number>>>; // counts; zero-occurrence keys omitted
+};
+```
+
+- `CoverageReason` is a **runnability** vocabulary: every member is the projection
+  of an `EvidenceDiagnosticCode` or `HistoryDiagnostic` that already exists, so a
+  new reason cannot be invented and no filesystem error string, path, or producer
+  text can enter it.
+- A capped discovery has an unknown workspace denominator, so `sessionRatio` is
+  `null` and **no percentage or `N / N` fraction may be rendered** — not even for
+  an all-available capped set. Counts plus `additional sessions not inspected` is
+  the honest form.
+- An **empty** inspection set is not complete; its usage reads `Unavailable`,
+  never `$0.00`, and its session line reads `No tracked sessions`.
+- When the report itself is `availability: "unavailable"`, `coverage` is
+  **omitted** — unavailable, not zero.
+- Unavailable sessions contribute nothing to any usage, date, chart, or count
+  other than the coverage line, and are never rendered as a zero-cost row.
+- Wording is part of the contract. Partial aggregates are labelled
+  `Known native cost` / `Known tokens` (and `Known native cost — completeness
+  unknown` when no coverage exists at all); no partial figure is **headlined**
+  `Total`, and the `usage.total` label survives on the detail rows it names (the
+  metric breakdown and the composition total), kept for compatibility. Unavailable
+  values read `Unavailable`, never `0`, `$0.00`, or a guessed reason. `Known` is
+  the only qualifier for partial figures: never "approximate", "estimated", or an
+  extrapolation.
+- Coverage belongs to the **aggregate** sections (history aggregate, global). A
+  selected history session's own detail shows no coverage **panel** and no
+  coverage-driven qualifier — that session replayed, so its own figures are
+  complete for that session's replay. Two range-scoped cases still render `Known`
+  inside a session detail, and both qualify the selected **range**, not the
+  replay: a range that reaches before the session's retained dated window
+  (`rangeTruncated()`, driven by `usageByDateTruncated`, §13.2), and a breakdown
+  that reports usage for only `n` of `m` calls/runs. The TUI has no
+  history/global section and gains no coverage surface; `json history|global`
+  expose `coverage` verbatim.
+- Per-day coverage is **not** rendered: an unreadable session's dates are unknown.
+
+### 13.2 Attribution, ranges, and scope
+
+Every range-filtered number is attributable to exactly one UTC calendar date,
+attributed by **logical call** — never by result arrival, and never by inferring a
+start, end, or duration:
+
+| Evidence | Date comes from | Consequence |
+| --- | --- | --- |
+| generation usage | `Generation.timestamp` | native parent-session usage |
+| tool call identity, status, and its attached usage | `Tool.timestamp` (the call time) | a call at `23:59` whose result arrives at `00:01` carries its usage/cost on the **call day** |
+| tool error event | `ErrorRecord.timestamp` (observation time) | the error can land on the **next day** than that call's usage |
+| child run | `AgentRun.observedAt` (publication time of the publishing result) | observation time only, never a run start/end/duration |
+| compaction / branch summary | its own persisted entry timestamp | — |
+
+- The attribution is computed **once**, by the canonical builder
+  (`CanonicalUsageLine.attributedAt`/`domain`/`bucket`), and is only projected:
+  one dated projection (`sessionDatedUsage`) feeds every range-aware widget, and
+  nothing re-walks report timestamps to build a second dated view. Two documented
+  exceptions: the legacy single-section `renderHtml(HtmlReport)` adapter has no
+  canonical session, so its current-view daily rows keep the pre-attribution
+  `buildDailyActivityRows` bucketing; it has no production caller and removing it
+  is deferred (§13.6). And the production `sessionView` path's
+  `sessionSpanMs`/`reportDates` (`src/ui/html.ts`) walks native record timestamps
+  to produce one **span/duration label** (the Overview Duration card and the
+  history entry's first/last dates), never a per-date usage figure — every dated
+  number still comes from `sessionDatedUsage`. Tools, agents, and errors are
+  filtered from their own canonical rows (one row per call/run/error); date-indexed
+  duplicates for them do not exist.
+- Boundaries are inclusive UTC dates (`from <= date <= to`); presets are anchored
+  on the view's **latest observed date**, never the machine clock, so exports stay
+  byte-identical.
+- Defaults: `current` = full observed span; `history`/`global` = 14 days ending at
+  the latest observed date. Scope defaults: `current` = `active` (active ancestry
+  after the marker), history/global = `tree` (all post-marker entries).
+- Range state is keyed by **view identity** (`current`, `history:aggregate`,
+  `history:<sessionId>`, `global`), so a selected session never inherits the
+  aggregate's range. The active view's range and table state are route state
+  (§13.4); other views' ranges and table settings are **ephemeral in-memory
+  caches**, never deep-link state, and die with the document.
+- A per-session dated window (`usageByDate`, ≤ 366 newest dates) carries one
+  boolean, `usageByDateTruncated`, set when the window cannot represent the
+  session's whole native usage: the 366-date cap, a native usage line with no
+  known attribution (`evidenceHealth.usage.dated === "partial"`), or an
+  unavailable/overflowed usage aggregate with native lines. All three causes share
+  the one flag and one `Known` render path; global aggregate rows carry the same
+  flag (`GlobalSessionRow.usageByDateTruncated`, required) so a partial
+  contribution makes the aggregate visibly partial. Omitted or undatable history
+  is never silently excluded, never counted as zero, and never extrapolated.
+- Silent custom-range clamping is removed: a range outside the observed data is
+  accepted and produces the affected widgets' empty state, and an invalid
+  (`from > to`) or half range pair is never partially applied.
+- A widget that is intentionally not range-filtered renders an explicit label from
+  the projection (`All report dates` / `Current environment` / `Session total`).
+  No page shows a range-filtered cost beside an unlabelled all-period breakdown.
+- Child usage remains a **breakdown**: it is never added to any session, model,
+  history, or global total, and its completeness is a derived fraction of the
+  rendered runs (`agentUsage`), never extrapolated and never carried on
+  integration evidence.
+
+### 13.3 Capability-driven tabs
+
+Tabs are computed server-side per section from the data contract, and the client
+renders only capable tabs; a route naming an unsupported tab coerces to the
+section default with a bounded notice. No tab is ever "present but guaranteed
+`Unavailable`".
+
+| Section | Tabs |
+| --- | --- |
+| current (view available) | overview, models, tools, environment (commands / skills / resources), agents, integrations, errors, ledger |
+| current (view unavailable) | none — a single `Unavailable` panel with the bounded diagnostic |
+| history (aggregate) | overview (chart, session list) |
+| history (session selected) | all tabs (the session carries a full `SessionReport`) |
+| global | overview (chart) |
+
+Commands, Skills, and Resources are **environment** inventory and are grouped under
+one Environment tab in the browser; inventory is environment state (never a
+"used"/"invocation" claim) and is never range-filtered, while skill invocations
+come only from explicit folded counters and integration rows keep detection,
+telemetry, activity, and version independent (ADR 0017, ADR 0009, ADR 0014). The
+TUI keeps its own fixed tab list and is not re-taxonomized; both surfaces consume
+the same `SessionReport`.
+
+### 13.4 Route authority
+
+The hash (`#/…`) is the single authority for navigation state; there is no query
+string and no server. One canonical parameter order —
+`scope, preset, from, to, session, entity, q, sort` — means one route has exactly
+one string.
+
+- `render()` derives **all** state from the route: content, the active sidebar item
+  and the active tab (`aria-current="page"`), the scope button and the range preset
+  (both `aria-pressed`), the search/sort control values, and the focus target.
+  Click handlers only mutate the route. (The environment sub-tab and the theme
+  toggle also use `aria-pressed`, but they are ephemeral client state outside the
+  route.)
+- A **discrete** route change (section, tab, scope, session, entity, range preset,
+  custom range, sort) **pushes** a history entry so Back restores the previous
+  state; only in-progress search typing **replaces** the current entry. The Tools
+  summary → calls tool filter is per-view-identity ephemeral client state, not
+  route state, and pushes nothing.
+- Parsing is total and never throws: any unknown section/tab/option/date degrades
+  to the section default with a bounded one-line notice. A custom range serializes
+  only as a validated `from`/`to` pair; a preset serializes alone; `preset` wins
+  when both are present. Ids (session, entity) are validated against the id set the
+  projection already exposes and are dropped, never echoed, otherwise, so no
+  prompt/argument/result/path text can reach the hash.
+- Capabilities are parsed from the payload; a history route with a selected
+  session uses the session-selected capability set (§13.3).
+- Environment degradation is explicit: in an environment that refuses the History
+  API (`SecurityError` on `file://`), every write is guarded and the document still
+  renders. A refused canonicalization keeps the applied route in memory; a refused
+  in-progress replacement falls back to a same-document hash assignment (costing
+  one entry per keystroke in that environment only).
+
+### 13.5 Completion contract
+
+`getArgumentCompletions(prefix)` keeps its signature and grammar decisions. Each
+returned item's `value` is the **full replacement argument text**: the raw prefix
+with only the current raw token span replaced, located on the raw string (quotes
+included) so every preceding character is copied byte-identically and quoting is
+preserved (`--output "/tmp/my report.json"` survives completion). A bare token
+value is returned only when there is no preceding content. This is required
+because the pinned provider hands the extension the whole argument region and
+replaces that whole region on selection; a token re-join would strip quotes.
+
+Pinned-API limitation (ADR 0017): with `@earendil-works/pi-tui@0.85.1`,
+`getSuggestions` sees only the pre-cursor text and `applyCompletion` appends the
+post-cursor remainder verbatim, so a mid-token completion of
+`/session-ins ui --the|me` yields `/session-ins ui --thememe`. No extension-side
+`value` can prevent that append; the milestone pins the provider's actual
+composition in a boundary test rather than asserting the unreachable result.
+Engine-independent guarantees remain: prior characters are preserved,
+option-repeat suppression, and `null` for an unparsable stream.
+
+### 13.6 Unsupported and deferred
+
+Two different verdicts. **Unsupported** means no safe evidence exists, so the
+value can only ever render `Unavailable`. **Deferred (out of scope)** means the
+evidence exists but this milestone deliberately does not aggregate or expose it;
+nothing about it is fabricated in the meantime.
+
+| Requested capability | Verdict | Reason |
+| --- | --- | --- |
+| Per-day coverage (which days are incomplete) | Unsupported | Unavailable sessions are unreadable by definition; their dates are unknown |
+| Usage-coverage ratio / estimated unavailable usage | Unsupported | Would fabricate usage; only the session ratio exists, and it is omitted when the denominator is unknown |
+| Tool-error message text | Unsupported | No structured error field exists in persisted tool results, and `content` is outside the privacy boundary → `Message: Unavailable` |
+| Tool result content / arguments in any view | Unsupported by design | Privacy boundary |
+| Agent run duration | Unsupported | No producer duration field; differencing timestamps would be an estimate |
+| Agent free-text failure reason | Unsupported | The producer exposes bounded enums only |
+| Agent task description / summary | Unsupported | Prompt text; privacy boundary |
+| Agent model / thinking level | Supported, conditional | Present for the pinned producer; validated, optional, `Unavailable` otherwise |
+| Global/history per-model, per-tool, per-agent breakdowns | Deferred (out of scope) | Every scanned session is replayed into a full `SessionReport`, but this milestone does not aggregate across sessions |
+| Inventory invocation counts for commands/prompts | Unsupported | No counter evidence exists; skills have counters, commands do not |
+| Live duration for historical sessions | Unsupported | Duration evidence is live-correlation only |
+| Integration version when the producer publishes none | Unsupported | Rendered `Unavailable`, never `0` |
+| Exact aggregate-row/detail reconciliation for ranges older than a session's retained dated window | Unsupported (bounded projection) | The window holds 366 dates; the omitted portion is reported as partial/`Known` with a truncation diagnostic, never reconstructed |
+| Child usage completeness when some runs report none | Known-only | Shown as `Known … (n of m runs)`; never extrapolated |
+| Removing the legacy `renderHtml(HtmlReport)` adapter | Deferred (out of scope) | No production caller, but deleting a module with its own test suite is its own change |

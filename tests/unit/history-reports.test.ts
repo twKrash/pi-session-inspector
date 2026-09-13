@@ -8,6 +8,7 @@ import type { FoldedAggregateEvidence } from "../../src/core/evidence.ts";
 import type { SessionEvidenceHealth } from "../../src/core/evidence-health.ts";
 import type { CanonicalRetainedAggregates } from "../../src/core/retained-aggregates.ts";
 import { readIntegrationPresence } from "../../src/integrations/presence.ts";
+import type { CoverageReason } from "../../src/storage/history.ts";
 import {
   loadGlobalReport,
   loadHistoryReports,
@@ -28,6 +29,7 @@ const unavailableInventory = {
   skills: {
     state: "unavailable",
     items: [],
+    count: null,
     invocationState: "unavailable",
     invocationCount: null,
     otherInvocations: null,
@@ -301,7 +303,11 @@ test("degrades one session to unavailable when its evidence provider fails or re
         sessionEvidence,
       });
       assert.deepEqual(history.sessions, [
-        { availability: "unavailable", sessionId: "history-session" },
+        {
+          availability: "unavailable",
+          sessionId: "history-session",
+          reason: "replay-failed",
+        },
       ]);
     }
   } finally {
@@ -565,6 +571,56 @@ test("replays manifest-discovered history through the shared session report pipe
         {
           availability: "available",
           sessionId: "history-session",
+          usageByDate: [
+            {
+              date: "2026-02-01",
+              totalTokens: 10,
+              cost: 0.1,
+              generations: 1,
+              tools: 0,
+              errors: 0,
+              composition: {
+                generations: { totalTokens: 10, cost: 0.1 },
+                toolResults: { totalTokens: 0, cost: 0 },
+                compactions: { totalTokens: 0, cost: 0 },
+                branchSummaries: { totalTokens: 0, cost: 0 },
+              },
+            },
+            {
+              date: "2026-02-02",
+              totalTokens: 20,
+              cost: 0.2,
+              generations: 1,
+              tools: 0,
+              errors: 0,
+              composition: {
+                generations: { totalTokens: 20, cost: 0.2 },
+                toolResults: { totalTokens: 0, cost: 0 },
+                compactions: { totalTokens: 0, cost: 0 },
+                branchSummaries: { totalTokens: 0, cost: 0 },
+              },
+            },
+          ],
+          usageByDateTruncated: false,
+          datedModels: [
+            {
+              date: "2026-02-01",
+              provider: "acme",
+              model: "alpha",
+              generations: 1,
+              totalTokens: 10,
+              cost: 0.1,
+            },
+            {
+              date: "2026-02-02",
+              provider: "acme",
+              model: "alpha",
+              generations: 1,
+              totalTokens: 20,
+              cost: 0.2,
+            },
+          ],
+          modelsTruncated: false,
           report: {
             sessionId: "history-session",
             usage: { totalTokens: 30, cost: 0.3 },
@@ -602,6 +658,7 @@ test("replays manifest-discovered history through the shared session report pipe
               },
             ],
             agents: [],
+            agentUsage: { runsTotal: 0, runsWithUsage: 0 },
             agentEvidence: "unavailable",
             agentActivity: {
               state: "unavailable",
@@ -624,6 +681,15 @@ test("replays manifest-discovered history through the shared session report pipe
         },
       ],
       diagnostics: [],
+      coverage: {
+        inspected: 1,
+        available: 1,
+        unavailable: 0,
+        sessionRatio: 1,
+        complete: true,
+        discoveryLimited: false,
+        reasons: {},
+      },
     });
     assert.equal(renderJson(history).includes("history-session.jsonl"), false);
     assert.equal(renderJson(history).includes(sessionDirectory), false);
@@ -646,7 +712,11 @@ test("returns explicit unavailable sessions when a manifest source cannot replay
       maintenance,
     });
     assert.deepEqual(history.sessions, [
-      { availability: "unavailable", sessionId: "history-session" },
+      {
+        availability: "unavailable",
+        sessionId: "history-session",
+        reason: "manifest-unavailable",
+      },
     ]);
     assert.equal(JSON.stringify(history).includes("missing.jsonl"), false);
   } finally {
@@ -681,7 +751,11 @@ test("makes malformed JSONL after a valid header and marker unavailable rather t
     });
 
     assert.deepEqual(history.sessions, [
-      { availability: "unavailable", sessionId: "history-session" },
+      {
+        availability: "unavailable",
+        sessionId: "history-session",
+        reason: "session-unreadable",
+      },
     ]);
     assert.deepEqual(global.sessions, [
       { availability: "unavailable", sessionId: "history-session" },
@@ -727,7 +801,11 @@ test("rejects active scope for durable history and global reports rather than in
       maintenance,
     });
     assert.deepEqual(unavailable.sessions, [
-      { availability: "unavailable", sessionId: "history-session" },
+      {
+        availability: "unavailable",
+        sessionId: "history-session",
+        reason: "marker-unavailable",
+      },
     ]);
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -757,6 +835,25 @@ test("preserves branch-summary usage once through history and global reports", a
     assert.deepEqual(history.sessions[0], {
       availability: "available",
       sessionId: "history-session",
+      usageByDate: [
+        {
+          date: "2026-02-02",
+          totalTokens: 17,
+          cost: 0.17,
+          generations: 0,
+          tools: 0,
+          errors: 0,
+          composition: {
+            generations: { totalTokens: 0, cost: 0 },
+            toolResults: { totalTokens: 0, cost: 0 },
+            compactions: { totalTokens: 0, cost: 0 },
+            branchSummaries: { totalTokens: 17, cost: 0.17 },
+          },
+        },
+      ],
+      usageByDateTruncated: false,
+      datedModels: [],
+      modelsTruncated: false,
       report: {
         sessionId: "history-session",
         usage: { totalTokens: 17, cost: 0.17 },
@@ -779,6 +876,7 @@ test("preserves branch-summary usage once through history and global reports", a
         generations: [],
         errors: [],
         agents: [],
+        agentUsage: { runsTotal: 0, runsWithUsage: 0 },
         agentEvidence: "unavailable",
         agentActivity: {
           state: "unavailable",
@@ -859,7 +957,13 @@ test("folds native session usage once into deterministic sorted date rows and in
     });
     assert.deepEqual(global, {
       availability: "available",
-      sessions: [{ availability: "available", sessionId: "history-session" }],
+      sessions: [
+        {
+          availability: "available",
+          sessionId: "history-session",
+          usageByDateTruncated: false,
+        },
+      ],
       usage: { totalTokens: 20, cost: 0.2 },
       dates: [
         {
@@ -870,6 +974,15 @@ test("folds native session usage once into deterministic sorted date rows and in
       ],
       inventory: { commands: null, skills: null, resources: null },
       diagnostics: [],
+      coverage: {
+        inspected: 1,
+        available: 1,
+        unavailable: 0,
+        sessionRatio: 1,
+        complete: true,
+        discoveryLimited: false,
+        reasons: {},
+      },
     });
 
     const repeated = await loadGlobalReport({
@@ -1034,5 +1147,225 @@ test("projects history inventory rows from the persisted snapshot", async () => 
     });
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+/** The one session id every coverage case below uses. */
+const COVERAGE_SESSION_ID = "11111111-1111-4111-8111-111111111111";
+
+/** The marker's bounded customType token; a source either carries it or not. */
+const TRACKING_MARKER_TOKEN = "session-inspector:tracking-start";
+
+/** The session header line for one Pi session id. */
+function headerFor(id: string): string {
+  return JSON.stringify({ type: "session", version: 3, id });
+}
+
+/** The native tracking marker Pi persists when a session starts tracking. */
+function trackingMarkerLine(): string {
+  return JSON.stringify({
+    type: "custom",
+    id: "marker",
+    parentId: null,
+    timestamp: "2026-02-01T00:00:01.000Z",
+    customType: TRACKING_MARKER_TOKEN,
+    data: { schemaVersion: 1 },
+  });
+}
+
+/** A complete body: the session header plus the tracking marker. */
+function validSource(): string {
+  return `${headerFor(COVERAGE_SESSION_ID)}\n${trackingMarkerLine()}`;
+}
+
+/**
+ * Writes one manifest and one JSONL source into a fresh temp root and returns
+ * LoadHistoryOptions. The helper owns the marker line, so a case body can fail
+ * on its own first line while the session still counts as Inspector-tracked.
+ */
+async function optionsWithSource(
+  source: string,
+  { marker = true }: { marker?: boolean } = {},
+): Promise<Parameters<typeof loadHistoryReports>[0]> {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-coverage-"));
+  const sessionDirectory = join(root, "public-sessions");
+  await mkdir(sessionDirectory);
+  const body = [
+    ...source
+      .split("\n")
+      .filter((line) => line.trim() && !line.includes(TRACKING_MARKER_TOKEN)),
+    ...(marker ? [trackingMarkerLine()] : []),
+  ].join("\n");
+  await writeFile(
+    join(sessionDirectory, `${COVERAGE_SESSION_ID}.jsonl`),
+    `${body}\n`,
+  );
+  const directory = join(root, "sessions", COVERAGE_SESSION_ID);
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "meta.json"),
+    `${JSON.stringify({ schemaVersion: 2, sessionId: COVERAGE_SESSION_ID, sourceFile: `${COVERAGE_SESSION_ID}.jsonl`, state: "tracking" })}\n`,
+  );
+  return {
+    root,
+    sessionDirectory: () => sessionDirectory,
+    scope: "tree",
+    maintenance,
+  };
+}
+
+test("history and global report the same coverage from the same inputs", async () => {
+  const options = await optionsWithSource(validSource());
+  const history = await loadHistoryReports(options);
+  const global = await loadGlobalReport(options);
+  assert.equal(history.coverage?.inspected, 1);
+  assert.equal(history.coverage?.complete, true);
+  assert.deepEqual(history.coverage, global.coverage);
+});
+
+test("every declared reason is produced by a real path", async () => {
+  const cases: [string, string, CoverageReason][] = [
+    ["malformed JSON", "{not json\n", "session-unreadable"],
+    [
+      "missing session header",
+      '{"type":"message","id":"x"}\n',
+      "session-unreadable",
+    ],
+    [
+      "session id mismatch",
+      headerFor("99999999-9999-4999-8999-999999999999"),
+      "session-unreadable",
+    ],
+  ];
+  for (const [label, source, reason] of cases) {
+    const history = await loadHistoryReports(await optionsWithSource(source));
+    assert.equal(history.coverage?.reasons[reason], 1, label);
+    assert.equal(history.coverage?.unavailable, 1, label);
+  }
+  const failing = await loadHistoryReports({
+    ...(await optionsWithSource(validSource())),
+    replay: () => {
+      throw new Error("projection exploded");
+    },
+  });
+  assert.deepEqual(
+    [failing.coverage?.reasons["replay-failed"], failing.coverage?.available],
+    [1, 0],
+  );
+});
+
+test("a missing marker keeps its own reason, not replay-failed", async () => {
+  const history = await loadHistoryReports(
+    await optionsWithSource(validSource(), { marker: false }),
+  );
+  // The manifest cannot be promoted without marker evidence, so discovery already
+  // reports it and the row never becomes a report.
+  assert.equal(history.sessions[0]?.availability, "unavailable");
+  assert.deepEqual(history.coverage?.reasons, { "marker-unavailable": 1 });
+  assert.equal(history.coverage?.available, 0);
+});
+
+/** One usage-bearing assistant generation line for the dated-window cases. */
+function usageGenerationLine(input: {
+  id: string;
+  parentId: string;
+  timestamp: string;
+}): string {
+  return JSON.stringify({
+    type: "message",
+    id: input.id,
+    parentId: input.parentId,
+    timestamp: input.timestamp,
+    message: {
+      role: "assistant",
+      provider: "acme",
+      model: "alpha",
+      content: [],
+      usage: { totalTokens: 2, cost: { total: 0.02 } },
+    },
+  });
+}
+
+/**
+ * A marker-first source with one usage-bearing generation on each of `days`
+ * distinct UTC dates, chained from the marker (the >366-date pattern of
+ * `tests/unit/dated-usage.test.ts`).
+ */
+function datedSource(days: number): string {
+  const lines = [headerFor(COVERAGE_SESSION_ID), trackingMarkerLine()];
+  let parentId = "marker";
+  for (let index = 0; index < days; index += 1) {
+    const id = `g${index}`;
+    lines.push(
+      usageGenerationLine({
+        id,
+        parentId,
+        timestamp: new Date(
+          Date.UTC(2026, 1, 2) + index * 86_400_000,
+        ).toISOString(),
+      }),
+    );
+    parentId = id;
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Writes one manifest and one marker-first dated window into a fresh temp root
+ * and returns LoadHistoryOptions.
+ */
+async function datedWindowOptions(
+  days: number,
+): Promise<Parameters<typeof loadGlobalReport>[0]> {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-dated-"));
+  const sessionDirectory = join(root, "public-sessions");
+  await mkdir(sessionDirectory);
+  await writeFile(
+    join(sessionDirectory, `${COVERAGE_SESSION_ID}.jsonl`),
+    `${datedSource(days)}\n`,
+  );
+  const directory = join(root, "sessions", COVERAGE_SESSION_ID);
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "meta.json"),
+    `${JSON.stringify({ schemaVersion: 2, sessionId: COVERAGE_SESSION_ID, sourceFile: `${COVERAGE_SESSION_ID}.jsonl`, state: "tracking" })}\n`,
+  );
+  return {
+    root,
+    sessionDirectory: () => sessionDirectory,
+    scope: "tree",
+    maintenance,
+  };
+}
+
+test("the global rows publish each session's dated-window partiality", async () => {
+  const partialOptions = await datedWindowOptions(400);
+  try {
+    const partial = await loadGlobalReport(partialOptions);
+    // A capped window is visible on the aggregate's own rows, so the global
+    // report never reads as complete while a contribution is partial.
+    assert.deepEqual(partial.sessions, [
+      {
+        availability: "available",
+        sessionId: COVERAGE_SESSION_ID,
+        usageByDateTruncated: true,
+      },
+    ]);
+  } finally {
+    await rm(partialOptions.root, { force: true, recursive: true });
+  }
+
+  const completeOptions = await datedWindowOptions(3);
+  try {
+    const complete = await loadGlobalReport(completeOptions);
+    assert.deepEqual(complete.sessions, [
+      {
+        availability: "available",
+        sessionId: COVERAGE_SESSION_ID,
+        usageByDateTruncated: false,
+      },
+    ]);
+  } finally {
+    await rm(completeOptions.root, { force: true, recursive: true });
   }
 });

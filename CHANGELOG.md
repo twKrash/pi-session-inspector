@@ -4,6 +4,16 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.9.0]
+
+- Coverage: session coverage with bounded per-session reasons, capped-discovery honesty, and `Known`/`Unavailable` wording instead of unqualified totals.
+- Range: one shared range projection for every tab, per-view ranges, validated custom-range hash round-trips, logical-call timestamp attribution.
+- Agents/Tools/Errors: child-run metrics separated from native agent tool activity, the child usage fraction derived from the rendered runs, `Related child run(s)` joins, errors led by tool identity.
+- Projection: agent role, artifact state, observation time, tool timestamps and per-date model/composition rows reach the browser through one canonical projection.
+- Navigation: authoritative hash route with Back/Forward, deep links, capability-filtered tabs, entity focus.
+- Environment/Integrations: inventory grouped as environment; detection, telemetry, activity and version shown independently.
+- Completion: `/session-inspector` completion preserves every preceding argument, quoted values included.
+
 ## [0.8.0]
 
 Evidence Foundation: every report now comes from one canonical session pipeline, so current, history, global, TUI, HTML, and JSON cannot disagree about scope, counters, or joins.

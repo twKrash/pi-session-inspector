@@ -11,6 +11,7 @@ import type { SessionReport } from "../../src/core/reports.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { readIntegrationPresence } from "../../src/integrations/presence.ts";
 import { loadInspectorBundle } from "../../src/ui/bundle.ts";
+import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { renderInspectorBundle } from "../../src/ui/html.ts";
 import { renderJson } from "../../src/ui/json.ts";
 import type { GlobalReport, HistoryReport } from "../../src/ui/load-history.ts";
@@ -242,6 +243,18 @@ test("repeated reads are byte-identical and leave the checkpoint untouched", asy
     // A second maintenance-free read never mutates durable state.
     assert.equal(await readFile(checkpointPath, "utf8"), before);
   });
+});
+
+test("two identical generations of the bundle fixture are byte-identical", async () => {
+  const source = await readFile(
+    new URL("../fixtures/bundles/inspector-bundle.json", import.meta.url),
+    "utf8",
+  );
+  // Two independent decodes of the same fixture: the document may not depend on
+  // object identity, insertion accidents, or a clock read.
+  const generate = (): string =>
+    renderInspectorBundle(JSON.parse(source) as InspectorBundle);
+  assert.equal(generate(), generate());
 });
 
 test("bundle render is deterministic across repeated loads of the same inputs", async () => {

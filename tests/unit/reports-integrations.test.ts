@@ -1414,3 +1414,62 @@ test("drops a retained aggregate when only one expired cursor map is populated",
 
   assert.equal(report.retainedAggregates, undefined);
 });
+
+test("agent usage is derived from the projected run set and bounded", () => {
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [
+        {
+          id: `subagent-${"a".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          usage: { totalTokens: 5, cost: 0.05 },
+        },
+        {
+          id: `subagent-${"b".repeat(64)}`,
+          status: "failed",
+          confidence: "cooperative",
+        },
+        {
+          id: `subagent-${"c".repeat(64)}`,
+          status: "running",
+          confidence: "cooperative",
+        },
+        // A forged row never reaches the projected set, so it can neither
+        // raise the run total nor add itself to the runs that reported usage.
+        {
+          id: "not-an-opaque-run-id",
+          status: "succeeded",
+          confidence: "cooperative",
+          usage: { totalTokens: 9, cost: 0.9 },
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(report.agentUsage, { runsTotal: 3, runsWithUsage: 1 });
+  // Both counts come from the same projected set, so the fraction is ≤ 1 by
+  // construction; there is deliberately no clamp to hide a wrong derivation.
+  assert.equal(
+    report.agentUsage.runsWithUsage <= report.agentUsage.runsTotal,
+    true,
+  );
+});
+
+test("an agent set with no usage reports zero of N, never a fabricated total", () => {
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [
+        {
+          id: `subagent-${"d".repeat(64)}`,
+          status: "unknown",
+          confidence: "cooperative",
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(report.agentUsage, { runsTotal: 1, runsWithUsage: 0 });
+});

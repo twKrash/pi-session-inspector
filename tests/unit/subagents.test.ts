@@ -1131,3 +1131,30 @@ test("counts two independent field conflicts", () => {
     { code: "cooperative-evidence-conflict", count: 2 },
   ]);
 });
+
+// The publication regressions: the joined case (the publishing entry's
+// observation time and canonical tool id) is pinned by "run carries publication
+// time, evidence tool id, model and failure" above; these two add the negative
+// halves so a call or a result that cannot be joined publishes nothing.
+
+test("a result that cannot be joined publishes no run", () => {
+  const evidence = readSubagentEvidence([
+    {
+      id: "r1",
+      parentId: null,
+      timestamp: "2026-09-12T00:01:00.000Z",
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "subagent",
+        details: { results: [{ runId: "run-1", success: true }] },
+      },
+    },
+  ]);
+  assert.equal(evidence.runs.length, 0);
+});
+
+test("a call without a result publishes no run while activity still counts it", () => {
+  const evidence = readSubagentEvidence([assistantEntry("a1", "call-1")]);
+  assert.deepEqual([evidence.runs.length, evidence.activity.calls], [0, 1]);
+});

@@ -236,7 +236,9 @@ export function createCurrentTuiComponent({
       return ["No skills inventory", INVENTORY_NOT_INVOCATIONS];
     }
     return [
-      `Skills: ${skills.items.length}`,
+      // Availability is the inventory's own row count, never the rows this
+      // view renders: a counted name the snapshot no longer lists is activity.
+      `Skills: ${skills.count ?? "Unavailable"}`,
       INVENTORY_NOT_INVOCATIONS,
       ...countsSummary,
       ...renderSkillRows(skills.items),

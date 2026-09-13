@@ -114,6 +114,10 @@ test("composes inventory, invocation counts, and tool source attribution", () =>
   assert.equal(report.skills.invocationState, "supported");
   assert.equal(report.skills.invocationCount, 3);
   assert.equal(report.skills.otherInvocations, 1);
+  // The inventory lists no skill rows, so availability is the inventory's own
+  // zero rows: `council-mode` is a counted name the snapshot does not carry, and
+  // a counter-only row never counts as an available skill.
+  assert.equal(report.skills.count, 0);
   assert.deepEqual(
     report.skills.items.find((row) => row.name === "council-mode")
       ?.explicitInvocations,
@@ -129,6 +133,7 @@ test("reports inventory as unavailable when no observation is supplied", () => {
   assert.equal(report.skills.invocationState, "unavailable");
   assert.equal(report.skills.invocationCount, null);
   assert.equal(report.skills.otherInvocations, null);
+  assert.equal(report.skills.count, null);
   assert.equal(report.resources.state, "unavailable");
   assert.deepEqual(report.resources.items, []);
 });
@@ -141,6 +146,10 @@ test("reports persisted inventory counts after the snapshot expires", () => {
   assert.equal(report.commands.state, "unavailable");
   assert.equal(report.commands.count, 7);
   assert.deepEqual(report.commands.items, []);
+  // Only commands mirror the persisted count: a skill availability figure is a
+  // count of INVENTORY skill rows, and with no snapshot there is none to count
+  // (the persisted skill aggregate is not a row count), so it stays unknown.
+  assert.equal(report.skills.count, null);
   assert.equal(report.resources.state, "unavailable");
   assert.deepEqual(report.resources.items, []);
 });
@@ -159,6 +168,7 @@ test("carries counted skill names without an inventory and never a fabricated ze
   assert.equal(report.skills.invocationState, "supported");
   assert.equal(report.skills.invocationCount, 7);
   assert.equal(report.skills.otherInvocations, 3);
+  assert.equal(report.skills.count, null);
   assert.deepEqual(report.skills.items, [
     { name: "council-mode", explicitInvocations: 4 },
   ]);

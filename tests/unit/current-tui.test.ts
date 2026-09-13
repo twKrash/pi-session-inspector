@@ -28,6 +28,7 @@ const report: SessionReport = {
   compactions: [],
   generations: [],
   agents: [],
+  agentUsage: { runsTotal: 0, runsWithUsage: 0 },
   agentEvidence: "unavailable",
   agentActivity: {
     state: "unavailable",
@@ -43,6 +44,7 @@ const report: SessionReport = {
   skills: {
     state: "unavailable",
     items: [],
+    count: null,
     invocationState: "unavailable",
     invocationCount: null,
     otherInvocations: null,
@@ -96,6 +98,7 @@ test("renders inventory, presence, agent activity, and bounded error messages", 
       invocationCount: 2,
       otherInvocations: 0,
       items: [{ name: "council-mode", explicitInvocations: 2 }],
+      count: 1,
     },
     resources: {
       state: "supported",
@@ -148,6 +151,7 @@ test("keeps counted skill names visible after the inventory expires", () => {
       invocationCount: 2,
       otherInvocations: 0,
       items: [{ name: "council-mode", explicitInvocations: 2 }],
+      count: null,
     },
   });
 
@@ -160,6 +164,48 @@ test("keeps counted skill names visible after the inventory expires", () => {
 
   const empty = renderTab(modelWith({}), "skills");
   assert.ok(empty.includes("Unavailable"));
+});
+
+test("states the skills inventory count, never the activity-inflated row count", () => {
+  // The snapshot lists two skills while the folded counters name a third the
+  // snapshot does not carry: the line is availability, so it counts the
+  // inventory rows only and leaves the counted name to the row list.
+  const counted = modelWith({
+    skills: {
+      state: "supported",
+      invocationState: "supported",
+      invocationCount: 5,
+      otherInvocations: 1,
+      items: [
+        { name: "council-mode", explicitInvocations: 2 },
+        { name: "guard-mode" },
+        { name: "retired-mode", explicitInvocations: 3 },
+      ],
+      count: 2,
+    },
+  });
+  const lines = renderTab(counted, "skills");
+  const rendered = lines.join("\n");
+  assert.match(rendered, /Skills: 2/);
+  assert.equal(/Skills: 3/.test(rendered), false);
+  assert.match(rendered, /retired-mode/);
+
+  // A supported inventory whose count is unknown states Unavailable rather
+  // than falling back to the rows it renders.
+  const unknownCount = modelWith({
+    skills: {
+      state: "supported",
+      invocationState: "unavailable",
+      invocationCount: null,
+      otherInvocations: null,
+      items: [{ name: "council-mode" }],
+      count: null,
+    },
+  });
+  assert.match(
+    renderTab(unknownCount, "skills").join("\n"),
+    /Skills: Unavailable/,
+  );
 });
 
 test("shares the ≠ inventory copy with the HTML renderer", () => {
@@ -211,6 +257,7 @@ test("renders the + N other invocations footnote only when non-zero", () => {
       invocationCount: 3,
       otherInvocations: 2,
       items: [{ name: "alpha", explicitInvocations: 1 }],
+      count: 1,
     },
   });
   assert.match(
@@ -225,6 +272,7 @@ test("renders the + N other invocations footnote only when non-zero", () => {
       invocationCount: 1,
       otherInvocations: 0,
       items: [{ name: "alpha", explicitInvocations: 1 }],
+      count: 1,
     },
   });
   assert.ok(
