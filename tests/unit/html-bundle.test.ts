@@ -77,6 +77,51 @@ test("renders one offline document with both current views and initial theme", (
   }
 });
 
+test("normalizes CommonJS import aliases before inlining route functions", () => {
+  const original = Function.prototype.toString;
+  try {
+    Function.prototype.toString = function (this: Function): string {
+      const source = original.call(this);
+      if (this.name === "parseRoute") {
+        return source.replace(
+          "parseRangeQuery(query)",
+          "(0, _range.parseRangeQuery)(query)",
+        );
+      }
+      if (this.name === "deriveView") {
+        return source.replace("resolveRange(", "(0, _range.resolveRange)(");
+      }
+      return source;
+    };
+    const source = inlineModuleSource();
+    assert.equal(source.includes("_range"), false);
+    const inlined = new Function(
+      `${source}\nreturn {parseRoute,deriveView};`,
+    )() as {
+      parseRoute: (hash: string, options: unknown) => unknown;
+      deriveView: (
+        route: unknown,
+        capabilities: unknown,
+        observedDates: string[],
+      ) => unknown;
+    };
+    const parsed = inlined.parseRoute("#current/overview?preset=7", {
+      scope: "active",
+      capabilities: { current: ["overview"], history: [], global: [] },
+      knownIds: new Set<string>(),
+    }) as { route: { tab: string } };
+    assert.equal(parsed.route.tab, "overview");
+    const view = inlined.deriveView(
+      parsed.route,
+      { current: ["overview"], history: [], global: [] },
+      ["2026-09-12"],
+    ) as { activeTab: string };
+    assert.equal(view.activeTab, "overview");
+  } finally {
+    Function.prototype.toString = original;
+  }
+});
+
 test("renders inventory, resources, agent activity, integration presence, and error messages", () => {
   const html = renderInspectorBundle(bundleFixture());
   const data = embedOf(html);

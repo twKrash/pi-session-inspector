@@ -605,14 +605,25 @@ const INLINED_FUNCTIONS = [
 ] as const;
 
 /**
+ * CJS transpilers rewrite imported calls to `(0, alias.name)`. Normalize the
+ * two known range imports before their function source leaves module scope.
+ */
+function inlineFunctionSource(fn: { name: string }): string {
+  return String(fn).replace(
+    /\(0,\s*[A-Za-z_$][\w$]*\.(parseRangeQuery|resolveRange)\)/g,
+    "$1",
+  );
+}
+
+/**
  * The inlined block as emitted. The result is a classic-script statement list
  * that declares every listed function by its own name; evaluating it with
  * `new Function` proves there is no module scope to resolve.
  */
 export function inlineModuleSource(): string {
-  return INLINED_FUNCTIONS.map((fn) => `const ${fn.name}=${String(fn)};`).join(
-    "\n",
-  );
+  return INLINED_FUNCTIONS.map(
+    (fn) => `const ${fn.name}=${inlineFunctionSource(fn)};`,
+  ).join("\n");
 }
 
 /**
