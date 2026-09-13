@@ -29,7 +29,7 @@ export type HistoryDiagnostic =
 export type CoverageReason =
   | "no-manifest" // neither metadata nor a pending manifest was readable
   | "manifest-unavailable" // source missing/unresolvable/rejected, lease unavailable, promotion threw
-  | "marker-unavailable" // source readable but marker/header/id evidence failed
+  | "marker-unavailable" // source readable but the tracking-marker check failed
   | "session-unreadable" // parse failure, malformed JSON, no header, id mismatch
   | "replay-failed"; // provider, canonical builder or report projection failed
 

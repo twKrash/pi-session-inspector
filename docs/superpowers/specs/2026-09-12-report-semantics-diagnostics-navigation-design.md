@@ -183,9 +183,11 @@ behaviour (progress-ledger ruling R12). Measured on the reference fixture
 (Task 5) → **84,039 B** after the range slice (inlined range module **+5,292 B**,
 client range machinery **+7,131 B**, catalog **+331 B**, payload **+607 B**; the
 `Function.prototype.toString()` inlining is design-mandated) → **105,882 B**
-before the routing slice → **126,663 B** at release, i.e. **+57,442 B (+82.98 %)**
-over the baseline. §12's P0-B "Size gate" bullet is annotated with this outcome;
-no spec-mandated behaviour was reduced to fit the gate.
+before the routing slice → **126,663 B** at Task 14 → **139,327 chars** before
+the final review-fix wave → **140,107 chars / 140,285 bytes** at release, i.e.
+**+70,886 chars (+102.4 %)** over the baseline. §12's P0-B "Size gate" bullet
+is annotated with this outcome; no spec-mandated behaviour was reduced to fit
+the gate.
 
 ### R15 — the capability table has a session-selected history set
 
@@ -316,6 +318,43 @@ the range verdict the history aggregate reads` (two sessions whose retained
 windows differ, complete coverage, the discriminating range asserted `Known` in
 both sections with the notice visible, and a range inside every window asserted
 unqualified in both).
+
+### Final review fixes — the fabricated-zero guard, the empty-window verdict, and two shipped-wording corrections
+
+The whole-branch review found two Important `unavailable != 0` regressions and
+two doc claims that did not match the shipped client. All four are corrected in
+`src/ui/html.ts` / the design text; no DTO, persistence, or dependency changed.
+
+- **No datable aggregate row.** `globalOverview` guarded its empty state on
+  `!!activeRange() && days.length === 0`, but with no datable row
+  `resolveRange` returns no range at all, so the guard never fired and a
+  complete-coverage aggregate whose whole window was unpublishable headlined a
+  fabricated `$0.00` / `0` (`Observed days` included). Shipped: the same
+  guard the history aggregate already uses — with no resolved range (and so no
+  datable window) the cost, tokens and observed-days metrics read `Unavailable`.
+  Covering test: `the global headline renders Unavailable when the aggregate has
+  no datable rows`.
+- **Unpublishable session row.** `historyRowCells` rendered the range verdict's
+  own zero sum for an available session whose own report has no published
+  `usage` (an overflowed/unattributable window that still dates activity).
+  Shipped: a member row publishes the verdict sum only when the session's own
+  projected `view.usage` exists; otherwise both spend cells read `Unavailable`,
+  regardless of the range's partial verdict. Covering test: `an overflowed
+  history session renders Unavailable, never $0.00`.
+- **Empty truncated window.** `rangeTruncated()`/`partialContribution` gated the
+  per-session verdict on `usageByDate.length`, so a session truncated with **no**
+  published row never qualified an aggregate and the selected-session notice
+  never fired. Shipped: the per-session verdict is `historyRowRange`'s, keyed on
+  `usageByDateTruncated === true` and the range-vs-oldest comparison, never on
+  row presence; a range fully inside a **retained** window stays unqualified.
+  Covering test: `a truncated session with an empty dated window still qualifies
+  an aggregate range`.
+- **§3.3's `discovery-limited` token and §5.2's duration cell.** Neither claim
+  matched the shipped client: no `discovery-limited` token is emitted (the capped
+  session line is the disclosure, ruling R7b), and the Overview duration card is
+  the session **span** labelled `All report dates` — not recomputed from in-range
+  records. Both cells are corrected inline above; §3.3's no-token rule and §5.2's
+  duration row now state the shipped behaviour.
 
 ### Stale prose that names deleted code
 
@@ -745,7 +784,10 @@ Additional rules:
   are fully covered by the retained evidence.
 - The coverage panel belongs to the **aggregate** sections only (history
   aggregate, global). It carries the bounded diagnostics (`manifest-unavailable`,
-  …) as plain tokens, plus `discovery-limited` when discovery hit the cap.
+  …) as plain tokens, and nothing else: there is no `discovery-limited` token
+  (ruling R7b, §0.5) — a capped discovery is disclosed by the session line
+  itself (`206 sessions inspected · additional sessions not inspected`, no
+  percentage, never `206 / 206`).
 - A **selected history session's detail carries no coverage panel and no
   coverage-driven `Known` qualifier**: that session replayed successfully, so its
   own figures are complete for that session. Workspace coverage qualifies
@@ -921,7 +963,7 @@ its own data.
 
 | Section | View | Range-filtered | Not filtered (and how it is labelled) |
 | --- | --- | --- | --- |
-| current | Overview metrics | cost, tokens, generations, tool calls, observed days, duration (recomputed from in-range records) | session identity (`sessionId`, status) |
+| current | Overview metrics | cost, tokens, generations, tool calls, observed days; duration is the session **span** (first to last native record), the one metric card labelled `All report dates` | session identity (`sessionId`, status) |
 | current | Models | per-model generations/tokens/cost **within range** | — |
 | current | Tools (summary + calls) | calls, status counts, known usage, last-used timestamp | inventory `source` label (static per name) |
 | current | Agents | child runs whose timestamp falls in range; run status/usage counts | parent relationship (identity, not a metric) |
@@ -1057,10 +1099,11 @@ Rules:
 > the shipped ones. The ≤ +15 % gate is **knowingly exceeded and recorded**, not
 > satisfied: 69,221 B → 84,039 B after the range slice (inlined range module
 > +5,292 B, client range machinery +7,131 B, catalog +331 B, payload +607 B) →
-> 105,882 B before the routing slice → **126,663 B** at release (+57,442 B,
-> +82.98 %). See §0.5 (R11/R12) and the annotated §12 P0-B size gate. Tables that
-> are intentionally not range-filtered carry the projection's explicit
-> `All report dates` label (§5.2).
+> 105,882 B before the routing slice → 126,663 B at Task 14 → 139,327 chars before
+> the final review-fix wave → **140,107 chars / 140,285 bytes** at release
+> (+70,886 chars, +102.4 %). See §0.5 (R11/R12) and the annotated §12 P0-B size
+> gate. Tables that are intentionally not range-filtered carry the projection's
+> explicit `All report dates` label (§5.2).
 
 ### 5.5 Acceptance criteria
 
@@ -1899,9 +1942,10 @@ the v0.8.0 baseline is 588 passing tests at `81f65b7`.
 
 > **Execution amendment (R18/R12).** This gate is **knowingly exceeded and
 > recorded**, not met: 69,221 B baseline → **84,039 B** after P0-B (**+21.41 %**, the
-> ceiling was 79,604 B; over by 4,435 B) → 105,882 B before P1-F → **126,663 B** at
-> release (**+57,442 B, +82.98 %**). The measured P0-B breakdown: inlined range
-> module **+5,292 B**, client range machinery **+7,131 B**, catalog **+331 B**,
+> ceiling was 79,604 B; over by 4,435 B) → 105,882 B before P1-F → 126,663 B at
+> Task 14 → 139,327 chars before the final review-fix wave → **140,107 chars /
+> 140,285 bytes** at release (**+70,886 chars, +102.4 %**). The measured P0-B
+> breakdown: inlined range module **+5,292 B**, client range machinery **+7,131 B**, catalog **+331 B**,
 > payload **+607 B** (the remainder is the fixture's own dated/day content). The
 > `Function.prototype.toString()` inlining is design-mandated and the emitted
 > function sources have no recoverable bytes, so the overage was accepted rather

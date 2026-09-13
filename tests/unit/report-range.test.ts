@@ -1599,6 +1599,148 @@ test("the global headline reads the range verdict the history aggregate reads", 
   assert.equal(metricOf(historyInside, "Known native cost"), undefined);
 });
 
+test("the global headline renders Unavailable when the aggregate has no datable rows", () => {
+  const bundle = bundleFixture();
+  // Complete coverage whose whole window is unpublishable: the fold carries no
+  // dated row, so no range resolves and nothing is datable. The section must
+  // read Unavailable rather than a fabricated $0.00 / 0 (design §3.3).
+  bundle.global.dates = [];
+  bundle.global.sessions = [
+    {
+      availability: "available",
+      sessionId: "session-a",
+      usageByDateTruncated: true,
+    },
+  ];
+  bundle.global.coverage = {
+    inspected: 1,
+    available: 1,
+    unavailable: 0,
+    sessionRatio: 1,
+    complete: true,
+    discoveryLimited: false,
+    reasons: {},
+  };
+  const harness = runClient(bundle);
+  const { client, element, texts } = harness;
+  client.state.section = "global";
+  client.state.tab = "overview";
+  client.state.range = undefined;
+  client.render();
+  const view = element("view");
+
+  assert.equal(metricValue(view, "Native cost"), "Unavailable");
+  assert.equal(metricValue(view, "Total tokens"), "Unavailable");
+  assert.equal(metricValue(view, "Observed days"), "Unavailable");
+  assert.equal(texts(view).includes("$0.00"), false);
+});
+
+test("an overflowed history session renders Unavailable, never $0.00", () => {
+  const bundle = bundleFixture();
+  const session = bundle.history.sessions[0];
+  if (session?.availability !== "available") {
+    throw new Error("the fixture's first history session");
+  }
+  // An overflowed aggregate publishes no usage summary, so the replayed report
+  // has no `usage`; its activity still dates, so the window carries rows whose
+  // spend is zero. The row is a range member with a zero sum — Unavailable, not
+  // $0.00 (invariant: unavailable != 0).
+  session.usageByDate = [
+    {
+      ...session.usageByDate[0],
+      totalTokens: 0,
+      cost: 0,
+      generations: 1,
+      tools: 0,
+      errors: 0,
+      composition: {
+        generations: { totalTokens: 0, cost: 0 },
+        toolResults: { totalTokens: 0, cost: 0 },
+        compactions: { totalTokens: 0, cost: 0 },
+        branchSummaries: { totalTokens: 0, cost: 0 },
+      },
+    },
+  ];
+  session.usageByDateTruncated = true;
+  delete session.report.usage;
+  delete session.report.usageComposition;
+  const harness = runClient(bundle);
+  const { client, element, texts } = harness;
+  client.state.section = "history";
+  client.state.session = null;
+  client.state.tab = "overview";
+  // A range inside the retained window makes the row a member, so before the
+  // fix it rendered the fabricated zero sum in both cells.
+  client.state.range = { kind: "custom", from: "2026-02-01", to: "2026-02-01" };
+  client.render();
+  const view = element("view");
+  const tokens = cellUnder(harness, view, "Tokens", session.sessionId);
+  const cost = cellUnder(harness, view, "Cost (USD)", session.sessionId);
+
+  assert.deepEqual(texts(tokens), ["Unavailable"]);
+  assert.deepEqual(texts(cost), ["Unavailable"]);
+  // No cell of the session's own row fabricates the spend.
+  const row = rowOf(view, texts, session.sessionId);
+  assert.equal(texts(row).includes("$0.00"), false);
+});
+
+test("a truncated session with an empty dated window still qualifies an aggregate range", () => {
+  const bundle = bundleFixture();
+  const template = bundle.history.sessions[0];
+  if (template?.availability !== "available") {
+    throw new Error("the fixture's first history session");
+  }
+  // A session whose whole window is unattributable publishes no dated row, so
+  // its own `usageByDateTruncated` flag alone must qualify a range that reaches
+  // it — the row-presence guard used to hide that verdict.
+  bundle.history.sessions = [
+    template,
+    {
+      ...template,
+      sessionId: "session-empty",
+      usageByDate: [],
+      usageByDateTruncated: true,
+      datedModels: [],
+      modelsTruncated: false,
+    },
+  ];
+  const complete: SessionCoverage = {
+    inspected: 2,
+    available: 2,
+    unavailable: 0,
+    sessionRatio: 1,
+    complete: true,
+    discoveryLimited: false,
+    reasons: {},
+  };
+  bundle.history.coverage = complete;
+  bundle.global.coverage = complete;
+  const harness = runClient(bundle);
+  const { client, element } = harness;
+  client.state.tab = "overview";
+  // The range sits inside the fold's retained window, so only the empty
+  // window's own truncation verdict can qualify it; the notice and the headline
+  // read that one verdict.
+  const inside = { kind: "custom", from: "2026-02-01", to: "2026-02-02" };
+
+  client.state.section = "global";
+  client.state.range = inside;
+  client.render();
+  const global = element("view");
+  assert.equal(metricOf(global, "Known native cost") !== undefined, true);
+  assert.equal(metricOf(global, "Native cost"), undefined);
+  assert.equal(element("range-truncated").hidden, false);
+
+  client.state.section = "history";
+  client.state.session = null;
+  client.state.range = inside;
+  client.render();
+  const history = element("view");
+  assert.equal(metricOf(history, "Known native cost") !== undefined, true);
+  assert.equal(metricOf(history, "Native cost"), undefined);
+  assert.equal(element("range-truncated").hidden, false);
+});
+
 test("an agent row resolves its parent to one of the three verdicts", async () => {
   const orphan = await loadInspectorBundle({
     ...bundleInput,

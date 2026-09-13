@@ -463,13 +463,17 @@ start, end, or duration:
 - The attribution is computed **once**, by the canonical builder
   (`CanonicalUsageLine.attributedAt`/`domain`/`bucket`), and is only projected:
   one dated projection (`sessionDatedUsage`) feeds every range-aware widget, and
-  nothing re-walks report timestamps to build a second dated view. One documented
-  exception: the legacy single-section `renderHtml(HtmlReport)` adapter has no
+  nothing re-walks report timestamps to build a second dated view. Two documented
+  exceptions: the legacy single-section `renderHtml(HtmlReport)` adapter has no
   canonical session, so its current-view daily rows keep the pre-attribution
   `buildDailyActivityRows` bucketing; it has no production caller and removing it
-  is deferred (§13.6). Tools, agents, and errors are filtered from their own
-  canonical rows (one row per call/run/error); date-indexed duplicates for them do
-  not exist.
+  is deferred (§13.6). And the production `sessionView` path's
+  `sessionSpanMs`/`reportDates` (`src/ui/html.ts`) walks native record timestamps
+  to produce one **span/duration label** (the Overview Duration card and the
+  history entry's first/last dates), never a per-date usage figure — every dated
+  number still comes from `sessionDatedUsage`. Tools, agents, and errors are
+  filtered from their own canonical rows (one row per call/run/error); date-indexed
+  duplicates for them do not exist.
 - Boundaries are inclusive UTC dates (`from <= date <= to`); presets are anchored
   on the view's **latest observed date**, never the machine clock, so exports stay
   byte-identical.
