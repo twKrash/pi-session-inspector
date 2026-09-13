@@ -2219,7 +2219,20 @@ function coercedRoute(route){const derived=deriveView(route,stateCapabilities(ro
 // session/entity navigation, a range preset, a custom range and a sort — pushes a
 // history entry, so Back restores the state it came from; only in-progress search
 // typing replaces the current entry (R16b), so a search box never fills the stack.
-function navigate(next,push){const route=coercedRoute(next),key=routeKey(route);if(key===lastAppliedKey)return;if(push===false&&typeof history!=="undefined"&&history.replaceState)history.replaceState(null,"",key);else location.hash=key;applyLocation();}
+// The replacement is best-effort for the same reason applyLocation's
+// canonicalization is (a file:// document may refuse it): the hash is the
+// fallback, so a keystroke still reaches the route it names — at the cost of one
+// entry per keystroke in that environment — and a document that refuses both
+// writes is swallowed, so the in-memory route still renders.
+function navigate(next,push){
+const route=coercedRoute(next),key=routeKey(route);
+if(key===lastAppliedKey)return;
+if(push===false&&typeof history!=="undefined"&&history.replaceState){
+// An in-progress replace may not throw out of the input listener either.
+try{history.replaceState(null,"",key);}catch(error){try{location.hash=key;}catch(inner){}}
+}else location.hash=key;
+applyLocation();
+}
 // The one link-route builder (design §9.4): a destination keeps the context it can
 // carry. A link that stays on the same view identity keeps the active range; a
 // link to another identity leaves the range out, so the entering view's own

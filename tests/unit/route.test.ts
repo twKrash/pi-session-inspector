@@ -101,6 +101,28 @@ test("a null range or entity never serializes and never throws", () => {
   );
 });
 
+test("a null range, entity or table derives and keys like an absent one", () => {
+  const absent: InspectorRoute = {
+    section: "current",
+    tab: "models",
+    scope: "tree",
+  };
+  // A hand-built route is input too: every optional field follows the table's
+  // rule, so null is the absence of state for derivation as for serialization.
+  const nulled = {
+    ...absent,
+    range: null,
+    entity: null,
+    table: null,
+  } as unknown as InspectorRoute;
+  assert.equal(routeKey(nulled), "#/current/models?scope=tree");
+  assert.deepEqual(
+    deriveView(nulled, capabilities, observed),
+    deriveView(absent, capabilities, observed),
+  );
+  assert.equal(routeKey(nulled), routeKey(absent));
+});
+
 test("a preset stays unresolved in the hash and resolves against the view's dates", () => {
   const { route } = parseRoute("#/current/tools?scope=tree&preset=7", defaults);
   assert.deepEqual(route.range, { kind: "preset", preset: 7 });

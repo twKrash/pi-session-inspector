@@ -402,13 +402,17 @@ export function deriveView(
     scope: route.scope,
     focusTarget: "section-heading",
   };
+  // A null optional field is the absence of state, exactly like a missing one,
+  // so a hand-built route derives as totally as a parsed one.
+  const intent = route.range === null ? undefined : route.range;
   const range = resolveRange(
-    route.range,
+    intent,
     observedDates,
     activeSection === "current" ? "current" : "aggregate",
   );
   if (range !== undefined) view.range = range;
-  if (route.entity !== undefined) view.entity = route.entity;
+  if (route.entity !== undefined && route.entity !== null)
+    view.entity = route.entity;
   if (notice !== undefined) view.notice = notice;
   return view;
 }

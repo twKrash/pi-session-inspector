@@ -434,6 +434,30 @@ test("an address bar that refuses canonicalization never suppresses the render",
   assert.equal(element("title").textContent, "Pick up the trail.");
 });
 
+test("a refused replacement on the search path still applies the typed query", () => {
+  // The same file:// rejection reaches the in-progress search path: a keystroke
+  // replaces the current entry, so a refused replacement must not throw out of
+  // the input listener. The fallback is the hash itself, so the document still
+  // renders the query the user just typed.
+  const harness = runClient(bundleFixture(), "#/current/models?scope=tree", {
+    replaceStateFails: true,
+  });
+  const { element, input, location, renders, texts } = harness;
+  const rows = (): number => element("view").querySelectorAll("tr").length;
+  const before = renders();
+  assert.equal(rows(), 2); // the header row plus the one model row
+
+  const typed = element("search");
+  typed.value = "zzz";
+  assert.doesNotThrow(() => input(typed));
+  assert.equal(renders() - before, 1);
+  assert.equal(location.hash, "#/current/models?scope=tree&q=zzz");
+  assert.equal(rows(), 1);
+  assert.equal(texts(element("view")).includes("acme"), false);
+  // The typed state is in the route, so the re-render writes the box back.
+  assert.equal(element("search").value, "zzz");
+});
+
 test("a discrete change pushes a history entry; only search typing replaces", () => {
   const harness = runClient(bundleFixture());
   const { element, click, change, input, location, preset, replacements } =
