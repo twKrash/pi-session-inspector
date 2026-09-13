@@ -116,7 +116,7 @@ or changes production behavior merely because a tool suggested it.
 
 ### Pre-M8.1 — repository and documentation hygiene
 
-**Status:** Planned. **Order:** First.
+**Status:** Complete. **Order:** First.
 
 Remove execution-process material from the tracked product surface while
 preserving durable decisions and keeping the active M8 plan available until M8

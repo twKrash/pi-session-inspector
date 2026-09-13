@@ -381,9 +381,8 @@ The Evidence Foundation (ADR 0016) is accepted only if all of the following hold
 
 ## 13. Report semantics
 
-This section states the `0.9.0` report-semantics contracts (design
-`docs/superpowers/specs/2026-09-12-report-semantics-diagnostics-navigation-design.md`,
-ADR 0017). Every addition here is additive: no persisted field, no collector, no
+This section states the `0.9.0` report-semantics contracts in [ADR 0017](../architecture/adr/0017-report-coverage-attribution-and-navigation.md).
+Every addition here is additive: no persisted field, no collector, no
 WAL/checkpoint/retention change, no `schemaVersion` bump, no command-surface
 change, and no Pi mutation beyond the existing tracking marker. The new fields
 live on the report DTOs (`json` writes them verbatim) and inside the generated
