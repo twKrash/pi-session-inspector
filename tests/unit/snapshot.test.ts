@@ -609,10 +609,17 @@ test("renders a static, script-free and network-free document", () => {
   assert.equal(html.includes('"sessionId"'), false);
   assert.equal(html.includes("application/json"), false);
   assert.equal(html.includes("JSON.parse"), false);
-  // No link or external reference of any kind survives, and the one inlined
-  // stylesheet is the only <style> block the CSP hash covers.
-  assert.equal(/<a[\s>]/.test(html), false);
-  assert.equal(html.includes("href="), false);
+  // The skip link is the one permitted anchor: exactly one `href`, and it is
+  // the same-document fragment `#main`. External, protocol-relative, `data:`,
+  // `file:` and route links stay banned; the one inlined stylesheet is the only
+  // <style> block the CSP hash covers.
+  assert.equal((html.match(/<a[\s>]/g) ?? []).length, 1);
+  assert.deepEqual(
+    [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]),
+    ["#main"],
+  );
+  assert.equal(/href="(?:\/\/|(?:data|file|javascript):)/i.test(html), false);
+  assert.equal(/href="#\//.test(html), false);
   assert.equal((html.match(/<style>/g) ?? []).length, 1);
   assert.equal((html.match(/<\/style>/g) ?? []).length, 1);
   for (const tag of ["td", "th", "section"]) {
@@ -1144,4 +1151,145 @@ test("prints each inventory's published availability, never a row count", () => 
   assert.equal(html.includes("4,711"), true);
   assert.equal(html.includes("4,712"), true);
   assert.equal(html.includes("4,713"), true);
+});
+
+test("restores the skip link as the one same-document anchor", () => {
+  const html = renderSnapshot(currentDto());
+
+  assert.equal(
+    html.includes('<a class="skip" href="#main">Skip to report</a>'),
+    true,
+  );
+  assert.match(html, /<main id="main"[^>]*>/);
+  const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]);
+  assert.deepEqual(hrefs, ["#main"]);
+});
+
+test("prints L2's parent verdict instead of looking a parent up in its rows", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const view = base.projection.report;
+  const range = base.projection.range;
+  if (view === undefined || range === undefined) {
+    throw new Error("the fixture must carry a report and a range");
+  }
+  const run = range.agents[0];
+  const parentId = `subagent-${"b".repeat(64)}`;
+  const orphanId = `subagent-${"c".repeat(64)}`;
+  const html = renderSnapshot({
+    ...base,
+    projection: {
+      ...base.projection,
+      report: {
+        ...view,
+        // Both ids are known to the full report, so a renderer recomputing the
+        // verdict from its rows prints the parent's label for the row the DTO
+        // calls outside-range, and "outside selected scope" for the orphan.
+        agents: [
+          { ...run, id: parentId, parentId: null, agent: "parent-role" },
+          { ...run, id: orphanId, parentId: null, agent: "orphan-role" },
+        ],
+      },
+      range: {
+        ...range,
+        agents: [
+          {
+            ...run,
+            id: parentId,
+            parentId: null,
+            agent: "parent-role",
+            parent: "none",
+          },
+          {
+            ...run,
+            id: `subagent-${"d".repeat(64)}`,
+            parentId,
+            agent: "outside-child",
+            parent: "outside-range",
+          },
+          {
+            ...run,
+            id: `subagent-${"e".repeat(64)}`,
+            parentId,
+            agent: "in-range-child",
+            parent: "in-range",
+          },
+          {
+            ...run,
+            id: `subagent-${"f".repeat(64)}`,
+            parentId: orphanId,
+            agent: "orphan-child",
+            parent: "unknown",
+          },
+        ],
+      },
+    },
+  });
+
+  // Each verdict is printed for exactly its own row.
+  assert.equal(
+    (html.match(new RegExp(CATALOG["agents.parentOutsideScope"], "g")) ?? [])
+      .length,
+    1,
+  );
+  assert.equal(
+    (html.match(new RegExp(CATALOG["agents.parentUnknown"], "g")) ?? []).length,
+    1,
+  );
+  // The in-range parent's own rendered label is printed for its child too, but
+  // never for the row the DTO puts outside the range: twice, not three times.
+  assert.equal((html.match(/parent-role/g) ?? []).length, 2);
+});
+
+test("renders a child whose parent exists only outside the selected range", () => {
+  const parentId = `subagent-${"b".repeat(64)}`;
+  const childId = `subagent-${"c".repeat(64)}`;
+  const report = toSessionReport(reduceEntries(SESSION_ID, ENTRIES), {
+    agents: {
+      state: "supported",
+      runs: [
+        {
+          id: parentId,
+          agent: "parent-role",
+          status: "succeeded",
+          confidence: "cooperative",
+          observedAt: "2026-03-01T10:00:00.000Z",
+        },
+        {
+          id: childId,
+          parentId,
+          agent: "child-role",
+          status: "succeeded",
+          confidence: "cooperative",
+          observedAt: "2026-03-10T10:00:00.000Z",
+        },
+      ],
+    },
+  });
+  // The 7-day preset anchors on 2026-03-10, so only the child's own day is a
+  // selected row while the full report still knows the parent: the verdict is
+  // L2's range membership answer, rendered from the DTO.
+  const dto: SnapshotDto = {
+    kind: "current",
+    schemaVersion: 1,
+    theme: "light",
+    projection: projectCurrentView(
+      {
+        availability: "available",
+        report,
+        daily: DAILY_ROWS,
+        dailyTruncated: false,
+        datedModels: DATED_MODELS,
+        modelsTruncated: false,
+      },
+      "tree",
+      PRESET_7,
+    ),
+  };
+  const html = renderSnapshot(dto);
+
+  assert.equal(html.includes(CATALOG["agents.parentOutsideScope"]), true);
+  assert.equal(html.includes("child-role"), true);
+  // The parent's own row is outside the selection, so it is never rendered.
+  assert.equal(html.includes("parent-role"), false);
 });

@@ -110,6 +110,16 @@ export type UiChildUsage = {
 export type UiToolSummaryRow = ToolSummaryRow & { partial: boolean };
 
 /**
+ * One rendered run's parent membership verdict: `in-range` when the selected
+ * rows carry the parent, `outside-range` when only the full report knows the
+ * id, and `unknown` when nothing does. `none` is a run with no parent id.
+ */
+export type UiAgentParent = "none" | "in-range" | "outside-range" | "unknown";
+
+/** One range-filtered run plus L2's own verdict for its parent. */
+export type UiAgentRow = AgentRow & { parent: UiAgentParent };
+
+/**
  * One projection's range and everything that changes with it. `requested` is
  * the intent the route/command carried (`null` when none) and `resolved` the
  * range that intent produced against this projection's own observed dates —
@@ -133,7 +143,7 @@ export type UiRangeProjection = {
   modelsTruncated: boolean;
   toolSummary: readonly UiToolSummaryRow[];
   toolCalls: readonly ToolRow[];
-  agents: readonly AgentRow[];
+  agents: readonly UiAgentRow[];
   childUsage: UiChildUsage;
   errors: readonly ErrorRow[];
   ledger: readonly LedgerItem[];
@@ -564,6 +574,7 @@ function sessionRange(input: {
     },
     resolved,
   );
+  const agents = agentParentVerdicts(input.report.agents, filtered.agents);
   return {
     requested,
     resolved,
@@ -577,8 +588,8 @@ function sessionRange(input: {
     modelsTruncated: input.modelsTruncated,
     toolSummary: toolSummary({ tools: filtered.tools }).map(toolUsageVerdict),
     toolCalls: toolCalls({ tools: filtered.tools }, null),
-    agents: filtered.agents,
-    childUsage: childUsageBreakdown(filtered.agents),
+    agents,
+    childUsage: childUsageBreakdown(agents),
     errors: filtered.errors,
     // A ledger row is dated by its own persisted timestamp, the same field the
     // tab renders.
@@ -761,6 +772,30 @@ function childUsageBreakdown(runs: readonly AgentRow[]): UiChildUsage {
     failedRunsWithUsage,
     byStatus,
   };
+}
+
+/**
+ * Each rendered run's parent verdict, decided here and never in a renderer: a
+ * parent the selected rows carry is `in-range`, one only the full report knows
+ * is `outside-range`, and an id nothing knows is `unknown`.
+ */
+function agentParentVerdicts(
+  all: readonly AgentRow[],
+  selected: readonly AgentRow[],
+): UiAgentRow[] {
+  const rendered = new Set(selected.map((run) => run.id));
+  const known = new Set(all.map((run) => run.id));
+  return selected.map((run) => ({
+    ...run,
+    parent:
+      run.parentId === null
+        ? "none"
+        : rendered.has(run.parentId)
+          ? "in-range"
+          : known.has(run.parentId)
+            ? "outside-range"
+            : "unknown",
+  }));
 }
 
 /** A selection with no runs: zero runs, no known usage, never a zero sum. */

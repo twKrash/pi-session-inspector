@@ -1261,3 +1261,108 @@ test("the projection modules reach no loader, filesystem, or browser state", () 
     );
   }
 });
+
+test("each rendered run carries L2's own parent verdict", () => {
+  const parentId = `subagent-${"b".repeat(64)}`;
+  const orphanId = `subagent-${"c".repeat(64)}`;
+  const childId = `subagent-${"d".repeat(64)}`;
+  const orphanChildId = `subagent-${"e".repeat(64)}`;
+  const rootlessId = `subagent-${"f".repeat(64)}`;
+  const report = toSessionReport(
+    reduceEntries("session-parent-verdict", [
+      {
+        type: "message",
+        id: "gen-parent-verdict",
+        parentId: null,
+        timestamp: "2026-03-10T10:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: { totalTokens: 10, cost: { total: 0.001 } },
+          content: [],
+        },
+      },
+    ]),
+    {
+      agents: {
+        state: "supported",
+        runs: [
+          {
+            id: parentId,
+            agent: "parent-role",
+            status: "succeeded",
+            confidence: "cooperative",
+            observedAt: "2026-03-01T10:00:00.000Z",
+          },
+          {
+            id: childId,
+            parentId,
+            agent: "child-role",
+            status: "succeeded",
+            confidence: "cooperative",
+            observedAt: "2026-03-10T10:00:00.000Z",
+          },
+          {
+            id: orphanChildId,
+            parentId: orphanId,
+            agent: "orphan-child",
+            status: "succeeded",
+            confidence: "cooperative",
+            observedAt: "2026-03-10T10:00:00.000Z",
+          },
+          {
+            id: rootlessId,
+            agent: "rootless-child",
+            status: "succeeded",
+            confidence: "cooperative",
+            observedAt: "2026-03-10T10:00:00.000Z",
+          },
+        ],
+      },
+    },
+  );
+  const view = {
+    availability: "available" as const,
+    report,
+    daily: foldedDaily(
+      [
+        dateRow({
+          date: "2026-03-10",
+          totalTokens: 10,
+          cost: 0.001,
+          generations: 1,
+        }),
+      ],
+      "session-parent-verdict",
+    ),
+  };
+
+  // The parent's own day is outside the 7-day preset, so its child's verdict is
+  // the selection's membership answer, not the full report's knowledge.
+  const selected = projectCurrentView(view, "tree", PRESET_7);
+  assert.deepEqual(
+    selected.range?.agents.map((row) => [row.id, row.parent]),
+    [
+      [childId, "outside-range"],
+      [orphanChildId, "unknown"],
+      [rootlessId, "none"],
+    ],
+  );
+
+  // The whole window: the parent is among the selected rows.
+  const all = projectCurrentView(view, "tree", {
+    kind: "custom",
+    from: "2026-03-01",
+    to: "2026-03-10",
+  });
+  assert.deepEqual(
+    all.range?.agents.map((row) => [row.id, row.parent]),
+    [
+      [parentId, "none"],
+      [childId, "in-range"],
+      [orphanChildId, "unknown"],
+      [rootlessId, "none"],
+    ],
+  );
+});

@@ -8,7 +8,6 @@ import {
   errorHeadline,
   errorMessage,
   toolDuration,
-  type AgentRow,
   type CompositionView,
   type CoverageProjection,
   type ErrorRow,
@@ -18,6 +17,7 @@ import {
   type ToolRow,
 } from "./report-projection.ts";
 import type {
+  UiAgentRow,
   UiChildUsage,
   UiGlobalProjection,
   UiHistoryProjection,
@@ -222,6 +222,7 @@ function frame(theme: SnapshotTheme, target: SnapshotTarget): string {
     `<title>${text(catalog["report.title"])} · ${text(target.title)}</title>` +
     `<style>${SNAPSHOT_STYLESHEET}</style></head>` +
     `<body${dark ? ' class="theme-dark"' : ""}>` +
+    `<a class="skip" href="#main">Skip to report</a>` +
     `<div class="shell"><aside aria-label="${attr(catalog.workspace)}"><div class="brand"><span class="mark" aria-hidden="true">π</span><span>${text(catalog["report.title"])}<br><small>${text(catalog["brand.tagline"])}</small></span></div>` +
     `<p class="eyebrow">${text(catalog.workspace)}</p>` +
     `<div class="rail-foot"><span class="dot"></span>${text(catalog["local.design"])}<p>Offline report. No tracking.<br>No prompts or outputs.</p><p class="mono">${text(catalog.offline)}</p></div></aside>` +
@@ -1039,7 +1040,7 @@ function agentsSections(
                     ? catalog["evidence.unavailable"]
                     : money(run.usage.cost),
                   orUnavailable(run.artifacts),
-                  parentLabel(run, runs, report),
+                  parentLabel(run, runs),
                 ]),
                 [
                   "status-cell",
@@ -1143,21 +1144,20 @@ function childUsageSummary(childUsage: UiChildUsage): string {
 }
 
 /**
- * The bounded parent verdict: a parent the rendered rows carry is labelled by its
- * own role, a parent only the full projection knows is outside the selection, and
- * an unknown id stays Unavailable.
+ * The row's parent cell: the wording is chosen for L2's published verdict, and
+ * an in-range parent is printed with its own rendered role label. The verdict is
+ * never re-derived from the rows here.
  */
-function parentLabel(
-  run: AgentRow,
-  runs: readonly AgentRow[],
-  report: SessionReportView,
-): string {
-  if (run.parentId === null) return ENGLISH_CATALOG["evidence.unavailable"];
+function parentLabel(run: UiAgentRow, runs: readonly UiAgentRow[]): string {
+  if (run.parent === "none") return ENGLISH_CATALOG["evidence.unavailable"];
+  if (run.parent === "outside-range") {
+    return ENGLISH_CATALOG["agents.parentOutsideScope"];
+  }
+  if (run.parent === "unknown") {
+    return ENGLISH_CATALOG["agents.parentUnknown"];
+  }
   const parent = runs.find((candidate) => candidate.id === run.parentId);
-  if (parent !== undefined) return orUnavailable(parent.agent);
-  return report.agents.some((candidate) => candidate.id === run.parentId)
-    ? ENGLISH_CATALOG["agents.parentOutsideScope"]
-    : ENGLISH_CATALOG["agents.parentUnknown"];
+  return orUnavailable(parent?.agent ?? null);
 }
 
 function integrationsSection(report: SessionReportView): string {
