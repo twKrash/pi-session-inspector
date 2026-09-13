@@ -1169,3 +1169,24 @@ test("detection and telemetry stay independent in the integration projection", a
   assert.equal(ENGLISH_CATALOG["integration.version"], "Version");
   assert.equal(ENGLISH_CATALOG["tab.environment"], "Environment");
 });
+
+test("numbers right-align, messages wrap, ids truncate but stay copyable", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  assert.match(html, /\.num\{text-align:right/);
+  assert.match(html, /\.wrap\{white-space:normal/);
+  assert.match(html, /\.id-cell\{[^}]*text-overflow:ellipsis/);
+  assert.match(html, /data-full-id="/);
+  assert.match(html, /table\.copyId/);
+  assert.equal(
+    /table\{width:100%;border-collapse:collapse;text-align:left;white-space:nowrap\}/.test(
+      html,
+    ),
+    false,
+  );
+  assert.equal(/td:last-child\{text-align:right\}/.test(html), false);
+});
+
+test("no decorative dashboard was added", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  assert.equal(/sparkline|gauge|donut|hero-chart/.test(html), false);
+});
