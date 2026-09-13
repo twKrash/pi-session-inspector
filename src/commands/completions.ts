@@ -9,8 +9,12 @@ import {
   INSPECTOR_THEME_VALUES,
   type InspectorMode,
   type InspectorTarget,
-  tokenizeInspectorArgs,
+  type RawToken,
+  scanInspectorArgs,
 } from "./grammar.ts";
+
+/** Half-open span of the current token in the raw argument prefix. */
+type Span = { start: number; end: number };
 
 /** Fixed value choices for value-consuming options; arity lives in the grammar. */
 function valueChoices(
@@ -29,31 +33,72 @@ function valueChoices(
 
 const HELP_TOKENS = new Set(["help", "--help", "-h"]);
 
+/** Replaces only the current raw token span; every preceding character survives. */
+function withReplacement(
+  prefix: string,
+  span: Span,
+  replacement: string,
+): string {
+  return prefix.slice(0, span.start) + replacement + prefix.slice(span.end);
+}
+
+/**
+ * The span a completion rewrites: the current raw token's span, or — when the
+ * prefix ends in whitespace — the empty span at the end of the prefix.
+ */
+function currentSpan(
+  tokens: readonly RawToken[],
+  trailingWhitespace: boolean,
+  prefix: string,
+): Span {
+  const last = tokens.at(-1);
+  if (trailingWhitespace || last === undefined) {
+    return { start: prefix.length, end: prefix.length };
+  }
+  return { start: last.start, end: last.end };
+}
+
+/**
+ * Completion items for one candidate set. `current` is the token's parser text
+ * (empty for the trailing span after whitespace); `value` is the rewritten raw
+ * prefix Pi replaces the whole argument region with, `label` the bare token.
+ */
 function items(
   values: readonly string[],
+  current: string,
   prefix: string,
+  span: Span,
 ): AutocompleteItem[] | null {
-  const matches = values.filter((value) => value.startsWith(prefix));
+  const matches = values.filter((value) => value.startsWith(current));
   if (matches.length === 0) return null;
-  return matches.map((value) => ({ value, label: value }));
+  return matches.map((value) => ({
+    value: withReplacement(prefix, span, value),
+    label: value,
+  }));
 }
 
 /**
  * Token-aware completion for the `/session-inspector` argument stream. Reuses
- * the grammar's tables and tokenizer so suggestions cannot drift from parsing.
+ * the grammar's tables and scanner so suggestions cannot drift from parsing.
+ * `value` is the raw prefix with only the current token span rewritten, which
+ * is what Pi's provider replaces the whole argument region with.
  * Returns `null` whenever the context has no valid suggestion; it never
  * fabricates an option or target for the current mode.
  */
 export function completeInspectorCommand(
   prefix: string,
 ): AutocompleteItem[] | null {
-  const tokenized = tokenizeInspectorArgs(prefix);
-  if (!tokenized) return null;
-  const tokens = [...tokenized.tokens];
-  const current = tokenized.trailingWhitespace ? "" : (tokens.pop() ?? "");
+  const scanned = scanInspectorArgs(prefix);
+  if (!scanned) return null;
+  const tokens: string[] = scanned.tokens.map((token) => token.text);
+  const current = scanned.trailingWhitespace ? "" : (tokens.pop() ?? "");
+  // The current span is the last raw token; when the prefix ends in whitespace
+  // it is the empty span at the end, where the next token is inserted.
+  const span = currentSpan(scanned.tokens, scanned.trailingWhitespace, prefix);
 
   // No mode chosen yet: complete the first token.
-  if (tokens.length === 0) return items(INSPECTOR_FIRST_TOKENS, current);
+  if (tokens.length === 0)
+    return items(INSPECTOR_FIRST_TOKENS, current, prefix, span);
 
   const mode = tokens[0] as string;
   if (HELP_TOKENS.has(mode)) return null;
@@ -63,12 +108,14 @@ export function completeInspectorCommand(
   let targetChosen = false;
   let chosenTarget: InspectorTarget | undefined;
   let pendingValue: string | undefined;
+  const usedOptions = new Set<string>();
 
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index] as string;
     if (token.startsWith("-")) {
       if (pendingValue) return null;
       if (!INSPECTOR_OPTIONS[typedMode].includes(token)) return null;
+      usedOptions.add(token);
       if (INSPECTOR_OPTION_ARITY[token] === "value") pendingValue = token;
       continue;
     }
@@ -95,16 +142,24 @@ export function completeInspectorCommand(
 
   if (pendingValue) {
     const choices = valueChoices(pendingValue, typedMode, chosenTarget);
-    return choices ? items(choices, current) : null;
+    return choices ? items(choices, current, prefix, span) : null;
   }
 
-  if (current.startsWith("-"))
-    return items(INSPECTOR_OPTIONS[typedMode], current);
+  // Options already present are never offered again (§10.2).
+  const options = INSPECTOR_OPTIONS[typedMode].filter(
+    (option) => !usedOptions.has(option),
+  );
+  if (current.startsWith("-")) return items(options, current, prefix, span);
   // A target may still be pending; only offer options once it is settled.
   if (typedMode !== "ui" && !targetChosen) {
-    const targetItems = items(INSPECTOR_TARGETS[typedMode], current);
+    const targetItems = items(
+      INSPECTOR_TARGETS[typedMode],
+      current,
+      prefix,
+      span,
+    );
     if (targetItems) return targetItems;
   }
-  if (current === "") return items(INSPECTOR_OPTIONS[typedMode], current);
+  if (current === "") return items(options, current, prefix, span);
   return null;
 }

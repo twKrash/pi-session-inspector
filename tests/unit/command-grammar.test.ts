@@ -5,6 +5,8 @@ import {
   INSPECTOR_OPTIONS,
   type InspectorCommand,
   parseInspectorCommand,
+  scanInspectorArgs,
+  tokenizeInspectorArgs,
 } from "../../src/commands/grammar.ts";
 
 const report = (args: string): InspectorCommand => {
@@ -133,4 +135,83 @@ test("keeps documented target defaults and output ownership", () => {
     reportOptions("json --output 'C:\\reports\\my file.json'").output,
     "C:\\reports\\my file.json",
   );
+});
+
+test("scanned tokens carry raw spans and the parser's own text", () => {
+  const scanned = scanInspectorArgs('ui --output "/tmp/my report.json" --th');
+  assert.deepEqual(
+    scanned?.tokens.map((token) => [
+      token.raw,
+      token.start,
+      token.end,
+      token.quoted,
+    ]),
+    [
+      ["ui", 0, 2, false],
+      ["--output", 3, 11, false],
+      ['"/tmp/my report.json"', 12, 33, true],
+      ["--th", 34, 38, false],
+    ],
+  );
+  assert.equal(scanned?.tokens[2]?.text, "/tmp/my report.json");
+  assert.equal(scanned?.trailingWhitespace, false);
+});
+
+test("the scanner keeps the parser's quote behaviour exactly", () => {
+  const single = scanInspectorArgs("json history --output '/tmp/a b.json'");
+  assert.deepEqual(
+    [single?.tokens.at(-1)?.text, single?.tokens.at(-1)?.quoted],
+    ["/tmp/a b.json", true],
+  );
+  const midToken = scanInspectorArgs('ui --output="/tmp/a b.json" --th');
+  assert.deepEqual(
+    midToken?.tokens.map((token) => token.text),
+    ["ui", "--output=/tmp/a b.json", "--th"],
+  );
+  assert.equal(midToken?.tokens[1]?.raw, '--output="/tmp/a b.json"');
+  assert.equal(scanInspectorArgs('ui --output="/tmp/a b.json'), undefined);
+});
+
+test("the stripped tokenizer is a projection of the scanner", () => {
+  const prefix = 'json history --output "/tmp/a b.json" ';
+  assert.deepEqual(tokenizeInspectorArgs(prefix)?.tokens, [
+    "json",
+    "history",
+    "--output",
+    "/tmp/a b.json",
+  ]);
+  assert.equal(
+    tokenizeInspectorArgs(prefix)?.trailingWhitespace,
+    scanInspectorArgs(prefix)?.trailingWhitespace,
+  );
+  // The scanner's spans index the original input, and the projected tokenizer
+  // agrees with it on both the text and the trailing-whitespace flag.
+  const corpus = [
+    "",
+    "   ",
+    "ui",
+    "ui ",
+    "ui --scope tree",
+    "tui current --scope active",
+    "json history --output '/tmp/x y.json'",
+    'ui --output="/tmp/a b.json" --th',
+    "ui --theme ''",
+    '" json " history',
+  ];
+  for (const input of corpus) {
+    const scanned = scanInspectorArgs(input);
+    for (const token of scanned?.tokens ?? []) {
+      assert.equal(input.slice(token.start, token.end), token.raw, input);
+    }
+    assert.deepEqual(
+      tokenizeInspectorArgs(input)?.tokens,
+      scanned?.tokens.map((token) => token.text),
+      input,
+    );
+    assert.equal(
+      tokenizeInspectorArgs(input)?.trailingWhitespace,
+      scanned?.trailingWhitespace,
+      input,
+    );
+  }
 });

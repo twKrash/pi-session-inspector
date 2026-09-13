@@ -74,43 +74,90 @@ function reject(): InspectorParseResult {
 }
 
 /**
+ * One argument token with its original span: `raw` is the source slice
+ * (quotes included), `text` the parser value (one layer of quotes stripped),
+ * and `quoted` whether a quote toggled anywhere inside the token.
+ */
+export type RawToken = {
+  raw: string;
+  text: string;
+  start: number;
+  end: number;
+  quoted: boolean;
+};
+
+/**
+ * One scanner serves the parser and the completer. It reproduces the parser's
+ * tokenization exactly: whitespace splits tokens, `"` and `'` toggle quoting
+ * anywhere inside a token, quote characters never enter `text`, no escapes.
+ * `raw` is the original span (used for replacement), `text` the parser value
+ * (used for matching). Returns `undefined` for an unterminated quote.
+ */
+export function scanInspectorArgs(
+  prefix: string,
+): { tokens: RawToken[]; trailingWhitespace: boolean } | undefined {
+  const tokens: RawToken[] = [];
+  let index = 0;
+  let trailingWhitespace = false;
+  while (index < prefix.length) {
+    if (/\s/.test(prefix[index] as string)) {
+      trailingWhitespace = true;
+      index += 1;
+      continue;
+    }
+    trailingWhitespace = false;
+    const start = index;
+    let text = "";
+    let quote: string | undefined;
+    let quoted = false;
+    while (index < prefix.length) {
+      const current = prefix[index] as string;
+      if (quote !== undefined) {
+        if (current === quote) quote = undefined;
+        else text += current;
+        index += 1;
+        continue;
+      }
+      if (current === '"' || current === "'") {
+        quote = current;
+        quoted = true;
+        index += 1;
+        continue;
+      }
+      if (/\s/.test(current)) break;
+      text += current;
+      index += 1;
+    }
+    if (quote !== undefined) return undefined;
+    tokens.push({
+      raw: prefix.slice(start, index),
+      text,
+      start,
+      end: index,
+      quoted,
+    });
+  }
+  return {
+    tokens,
+    trailingWhitespace: prefix.length > 0 && trailingWhitespace,
+  };
+}
+
+/**
  * Splits command text the way Pi receives it: whitespace-collapsed tokens with
  * quoted values preserved (quotes stripped, no escape processing). Returns
  * `undefined` for an unterminated quote so callers never partially accept.
+ * Now a projection of the scanner, so parsing and completion cannot drift.
  */
 export function tokenizeInspectorArgs(
   input: string,
 ): { tokens: string[]; trailingWhitespace: boolean } | undefined {
-  const tokens: string[] = [];
-  let token = "";
-  let started = false;
-  let quote: '"' | "'" | undefined;
-  let trailingWhitespace = false;
-  for (const character of input) {
-    const whitespace = /\s/.test(character);
-    trailingWhitespace = whitespace;
-    if (quote) {
-      if (character === quote) quote = undefined;
-      else token += character;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      started = true;
-    } else if (whitespace) {
-      if (started) {
-        tokens.push(token);
-        token = "";
-        started = false;
-      }
-    } else {
-      token += character;
-      started = true;
-    }
-  }
-  if (quote) return undefined;
-  if (started) tokens.push(token);
-  return { tokens, trailingWhitespace: input.length > 0 && trailingWhitespace };
+  const scanned = scanInspectorArgs(input);
+  if (scanned === undefined) return undefined;
+  return {
+    tokens: scanned.tokens.map((token) => token.text),
+    trailingWhitespace: scanned.trailingWhitespace,
+  };
 }
 
 /**
