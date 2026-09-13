@@ -745,9 +745,11 @@ Additional rules:
 7. A `coverage`-less report (older file) renders the `completeness unknown`
    variants, not `Total`.
 8. A selected history session's detail shows that session's own figures with no
-   coverage panel and no coverage-driven qualifier; the only `Known` qualifiers
-   there are range-scoped (a range reaching before the retained dated window, an
-   `n of m` breakdown — §0.5).
+   coverage panel and no coverage-driven qualifier; its `Known` qualifiers are
+   range-scoped (a range reaching before the retained dated window, an `n of m`
+   breakdown — §0.5), except the Agents tab's child-usage headline, which always
+   reads `Known child tokens`/`Known child cost` because child usage is a
+   breakdown and never a session total (ADR 0007).
 9. Byte-identical regeneration of the same inputs (determinism unchanged).
 
 ---
@@ -885,8 +887,8 @@ its own data.
 | current | Agents | child runs whose timestamp falls in range; run status/usage counts | parent relationship (identity, not a metric) |
 | current | Errors | errors in range | — |
 | current | Usage composition | all four parts recomputed in range | — |
-| current | Integrations | nothing (no counter source carries per-date rows today) — the Activity column is a session-scope value labelled `Session total` | detection/telemetry state, version, activity counters = environment facts, labelled `Session total · current environment`, never "in range" |
-| current | Commands/Skills/Resources | nothing — inventory is environment data and explicit skill-invocation counters are session-scope aggregates | inventory rows and invocation counters, labelled `Session total` |
+| current | Integrations | nothing (no counter source carries per-date rows today) — the Activity column is a session-scope value labelled `Session total` | detection/telemetry state and version = environment facts (state claims, never usage), so nothing there is labelled "in range" |
+| current | Commands/Skills/Resources | nothing — inventory is environment data and explicit skill-invocation counters are session-scope aggregates | inventory rows and invocation counters, labelled `Current environment` |
 | current | Ledger | unchanged (bounded diagnostic rows) | — |
 | history (aggregate) | Overview metrics, chart, session rows | usage, sessions, days; a session row is in range only when it has at least one range-relevant observed record inside the range (§5.6) | inventory counts (environment) |
 | history (session) | all tabs | identical to `current` (no coverage qualifier, §3.3) | — |
@@ -1992,9 +1994,11 @@ its own justification in the slice report.
 15. `/session-inspector tui` and `/session-inspector tui ledger`: confirm the TUI
     still renders both tabs and the scope switch.
 16. Open a History session detail: confirm no coverage panel and no
-    coverage-driven qualifier appear; the only `Known` qualifier is range-scoped
+    coverage-driven qualifier appear; the `Known` qualifiers are range-scoped
     (a range reaching before the retained dated window, or an `n of m`
-    breakdown — §0.5).
+    breakdown — §0.5), except the Agents tab's child-usage headline, which always
+    reads `Known child tokens`/`Known child cost` (child usage is a breakdown,
+    never a session total — ADR 0007).
 17. Type `/session-ins ui --output "/tmp/my report.json" --th` + TAB: confirm
     `/session-ins ui --output "/tmp/my report.json" --theme` (quotes and embedded
     space preserved); repeat with the cursor inside the option token.

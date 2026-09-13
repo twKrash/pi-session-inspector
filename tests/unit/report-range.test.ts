@@ -1343,6 +1343,58 @@ test("the global truncation notice fires only for a range before the retained wi
   );
 });
 
+test("a complete-coverage global headline qualifies a range before the retained window", () => {
+  const bundle = bundleFixture();
+  const partial = bundle.global.sessions[0];
+  if (partial?.availability !== "available") {
+    throw new Error("the fixture's first global session");
+  }
+  partial.usageByDateTruncated = true;
+  // Coverage is complete, so the range's own verdict is the only qualifier the
+  // headline can read: every tracked session replayed.
+  bundle.global.coverage = {
+    inspected: 2,
+    available: 2,
+    unavailable: 0,
+    sessionRatio: 1,
+    complete: true,
+    discoveryLimited: false,
+    reasons: {},
+  };
+  const harness = runClient(bundle);
+  const { client, element, texts } = harness;
+  client.state.section = "global";
+  client.state.tab = "overview";
+
+  // The range reaches before the retained window, so the aggregate cannot
+  // represent the spend: the headline is Known, never Total (design §5.6).
+  client.state.range = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2026-02-02",
+  };
+  client.render();
+  const reached = texts(element("view"));
+  assert.equal(reached.includes("Known tokens"), true);
+  assert.equal(reached.includes("Known native cost"), true);
+  assert.equal(reached.includes("Total tokens"), false);
+  assert.equal(reached.includes("Native cost"), false);
+
+  // A range inside the retained window is exact, so the same headline stays
+  // unqualified even though a tracked session is truncated.
+  client.state.range = {
+    kind: "custom",
+    from: "2026-02-01",
+    to: "2026-02-02",
+  };
+  client.render();
+  const inside = texts(element("view"));
+  assert.equal(inside.includes("Total tokens"), true);
+  assert.equal(inside.includes("Native cost"), true);
+  assert.equal(inside.includes("Known tokens"), false);
+  assert.equal(inside.includes("Known native cost"), false);
+});
+
 test("an agent row resolves its parent to one of the three verdicts", async () => {
   const orphan = await loadInspectorBundle({
     ...bundleInput,
