@@ -18,6 +18,9 @@ test("offers only valid completions for the current token", () => {
   assert.deepEqual(labels("json "), ["current", "history", "global"]);
   assert.deepEqual(labels("ui -"), ["--scope", "--theme", "--no-open"]);
   assert.equal(completeInspectorCommand("snapshot --"), null);
+  assert.equal(completeInspectorCommand("snapshot --preset "), null);
+  assert.equal(completeInspectorCommand("snapshot --scope "), null);
+  assert.equal(completeInspectorCommand("snapshot --preset 7 "), null);
   assert.deepEqual(labels("snapshot current -"), [
     "--scope",
     "--preset",

@@ -129,6 +129,7 @@ export function completeInspectorCommand(
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index] as string;
     if (token.startsWith("-")) {
+      if (typedMode === "snapshot" && !targetChosen) return null;
       if (pendingValue) return null;
       if (!optionsFor(typedMode, chosenTarget, usedOptions).includes(token))
         return null;
