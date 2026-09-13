@@ -277,6 +277,46 @@ range preset) are marked `aria-pressed`; `aria-selected` is not used at all
 `aria-pressed` but are ephemeral client state outside the route, so no bullet
 names them as route-derived.
 
+### R20 — the global headline carries the range verdict, and that verdict reads the contributing sessions' windows
+
+§3.3 and §5.6 require a range that reaches beyond a session's retained dated
+evidence to be qualified `Known`; `historyOverview` implemented that
+(`partial = members.partial || !!range && partialContribution(range)`) while
+`globalOverview` rendered the coverage ladder alone. The shipped behaviour
+changed twice:
+
+1. **Round 2 of the review — the wording mirror.** `globalOverview` now applies
+the history aggregate's own label switch (`metric.cost`/`metric.tokens` →
+`metric.knownCost`/`metric.knownTokens` when the range verdict is partial), so a
+complete-coverage report with a truncated contribution cannot headline `Native
+cost`/`Total tokens` over a range-incomplete sum. Its verdict at that point was
+`rangeTruncated()` alone. The same round corrected design §3.4 criterion 8/§14
+UAT 16 for the always-partial Agents headline and §5.2's `Session total`
+pairing in the sections themselves.
+2. **Round 3 (Task 20 hardening, this amendment) — the verdict breadth.**
+`rangeTruncated()`'s global branch is `data.global.dailyTruncated &&
+reachesBeforeRetained(data.global.daily, range)`, a comparison against the
+**oldest folded global row**; the history aggregate's verdict is additionally
+`partialContribution(range)`, which reads every available
+`data.history.sessions[].usageByDate`. A range beginning after the folded oldest
+date but before a truncated session's own retained window was therefore
+unqualified in the global section and `Known` in the history section, for the
+same range in the same document. Shipped: the global verdict is
+`(data.global.dailyTruncated && reachesBeforeRetained(data.global.daily, range))
+|| partialContribution(range)`, and `syncRangeNotice` reads that one verdict, so
+the global headline and the global truncation notice can disagree with neither
+each other nor the history aggregate. **No DTO change was needed**:
+`GlobalSessionRow` still carries only `usageByDateTruncated` (§5.6);
+`partialContribution` reads the history projection the same document already
+carries. Round 2's residual "closing this needs dated rows on
+`GlobalSessionRow`" is superseded.
+
+Covering test: `tests/unit/report-range.test.ts` → `the global headline reads
+the range verdict the history aggregate reads` (two sessions whose retained
+windows differ, complete coverage, the discriminating range asserted `Known` in
+both sections with the notice visible, and a range inside every window asserted
+unqualified in both).
+
 ### Stale prose that names deleted code
 
 §1.3 and §1.8 described the pre-milestone client using identifiers that no longer

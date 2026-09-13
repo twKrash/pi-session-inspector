@@ -1476,6 +1476,129 @@ test("a complete-coverage global headline qualifies a range before the retained 
   assert.equal(inside.includes("Known native cost"), false);
 });
 
+test("the global headline reads the range verdict the history aggregate reads", () => {
+  const bundle = bundleFixture();
+  const template = bundle.history.sessions[0];
+  if (template?.availability !== "available") {
+    throw new Error("the fixture's first history session");
+  }
+  // Two replayed sessions whose retained windows differ: the earlier one carries
+  // the folded aggregate's oldest date, while session-a's window starts later
+  // and is truncated. A range can therefore begin after the fold's oldest date
+  // and still reach before session-a's own window.
+  template.usageByDateTruncated = true;
+  bundle.history.sessions = [
+    template,
+    {
+      ...template,
+      sessionId: "session-earlier",
+      usageByDate: [
+        {
+          ...template.usageByDate[0],
+          date: "2026-01-15",
+          totalTokens: 50,
+          cost: 0.01,
+          generations: 1,
+          tools: 0,
+          errors: 0,
+          composition: {
+            generations: { totalTokens: 50, cost: 0.01 },
+            toolResults: { totalTokens: 0, cost: 0 },
+            compactions: { totalTokens: 0, cost: 0 },
+            branchSummaries: { totalTokens: 0, cost: 0 },
+          },
+        },
+      ],
+      usageByDateTruncated: false,
+    },
+  ];
+  bundle.global.sessions = [
+    {
+      availability: "available",
+      sessionId: template.sessionId,
+      usageByDateTruncated: true,
+    },
+    {
+      availability: "available",
+      sessionId: "session-earlier",
+      usageByDateTruncated: false,
+    },
+  ];
+  // The fold those windows produce, with the older date first.
+  bundle.global.dates = [
+    {
+      date: "2026-01-15",
+      sessions: 1,
+      usage: { totalTokens: 50, cost: 0.01 },
+    },
+    ...bundle.global.dates,
+  ];
+  // Coverage is complete, so a range's own verdict is the only qualifier either
+  // headline can read.
+  const complete: SessionCoverage = {
+    inspected: 2,
+    available: 2,
+    unavailable: 0,
+    sessionRatio: 1,
+    complete: true,
+    discoveryLimited: false,
+    reasons: {},
+  };
+  bundle.history.coverage = complete;
+  bundle.global.coverage = complete;
+  // The server renders the notice element only for a capped initial view.
+  bundle.current.tree.dailyTruncated = true;
+  const harness = runClient(bundle);
+  const { client, element } = harness;
+  client.state.tab = "overview";
+  const reaching = { kind: "custom", from: "2026-01-20", to: "2026-02-02" };
+  const inside = { kind: "custom", from: "2026-02-01", to: "2026-02-02" };
+
+  // The range starts after the fold's oldest date (2026-01-15) but before
+  // session-a's retained window (2026-02-01): the global headline qualifies like
+  // the history aggregate's, and the notice states the same verdict.
+  client.state.section = "global";
+  client.state.range = reaching;
+  client.render();
+  const globalReaching = element("view");
+  assert.equal(
+    metricOf(globalReaching, "Known native cost") !== undefined,
+    true,
+  );
+  assert.equal(metricOf(globalReaching, "Native cost"), undefined);
+  assert.equal(metricOf(globalReaching, "Known tokens") !== undefined, true);
+  assert.equal(metricOf(globalReaching, "Total tokens"), undefined);
+  assert.equal(element("range-truncated").hidden, false);
+
+  client.state.section = "history";
+  client.state.session = null;
+  client.state.range = reaching;
+  client.render();
+  const historyReaching = element("view");
+  assert.equal(
+    metricOf(historyReaching, "Known native cost") !== undefined,
+    true,
+  );
+  assert.equal(metricOf(historyReaching, "Native cost"), undefined);
+
+  // A range inside every retained window is exact in both sections.
+  client.state.section = "global";
+  client.state.range = inside;
+  client.render();
+  const globalInside = element("view");
+  assert.equal(metricOf(globalInside, "Native cost") !== undefined, true);
+  assert.equal(metricOf(globalInside, "Known native cost"), undefined);
+  assert.equal(element("range-truncated").hidden, true);
+
+  client.state.section = "history";
+  client.state.session = null;
+  client.state.range = inside;
+  client.render();
+  const historyInside = element("view");
+  assert.equal(metricOf(historyInside, "Native cost") !== undefined, true);
+  assert.equal(metricOf(historyInside, "Known native cost"), undefined);
+});
+
 test("an agent row resolves its parent to one of the three verdicts", async () => {
   const orphan = await loadInspectorBundle({
     ...bundleInput,
@@ -1833,12 +1956,24 @@ test("an absent producer with persisted telemetry stays a valid row", async () =
 });
 
 /** One metric card's rendered value, matched by its exact title. */
-function metricValue(view: StubElement, title: string): string {
-  const metric = view
+/** The one metric card titled `title`, so an assertion reads a card and not the row it sits beside. */
+function metricOf(view: StubElement, title: string): StubElement | undefined {
+  return view
     .querySelectorAll(".metric")
     .find((node) => node.children[0]?.textContent === title);
+}
+
+function metricValue(view: StubElement, title: string): string {
+  const metric = metricOf(view, title);
   if (metric === undefined) throw new Error(`no metric titled ${title}`);
   return metric.children[1]?.textContent ?? "";
+}
+
+/** The note line under the metric card titled `title` (its third child). */
+function metricNote(view: StubElement, title: string): string {
+  const metric = metricOf(view, title);
+  if (metric === undefined) throw new Error(`no metric titled ${title}`);
+  return metric.children[2]?.textContent ?? "";
 }
 
 /**
@@ -1947,13 +2082,32 @@ test("the agents panel metric cards are the per-status buckets of the rows it re
     ].map((title) => metricValue(view, title)),
     ["5", "1", "1", "1", "1", "1"],
   );
-  // A bucket with no row is omitted rather than rendered as a zero.
-  assert.equal(
-    view
-      .querySelectorAll(".metric")
-      .some((node) => node.children[0]?.textContent === "Zero"),
-    false,
+  // A bucket with no row is omitted rather than rendered as a zero: a set whose
+  // only status is `succeeded` renders no other bucket card at all, so a
+  // rendered `Failed` card could only be a fabricated zero.
+  const succeededOnly = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithStatuses(["succeeded"]),
+    }),
   );
+  succeededOnly.client.state.scope = "tree";
+  succeededOnly.client.state.tab = "agents";
+  succeededOnly.client.render();
+  const succeededView = succeededOnly.element("view");
+  assert.deepEqual(
+    ["Child runs", "Succeeded"].map((title) =>
+      metricValue(succeededView, title),
+    ),
+    ["1", "1"],
+  );
+  assert.deepEqual(
+    ["Succeeded", "Failed", "Interrupted", "Running", "Unknown"].filter(
+      (title) => metricOf(succeededView, title) !== undefined,
+    ),
+    ["Succeeded"],
+  );
+  assert.equal(metricOf(succeededView, "Failed"), undefined);
 });
 
 test("an agents tab whose runs carry no observed time names that cause", async () => {
@@ -2005,16 +2159,20 @@ test("an agents tab whose runs carry no observed time names that cause", async (
 });
 
 test("a tools summary row states its own partial fraction in the cell it qualifies", async () => {
+  // `read` reported usage in one of its three calls while `bash` reported it in
+  // its only call, so the panel groups four calls with two reporting: the row's
+  // fraction and the panel's differ, and a substitution cannot pass.
   const harness = runClient(
     await loadInspectorBundle({
       ...bundleInput,
-      loadCurrent: async () => currentModelWithPartialToolUsage(),
+      loadCurrent: async () => currentModelWithMixedToolUsage(),
     }),
   );
   harness.client.state.scope = "tree";
   harness.client.state.tab = "tools";
   harness.client.render();
   const view = harness.element("view");
+  assert.equal(metricNote(view, "Known tokens"), "2 of 4 calls reported usage");
 
   // The row's Known tokens cell carries the row's own sentence (`1 of 3`), not
   // the panel's fraction over every call.
@@ -2022,6 +2180,10 @@ test("a tools summary row states its own partial fraction in the cell it qualifi
   assert.equal(
     harness.texts(tokens).includes("1 of 3 calls reported usage"),
     true,
+  );
+  assert.equal(
+    harness.texts(tokens).includes("2 of 4 calls reported usage"),
+    false,
   );
   assert.equal(harness.texts(tokens).includes("Known tokens"), true);
 });

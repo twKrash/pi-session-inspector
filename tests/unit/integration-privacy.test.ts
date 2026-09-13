@@ -458,6 +458,7 @@ function hostileBundle(): InspectorBundle {
   if (report === undefined) throw new Error("the fixture tree report");
   Object.assign(report, {
     sessionName: "SECRET_TASK",
+    task: "SECRET_SUBAGENT_TASK",
     progressSummary: "SECRET_PROMPT",
     finalOutput: "SECRET_OUTPUT",
     transcriptPath: "/home/dev/private/transcript.jsonl",
@@ -499,6 +500,7 @@ test("the browser payload never carries raw producer text or paths", () => {
   const sentinels = [
     "SECRET_PROMPT",
     "SECRET_TASK",
+    "SECRET_SUBAGENT_TASK",
     "SECRET_RESULT",
     "SECRET_ARGUMENT",
     "SECRET_OUTPUT",
