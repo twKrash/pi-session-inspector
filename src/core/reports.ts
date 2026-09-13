@@ -1,3 +1,7 @@
+import type {
+  CanonicalInventoryObservation,
+  CanonicalSession,
+} from "./canonical.ts";
 import {
   isAllowedIntegrationCounter,
   isKnownIntegrationVersion,
@@ -364,11 +368,40 @@ export function cacheHitPercent(usage: Usage | undefined): number | undefined {
 }
 
 export function toSessionReport(
-  reduced: ReducedSession,
+  source: ReducedSession | CanonicalSession,
   evidence: SessionReportEvidence = {},
 ): SessionReport {
+  const canonical = isCanonicalSession(source) ? source : undefined;
+  const generations = source.generations;
+  const sourceTools = source.tools;
+  const compactions = source.compactions;
+  const errors = source.errors;
+  const sessionId = source.sessionId;
+  const sourceUsage = isCanonicalSession(source)
+    ? source.usage.state === "known"
+      ? {
+          state: "known" as const,
+          usage: source.usage.known,
+          composition: source.usage.composition,
+        }
+      : undefined
+    : evidence.usage?.state === "unavailable"
+      ? undefined
+      : evidence.usage?.state === "known"
+        ? evidence.usage
+        : {
+            state: "known" as const,
+            usage: source.usage,
+            composition: source.usageComposition,
+          };
+  const projectedEvidence = projectEvidence(
+    canonical === undefined
+      ? evidence
+      : canonicalReportEvidence(canonical, evidence),
+  );
+  const inventory = projectedEvidence.inventory;
   const models = new Map<string, ModelSummary>();
-  for (const generation of reduced.generations) {
+  for (const generation of generations) {
     const key = `${generation.provider}\u0000${generation.model}`;
     const current = models.get(key) ?? {
       provider: generation.provider,
@@ -382,25 +415,7 @@ export function toSessionReport(
     current.cost = roundCost(current.cost + generation.usage.cost);
     models.set(key, current);
   }
-  const projectedEvidence = projectEvidence(evidence);
-  const inventory = projectedEvidence.inventory;
-  const {
-    sessionId,
-    usage: reducedUsage,
-    usageComposition: reducedComposition,
-    ...body
-  } = reduced;
-  const usage =
-    evidence.usage?.state === "unavailable"
-      ? undefined
-      : evidence.usage?.state === "known"
-        ? evidence.usage
-        : {
-            state: "known" as const,
-            usage: reducedUsage,
-            composition: reducedComposition,
-          };
-  const tools = reduced.tools.map((tool) => {
+  const tools = sourceTools.map((tool) => {
     const durationMs = projectedEvidence.duration.tools.get(tool.id);
     const source = inventory?.toolSources[tool.name];
     const projected: SessionReportTool = { ...tool };
@@ -424,11 +439,16 @@ export function toSessionReport(
     sessionId,
     // L1 rejected this aggregate (for example overflow). Omit both fields
     // rather than publishing a clamped or zero total.
-    ...(usage === undefined
+    ...(sourceUsage === undefined
       ? {}
-      : { usage: usage.usage, usageComposition: usage.composition }),
-    ...body,
+      : {
+          usage: sourceUsage.usage,
+          usageComposition: sourceUsage.composition,
+        }),
+    generations,
     tools,
+    compactions,
+    errors,
     ...(projectedEvidence.walDetail === "expired"
       ? { walDetail: "expired" as const }
       : {}),
@@ -450,6 +470,120 @@ export function toSessionReport(
         a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
     ),
   };
+}
+
+function isCanonicalSession(
+  source: ReducedSession | CanonicalSession,
+): source is CanonicalSession {
+  return (
+    "schemaVersion" in source &&
+    source.schemaVersion === 1 &&
+    "health" in source
+  );
+}
+
+function canonicalReportEvidence(
+  session: CanonicalSession,
+  evidence: SessionReportEvidence,
+): SessionReportEvidence {
+  const projection = { ...evidence };
+  const agentState = projection.agents?.state;
+  delete projection.agents;
+  delete projection.integrations;
+  delete projection.inventory;
+  delete projection.usage;
+  delete projection.duration;
+  delete projection.evidenceHealth;
+  delete projection.retainedAggregates;
+  delete projection.walDetail;
+  return {
+    ...projection,
+    agents: {
+      state:
+        agentState ??
+        (session.agents.length === 0 ? "unavailable" : "supported"),
+      runs: session.agents,
+    },
+    integrations: session.integrationEvents.map((event) => ({
+      integration: event.integration,
+      presence: event.presence,
+      state: event.state,
+      ...(event.version === undefined ? {} : { version: event.version }),
+      ...(event.counters === undefined ? {} : { counters: event.counters }),
+    })),
+    ...(session.inventory === undefined
+      ? {}
+      : { inventory: canonicalInventorySnapshot(session.inventory) }),
+    duration: canonicalDuration(session.tools),
+    evidenceHealth: session.health,
+    retainedAggregates: session.retainedAggregates,
+    ...(hasSealedDetail(session) ? { walDetail: "expired" as const } : {}),
+  };
+}
+
+function canonicalInventorySnapshot(
+  input: CanonicalInventoryObservation,
+): InventorySnapshot {
+  return {
+    schemaVersion: 1,
+    ...(input.observedAt.state === "known"
+      ? { observedAt: input.observedAt.at }
+      : {}),
+    commands: input.commands.map((row) => ({
+      name: row.name,
+      source: row.source as CommandRow["source"],
+      sourceLabel: row.sourceLabel,
+      scope: row.scope as CommandRow["scope"],
+      origin: row.origin as CommandRow["origin"],
+      ...(row.description === undefined
+        ? {}
+        : { description: row.description }),
+    })),
+    skills: input.skills.map((row) => ({
+      name: row.name,
+      ...(row.sourceLabel === undefined
+        ? {}
+        : { sourceLabel: row.sourceLabel }),
+      ...(row.scope === undefined
+        ? {}
+        : { scope: row.scope as SkillRow["scope"] }),
+      ...(row.origin === undefined
+        ? {}
+        : { origin: row.origin as SkillRow["origin"] }),
+      ...(row.description === undefined
+        ? {}
+        : { description: row.description }),
+    })),
+    resources: input.resources.map((row) => ({
+      sourceLabel: row.sourceLabel,
+      scope: row.scope as ResourceSourceRow["scope"],
+      origin: row.origin as ResourceSourceRow["origin"],
+      commands: row.commands,
+      skills: row.skills,
+      prompts: row.prompts,
+      tools: row.tools,
+    })),
+    toolSources: input.toolSources,
+  };
+}
+
+function canonicalDuration(
+  tools: readonly Tool[],
+): SessionReportEvidence["duration"] {
+  const durationTools = tools.flatMap((tool) =>
+    tool.durationMs === undefined
+      ? []
+      : [{ id: tool.id, durationMs: tool.durationMs }],
+  );
+  return durationTools.length === 0
+    ? { state: "unavailable" }
+    : { state: "supported", tools: durationTools };
+}
+
+function hasSealedDetail(session: CanonicalSession): boolean {
+  return Object.values(session.retainedAggregates.boundary.sealedThrough).some(
+    (cursor) => cursor > 0,
+  );
 }
 
 type ProjectedEvidence = {

@@ -103,10 +103,11 @@ Report data flows through exactly three layers (ADR 0016):
 
 ### Canonical session additions
 
-Two additive `CanonicalSession` fields carry decisions L2 must not recompute:
+Three additive `CanonicalSession` fields carry decisions L2 must not recompute:
 
 - `scopedEntryIds: string[]` — the builder's scope decision in resolution order (active ancestry after the marker, or every post-marker entry for tree scope). L2 maps these ids back to parsed entries (dropping ids with no parsed entry); loaders never re-derive scope. The full entry graph is deliberately not the scoped set.
 - `effectiveCounters` — the effective producer counters (integration counts, named/overflow skill counts, permission presence) computed once from the folded prefix plus the retained atomic suffix, unioned once. Its explicit state is `retained` (total is exactly the retained atomic records), `aggregate-only` (a folded or pruned contribution is included), or `unavailable` (no checkpoint boundary exists, so pruning cannot be ruled out). Values publish only for the first two states; `unavailable` publishes no values, never zeros. L2 never adds facts on top of a published total.
+- `retainedSkillInvocations` — when effective counters are unavailable, L1's bounded count of explicitly retained skill facts (named rows plus exact overflow) remains available as a separate detail projection. L2 copies it; it never recounts `skillInvocations`.
 
 ### Scope semantics
 

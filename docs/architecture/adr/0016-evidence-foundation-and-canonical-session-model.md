@@ -39,7 +39,7 @@ The per-key total (`folded prefix + retained atomic suffix`, unioned once) reach
 - `aggregate-only` — a folded or pruned contribution is included;
 - `unavailable` — no trustworthy total can be stated (no checkpoint boundary exists, so pruning cannot be ruled out).
 
-Values are published only for `retained` and `aggregate-only`; `unavailable` publishes no values, never zeros. L2 never adds facts on top of a published total. Where no trustworthy total exists, L2 still publishes retained explicit skill-invocation detail from `CanonicalSession.skillInvocations` so `report.skills` agrees with `evidenceHealth.aggregates.skillInvocations.retainedInvocations`.
+Values are published only for `retained` and `aggregate-only`; `unavailable` publishes no values, never zeros. L2 never adds facts on top of a published total. Where no trustworthy total exists, L1 publishes a bounded `retainedSkillInvocations` count from retained explicit skill facts, and L2 copies that detail without recounting `CanonicalSession.skillInvocations`, so `report.skills` agrees with `evidenceHealth.aggregates.skillInvocations.retainedInvocations`.
 
 ### Skill invocation is first-class evidence
 

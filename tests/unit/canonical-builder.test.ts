@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
+  attachSubagentEvidence,
   buildCanonicalSession,
   projectEvidenceHealth,
 } from "../../src/core/canonical.ts";
@@ -337,6 +338,8 @@ test("ready session exposes skill detail, aggregates and reconciled usage", () =
   assert.equal(result.state, "ready");
   const session = result.state === "ready" ? result.session : undefined;
   assert.equal(session?.skillInvocations.length, 1);
+  assert.equal(session?.retainedSkillInvocations?.named.demo, 1);
+  assert.equal(session?.retainedSkillInvocations?.overflow, 0);
   assert.equal(session?.markerEntryId, "marker");
   assert.equal(session?.retainedAggregates.boundary.detail, "aggregate-only");
   assert.equal(session?.usage.state, "known");
@@ -626,6 +629,20 @@ test("P1.2a: child run usage never changes the session/native totals", () => {
   assert.equal(child.length, 1);
   assert.equal(child[0]?.contributesToSession, false);
   assert.equal(child[0]?.bucket, "child-run");
+
+  const base = buildCanonicalSession({
+    parsed: parsed([MARKER, ASSISTANT, TOOL_RESULT]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(base.state, "ready");
+  if (base.state !== "ready") throw new Error("unreachable");
+  const attached = attachSubagentEvidence(base.session, subagents);
+  assert.deepEqual(attached.agents, session.agents);
+  assert.deepEqual(attached.usage, session.usage);
+  assert.deepEqual(attached.health, session.health);
+
   const health = projectEvidenceHealth(session);
   assert.equal(health.usage.childLines, 1);
   assert.equal(health.usage.nativeLines, 2);

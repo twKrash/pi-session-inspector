@@ -58,6 +58,8 @@ test("loaders never import storage readers", async () => {
       ),
       false,
     );
+    assert.equal(/readPiEntryEvidence|reduceEntries\(/.test(source), false);
+    assert.equal((source.match(/buildCanonicalSession\(/g) ?? []).length, 1);
   }
 });
 
@@ -757,7 +759,7 @@ test("projects persisted Pi-entry integration evidence in the production loader"
   assert.deepEqual(model?.report.integrations, [
     {
       integration: "context",
-      presence: "unknown",
+      presence: "present",
       version: 1,
       state: "supported",
       counters: { calls: 1 },

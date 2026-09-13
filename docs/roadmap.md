@@ -669,5 +669,10 @@ reviews.
   hash. M8 may publish only that unchanged candidate or must requalify a
   changed candidate through the affected gates.
 
+### Pre-M8.8 — Bugfixes and addressing the feedback
+
+For now it is a placeholder to address all findings and feedback before
+the public release, making sure that we have production ready code.
+
 **Release:** a compatible RC hardening pass may bump the next patch version;
 publication remains part of M8.

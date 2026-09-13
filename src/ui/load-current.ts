@@ -1,13 +1,12 @@
 import { readFile } from "node:fs/promises";
 import {
+  attachSubagentEvidence,
   buildCanonicalSession,
   type RetainedWalRecord,
 } from "../core/canonical.ts";
 import type { L0Evidence } from "../core/evidence.ts";
 import type { Scope } from "../core/events.ts";
-import { reduceEntries } from "../core/reduce.ts";
-import { toSessionReport, type DurationEvidence } from "../core/reports.ts";
-import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
+import { toSessionReport } from "../core/reports.ts";
 import {
   readSubagentEvidence,
   type SubagentEvidence,
@@ -15,7 +14,7 @@ import {
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
 import { sessionDatedUsage } from "./dated-usage.ts";
-import { countersFrom, usageFrom } from "./l2-projection.ts";
+import { countersFrom } from "./l2-projection.ts";
 import type { SessionObservation } from "./observation.ts";
 
 /**
@@ -80,9 +79,8 @@ export async function loadCurrentSessionReport(
         : { inventory: observation.inventory }),
     };
     // The builder is the single scope authority, so its resolution is what the
-    // subagent adapter reads. The second (pure, in-memory) build then supplies
-    // L1 with the same cooperative evidence class the DTO publishes, so the
-    // health and the body cannot contradict each other (P1.2).
+    // subagent adapter reads. Attach its already-validated cooperative result
+    // without replaying native entries or integration adapters (P1.2).
     const resolved = buildCanonicalSession(buildInput);
     if (resolved.state !== "ready") return undefined;
     // R49: the entry set is the builder's resolution in order, mapped back to
@@ -102,20 +100,9 @@ export async function loadCurrentSessionReport(
     const subagentEvidence =
       (await options.subagentEvidence?.(entries, resolved.session.sessionId)) ??
       readSubagentEvidence(entries, resolved.session.sessionId);
-    const built = buildCanonicalSession({
-      ...buildInput,
-      subagents: subagentEvidence,
-    });
-    if (built.state !== "ready") return undefined;
-    const session = built.session;
-    // R47: `expired` keeps its existing meaning — some prune seal exists — so a
-    // checkpoint with no pruned detail is never labelled as cold.
-    const sealed = Object.values(
-      session.retainedAggregates.boundary.sealedThrough,
-    ).some((cursor) => cursor > 0);
+    const session = attachSubagentEvidence(resolved.session, subagentEvidence);
     return createCurrentTuiModel(
-      toSessionReport(reduceEntries(session.sessionId, entries), {
-        ...(sealed ? { walDetail: "expired" as const } : {}),
+      toSessionReport(session, {
         agents: {
           state: subagentEvidence.state,
           runs: subagentEvidence.runs,
@@ -123,15 +110,6 @@ export async function loadCurrentSessionReport(
         agentActivity: subagentEvidence.activity,
         presence: observation?.presence,
         ...countersFrom(session),
-        ...usageFrom(session),
-        inventory: observation?.inventory,
-        integrations: readPiEntryEvidence(entries),
-        // Task 14 fields: the canonical health and checkpoint-surviving
-        // aggregates reach L2 as L1 produced them, never re-derived.
-        evidenceHealth: session.health,
-        retainedAggregates: session.retainedAggregates,
-        // Duration exists only from an exact live subject correlation (L1).
-        duration: durationEvidence(session.tools),
       }),
       scope,
       // R19: the already-built canonical session is projected once; no extra
@@ -141,18 +119,4 @@ export async function loadCurrentSessionReport(
   } catch {
     return undefined;
   }
-}
-
-/** Only correlated tool rows carry a duration; the projection re-validates. */
-function durationEvidence(
-  tools: readonly { id: string; durationMs?: number }[],
-): DurationEvidence {
-  return {
-    state: "supported",
-    tools: tools.flatMap((tool) =>
-      tool.durationMs === undefined
-        ? []
-        : [{ id: tool.id, durationMs: tool.durationMs }],
-    ),
-  };
 }

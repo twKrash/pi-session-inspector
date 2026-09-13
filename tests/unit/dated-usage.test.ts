@@ -36,6 +36,21 @@ function reportOf(file: string): SessionReport {
   return toSessionReport(reduceEntries(parsed.id ?? "fixture", parsed.entries));
 }
 
+test("projects a canonical session directly into the report DTO", () => {
+  const actual = toSessionReport(canonicalOf(FIXTURE));
+  const expected = reportOf(FIXTURE);
+
+  assert.deepEqual(actual.usage, expected.usage);
+  assert.deepEqual(actual.usageComposition, expected.usageComposition);
+  assert.deepEqual(actual.generations, expected.generations);
+  assert.deepEqual(actual.compactions, expected.compactions);
+  assert.deepEqual(actual.errors, expected.errors);
+  assert.deepEqual(actual.tools, expected.tools);
+  assert.deepEqual(actual.models, expected.models);
+  assert.equal(actual.evidenceHealth.core, "supported");
+  assert.ok(actual.retainedAggregates);
+});
+
 test("the marker-bearing fixture builds a ready canonical session", () => {
   const session = canonicalOf(FIXTURE);
   assert.equal(session.sessionId, "mixed-usage-session");

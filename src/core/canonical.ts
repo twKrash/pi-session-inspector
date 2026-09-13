@@ -42,6 +42,7 @@ import {
   counterDeltaAfterCursors,
   foldedFromCheckpointAggregates,
   MAX_FOLDED_COUNT,
+  MAX_SKILL_KEYS,
   mergeFoldedCounters,
   type CheckpointCounterAggregates,
   type FoldedCounters,
@@ -235,6 +236,8 @@ export type CanonicalSession = {
   stateTransitions: CanonicalStateTransition[];
   integrationEvents: CanonicalIntegrationEvent[];
   skillInvocations: CanonicalSkillInvocation[];
+  /** L1-counted retained skill facts available when effective counters are unavailable. */
+  retainedSkillInvocations?: CanonicalRetainedSkillInvocations;
   liveTimings: CanonicalLiveTiming[];
   inventory?: CanonicalInventoryObservation;
   usage: CanonicalUsageSummary;
@@ -265,6 +268,11 @@ export type CanonicalEffectiveCounters =
     } & CanonicalEffectiveCounterValues);
 
 /** The published counter values of a trustworthy effective total. */
+export type CanonicalRetainedSkillInvocations = {
+  named: Readonly<Record<string, number>>;
+  overflow: number;
+};
+
 export type CanonicalEffectiveCounterValues = {
   integration?: Partial<Record<IntegrationKey, Record<string, number>>>;
   skillInvocations?: {
@@ -378,6 +386,125 @@ export function projectEvidenceHealth(
   return session.health;
 }
 
+/**
+ * Adds the already-sanitized cooperative result to a built session without
+ * replaying native entries, integrations, or retained aggregates.
+ */
+export function attachSubagentEvidence(
+  session: CanonicalSession,
+  subagents: SubagentEvidence,
+): CanonicalSession {
+  try {
+    const agents = [...subagents.runs];
+    const usage = appendSubagentUsage(session.usage, agents);
+    const sources = session.health.sources.filter(
+      (source) =>
+        source.source !== "subagent-result" &&
+        source.source !== "subagent-archive",
+    );
+    sources.push({
+      source: "subagent-result",
+      authority: "cooperative",
+      state: subagents.state === "supported" ? "supported" : "unavailable",
+      schemaVersion: 1,
+      recordsSeen: agents.length,
+      factsAccepted: agents.length,
+      recordsRejected: 0,
+      detail: "full",
+    });
+    const artifacts = agents.filter(
+      (run) => run.artifacts !== undefined,
+    ).length;
+    if (artifacts > 0) {
+      sources.push({
+        source: "subagent-archive",
+        authority: "cooperative",
+        state: "supported",
+        schemaVersion: 1,
+        recordsSeen: artifacts,
+        factsAccepted: artifacts,
+        recordsRejected: 0,
+        detail: "full",
+      });
+    }
+    const diagnostics = [
+      ...session.health.diagnostics,
+      ...subagents.diagnostics.map((diagnostic) => ({
+        source: "subagent-result" as const,
+        code: diagnostic.code,
+        severity: defaultDiagnosticSeverity(diagnostic.code),
+        count: diagnostic.count,
+      })),
+    ];
+    const rebuiltHealth = buildEvidenceHealth({
+      core: session.health.core,
+      sources,
+      joins: {
+        ...session.health.joins,
+        agentRuns: agents.length,
+        knownAgentParents: agents.filter((run) => run.parentId !== undefined)
+          .length,
+      },
+      usage: {
+        ...session.health.usage,
+        childLines: usage.lines.filter(
+          (line) => line.domain === "child-breakdown",
+        ).length,
+      },
+      aggregates: session.health.aggregates,
+      diagnostics,
+    });
+    const health =
+      session.health.truncated === true && rebuiltHealth.truncated !== true
+        ? { ...rebuiltHealth, truncated: true as const }
+        : rebuiltHealth;
+    return { ...session, agents, usage, health };
+  } catch {
+    return session;
+  }
+}
+
+function appendSubagentUsage(
+  summary: CanonicalUsageSummary,
+  runs: readonly AgentRun[],
+): CanonicalUsageSummary {
+  const lines = runs.flatMap((run) =>
+    run.usage === undefined
+      ? []
+      : [
+          {
+            id: `usage-line:child:${run.id}`,
+            ownerId: run.id,
+            domain: "child-breakdown" as const,
+            bucket: "child-run" as const,
+            usage: run.usage,
+            contributesToSession: false,
+            observedAt: timeKnown(run.observedAt, "pi-publication-entry"),
+            attributedAt: timeKnown(run.observedAt, "pi-publication-entry"),
+            provenance: {
+              source: "subagent-result" as const,
+              authority: "cooperative" as const,
+              recordId: run.id,
+            },
+          },
+        ],
+  );
+  return {
+    ...summary,
+    lines: [
+      ...summary.lines.filter((line) => line.domain !== "child-breakdown"),
+      ...lines,
+    ],
+    coverage: {
+      ...summary.coverage,
+      "child-run": coverageOf(
+        runs.length,
+        runs.filter((run) => run.usage !== undefined).length,
+      ),
+    },
+  };
+}
+
 function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   const diagnostics = new DiagnosticAccumulator();
   for (const extra of input.diagnostics ?? []) {
@@ -477,6 +604,8 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   const skillInvocations = input.evidence.atomic
     .filter(isSkillInvocation)
     .map(toCanonicalSkillInvocation);
+  const retainedSkillInvocations =
+    countRetainedSkillInvocations(skillInvocations);
   const liveFacts = input.evidence.atomic.filter(isLiveTiming);
   const liveTimings = liveFacts.map(toCanonicalLiveTiming);
   const tools = correlateLiveDuration(sessionId, reduced.tools, liveFacts);
@@ -543,6 +672,9 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
     stateTransitions,
     integrationEvents,
     skillInvocations,
+    ...(retainedSkillInvocations === undefined
+      ? {}
+      : { retainedSkillInvocations }),
     liveTimings,
     ...(inventory === undefined ? {} : { inventory }),
     usage,
@@ -551,6 +683,21 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
     health,
   };
   return { state: "ready", session };
+}
+
+function countRetainedSkillInvocations(
+  facts: readonly CanonicalSkillInvocation[],
+): CanonicalRetainedSkillInvocations | undefined {
+  const named = Object.create(null) as Record<string, number>;
+  let overflow = 0;
+  for (const fact of facts) {
+    const current = named[fact.skill];
+    if (current !== undefined) named[fact.skill] = current + 1;
+    else if (Object.keys(named).length >= MAX_SKILL_KEYS) overflow += 1;
+    else named[fact.skill] = 1;
+  }
+  if (Object.keys(named).length === 0 && overflow === 0) return undefined;
+  return { named, overflow };
 }
 
 // ---------------------------------------------------------------------------

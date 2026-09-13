@@ -2,19 +2,19 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
+  attachSubagentEvidence,
   buildCanonicalSession,
   type CanonicalSession,
   type RetainedWalRecord,
 } from "../core/canonical.ts";
 import type { L0Evidence } from "../core/evidence.ts";
 import type { Scope, SessionEntry, Usage } from "../core/events.ts";
-import { addUsage, reduceEntries } from "../core/reduce.ts";
+import { addUsage } from "../core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../core/reports.ts";
 import {
   buildSessionCoverage,
   type SessionCoverage,
 } from "../core/session-coverage.ts";
-import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
 import {
   readSubagentEvidence,
   type SubagentEvidence,
@@ -33,11 +33,7 @@ import {
   type DateUsageRow,
 } from "./dated-usage.ts";
 import type { SessionObservation } from "./observation.ts";
-import {
-  countersFrom,
-  resourceCountsFrom,
-  usageFrom,
-} from "./l2-projection.ts";
+import { countersFrom, resourceCountsFrom } from "./l2-projection.ts";
 
 type MaintenanceOptions = {
   writerId: string;
@@ -366,20 +362,12 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
           // Published archive presence is validated, bounded, and never a path.
           const subagentEvidence =
             supplied?.subagents ?? readSubagentEvidence(entries, sessionId);
-          // Task 15 discipline: the builder receives the same cooperative
-          // evidence the DTO publishes, so health and body cannot contradict
-          // each other (`joins.agentRuns === report.agents.length`).
-          const built = buildCanonicalSession({
-            ...buildInput,
-            subagents: subagentEvidence,
-          });
-          if (built.state !== "ready")
-            return {
-              availability: "unavailable",
-              sessionId,
-              reason: "replay-failed",
-            };
-          const session = built.session;
+          // Task 15 discipline: attach the same cooperative evidence the DTO
+          // publishes without replaying native entries or integration adapters.
+          const session = attachSubagentEvidence(
+            resolved.session,
+            subagentEvidence,
+          );
           // R47: `expired` keeps its existing meaning — some prune seal exists.
           const sealed = Object.values(
             session.retainedAggregates.boundary.sealedThrough,
@@ -444,29 +432,16 @@ function sourceReadFailure(
  * session being replayed.
  */
 function defaultReplay(input: HistoryReplayInput): SessionReport {
-  return toSessionReport(
-    reduceEntries(input.session.sessionId, input.entries),
-    {
-      ...(input.sealed ? { walDetail: "expired" as const } : {}),
-      agents: {
-        state: input.subagentEvidence.state,
-        runs: input.subagentEvidence.runs,
-      },
-      agentActivity: input.subagentEvidence.activity,
-      presence: input.observation?.presence,
-      ...countersFrom(input.session),
-      ...usageFrom(input.session),
-      ...resourceCountsFrom(input.session),
-      ...(input.observation?.inventory === undefined
-        ? {}
-        : { inventory: input.observation.inventory }),
-      integrations: readPiEntryEvidence(input.entries),
-      // Task 14 fields: canonical health and checkpoint-surviving aggregates
-      // reach L2 as L1 produced them, never re-derived.
-      evidenceHealth: input.session.health,
-      retainedAggregates: input.session.retainedAggregates,
+  return toSessionReport(input.session, {
+    agents: {
+      state: input.subagentEvidence.state,
+      runs: input.subagentEvidence.runs,
     },
-  );
+    agentActivity: input.subagentEvidence.activity,
+    presence: input.observation?.presence,
+    ...countersFrom(input.session),
+    ...resourceCountsFrom(input.session),
+  });
 }
 
 function toGlobalSessionRow(session: SessionScan): GlobalSessionRow {
