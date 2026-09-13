@@ -268,13 +268,13 @@ export function parseRangeOptions(input: {
  * where the projection produced one; a tool may instead carry the canonical
  * persisted `timestamp`, whose UTC day is the call day (design §5.7). `agents`
  * are dated by `observedAt` and `errors` by `timestamp`, and either field may
- * be absent — an undated row is never in range.
+ * be absent or `null` — an undated row is never in range.
  */
 export type ViewRows = {
   rows: readonly { date?: string }[];
   models: readonly { date?: string }[];
   tools: readonly { date?: string; timestamp?: string }[];
-  agents: readonly { observedAt?: string }[];
+  agents: readonly { observedAt?: string | null }[];
   errors: readonly { timestamp?: string }[];
 };
 

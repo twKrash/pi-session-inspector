@@ -1,0 +1,925 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+
+import {
+  attachSubagentEvidence,
+  buildCanonicalSession,
+  type CanonicalSessionBuildResult,
+} from "../../src/core/canonical.ts";
+import { reduceEntries } from "../../src/core/reduce.ts";
+import { toSessionReport, type SessionReport } from "../../src/core/reports.ts";
+import type { SessionCoverage } from "../../src/core/session-coverage.ts";
+import type { AgentRun } from "../../src/core/events.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+import {
+  loadInspectorBundle,
+  type InspectorBundle,
+} from "../../src/ui/bundle.ts";
+import {
+  createCurrentTuiModel,
+  type CurrentTuiModel,
+} from "../../src/ui/current.ts";
+import {
+  sessionDatedUsage,
+  type DateUsageRow,
+} from "../../src/ui/dated-usage.ts";
+import type { GlobalReport, HistoryReport } from "../../src/ui/load-history.ts";
+import {
+  projectCurrentView,
+  projectGlobalReport,
+  projectHistoricalSession,
+  projectHistoryReport,
+  projectInspectorUi,
+  type GlobalReportProjection,
+} from "../../src/ui/ui-projection.ts";
+import { historyEntry } from "../../src/ui/report-projection.ts";
+import {
+  bundleInput,
+  currentModelWithTools,
+  FORBIDDEN_PRODUCER_KEYS,
+} from "../helpers/bundle-scenarios.ts";
+
+/**
+ * The Task 3 ownership fixture: one real canonical session whose active path
+ * ends on 2026-02-02 and whose tree carries a sibling branch on 2026-02-03, so
+ * every projection's own range anchor is observable. The header also plants the
+ * producer-only fields and the read call a hostile argument payload, so the
+ * privacy assertion proves the projection, not the fixture, is what drops them.
+ */
+const SESSION_PROJECTION = "session-projection";
+
+const HEADER = {
+  type: "session",
+  version: 3,
+  id: SESSION_PROJECTION,
+  timestamp: "2026-02-02T09:00:00.000Z",
+  sessionName: "SECRET_SESSION_NAME",
+  sessionFile: "/tmp/SECRET_SESSION_FILE.jsonl",
+  transcriptPath: "/tmp/SECRET_TRANSCRIPT.jsonl",
+};
+const MARKER = {
+  type: "custom",
+  id: "marker",
+  parentId: null,
+  timestamp: "2026-02-02T09:00:01.000Z",
+  customType: "session-inspector:tracking-start",
+  data: { schemaVersion: 1 },
+};
+const GEN_ACTIVE = {
+  type: "message",
+  id: "gen-active",
+  parentId: "marker",
+  timestamp: "2026-02-02T10:00:00.000Z",
+  message: {
+    role: "assistant",
+    provider: "acme",
+    model: "alpha",
+    usage: { totalTokens: 600, cost: { total: 0.12 } },
+    content: [
+      {
+        type: "toolCall",
+        id: "call_read",
+        name: "read",
+        input: {
+          path: "/home/dev/SECRET_ARGUMENT/notes.md",
+          command: "cat SECRET_ARGUMENT",
+        },
+      },
+    ],
+  },
+};
+const READ_RESULT = {
+  type: "message",
+  id: "res-read",
+  parentId: "gen-active",
+  timestamp: "2026-02-02T10:00:05.000Z",
+  message: {
+    role: "toolResult",
+    toolCallId: "call_read",
+    toolName: "read",
+    isError: false,
+    usage: { totalTokens: 180, cost: { total: 0.04 } },
+    content: [{ type: "text", text: "SECRET_RESULT_BODY" }],
+  },
+};
+const GEN_BASH = {
+  type: "message",
+  id: "gen-bash",
+  parentId: "marker",
+  timestamp: "2026-02-02T23:59:00.000Z",
+  message: {
+    role: "assistant",
+    provider: "acme",
+    model: "alpha",
+    usage: { totalTokens: 5, cost: { total: 0.001 } },
+    content: [{ type: "toolCall", id: "call_bash", name: "bash" }],
+  },
+};
+const BASH_RESULT = {
+  type: "message",
+  id: "res-bash",
+  parentId: "gen-bash",
+  timestamp: "2026-02-03T00:00:05.000Z",
+  message: {
+    role: "toolResult",
+    toolCallId: "call_bash",
+    toolName: "bash",
+    isError: true,
+    content: [],
+  },
+};
+const GEN_BRANCH = {
+  type: "message",
+  id: "gen-branch",
+  parentId: "marker",
+  timestamp: "2026-02-03T09:00:00.000Z",
+  message: {
+    role: "assistant",
+    provider: "acme",
+    model: "beta",
+    usage: { totalTokens: 15, cost: { total: 0.003 } },
+    content: [],
+  },
+};
+
+const RECORDS = [
+  HEADER,
+  MARKER,
+  GEN_ACTIVE,
+  READ_RESULT,
+  GEN_BASH,
+  BASH_RESULT,
+  GEN_BRANCH,
+];
+
+const CHILD_RUN: AgentRun = {
+  id: `subagent-${"a".repeat(64)}`,
+  status: "succeeded",
+  confidence: "cooperative",
+  observedAt: "2026-02-03T00:00:05.000Z",
+  evidenceToolId: "tool:call_bash",
+  model: "alpha",
+  usage: { totalTokens: 50, cost: 0.01 },
+};
+
+function parseFixture(): ReturnType<typeof parseSessionJsonl> {
+  return parseSessionJsonl(
+    `${RECORDS.map((record) => JSON.stringify(record)).join("\n")}\n`,
+  );
+}
+
+/** The one canonical build both current views read; the builder owns scope. */
+function builtFixture(
+  scope: "active" | "tree",
+  leafId: string | null,
+): CanonicalSessionBuildResult {
+  const built = buildCanonicalSession({
+    parsed: parseFixture(),
+    scope,
+    leafId,
+    evidence: { atomic: [], folded: [] },
+  });
+  if (built.state !== "ready") {
+    throw new Error(`the fixture session must build for scope ${scope}`);
+  }
+  return built;
+}
+
+/**
+ * The active view: the leaf is the read result, so the sibling bash branch and
+ * its child run stay out of this report. Its own dated window ends 2026-02-02.
+ */
+function activeModel(): CurrentTuiModel {
+  const built = builtFixture("active", "res-read");
+  if (built.state !== "ready") throw new Error("active build failed");
+  return createCurrentTuiModel(
+    toSessionReport(built.session),
+    "active",
+    sessionDatedUsage(built.session),
+  );
+}
+
+/**
+ * The tree view: every branch, its window ends 2026-02-03, and the failed bash
+ * call publishes one error plus one child run dated 2026-02-03.
+ */
+function treeModel(): CurrentTuiModel {
+  const built = builtFixture("tree", null);
+  if (built.state !== "ready") throw new Error("tree build failed");
+  const session = attachSubagentEvidence(built.session, {
+    state: "supported",
+    runs: [CHILD_RUN],
+    activity: {
+      state: "unavailable",
+      calls: 0,
+      succeeded: 0,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    },
+    diagnostics: [],
+  });
+  return createCurrentTuiModel(
+    toSessionReport(session),
+    "tree",
+    sessionDatedUsage(session),
+  );
+}
+
+/** One synthetic dated window row, so a history verdict is pinned exactly. */
+function dateRow(input: {
+  date: string;
+  totalTokens: number;
+  cost: number;
+  generations: number;
+}): DateUsageRow {
+  return {
+    date: input.date,
+    totalTokens: input.totalTokens,
+    cost: input.cost,
+    generations: input.generations,
+    tools: 0,
+    errors: 0,
+    composition: {
+      generations: { totalTokens: input.totalTokens, cost: input.cost },
+      toolResults: { totalTokens: 0, cost: 0 },
+      compactions: { totalTokens: 0, cost: 0 },
+      branchSummaries: { totalTokens: 0, cost: 0 },
+    },
+  };
+}
+
+/** One generation-only session, the minimum a history row's report needs. */
+function historicalReport(input: {
+  sessionId: string;
+  timestamp: string;
+  totalTokens: number;
+  cost: number;
+}): SessionReport {
+  return toSessionReport(
+    reduceEntries(input.sessionId, [
+      {
+        type: "message",
+        id: `${input.sessionId}-gen`,
+        parentId: null,
+        timestamp: input.timestamp,
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: {
+            totalTokens: input.totalTokens,
+            cost: { total: input.cost },
+          },
+          content: [],
+        },
+      },
+    ]),
+  );
+}
+
+const COVERAGE: SessionCoverage = {
+  inspected: 4,
+  available: 3,
+  unavailable: 1,
+  sessionRatio: 0.75,
+  complete: true,
+  discoveryLimited: false,
+  reasons: { "marker-unavailable": 1 },
+};
+
+/**
+ * The history aggregate: one real member session, one truncated window whose
+ * retained rows all lie after a range (omitted history), one truncated window
+ * with an in-range retained row (partial), and one unavailable session.
+ */
+function historyReport(tree: CurrentTuiModel): HistoryReport {
+  const treeView = tree.datedUsage;
+  if (treeView === undefined) throw new Error("the tree fixture needs dates");
+  const omittedReport = historicalReport({
+    sessionId: "session-omitted",
+    timestamp: "2026-03-10T10:00:00.000Z",
+    totalTokens: 300,
+    cost: 0.06,
+  });
+  const partialReport = historicalReport({
+    sessionId: "session-partial",
+    timestamp: "2026-02-10T10:00:00.000Z",
+    totalTokens: 250,
+    cost: 0.05,
+  });
+  return {
+    availability: "available",
+    sessions: [
+      {
+        availability: "available",
+        sessionId: SESSION_PROJECTION,
+        usageByDate: treeView.dates,
+        usageByDateTruncated: treeView.truncated,
+        datedModels: treeView.models,
+        modelsTruncated: treeView.modelsTruncated,
+        report: tree.report,
+      },
+      {
+        availability: "available",
+        sessionId: "session-omitted",
+        usageByDate: [
+          dateRow({
+            date: "2026-03-10",
+            totalTokens: 300,
+            cost: 0.06,
+            generations: 1,
+          }),
+        ],
+        usageByDateTruncated: true,
+        datedModels: [],
+        modelsTruncated: false,
+        report: omittedReport,
+      },
+      {
+        availability: "available",
+        sessionId: "session-partial",
+        usageByDate: [
+          dateRow({
+            date: "2026-02-10",
+            totalTokens: 250,
+            cost: 0.05,
+            generations: 1,
+          }),
+          dateRow({
+            date: "2026-03-10",
+            totalTokens: 50,
+            cost: 0.01,
+            generations: 1,
+          }),
+        ],
+        usageByDateTruncated: true,
+        datedModels: [],
+        modelsTruncated: false,
+        report: partialReport,
+      },
+      {
+        availability: "unavailable",
+        sessionId: "session-missing",
+        reason: "marker-unavailable",
+      },
+    ],
+    diagnostics: [],
+    coverage: COVERAGE,
+  };
+}
+
+/** The global aggregate over the same two dated rows, hand-built at DTO level. */
+function globalReportOf(tree: CurrentTuiModel): GlobalReport {
+  void tree;
+  return {
+    availability: "available",
+    sessions: [
+      {
+        availability: "available",
+        sessionId: SESSION_PROJECTION,
+        usageByDateTruncated: false,
+      },
+      { availability: "unavailable", sessionId: "session-missing" },
+    ],
+    usage: { totalTokens: 800, cost: 0.164 },
+    dates: [
+      {
+        date: "2026-02-02",
+        sessions: 1,
+        usage: { totalTokens: 780, cost: 0.16 },
+      },
+      {
+        date: "2026-02-03",
+        sessions: 1,
+        usage: { totalTokens: 20, cost: 0.004 },
+      },
+    ],
+    diagnostics: [],
+    inventory: { commands: 3, skills: 2, resources: null },
+    coverage: COVERAGE,
+  };
+}
+
+/** The one bundle every semantic assertion reads; its two anchors differ. */
+async function bundleWithDifferentObservedDates(): Promise<InspectorBundle> {
+  const tree = treeModel();
+  const history = historyReport(tree);
+  const global = globalReportOf(tree);
+  return loadInspectorBundle({
+    ...bundleInput,
+    loadCurrent: async (scope) => (scope === "active" ? activeModel() : tree),
+    loadHistory: async () => history,
+    loadGlobal: async () => global,
+  });
+}
+
+/** Both current views failed to replay and history is unavailable. */
+async function unavailableBundle(): Promise<InspectorBundle> {
+  return loadInspectorBundle({
+    ...bundleInput,
+    loadCurrent: async () => undefined,
+    loadHistory: async () => ({
+      availability: "unavailable",
+      sessions: [],
+      diagnostics: [],
+    }),
+    loadGlobal: async () => ({
+      availability: "unavailable",
+      sessions: [],
+      usage: { totalTokens: 0, cost: 0 },
+      dates: [],
+      diagnostics: [],
+      inventory: { commands: null, skills: null, resources: null },
+    }),
+  });
+}
+
+/** A bundle whose current view carries no dated projection at all. */
+async function bundleWithoutObservedDates(): Promise<InspectorBundle> {
+  return loadInspectorBundle({
+    ...bundleInput,
+    loadCurrent: async () => currentModelWithTools(),
+  });
+}
+
+const PRESET_7 = { kind: "preset", preset: 7 } as const;
+const FIRST_DAY = {
+  kind: "custom",
+  from: "2026-02-02",
+  to: "2026-02-02",
+} as const;
+
+test("each current view resolves a preset against its own observed dates", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+
+  assert.equal(projected.kind, "ui");
+  assert.equal(projected.schemaVersion, 1);
+  assert.equal(projected.theme, bundle.theme);
+  assert.equal(projected.initialScope, bundle.initialScope);
+  assert.equal(
+    projected.current.sameReportProjection,
+    bundle.current.sameReportProjection,
+  );
+
+  // One shared preset, two independent anchors: no global {from,to} pair.
+  assert.deepEqual(projected.current.active.range?.resolved, {
+    preset: 7,
+    from: "2026-01-27",
+    to: "2026-02-02",
+  });
+  assert.deepEqual(projected.current.tree.range?.resolved, {
+    preset: 7,
+    from: "2026-01-28",
+    to: "2026-02-03",
+  });
+  assert.deepEqual(projected.current.active.range?.requested, PRESET_7);
+  assert.deepEqual(projected.current.tree.range?.requested, PRESET_7);
+
+  const tree = projected.current.tree.range;
+  assert.equal(tree?.totals.totalTokens, 800);
+  assert.equal(tree?.totals.days, 2);
+  assert.deepEqual(
+    tree?.daily.map((row) => row.date),
+    ["2026-02-02", "2026-02-03"],
+  );
+  assert.equal(
+    tree?.toolCalls.every((row) => row.timestamp.startsWith("2026-02-02")),
+    true,
+  );
+  // The sibling branch is in the tree range and out of the active one.
+  assert.equal(tree?.errors.length, 1);
+  assert.equal(tree?.toolSummary.length, 2);
+  assert.equal(projected.current.active.range?.errors.length, 0);
+  assert.equal(projected.current.active.range?.totals.totalTokens, 780);
+  assert.equal(projected.current.active.range?.totals.days, 1);
+
+  // All-date evidence stays off range accounting and outside the totals.
+  assert.equal(projected.current.tree.evidence.length > 0, true);
+  assert.equal(projected.current.tree.report?.usage?.totalTokens, 800);
+});
+
+test("a custom range changes daily, model, tool, agent, error and ledger rows", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const projected = projectInspectorUi({ bundle, intent: FIRST_DAY });
+  const range = projected.current.tree.range;
+  if (range === undefined) throw new Error("the tree view must carry a range");
+
+  assert.deepEqual(range.resolved, {
+    preset: null,
+    from: "2026-02-02",
+    to: "2026-02-02",
+  });
+  assert.deepEqual(
+    range.daily.map((row) => row.date),
+    ["2026-02-02"],
+  );
+  assert.equal(range.totals.totalTokens, 785);
+  assert.equal(range.totals.cost, 0.161);
+  assert.equal(range.totals.generations, 2);
+  assert.equal(range.totals.tools, 2);
+  assert.equal(range.totals.days, 1);
+  // The period composition reconciles with the same filtered rows.
+  assert.equal(range.composition?.reconciles, true);
+  assert.equal(range.composition?.total?.totalTokens, 785);
+  assert.deepEqual(
+    range.models.map((row) => [
+      row.provider,
+      row.model,
+      row.generations,
+      row.totalTokens,
+    ]),
+    [["acme", "alpha", 2, 605]],
+  );
+  assert.deepEqual(
+    range.toolSummary.map((row) => [row.name, row.calls, row.withUsage]),
+    [
+      ["bash", 1, 0],
+      ["read", 1, 1],
+    ],
+  );
+  assert.deepEqual(
+    range.toolCalls.map((row) => [row.name, row.status]),
+    [
+      ["bash", "failed"],
+      ["read", "succeeded"],
+    ],
+  );
+  // Agents, errors and ledger rows are dated by their own persisted fields.
+  assert.deepEqual(range.agents, []);
+  assert.deepEqual(range.errors, []);
+  assert.deepEqual(
+    range.ledger.map((item) => [item.kind, item.timestamp.slice(0, 10)]),
+    [
+      ["generation", "2026-02-02"],
+      ["tool", "2026-02-02"],
+      ["generation", "2026-02-02"],
+      ["tool", "2026-02-02"],
+    ],
+  );
+
+  // The wider preset keeps the sibling day's rows in the same projections.
+  const wider = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const widerRange = wider.current.tree.range;
+  assert.equal(widerRange?.agents.length, 1);
+  assert.equal(widerRange?.errors.length, 1);
+  assert.equal(widerRange?.ledger.length, 6);
+  assert.deepEqual(
+    widerRange?.models.map((row) => [row.model, row.totalTokens]),
+    [
+      ["alpha", 605],
+      ["beta", 15],
+    ],
+  );
+});
+
+test("child usage stays a breakdown and never enters the native range total", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const range = projected.current.tree.range;
+  if (range === undefined) throw new Error("the tree view must carry a range");
+
+  assert.equal(range.totals.totalTokens, 800);
+  assert.deepEqual(
+    range.agents.map((row) => [row.id, row.usage?.totalTokens]),
+    [[CHILD_RUN.id, 50]],
+  );
+  assert.equal(
+    range.agents.reduce((sum, row) => sum + (row.usage?.totalTokens ?? 0), 0),
+    50,
+  );
+  assert.equal(
+    range.totals.totalTokens,
+    projected.current.tree.report?.usage?.totalTokens,
+  );
+  assert.equal(projected.current.tree.report?.agentCount, 1);
+  assert.equal(projected.current.active.report?.agentCount, null);
+});
+
+test("each named entry point projects one section on its own", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const whole = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const partial = bundle.history.sessions.find(
+    (session) => session.sessionId === "session-partial",
+  );
+  if (partial === undefined) throw new Error("fixture session missing");
+
+  const active = projectCurrentView(bundle.current.active, "active", PRESET_7);
+  assert.deepEqual(
+    active.range?.resolved,
+    whole.current.active.range?.resolved,
+  );
+  assert.equal(active.scope, "active");
+
+  const history = projectHistoryReport(bundle.history, PRESET_7);
+  assert.deepEqual(history.resolved, whole.history.resolved);
+  assert.equal(history.sessions.length, bundle.history.sessions.length);
+  // The legacy per-section row keeps the same bounded shape and dated window.
+  const row = historyEntry(partial);
+  assert.equal(row.sessionId, "session-partial");
+  assert.equal(row.firstDate, "2026-02-10");
+  assert.deepEqual(
+    row.usageByDate?.map((dated) => dated.date),
+    ["2026-02-10", "2026-03-10"],
+  );
+
+  // The supplied history windows are the aggregate's partiality input: the same
+  // report without them cannot see the partial contribution.
+  const withWindows: GlobalReportProjection = projectGlobalReport(
+    bundle.global,
+    PRESET_7,
+    bundle.history.sessions,
+  );
+  const withoutWindows = projectGlobalReport(bundle.global, PRESET_7);
+  assert.deepEqual(withWindows.daily, withoutWindows.daily);
+  assert.equal(withoutWindows.truncated, false);
+  assert.equal(withWindows.truncated, true);
+
+  const view = projectHistoricalSession(partial, PRESET_7);
+  assert.deepEqual(view.range?.resolved, {
+    preset: 7,
+    from: "2026-03-04",
+    to: "2026-03-10",
+  });
+  assert.equal(view.scope, undefined);
+  assert.equal(view.report?.sessionId, "session-partial");
+});
+
+test("a truncated row inside omitted history reports unknown, never zero", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const projected = projectInspectorUi({
+    bundle,
+    intent: { kind: "custom", from: "2026-01-01", to: "2026-02-03" },
+  });
+
+  const row = projected.history.sessions.find(
+    (session) => session.sessionId === "session-omitted",
+  );
+  assert.equal(row?.membership, "unknown");
+  assert.equal(row?.totalTokens, null);
+  assert.equal(row?.cost, null);
+  assert.equal(row?.partial, true);
+  assert.equal(row?.availability, "available");
+  // The aggregate is partial because a contributing window cannot represent it.
+  assert.equal(projected.history.truncated, true);
+  // The member session carries a known retained sum, so it is a member.
+  const member = projected.history.sessions.find(
+    (session) => session.sessionId === SESSION_PROJECTION,
+  );
+  assert.equal(member?.membership, "member");
+  assert.equal(member?.totalTokens, 800);
+  assert.equal(member?.partial, false);
+  // An unavailable session is unknown, never a fabricated zero row.
+  const missing = projected.history.sessions.find(
+    (session) => session.sessionId === "session-missing",
+  );
+  assert.equal(missing?.membership, "unknown");
+  assert.equal(missing?.totalTokens, null);
+  assert.equal(missing?.partial, false);
+  assert.equal(missing?.view, undefined);
+  assert.equal(missing?.agentCount, null);
+});
+
+test("an in-range retained row stays partial with its known sum", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const projected = projectInspectorUi({
+    bundle,
+    intent: { kind: "custom", from: "2026-01-01", to: "2026-02-20" },
+  });
+
+  const row = projected.history.sessions.find(
+    (session) => session.sessionId === "session-partial",
+  );
+  assert.equal(row?.membership, "member");
+  assert.equal(row?.totalTokens, 250);
+  assert.equal(row?.cost, 0.05);
+  assert.equal(row?.partial, true);
+  assert.equal(row?.published, true);
+});
+
+test("history carries the coverage ladder, membership order and per-session views", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+
+  assert.equal(projected.history.availability, "available");
+  assert.deepEqual(projected.history.usageLabels, {
+    cost: "metric.cost",
+    tokens: "metric.tokens",
+    usageUnavailable: false,
+    sessions: "coverage.complete",
+  });
+  assert.equal(projected.history.coverage?.line, "3 / 4 sessions");
+  assert.equal(projected.history.evidence.length > 0, true);
+  // Fixed order: newest last date first, the usable rows ahead of the unknown.
+  assert.deepEqual(
+    projected.history.sessions.map((session) => session.sessionId),
+    [
+      "session-omitted",
+      "session-partial",
+      SESSION_PROJECTION,
+      "session-missing",
+    ],
+  );
+  // Three projections, three anchors for the same preset: current active,
+  // current tree, and a selected session all resolve independently.
+  const selected = projected.history.sessions.find(
+    (session) => session.sessionId === "session-partial",
+  );
+  assert.deepEqual(selected?.view?.range?.resolved, {
+    preset: 7,
+    from: "2026-03-04",
+    to: "2026-03-10",
+  });
+  assert.deepEqual(projected.history.resolved, {
+    preset: 7,
+    from: "2026-03-04",
+    to: "2026-03-10",
+  });
+  assert.notDeepEqual(
+    selected?.view?.range?.resolved,
+    projected.current.tree.range?.resolved,
+  );
+  assert.equal(selected?.view?.report?.sessionId, "session-partial");
+  assert.deepEqual(selected?.view?.capabilities, [
+    "overview",
+    "models",
+    "tools",
+    "environment",
+    "agents",
+    "integrations",
+    "errors",
+    "ledger",
+  ]);
+});
+
+test("an unavailable current view and history section degrade without zeros", async () => {
+  const bundle = await unavailableBundle();
+  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+
+  for (const view of [projected.current.active, projected.current.tree]) {
+    assert.equal(view.availability, "unavailable");
+    assert.equal(view.diagnostic, "current-unavailable");
+    assert.equal(view.report, undefined);
+    assert.equal(view.range, undefined);
+    assert.deepEqual(view.capabilities, []);
+    assert.deepEqual(view.evidence, []);
+  }
+  assert.equal(projected.history.availability, "unavailable");
+  assert.equal(projected.history.resolved, null);
+  assert.deepEqual(projected.history.sessions, []);
+  assert.deepEqual(projected.history.daily, []);
+  assert.equal(projected.history.totals.totalTokens, 0);
+  assert.equal(projected.history.coverage, null);
+  assert.equal(projected.history.usageLabels.usageUnavailable, true);
+  assert.equal(projected.global.availability, "unavailable");
+  assert.equal(projected.global.resolved, null);
+  assert.deepEqual(projected.global.daily, []);
+  assert.equal(projected.global.coverage, null);
+  assert.equal(projected.global.usageLabels.usageUnavailable, true);
+});
+
+test("a view with no observed dates resolves no range instead of inventing one", async () => {
+  const bundle = await bundleWithoutObservedDates();
+  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+
+  assert.equal(projected.current.active.availability, "available");
+  assert.equal(projected.current.active.range?.resolved, null);
+  assert.deepEqual(projected.current.active.range?.requested, PRESET_7);
+  assert.equal(projected.current.active.range?.truncated, false);
+  assert.deepEqual(projected.current.active.range?.daily, []);
+  assert.equal(projected.current.active.range?.totals.days, 0);
+  assert.equal(projected.current.active.range?.composition, null);
+  assert.deepEqual(projected.current.active.range?.ledger, []);
+  // A view without a dated projection carries no dated model rows either.
+  assert.deepEqual(projected.current.active.range?.models, []);
+});
+
+test("global folds its own dates and counts tracked and unavailable sessions", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const global = projected.global;
+
+  assert.equal(global.availability, "available");
+  assert.deepEqual(global.resolved, {
+    preset: 7,
+    from: "2026-01-28",
+    to: "2026-02-03",
+  });
+  assert.deepEqual(
+    global.daily.map((row) => [row.date, row.sessions, row.totalTokens]),
+    [
+      ["2026-02-02", 1, 780],
+      ["2026-02-03", 1, 20],
+    ],
+  );
+  assert.equal(global.totals.totalTokens, 800);
+  assert.equal(global.totals.days, 2);
+  assert.equal(global.trackedSessions, 2);
+  assert.equal(global.unavailableSessions, 1);
+  assert.equal(global.inventory.commands, 3);
+  assert.equal(global.inventory.resources, null);
+  assert.equal(global.coverage?.line, "3 / 4 sessions");
+  assert.equal(global.evidence.length > 0, true);
+  assert.equal(global.composition.available, false);
+
+  const narrowed = projectInspectorUi({
+    bundle,
+    intent: { kind: "custom", from: "2026-02-02", to: "2026-02-02" },
+  });
+  assert.deepEqual(
+    narrowed.global.daily.map((row) => row.date),
+    ["2026-02-02"],
+  );
+  assert.equal(narrowed.global.totals.totalTokens, 780);
+});
+
+test("the projection is pure and deterministic for identical bounded inputs", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const before = JSON.stringify(bundle);
+  const first = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const second = projectInspectorUi({ bundle, intent: PRESET_7 });
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(bundle), before);
+
+  // An independently loaded bundle with the same data projects identically.
+  const other = await bundleWithDifferentObservedDates();
+  assert.equal(
+    JSON.stringify(projectInspectorUi({ bundle: other, intent: PRESET_7 })),
+    JSON.stringify(first),
+  );
+});
+
+test("no producer-only field or planted secret reaches the projection", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const serialized = JSON.stringify(
+    projectInspectorUi({ bundle, intent: PRESET_7 }),
+  );
+  for (const key of FORBIDDEN_PRODUCER_KEYS) {
+    assert.equal(serialized.includes(`"${key}"`), false, key);
+  }
+  for (const secret of [
+    "SECRET_SESSION_NAME",
+    "SECRET_SESSION_FILE",
+    "SECRET_TRANSCRIPT",
+    "SECRET_ARGUMENT",
+    "SECRET_RESULT_BODY",
+  ]) {
+    assert.equal(serialized.includes(secret), false, secret);
+  }
+  // The bounded fields the tools/errors views may render are still there.
+  assert.equal(serialized.includes('"tool:call_bash"'), true);
+});
+
+test("the projection modules reach no loader, filesystem, or browser state", () => {
+  const shared = [
+    "node:",
+    "./route.ts",
+    "./load-current.ts",
+    "./html.ts",
+    "document.",
+    "window.",
+    "Date.now",
+    "new Date(",
+    "readFile",
+    "loadInspectorBundle",
+    "loadHistoryReports",
+    "loadGlobalReport",
+    "loadCurrentSessionReport",
+  ];
+  const files = [
+    // The report projection is even narrower: it never names the bundle DTO it
+    // was extracted from.
+    {
+      path: "src/ui/report-projection.ts",
+      forbidden: [...shared, "./bundle.ts"],
+    },
+    { path: "src/ui/ui-projection.ts", forbidden: shared },
+  ];
+  for (const file of files) {
+    const source = readFileSync(file.path, "utf8");
+    for (const fragment of file.forbidden) {
+      assert.equal(
+        source.includes(fragment),
+        false,
+        `${file.path} must not reference ${fragment}`,
+      );
+    }
+    // The loader's own report types are the one thing borrowed across the
+    // loader seam, and only as a type: with every `import type { ... }` edge
+    // removed, no loader module is named at all.
+    assert.equal(
+      source
+        .replace(/import type \{[\s\S]*?\} from "[^"]*";/g, "")
+        .includes("./load-history.ts"),
+      false,
+      `${file.path} must value-import nothing from the loader`,
+    );
+    assert.equal(
+      /import type \{[\s\S]*?\} from "\.\/load-history\.ts";/.test(source),
+      true,
+      `${file.path} must type-import the loader's report shapes`,
+    );
+  }
+});
