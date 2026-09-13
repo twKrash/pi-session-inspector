@@ -4,9 +4,10 @@
  * boundaries, a validated custom pair, one filter for every tab, and honest
  * aggregate membership. Range parsing is a TypeScript boundary; browser route
  * consumers are migrated separately.
+ */
 
-/** The three bounded presets. Module-internal: `RangeState`/`RangeIntent` name it. */
-type RangePreset = 7 | 14 | 30;
+/** The three bounded presets. */
+export type RangePreset = 7 | 14 | 30;
 
 /** A resolved range: a preset (when one produced it) plus its inclusive span. */
 export type RangeState = {
@@ -158,11 +159,11 @@ export function serializeRangeQuery(intent: RangeIntent): [string, string][] {
 }
 
 /**
- * Parses a route query into a range intent, or `undefined` when it cannot be
- * applied as a whole. A `preset` key has precedence over a pair and must name a
- * known preset; otherwise a complete, well-formed, non-inverted `from`/`to`
- * pair is required. A lone endpoint, a malformed date, an empty string, and an
- * unknown or empty preset are all rejected — never partially applied.
+ * Parses a route query into a strict `RangeQueryResult`. Empty input succeeds
+ * without an intent; a known preset or a complete, well-formed, non-inverted
+ * `from`/`to` pair succeeds with one. Mixed preset/endpoint forms, lone
+ * endpoints, malformed dates, empty values, unknown keys, and duplicates are
+ * rejected as `invalid-range` — never partially applied.
  */
 export type RangeQueryResult =
   | { ok: true; intent?: RangeIntent }
