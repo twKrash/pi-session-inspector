@@ -5,6 +5,7 @@ import {
   historyRowRange,
   isInRange,
   latestObservedDate,
+  parseRangeOptions,
   parseRangeQuery,
   presetRange,
   resolveRange,
@@ -14,6 +15,37 @@ import {
 } from "../../src/ui/range.ts";
 
 const dates = ["2026-09-01", "2026-09-11", "2026-09-12"];
+
+test("strict query parsing accepts only complete validated ranges", () => {
+  assert.deepEqual(parseRangeQuery(""), { ok: true });
+  assert.deepEqual(parseRangeQuery("preset=7"), {
+    ok: true,
+    intent: { kind: "preset", preset: 7 },
+  });
+  assert.deepEqual(parseRangeQuery("from=2026-02-01&to=2026-02-02"), {
+    ok: true,
+    intent: { kind: "custom", from: "2026-02-01", to: "2026-02-02" },
+  });
+  for (const query of [
+    "preset=7&preset=14",
+    "preset=7&from=2026-02-01&to=2026-02-02",
+    "from=2026-02-01",
+    "from=2026-02-02&to=2026-02-01",
+    "from=2026-02-30&to=2026-03-01",
+    "preset=5",
+    "to=2026-02-01&from=",
+    "token=secret",
+    `x=${"a".repeat(513)}`,
+  ])
+    assert.deepEqual(parseRangeQuery(query), {
+      ok: false,
+      code: "invalid-range",
+    });
+  assert.deepEqual(parseRangeOptions({ preset: "14" }), {
+    ok: true,
+    intent: { kind: "preset", preset: 14 },
+  });
+});
 
 test("presets are anchored on the latest observed date, inclusively", () => {
   assert.deepEqual(presetRange(7, dates), {
@@ -66,14 +98,20 @@ test("boundaries are inclusive and defaults are span/14D", () => {
 });
 
 test("a preset stays an unresolved intent until it meets a view's dates", () => {
-  assert.deepEqual(parseRangeQuery("preset=7"), { kind: "preset", preset: 7 });
+  assert.deepEqual(parseRangeQuery("preset=7"), {
+    ok: true,
+    intent: { kind: "preset", preset: 7 },
+  });
   assert.deepEqual(parseRangeQuery("preset=30&from=2026-09-01&to=2026-09-12"), {
-    kind: "preset",
-    preset: 30,
+    ok: false,
+    code: "invalid-range",
   });
   assert.deepEqual(
     [parseRangeQuery("preset=99"), parseRangeQuery("preset=")],
-    [undefined, undefined],
+    [
+      { ok: false, code: "invalid-range" },
+      { ok: false, code: "invalid-range" },
+    ],
   );
   assert.deepEqual(serializeRangeQuery({ kind: "preset", preset: 7 }), [
     ["preset", "7"],
@@ -86,19 +124,21 @@ test("a preset stays an unresolved intent until it meets a view's dates", () => 
 
 test("a custom range survives only as a valid pair", () => {
   assert.deepEqual(parseRangeQuery("from=2026-09-01&to=2026-09-12"), {
-    kind: "custom",
-    from: "2026-09-01",
-    to: "2026-09-12",
+    ok: true,
+    intent: { kind: "custom", from: "2026-09-01", to: "2026-09-12" },
   });
   for (const query of [
-    "",
     "from=2026-09-01",
     "to=2026-09-12",
     "from=2026-09-12&to=2026-09-01",
     "from=x&to=y",
     "preset=99",
   ]) {
-    assert.equal(parseRangeQuery(query), undefined, query);
+    assert.deepEqual(
+      parseRangeQuery(query),
+      { ok: false, code: "invalid-range" },
+      query,
+    );
   }
   assert.deepEqual(
     serializeRangeQuery({

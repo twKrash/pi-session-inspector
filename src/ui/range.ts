@@ -1,17 +1,9 @@
 /**
- * The pure range contract (design §5.1-§5.6): presets anchored on a view's own
- * latest observed UTC date, inclusive boundaries, a validated custom pair, one
- * filter for every tab, and honest aggregate membership.
- *
- * Every exported function below is inlined into the generated document with
- * `Function.prototype.toString()` and evaluated with no module scope, so each
- * one is self-contained: no module-scope constant, no runtime import, no Node
- * or DOM API, no clock read, and no module-scope regex. Constants are declared
- * inside the function that uses them, and shared logic is written inline rather
- * than as a named nested helper: the transpiler wraps named nested functions
- * with a module-scope `__name` helper, which would break the inlined source.
- * Type-only declarations are erased at runtime and carry no such requirement.
- */
+ * The pure range contract (design §5.1-§5.6): strict bounded input validation,
+ * presets anchored on a view's own latest observed UTC date, inclusive
+ * boundaries, a validated custom pair, one filter for every tab, and honest
+ * aggregate membership. Range parsing is a TypeScript boundary; browser route
+ * consumers are migrated separately.
 
 /** The three bounded presets. Module-internal: `RangeState`/`RangeIntent` name it. */
 type RangePreset = 7 | 14 | 30;
@@ -172,19 +164,38 @@ export function serializeRangeQuery(intent: RangeIntent): [string, string][] {
  * pair is required. A lone endpoint, a malformed date, an empty string, and an
  * unknown or empty preset are all rejected — never partially applied.
  */
-export function parseRangeQuery(query: string): RangeIntent | undefined {
-  const DATE = /^\d{4}-\d{2}-\d{2}$/;
-  if (typeof query !== "string") return undefined;
+export type RangeQueryResult =
+  | { ok: true; intent?: RangeIntent }
+  | { ok: false; code: "invalid-range" };
+
+export function parseRangeQuery(search: string): RangeQueryResult {
+  const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const invalid = { ok: false, code: "invalid-range" } as const;
+  if (typeof search !== "string" || search.length > 512) return invalid;
+  if (search === "") return { ok: true };
   const params = new Map<string, string>();
-  for (const part of query.split("&")) {
-    if (part === "") continue;
+  for (const part of search.split("&")) {
     const separator = part.indexOf("=");
-    if (separator < 1) continue;
-    const key = part.slice(0, separator);
-    if (!params.has(key)) params.set(key, part.slice(separator + 1));
+    if (separator < 1) return invalid;
+    let key: string;
+    let value: string;
+    try {
+      key = decodeURIComponent(part.slice(0, separator));
+      value = decodeURIComponent(part.slice(separator + 1));
+    } catch {
+      return invalid;
+    }
+    if (
+      (key !== "preset" && key !== "from" && key !== "to") ||
+      value === "" ||
+      params.has(key)
+    )
+      return invalid;
+    params.set(key, value);
   }
   const preset = params.get("preset");
   if (preset !== undefined) {
+    if (params.has("from") || params.has("to")) return invalid;
     const resolved: RangePreset | undefined =
       preset === "7"
         ? 7
@@ -193,15 +204,62 @@ export function parseRangeQuery(query: string): RangeIntent | undefined {
           : preset === "30"
             ? 30
             : undefined;
-    if (resolved === undefined) return undefined;
-    return { kind: "preset", preset: resolved };
+    return resolved === undefined
+      ? invalid
+      : { ok: true, intent: { kind: "preset", preset: resolved } };
   }
   const from = params.get("from");
   const to = params.get("to");
-  if (from === undefined || to === undefined) return undefined;
-  if (!DATE.test(from) || !DATE.test(to)) return undefined;
-  if (from > to) return undefined;
-  return { kind: "custom", from, to };
+  if (from === undefined || to === undefined) return invalid;
+  const fromMatch = DATE.exec(from);
+  const toMatch = DATE.exec(to);
+  if (fromMatch === null || toMatch === null || from > to) return invalid;
+  const fromDate = new Date(0);
+  fromDate.setUTCFullYear(
+    Number(fromMatch[1]),
+    Number(fromMatch[2]) - 1,
+    Number(fromMatch[3]),
+  );
+  const toDate = new Date(0);
+  toDate.setUTCFullYear(
+    Number(toMatch[1]),
+    Number(toMatch[2]) - 1,
+    Number(toMatch[3]),
+  );
+  if (
+    fromDate.getUTCFullYear() !== Number(fromMatch[1]) ||
+    fromDate.getUTCMonth() !== Number(fromMatch[2]) - 1 ||
+    fromDate.getUTCDate() !== Number(fromMatch[3]) ||
+    toDate.getUTCFullYear() !== Number(toMatch[1]) ||
+    toDate.getUTCMonth() !== Number(toMatch[2]) - 1 ||
+    toDate.getUTCDate() !== Number(toMatch[3])
+  )
+    return invalid;
+  return { ok: true, intent: { kind: "custom", from, to } };
+}
+
+export function parseRangeOptions(input: {
+  preset?: string;
+  from?: string;
+  to?: string;
+}): RangeQueryResult {
+  const invalid = { ok: false, code: "invalid-range" } as const;
+  if (input === null || typeof input !== "object") return invalid;
+  if (
+    Object.keys(input).some(
+      (key) => key !== "preset" && key !== "from" && key !== "to",
+    )
+  )
+    return invalid;
+  const parts: string[] = [];
+  for (const key of ["preset", "from", "to"] as const) {
+    const value = input[key];
+    if (value !== undefined) {
+      if (typeof value !== "string") return invalid;
+      parts.push(`${key}=${value}`);
+    }
+  }
+  return parseRangeQuery(parts.join("&"));
 }
 
 /**
