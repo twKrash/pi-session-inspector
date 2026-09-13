@@ -140,9 +140,9 @@ discovery marker-evidence callback tests the tracking marker alone, header, id a
 parse failures are named `session-unreadable` (`sourceReadFailure` in
 `src/ui/load-history.ts`), and `marker-unavailable` is only a genuine
 marker-evidence failure. §3.1.1's table row is corrected inline. (The shipped
-`CoverageReason` comment in `src/storage/history.ts` still carries the older, wider
-"marker/header/id" wording; it is a comment on the same vocabulary and was not
-edited by this documentation task.)
+`CoverageReason` comment in `src/storage/history.ts` carried the older, wider
+"marker/header/id" wording; the final review-fix wave corrected that comment, which
+now states the marker-only wording.)
 
 ### R9/R13 + the Task 4 fix — the per-session dated window has THREE partial causes, one flag, published on global rows too
 
@@ -184,8 +184,8 @@ behaviour (progress-ledger ruling R12). Measured on the reference fixture
 client range machinery **+7,131 B**, catalog **+331 B**, payload **+607 B**; the
 `Function.prototype.toString()` inlining is design-mandated) → **105,882 B**
 before the routing slice → **126,663 B** at Task 14 → **139,327 chars** before
-the final review-fix wave → **140,107 chars / 140,285 bytes** at release, i.e.
-**+70,886 chars (+102.4 %)** over the baseline. §12's P0-B "Size gate" bullet
+the final review-fix wave → **140,432 chars / 140,611 bytes** at release, i.e.
+**+71,211 chars (+102.9 %)** over the baseline. §12's P0-B "Size gate" bullet
 is annotated with this outcome; no spec-mandated behaviour was reduced to fit
 the gate.
 
@@ -963,7 +963,7 @@ its own data.
 
 | Section | View | Range-filtered | Not filtered (and how it is labelled) |
 | --- | --- | --- | --- |
-| current | Overview metrics | cost, tokens, generations, tool calls, observed days; duration is the session **span** (first to last native record), the one metric card labelled `All report dates` | session identity (`sessionId`, status) |
+| current | Overview metrics | cost, tokens, generations, tool calls, observed days; duration is the session **span** (first to last native record), a metric card labelled `All report dates` | session identity (`sessionId`, status) |
 | current | Models | per-model generations/tokens/cost **within range** | — |
 | current | Tools (summary + calls) | calls, status counts, known usage, last-used timestamp | inventory `source` label (static per name) |
 | current | Agents | child runs whose timestamp falls in range; run status/usage counts | parent relationship (identity, not a metric) |
@@ -1100,8 +1100,8 @@ Rules:
 > satisfied: 69,221 B → 84,039 B after the range slice (inlined range module
 > +5,292 B, client range machinery +7,131 B, catalog +331 B, payload +607 B) →
 > 105,882 B before the routing slice → 126,663 B at Task 14 → 139,327 chars before
-> the final review-fix wave → **140,107 chars / 140,285 bytes** at release
-> (+70,886 chars, +102.4 %). See §0.5 (R11/R12) and the annotated §12 P0-B size
+> the final review-fix wave → **140,432 chars / 140,611 bytes** at release
+> (+71,211 chars, +102.9 %). See §0.5 (R11/R12) and the annotated §12 P0-B size
 > gate. Tables that are intentionally not range-filtered carry the projection's
 > explicit `All report dates` label (§5.2).
 
@@ -1943,8 +1943,8 @@ the v0.8.0 baseline is 588 passing tests at `81f65b7`.
 > **Execution amendment (R18/R12).** This gate is **knowingly exceeded and
 > recorded**, not met: 69,221 B baseline → **84,039 B** after P0-B (**+21.41 %**, the
 > ceiling was 79,604 B; over by 4,435 B) → 105,882 B before P1-F → 126,663 B at
-> Task 14 → 139,327 chars before the final review-fix wave → **140,107 chars /
-> 140,285 bytes** at release (**+70,886 chars, +102.4 %**). The measured P0-B
+> Task 14 → 139,327 chars before the final review-fix wave → **140,432 chars /
+> 140,611 bytes** at release (**+71,211 chars, +102.9 %**). The measured P0-B
 > breakdown: inlined range module **+5,292 B**, client range machinery **+7,131 B**, catalog **+331 B**,
 > payload **+607 B** (the remainder is the fixture's own dated/day content). The
 > `Function.prototype.toString()` inlining is design-mandated and the emitted
