@@ -17,3 +17,37 @@ Read [research](docs/research/pi-ecosystem.md), [spec](docs/specs/pi-session-ins
 ## Required checks
 
 Run focused tests, typecheck, lint, and `npm pack --dry-run` for packaging changes. Add/update sanitized fixtures for replay, recovery, privacy, and integration changes. Update spec/ADR for architecture boundary changes.
+
+## Change delivery
+
+Prefer small, independently mergeable pull requests.
+
+- A milestone may span multiple PRs.
+- Target 2–5 SDD tasks per PR.
+- Prefer roughly ≤5–8 production files and ≤1–3k meaningful changed lines per PR
+  when the architecture permits it.
+- Every PR must leave `main` green and must not depend on unmerged later work.
+- After merging a PR, start the next worktree/branch from the updated `main`.
+- Run focused verification, full tests, typecheck, lint and format checks for
+  every PR.
+- Perform a whole-PR review before merge.
+- Do not accumulate an entire multi-slice milestone on one feature branch.
+
+## Agent planning artifacts
+
+Superpowers execution artifacts are local working material, not product
+documentation.
+
+Keep local-only:
+- `.superpowers/specs/`
+- `.superpowers/plans/`
+- `.superpowers/sdd/`
+- task briefs, ledgers, review reports and scratch artifacts
+
+Keep tracked when durable:
+- `docs/architecture/adr/`
+- product/user-facing specs under `docs/specs/`
+- `CHANGELOG.md`
+
+Use `.git/info/exclude` for developer-local Superpowers artifacts when possible
+instead of imposing those ignores on every repository consumer.

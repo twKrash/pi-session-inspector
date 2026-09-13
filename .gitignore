@@ -10,3 +10,4 @@ graphify-out/
 report*.json
 .pi/
 .superpowers/
+docks/superpowers
