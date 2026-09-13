@@ -19,7 +19,7 @@ const ISO_INSTANT =
 const MAX_TIMESTAMP_LENGTH = 35;
 
 /** Canonical integration keys accepted by the report projection (spec §11). */
-export const INTEGRATION_KEYS: ReadonlySet<string> = new Set<IntegrationKey>([
+const INTEGRATION_KEYS: ReadonlySet<string> = new Set<IntegrationKey>([
   "context",
   "rtk",
   "ponytail",

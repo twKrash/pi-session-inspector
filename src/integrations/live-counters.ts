@@ -38,7 +38,7 @@ function readResolution(value: unknown): string {
  * oversized `requestId`; a malformed ID yields no attribution rather than a
  * hash of a fallback. The raw producer ID never leaves this function.
  */
-export function readRequestAttribution(
+function readRequestAttribution(
   payload: unknown,
   sessionId: string,
 ): { request: string } | undefined {
@@ -62,7 +62,7 @@ export function readRequestAttribution(
 }
 
 /** Extracts only a bounded skill identity; the remainder is never retained. */
-export function readSkillCommandName(text: string): string | undefined {
+function readSkillCommandName(text: string): string | undefined {
   if (!text.startsWith(SKILL_PREFIX)) return undefined;
   const rest = text.slice(SKILL_PREFIX.length);
   const end = rest.search(/\s/);

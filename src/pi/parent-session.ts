@@ -8,7 +8,7 @@ import { isBoundedToken } from "../core/evidence.ts";
  * Callers own visibility (evidence health); no path text, filesystem error, or
  * candidate id ever accompanies it.
  */
-export const PARENT_SESSION_UNAVAILABLE = "parent-session-unavailable" as const;
+const PARENT_SESSION_UNAVAILABLE = "parent-session-unavailable" as const;
 
 export type ParentSessionDiagnostic = typeof PARENT_SESSION_UNAVAILABLE;
 

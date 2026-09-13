@@ -407,15 +407,6 @@ export type HtmlReport =
   | { kind: "history"; report: HistoryReport }
   | { kind: "global"; report: GlobalReport };
 
-export type DailyActivityRow = {
-  date: string;
-  sessions: number;
-  totalTokens: number;
-  cost: number;
-  generations?: number;
-  tools?: number;
-};
-
 type SafeUsage = NonNullable<SessionReport["usage"]>;
 type CompositionKey =
   | "generations"

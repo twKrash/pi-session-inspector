@@ -41,7 +41,8 @@
     "test": "node --import tsx --test tests/**/*.test.ts",
     "benchmark:smoke": "node --expose-gc --import tsx benchmark/run.ts --mode=smoke",
     "benchmark:release": "node --expose-gc --import tsx benchmark/run.ts --mode=release --out=benchmark/artifacts/release-latest.json",
-    "knip": "knip"
+    "knip": "knip",
+    "prepare": "node scripts/install-hooks.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",

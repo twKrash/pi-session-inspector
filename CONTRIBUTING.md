@@ -8,6 +8,10 @@ Pi Session Inspector is currently a design baseline. Do not add production code 
 - npm
 - Latest supported Pi release
 
+From a repository checkout, `npm install` configures `.githooks/` through the
+`prepare` script. Run `npm run prepare` after a fresh clone when needed. The
+pre-commit hook runs `npm run knip`.
+
 ## Rules
 
 - Read [research](docs/research/pi-ecosystem.md), [spec](docs/specs/pi-session-inspector-v1.md), [implementation plan](docs/plans/pi-session-inspector-v1-implementation.md), [ADRs](docs/architecture/README.md), and `AGENTS.md` first. These are canonical; do not create a competing planning source.

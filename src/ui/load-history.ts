@@ -424,7 +424,7 @@ async function scanHistory(options: LoadHistoryOptions): Promise<HistoryScan> {
 }
 
 /** Deterministic source-read validation; every failure it can name maps to ONE reason. */
-export function sourceReadFailure(
+function sourceReadFailure(
   parsed: {
     id?: unknown;
     hasMalformedJson?: unknown;

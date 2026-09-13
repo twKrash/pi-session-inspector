@@ -174,7 +174,7 @@ the roadmap-only change itself does not.
 
 ### Pre-M8.2 — static inventory and dead-code cleanup
 
-**Status:** Planned. **Depends on:** Pre-M8.1.
+**Status:** Complete. **Depends on:** Pre-M8.1.
 
 Use static analysis to find unused exports, files, dependencies, and duplicated
 code, but treat every finding as a hypothesis. Dynamic registration, Pi
@@ -197,6 +197,10 @@ and compatibility shims can look unused while remaining required.
 5. Keep raw audit output local unless a finding changes a durable architecture,
    security, or release decision; promote only that decision to an ADR,
    roadmap, spec, or CHANGELOG.
+
+**Outcome:** Knip now records validated manual/test seams and intentional type
+contracts; seven stale exports/types were removed. The jscpd source clones were
+reviewed without a safe production extraction.
 
 **Acceptance gates**
 

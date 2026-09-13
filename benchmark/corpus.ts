@@ -10,7 +10,7 @@ export const CORPUS_VERSION = 1;
 export const CORPUS_SEED = 20260907;
 export const CORPUS_RECORDS = 10_000;
 export const CORPUS_TARGET_BYTES = 100 * 1024 * 1024;
-export const CORPUS_CHECKPOINTS = 1_000;
+const CORPUS_CHECKPOINTS = 1_000;
 
 const FILLER = "corpus-fixed-seed-filler-".repeat(24);
 const PROVIDERS = ["acme", "globex", "initech"];
