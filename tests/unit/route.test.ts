@@ -135,6 +135,49 @@ test("unknown ids are dropped, never echoed", () => {
   );
 });
 
+test("an untrusted capability table parses as no tabs instead of throwing", () => {
+  const untrusted = {
+    scope: "active" as const,
+    capabilities: { current: null, history: 7, global: ["overview"] },
+    knownIds: new Set<string>(),
+  } as unknown as typeof defaults;
+  const parsed = parseRoute("#/current/models", untrusted);
+  assert.deepEqual(
+    [parsed.route.tab, parsed.notice],
+    ["overview", "tab-unavailable"],
+  );
+  const view = deriveView(
+    parsed.route,
+    { current: null, global: ["overview"] } as unknown as typeof capabilities,
+    observed,
+  );
+  assert.deepEqual([view.visibleTabs, view.activeTab], [[], "overview"]);
+});
+
+test("a section with no tab stays silent about its own default tab", () => {
+  const none = { current: [], history: [], global: [] };
+  // An unavailable view renders no tab at all: the section default is silent,
+  // and only a tab the route asks for beyond it is a real degradation.
+  const silent = deriveView(
+    { section: "current", tab: "overview", scope: "active" },
+    none,
+    observed,
+  );
+  assert.deepEqual(
+    [silent.visibleTabs, silent.activeTab, silent.notice],
+    [[], "overview", undefined],
+  );
+  const asked = deriveView(
+    { section: "current", tab: "models", scope: "active" },
+    none,
+    observed,
+  );
+  assert.deepEqual(
+    [asked.activeTab, asked.notice],
+    ["overview", "tab-unavailable"],
+  );
+});
+
 test("deriveView exposes exactly the state that drives rendering", () => {
   const view = deriveView(
     {

@@ -498,9 +498,11 @@ test("embeds deterministic current, history, and global view contracts", () => {
   for (const html of [renderHtml(current), history, global]) {
     const script = scriptOf(html);
     assert.match(script, /selectedDays\(\)/);
-    assert.match(script, /state\.query/);
-    assert.match(script, /state\.sort/);
-    assert.match(script, /state\.metric/);
+    // One active table: its query and sort live in the route (§9.5), and the one
+    // chart metric in the view's own ephemeral settings.
+    assert.match(script, /activeQuery\(\)/);
+    assert.match(script, /activeSort\(\)/);
+    assert.match(script, /activeMetric\(\)/);
   }
 });
 
@@ -789,7 +791,7 @@ test("precomputes per-tab rows instead of re-deriving them in the browser", () =
     "ledger",
   ]) {
     assert.equal(
-      script.includes(`state.tab==="${tab}"`),
+      script.includes(`tab==="${tab}"`),
       true,
       `missing tab branch: ${tab}`,
     );
@@ -1026,9 +1028,11 @@ test("renders a history session table with the approved columns and drill-down",
     script,
     /\[tr\("table\.session"\),tr\("table\.duration"\),tr\("table\.tokens"\),tr\("table\.generations"\),tr\("table\.agents"\),tr\("table\.status"\),tr\("table\.cost"\)\]/,
   );
-  assert.match(script, /historySessions\(\)\[state\.session\]/);
+  // A history row's drill-down writes the session id into the route and the
+  // client resolves it by that id, never by an array index.
+  assert.match(script, /selectedSession\(\)/);
   assert.match(script, /dataset\.session/);
-  assert.match(script, /state\.session=null/);
+  assert.match(script, /session:null/);
   // History keeps the shared tab renderer instead of hiding it.
   assert.equal(
     script.includes('tabsNode.hidden=state.range==="history"'),
@@ -1043,15 +1047,19 @@ test("preserves scroll position and search focus across re-renders", () => {
   const script = scriptOf(renderHtml(richCurrent));
   assert.match(script, /window\.scrollY/);
   assert.match(script, /window\.scrollTo\(0,scrollY\)/);
-  assert.match(script, /state\.query=event\.target\.value/);
+  // A typed query is the active table's own route state, so Back restores it.
+  assert.match(script, /withTable\(\{query:event\.target\.value\}\)/);
   assert.match(script, /setSelectionRange/);
 });
 
 test("filters presets and custom ranges with inclusive UTC validation", () => {
   const script = scriptOf(renderHtml(historyReport()));
-  // The client calls the inlined resolver with the active view's own intent;
-  // the old per-section `latestDate()` scan no longer exists.
-  assert.match(script, /activeRange=\(\)=>resolveRange\(activeIntent\(\)/);
+  // The one derivation resolves the active view's own intent against its own
+  // observed dates, and the old per-section `latestDate()` scan is gone.
+  assert.match(
+    script,
+    /deriveView\(state,stateCapabilities\(state\),rangeDates\(\)\)/,
+  );
   assert.match(script, /from>to/);
   assert.match(script, /tr\("range\.error"\)/);
   assert.match(script, /data-days/);

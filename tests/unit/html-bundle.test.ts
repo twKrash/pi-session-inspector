@@ -1013,16 +1013,23 @@ test("inventory projects as environment state, never as activity", async () => {
   );
 
   // The browser groups the inventory under one Environment entry: commands and
-  // skills are no longer primary tabs, and every environment view stays out of
-  // the range-filtered tab strip.
+  // skills are no longer primary tabs, and the tab strip is built from the
+  // payload's capability table rather than a client-side literal.
   assert.equal(
     html.includes(
       'const TABS=["overview","models","tools","environment","agents","integrations","errors","ledger"]',
     ),
+    false,
+    "the tab strip must come from the capability table",
+  );
+  assert.equal(html.includes("derived.visibleTabs.map"), true);
+  assert.equal(
+    html.includes('"historySession":["overview","models"'),
     true,
+    "a selected history session offers every tab (design §9.3)",
   );
   for (const fragment of [
-    'state.tab==="environment"',
+    'tab==="environment"',
     'tr("env.available"',
     'tr("env.observed"',
     'tr("env.invocationsObserved"',

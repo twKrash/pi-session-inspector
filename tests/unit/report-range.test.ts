@@ -37,6 +37,7 @@ import {
   modelWithToolError,
   modelWithToolErrorAndTwoChildren,
 } from "../helpers/bundle-scenarios.ts";
+import { runClient, type StubElement } from "../helpers/client-harness.ts";
 
 function bundleFixture(): InspectorBundle {
   return JSON.parse(
@@ -182,289 +183,15 @@ test("the emitted client script parses and wires the one range", () => {
     "event.target.closest",
     'group:"member"',
     'group:"unknown"',
-    "resolveRange(activeIntent()",
+    // The one derivation resolves the active view's own intent, so the range and
+    // every rendered value come from the same place (design §9.2).
+    "deriveView(state,stateCapabilities(state),rangeDates())",
   ]) {
     assert.equal(script.includes(fragment), true, fragment);
   }
   assert.equal(/__name\(/.test(script), false);
   assert.equal(/Date\.now|Math\.random|new Date\(\)/.test(script), false);
 });
-
-type StubElement = HarnessNode & {
-  id: string;
-  tagName: string;
-  className: string;
-  textContent: string;
-  hidden: boolean;
-  value: string;
-  placeholder: string;
-  dataset: Record<string, string>;
-  style: Record<string, string>;
-  attributes: Record<string, string>;
-  children: StubElement[];
-  parentNode: StubElement | null;
-  listeners: Record<string, ((event: unknown) => void)[]>;
-  append(...nodes: unknown[]): void;
-  replaceChildren(...nodes: unknown[]): void;
-  setAttribute(name: string, value: unknown): void;
-  removeAttribute(name: string): void;
-  querySelector(selector: string): StubElement | null;
-  querySelectorAll(selector: string): StubElement[];
-  closest(selector: string): StubElement | null;
-  addEventListener(type: string, listener: (event: unknown) => void): void;
-  classList: { add(value: string): void; toggle(value: string): boolean };
-  focus(): void;
-  setSelectionRange(): void;
-  showModal(): void;
-  close(): void;
-};
-
-/** The client is a classic script; its `instanceof Node` checks need a class. */
-class HarnessNode {}
-
-function descendant(node: StubElement, selector: string): StubElement | null {
-  for (const child of node.children) {
-    const matches = selector.startsWith(".")
-      ? child.className.split(" ").includes(selector.slice(1))
-      : child.tagName === selector;
-    if (matches) return child;
-    const nested = descendant(child, selector);
-    if (nested !== null) return nested;
-  }
-  return null;
-}
-
-function stubElement(
-  tagName: string,
-  onAppend?: (element: StubElement) => void,
-): StubElement {
-  const element = new HarnessNode() as StubElement;
-  element.id = "";
-  element.tagName = tagName;
-  element.className = "";
-  element.textContent = "";
-  element.hidden = false;
-  element.value = "";
-  element.placeholder = "";
-  element.dataset = {};
-  element.style = {};
-  element.attributes = {};
-  element.children = [];
-  element.parentNode = null;
-  element.listeners = {};
-  element.append = (...nodes) => {
-    for (const node of nodes) {
-      if (node instanceof HarnessNode) {
-        (node as StubElement).parentNode = element;
-        element.children.push(node as StubElement);
-        onAppend?.(node as StubElement);
-      }
-    }
-  };
-  element.replaceChildren = (...nodes) => {
-    element.children = [];
-    element.append(...nodes);
-  };
-  element.setAttribute = (name, value) => {
-    element.attributes[name] = String(value);
-    if (name === "id") element.id = String(value);
-    if (name === "class") element.className = String(value);
-  };
-  element.removeAttribute = (name) => {
-    delete element.attributes[name];
-  };
-  element.querySelector = (selector) => descendant(element, selector);
-  element.querySelectorAll = (selector) => {
-    const found: StubElement[] = [];
-    for (const child of element.children) {
-      if (
-        selector.startsWith(".")
-          ? child.className.split(" ").includes(selector.slice(1))
-          : child.tagName === selector
-      ) {
-        found.push(child);
-      }
-      found.push(...child.querySelectorAll(selector));
-    }
-    return found;
-  };
-  element.closest = (selector) => {
-    let node: StubElement | null = element;
-    while (node !== null) {
-      const matches = selector.startsWith(".")
-        ? node.className.split(" ").includes(selector.slice(1))
-        : node.tagName === selector;
-      if (matches) return node;
-      node = node.parentNode;
-    }
-    return null;
-  };
-  element.addEventListener = (type, listener) => {
-    if (element.listeners[type] === undefined) element.listeners[type] = [];
-    element.listeners[type].push(listener);
-  };
-  element.classList = { add: () => {}, toggle: () => false };
-  element.focus = () => {};
-  element.setSelectionRange = () => {};
-  element.showModal = () => {};
-  element.close = () => {};
-  return element;
-}
-
-type ClientInternals = {
-  state: {
-    section: string;
-    scope: string;
-    tab: string;
-    session: number | null;
-    envTab: string;
-    query: string;
-  };
-  rangeIntents: Record<string, unknown>;
-  render(): void;
-};
-
-/**
- * Runs the emitted client against a stub document. The generated document is
- * 40 KB of client code that no other test executes, so at least one test has to
- * render it for real: the store below is what the client's own `q(id)` reads.
- */
-function runClient(bundle: InspectorBundle): {
-  client: ClientInternals;
-  preset(days: string): void;
-  submit(): void;
-  click(node: StubElement): void;
-  element(id: string): StubElement;
-  texts(node: StubElement): string[];
-} {
-  const html = renderInspectorBundle(bundle);
-  const payload =
-    /<script type="application\/json" id="report-data">([\s\S]*?)<\/script>/.exec(
-      html,
-    )?.[1] ?? "";
-  const catalog =
-    /<script type="application\/json" id="catalog-data">([\s\S]*?)<\/script>/.exec(
-      html,
-    )?.[1] ?? "";
-  const script =
-    /<script>\n([\s\S]*)\n<\/script><\/body>/.exec(html)?.[1] ?? "";
-  // Every id the server-rendered markup carries; anything else is absent, so
-  // the client's create-on-demand paths (and any stale id) behave as in a browser.
-  const markupIds = [
-    "navigation",
-    "breadcrumb",
-    "kicker",
-    "title",
-    "subtitle",
-    "theme",
-    "session-label",
-    "scope-note",
-    "wal-detail",
-    "scope",
-    "scope-sub",
-    "scope-fixed",
-    "time-range",
-    "range-name",
-    "range-dates",
-    "custom-range",
-    "date-dialog",
-    "date-form",
-    "date-title",
-    "date-from",
-    "date-to",
-    "date-error",
-    "date-cancel",
-    "tabs",
-    "view",
-    "announcement",
-    "report-data",
-    "catalog-data",
-    // The server renders the truncation notice only for a capped view.
-    ...(html.includes('id="range-truncated"') ? ["range-truncated"] : []),
-  ];
-  const store = new Map<string, StubElement>();
-  const register = (element: StubElement): void => {
-    if (element.id !== "") store.set(element.id, element);
-  };
-  const dayButtons = ["7", "14", "30"].map((days) => {
-    const button = stubElement("button", register);
-    button.dataset.days = days;
-    return button;
-  });
-  const documentStub = {
-    body: stubElement("body"),
-    activeElement: null,
-    listeners: {} as Record<string, (event: unknown) => void>,
-    getElementById: (id: string): StubElement | null => {
-      const existing = store.get(id);
-      if (existing !== undefined) return existing;
-      if (!markupIds.includes(id)) return null;
-      const created = stubElement(id === "tabs" ? "nav" : "div", register);
-      created.id = id;
-      created.parentNode = stubElement("div");
-      created.textContent =
-        id === "report-data" ? payload : id === "catalog-data" ? catalog : "";
-      store.set(id, created);
-      return created;
-    },
-    createElement: (name: string): StubElement => stubElement(name, register),
-    createElementNS: (_namespace: string, name: string): StubElement =>
-      stubElement(name, register),
-    querySelectorAll: (selector: string): StubElement[] =>
-      selector === "[data-days]" ? dayButtons : [],
-    addEventListener: (
-      type: string,
-      listener: (event: unknown) => void,
-    ): void => {
-      documentStub.listeners[type] = listener;
-    },
-  };
-  const windowStub = { scrollX: 0, scrollY: 0, scrollTo: () => {} };
-  const factory = new Function(
-    "document",
-    "window",
-    "Node",
-    `${script}\nreturn {state:state,rangeIntents:rangeIntents,render:render};`,
-  ) as (document: unknown, window: unknown, node: unknown) => ClientInternals;
-  const client = factory(documentStub, windowStub, HarnessNode);
-  const texts = (node: StubElement): string[] => {
-    const collected = node.textContent === "" ? [] : [node.textContent];
-    for (const child of node.children) collected.push(...texts(child));
-    return collected;
-  };
-  return {
-    client,
-    preset: (days) => {
-      const button = dayButtons.find(
-        (candidate) => candidate.dataset.days === days,
-      );
-      if (button === undefined) throw new Error(`no preset ${days}`);
-      for (const listener of button.listeners.click ?? []) {
-        listener({ currentTarget: button });
-      }
-    },
-    submit: () => {
-      for (const listener of documentStub.getElementById("date-form")?.listeners
-        .submit ?? []) {
-        listener({ preventDefault: () => {} });
-      }
-    },
-    // The client delegates every button to one document-level click handler, so
-    // a rendered control is exercised through that handler, not by calling the
-    // state logic the handler would have reached.
-    click: (node) => {
-      const listener = documentStub.listeners.click;
-      if (listener === undefined) throw new Error("no document click handler");
-      listener({ target: node });
-    },
-    element: (id) => {
-      const found = documentStub.getElementById(id);
-      if (found === null) throw new Error(`no element #${id}`);
-      return found;
-    },
-    texts,
-  };
-}
 
 test("the client renders every section and tab from the one active range", () => {
   const harness = runClient(bundleFixture());
@@ -485,12 +212,12 @@ test("the client renders every section and tab from the one active range", () =>
   );
 
   // A preset is anchored on this view's own latest observed date, not a clock.
-  client.rangeIntents.current = { kind: "preset", preset: 7 };
+  client.state.range = { kind: "preset", preset: 7 };
   client.render();
   assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
 
   // A custom single day narrows every range-filtered metric to that day.
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2026-02-02",
     to: "2026-02-02",
@@ -560,7 +287,7 @@ test("the client renders every section and tab from the one active range", () =>
   );
   assert.equal(outside.includes("$0.00"), false);
 
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2026-02-02",
     to: "2026-02-02",
@@ -568,7 +295,9 @@ test("the client renders every section and tab from the one active range", () =>
   client.render();
 
   for (const section of ["current", "history", "global"]) {
-    for (const session of section === "history" ? [null, 0] : [null]) {
+    for (const session of section === "history"
+      ? [null, "session-a"]
+      : [null]) {
       for (const tab of [
         "overview",
         "models",
@@ -617,7 +346,7 @@ test("the client groups unattributable history rows and never shows them as zero
   client.state.tab = "overview";
 
   // A range entirely inside the omitted history is unknown, never a zero row.
-  client.rangeIntents["history:aggregate"] = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -633,7 +362,7 @@ test("the client groups unattributable history rows and never shows them as zero
   );
 
   // A range that reaches before the retained window is in range and Known.
-  client.rangeIntents["history:aggregate"] = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2029-06-21",
@@ -665,7 +394,7 @@ test("an aggregate range with no in-range observation renders the empty state", 
   const { client, element, texts } = harness;
   const outside = { kind: "custom", from: "2020-01-01", to: "2020-12-31" };
 
-  client.rangeIntents.global = outside;
+  client.state.range = outside;
   client.state.section = "global";
   client.state.tab = "overview";
   client.render();
@@ -679,7 +408,7 @@ test("an aggregate range with no in-range observation renders the empty state", 
   assert.equal(global.includes("0"), false);
   assert.equal(global.includes("Observed days"), false);
 
-  client.rangeIntents["history:aggregate"] = outside;
+  client.state.range = outside;
   client.state.section = "history";
   client.state.session = null;
   client.render();
@@ -743,7 +472,7 @@ test("a truncated session outside the range still qualifies the aggregate as Kno
   // The range is inside session-a's retained window and entirely before
   // session-c's: the aggregate value is still only Known, and the excluded
   // session contributes nothing to the in-range sums.
-  client.rangeIntents["history:aggregate"] = {
+  client.state.range = {
     kind: "custom",
     from: "2026-02-01",
     to: "2026-02-02",
@@ -756,7 +485,7 @@ test("a truncated session outside the range still qualifies the aggregate as Kno
   assert.equal(outside.includes("$0.05"), false);
 
   // A range inside that session's own retained window is not partial.
-  client.rangeIntents["history:aggregate"] = {
+  client.state.range = {
     kind: "custom",
     from: "2029-06-21",
     to: "2029-06-21",
@@ -810,7 +539,7 @@ test("the current truncation notice fires only for a range inside the retained w
   assert.equal(element("range-truncated").hidden, true);
 
   // A range reaching before the retained window is flagged.
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -829,7 +558,7 @@ test("the restore notice fires only when a range could fall back to a default", 
   unobserved.current.tree.daily = [];
   unobserved.current.tree.dailyTruncated = true;
   const withoutDates = runClient(unobserved);
-  withoutDates.client.rangeIntents.current = { kind: "preset", preset: 7 };
+  withoutDates.client.state.range = { kind: "preset", preset: 7 };
   withoutDates.client.render();
   assert.equal(withoutDates.element("range-name").textContent, "Unavailable");
   assert.equal(withoutDates.element("range-dates").textContent, "Unavailable");
@@ -837,7 +566,7 @@ test("the restore notice fires only when a range could fall back to a default", 
 
   // A view with observed dates still says when the chosen range did not apply.
   const withDates = runClient(bundleFixture());
-  withDates.client.rangeIntents.current = {
+  withDates.client.state.range = {
     kind: "custom",
     from: "2026-02-05",
     to: "2026-02-01",
@@ -965,7 +694,7 @@ test("the current Models tab renders the dated rows in range, not the aggregate"
   client.state.tab = "models";
 
   // 7D anchors on this view's latest observed day, so the older model day drops.
-  client.rangeIntents.current = { kind: "preset", preset: 7 };
+  client.state.range = { kind: "preset", preset: 7 };
   client.render();
   assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
   const seven = texts(element("view"));
@@ -975,7 +704,7 @@ test("the current Models tab renders the dated rows in range, not the aggregate"
   assert.equal(has(seven, "All report dates"), false);
 
   // 14D reaches the older day, so the same tab shows one more model row.
-  client.rangeIntents.current = { kind: "preset", preset: 14 };
+  client.state.range = { kind: "preset", preset: 14 };
   client.render();
   assert.equal(element("range-dates").textContent, "2026-01-20 → 2026-02-02");
   const fourteen = texts(element("view"));
@@ -998,7 +727,7 @@ test("the current Models tab stays range-scoped and never falls back to an aggre
 
   // A range with no in-range model day is a range statement, never the
   // session-wide "no generations" card and never the aggregate rows.
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1033,13 +762,13 @@ test("a history session detail keeps the aggregate model table labelled for all 
   const harness = runClient(bundleFixture());
   const { client, element, texts } = harness;
   client.state.section = "history";
-  client.state.session = 0;
+  client.state.session = "session-a";
   client.state.tab = "models";
 
   // This payload carries no dated model rows for its history sessions (the
   // pre-Task-8 shape and the legacy adapter), so its table is the aggregate
   // one, labelled, and it is never emptied by the range.
-  client.rangeIntents["history:session-a"] = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1068,7 +797,7 @@ test("a history session detail keeps the aggregate model table labelled for all 
   const legacy = runClient(bundleFixture());
   legacy.client.state.section = "current";
   legacy.client.state.tab = "models";
-  legacy.client.rangeIntents.current = {
+  legacy.client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1092,7 +821,7 @@ test("range-scoped empty tabs carry the range-qualified line", () => {
   const harness = runClient(bundleFixture());
   const { client, element, texts } = harness;
   client.state.section = "current";
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1254,7 +983,7 @@ test("the Tools and Agents tabs filter their canonical rows and drop the label i
   assert.equal(has(whole, "All report dates"), false);
 
   // Only the call made on the selected day survives the filter.
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2026-02-02",
     to: "2026-02-02",
@@ -1266,7 +995,7 @@ test("the Tools and Agents tabs filter their canonical rows and drop the label i
 
   // A range with no in-range call is a range statement, never the session-wide
   // "no native calls" card and never the labelled aggregate rows.
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1284,7 +1013,7 @@ test("the Tools and Agents tabs filter their canonical rows and drop the label i
   // fixture's run is observed on the selected day, so its summary and its row
   // render for that day and neither renders for a range it cannot be placed in.
   client.state.tab = "agents";
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2026-02-02",
     to: "2026-02-02",
@@ -1293,7 +1022,7 @@ test("the Tools and Agents tabs filter their canonical rows and drop the label i
   const observed = texts(element("view"));
   assert.equal(observed.includes("Child runs"), true);
   assert.equal(observed.includes("1 of 1 runs reported usage"), true);
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1472,11 +1201,11 @@ test("a history session detail filters its dated model rows like the current sec
   const harness = runClient(bundle);
   const { client, element, texts } = harness;
   client.state.section = "history";
-  client.state.session = 0;
+  client.state.session = "session-a";
   client.state.tab = "models";
 
   // 7D anchors on this session's own latest observed day, so the older row drops.
-  client.rangeIntents["history:session-a"] = { kind: "preset", preset: 7 };
+  client.state.range = { kind: "preset", preset: 7 };
   client.render();
   assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
   const seven = texts(element("view"));
@@ -1486,7 +1215,7 @@ test("a history session detail filters its dated model rows like the current sec
   assert.equal(has(seven, "All report dates"), false);
 
   // 14D reaches the older day, so the same detail shows one more model row.
-  client.rangeIntents["history:session-a"] = { kind: "preset", preset: 14 };
+  client.state.range = { kind: "preset", preset: 14 };
   client.render();
   assert.equal(element("range-dates").textContent, "2026-01-20 → 2026-02-02");
   assert.deepEqual(modelCells(texts(element("view")), "legacy"), [
@@ -1496,7 +1225,7 @@ test("a history session detail filters its dated model rows like the current sec
   ]);
 
   // The range never falls back to the aggregate rows of the same session detail.
-  client.rangeIntents["history:session-a"] = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1541,7 +1270,7 @@ test("a dated model source with no rows is Unavailable, never a range statement"
   session.modelsTruncated = false;
   const detail = runClient(history);
   detail.client.state.section = "history";
-  detail.client.state.session = 0;
+  detail.client.state.session = "session-a";
   detail.client.state.tab = "models";
   detail.client.render();
   const values = detail.texts(detail.element("view"));
@@ -1575,7 +1304,7 @@ test("the global truncation notice fires only for a range before the retained wi
   assert.equal(element("range-truncated").hidden, false);
 
   // A range inside the retained window is not reaching before it: no notice.
-  client.rangeIntents.global = {
+  client.state.range = {
     kind: "custom",
     from: "2026-02-01",
     to: "2026-02-02",
@@ -1584,7 +1313,7 @@ test("the global truncation notice fires only for a range before the retained wi
   assert.equal(element("range-truncated").hidden, true);
 
   // A range reaching before it is flagged again, with the one bounded sentence.
-  client.rangeIntents.global = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1656,6 +1385,19 @@ function envSubNav(view: StubElement, envTab: string): StubElement {
   return button;
 }
 
+/** The Environment sub-section the rendered sub-navigation has pressed. */
+function pressedEnvTab(view: StubElement): string {
+  for (const button of view.querySelectorAll("button")) {
+    if (
+      button.dataset.envTab !== undefined &&
+      button.attributes["aria-pressed"] === "true"
+    ) {
+      return button.dataset.envTab;
+    }
+  }
+  throw new Error("no pressed environment sub-navigation control");
+}
+
 /** One rendered table row, by a text its cells render exactly. */
 function rowOf(
   view: StubElement,
@@ -1707,7 +1449,7 @@ test("inventory renders as environment with no activity claim", async () => {
 
   // The selected range filters session activity, not inventory: a range with no
   // observations leaves every environment line exactly as it was.
-  client.rangeIntents.current = {
+  client.state.range = {
     kind: "custom",
     from: "2020-01-01",
     to: "2020-12-31",
@@ -1745,8 +1487,7 @@ test("skills availability is the inventory count, never a counter-only name", as
 
   // The counter-only name is still an activity row in the skills inventory, and
   // the panel-level summary above the table is unchanged by the sub-section.
-  client.state.envTab = "skills";
-  client.render();
+  harness.click(envSubNav(element("view"), "skills"));
   const retired = texts(rowOf(element("view"), texts, "retired-mode"));
   assert.equal(has(retired, "retired-mode"), true);
   assert.equal(has(retired, "5"), true);
@@ -1783,8 +1524,7 @@ test("skills availability is unavailable without an inventory snapshot", async (
   assert.equal(/Skills Available: \d/.test(rendered.join(" ")), false);
 
   // The rows are activity that outlived the inventory; they are still listed.
-  client.state.envTab = "skills";
-  client.render();
+  harness.click(envSubNav(element("view"), "skills"));
   assert.equal(
     has(texts(rowOf(element("view"), texts, "retired-mode")), "5"),
     true,
@@ -1810,13 +1550,13 @@ test("the Environment sub-navigation swaps inventory tables and keeps search", a
 
   // Commands is the default sub-section, and its inventory table keeps the
   // table-local search control beside its rows.
-  assert.equal(client.state.envTab, "commands");
+  assert.equal(pressedEnvTab(view()), "commands");
   assert.equal(has(rendered(), "cmd-1"), true);
   assert.equal(element("search").placeholder, "Filter this table…");
 
   // A sub-navigation control swaps the table inside the same Environment panel.
   harness.click(envSubNav(view(), "skills"));
-  assert.equal(client.state.envTab, "skills");
+  assert.equal(pressedEnvTab(view()), "skills");
   assert.equal(has(rendered(), "council-mode"), true);
   assert.equal(has(rendered(), "cmd-1"), false);
   assert.equal(element("search").placeholder, "Filter this table…");
@@ -1832,12 +1572,12 @@ test("the Environment sub-navigation swaps inventory tables and keeps search", a
   );
 
   harness.click(envSubNav(view(), "resources"));
-  assert.equal(client.state.envTab, "resources");
+  assert.equal(pressedEnvTab(view()), "resources");
   assert.equal(has(rendered(), "Sources"), true);
   assert.equal(has(rendered(), "council-mode"), false);
 
   // The retained search still narrows the visible inventory table.
-  client.state.query = "cmd-99";
+  client.state.table = { query: "cmd-99" };
   harness.click(envSubNav(view(), "commands"));
   assert.equal(has(rendered(), "cmd-99"), true);
   assert.equal(has(rendered(), "cmd-1"), false);

@@ -74,8 +74,9 @@ export type InspectorRoute = {
 
 /**
  * The tabs each section can render (design §9.3). A section missing from the
- * table (or listing no tab) can render none, so every requested tab is
- * unsupported there and the route falls back to the root tab.
+ * table (or listing no tab, or listing a value that is not an array) can render
+ * none, so every requested tab is unsupported there and the route falls back to
+ * the root tab.
  */
 export type SectionCapabilities = Readonly<
   Partial<Record<RouteSection, readonly string[]>>
@@ -276,8 +277,11 @@ export function parseRoute(hash: string, options: RouteOptions): ParsedRoute {
       : "current";
   const requestedTab =
     segments.length > 1 && segments[1] !== "" ? segments[1] : undefined;
-  const listed = options.capabilities[section];
-  const tabs: readonly string[] = listed === undefined ? [] : listed;
+  // A caller-supplied table is untrusted input: a missing or non-array section
+  // value lists no tab, so parsing stays total instead of throwing.
+  const sectionTable = options.capabilities;
+  const listed = sectionTable === undefined ? undefined : sectionTable[section];
+  const tabs: readonly string[] = Array.isArray(listed) ? listed : [];
   const defaultTab = tabs.length > 0 ? tabs[0] : "overview";
 
   let notice: RouteNotice | undefined;
@@ -305,12 +309,14 @@ export function parseRoute(hash: string, options: RouteOptions): ParsedRoute {
   if (rangeRequested && intent === undefined && notice === undefined) {
     notice = "range-restored";
   }
+  const knownIds = options.knownIds;
   const session = params.get("session");
   if (
     section === "history" &&
     session !== undefined &&
     session !== "" &&
-    options.knownIds.has(session)
+    knownIds !== undefined &&
+    knownIds.has(session)
   ) {
     route.session = session;
   }
@@ -322,7 +328,8 @@ export function parseRoute(hash: string, options: RouteOptions): ParsedRoute {
     if (
       ENTITY_KINDS.indexOf(kind) >= 0 &&
       id !== "" &&
-      options.knownIds.has(id)
+      knownIds !== undefined &&
+      knownIds.has(id)
     ) {
       route.entity = { kind: kind as EntityKind, id };
     }
@@ -349,6 +356,10 @@ export function parseRoute(hash: string, options: RouteOptions): ParsedRoute {
  * derived unchanged. With nothing observed there is no range to resolve — never
  * a clock-derived or sentinel one — and this function makes no claim about a
  * range the raw hash failed to restore: that notice belongs to `parseRoute`.
+ *
+ * `tab-unavailable` names a tab the route asked for beyond the section's own
+ * default, so a section that can render nothing (an unavailable view, whose
+ * capability list is empty) stays silent about its default tab.
  */
 export function deriveView(
   route: InspectorRoute,
@@ -358,15 +369,21 @@ export function deriveView(
   const requested = route.section;
   const activeSection: RouteSection =
     requested === "history" || requested === "global" ? requested : "current";
-  const listed = capabilities[activeSection];
-  const visibleTabs: string[] = listed === undefined ? [] : listed.slice();
+  const sectionTable: SectionCapabilities | undefined = capabilities;
+  const listed =
+    sectionTable === undefined ? undefined : sectionTable[activeSection];
+  const visibleTabs: string[] = Array.isArray(listed) ? listed.slice() : [];
   const defaultTab = visibleTabs.length > 0 ? visibleTabs[0] : "overview";
   let notice: RouteNotice | undefined;
   if (activeSection !== requested) notice = "section-unavailable";
   let activeTab = defaultTab;
   if (typeof route.tab === "string" && route.tab !== "") {
     if (visibleTabs.indexOf(route.tab) >= 0) activeTab = route.tab;
-    else if (notice === undefined) notice = "tab-unavailable";
+    // A section with nothing to render (an unavailable view) is silent about its
+    // own default tab: only a tab the route asks for beyond that default is a
+    // capability the document could not honour.
+    else if (notice === undefined && route.tab !== defaultTab)
+      notice = "tab-unavailable";
   }
   const view: RouteView = {
     activeSection,
