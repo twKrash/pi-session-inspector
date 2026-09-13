@@ -131,7 +131,9 @@ export type RouteView = {
  * `current` route carries its scope, a non-current route never does, a preset
  * serializes alone, and a custom range needs a well-formed, non-inverted pair.
  * A value that fails validation is dropped rather than echoed, so the emitted
- * hash is always re-parsable to the same route.
+ * hash is always re-parsable to the same route. Every optional field is
+ * absence-tolerant: a `null` range, entity or table is as absent as a missing
+ * one, so a hand-built route serializes just as totality requires.
  */
 export function serializeRoute(route: InspectorRoute): string {
   const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -156,7 +158,7 @@ export function serializeRoute(route: InspectorRoute): string {
     pairs.push(`scope=${route.scope === "tree" ? "tree" : "active"}`);
   }
   const range = route.range;
-  if (range !== undefined) {
+  if (range !== undefined && range !== null) {
     if (range.kind === "preset") {
       if (range.preset === 7 || range.preset === 14 || range.preset === 30) {
         pairs.push(`preset=${range.preset}`);
@@ -177,6 +179,7 @@ export function serializeRoute(route: InspectorRoute): string {
   const entity = route.entity;
   if (
     entity !== undefined &&
+    entity !== null &&
     ENTITY_KINDS.indexOf(entity.kind) >= 0 &&
     typeof entity.id === "string" &&
     entity.id !== ""

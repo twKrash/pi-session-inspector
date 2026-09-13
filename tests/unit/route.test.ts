@@ -7,7 +7,6 @@ import {
   isInRange,
   latestObservedDate,
   parseRangeQuery,
-  presetRange,
   resolveRange,
 } from "../../src/ui/range.ts";
 import {
@@ -68,6 +67,38 @@ test("a route with no table never serializes one", () => {
       String(table),
     );
   }
+});
+
+test("a null range or entity never serializes and never throws", () => {
+  const base = {
+    section: "history",
+    tab: "overview",
+    scope: "active",
+  } as const;
+  // A hand-built route is input too, and every optional field follows the table's
+  // rule: null is the absence of state, never a value to dereference.
+  for (const range of [undefined, null]) {
+    for (const entity of [undefined, null]) {
+      assert.equal(
+        serializeRoute({
+          ...base,
+          range,
+          entity,
+        } as unknown as InspectorRoute),
+        "#/history/overview",
+        `${String(range)}/${String(entity)}`,
+      );
+    }
+  }
+  // A present value is still serialized in the canonical order.
+  assert.equal(
+    serializeRoute({
+      ...base,
+      range: { kind: "preset", preset: 7 },
+      entity: { kind: "tool", id: "tool:call-abc" },
+    }),
+    "#/history/overview?preset=7&entity=tool%3Atool%3Acall-abc",
+  );
 });
 
 test("a preset stays unresolved in the hash and resolves against the view's dates", () => {
@@ -510,7 +541,6 @@ test("every exported function survives inlining with no module scope", () => {
   // then the route module's own functions, declared in the same block order.
   const source = [
     latestObservedDate,
-    presetRange,
     resolveRange,
     isInRange,
     parseRangeQuery,

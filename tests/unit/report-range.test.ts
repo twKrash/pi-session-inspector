@@ -16,7 +16,6 @@ import {
 import {
   filterView,
   parseRangeQuery,
-  presetRange,
   resolveRange,
   type RangeState,
 } from "../../src/ui/range.ts";
@@ -105,7 +104,6 @@ test("the inlined range module evaluates and runs with no module scope", () => {
   const source = inlineModuleSource();
   for (const fragment of [
     "const latestObservedDate=",
-    "const presetRange=",
     "const resolveRange=",
     "const isInRange=",
     "const parseRangeQuery=",
@@ -114,9 +112,15 @@ test("the inlined range module evaluates and runs with no module scope", () => {
   ]) {
     assert.equal(source.includes(fragment), true, fragment);
   }
-  // The document ships no helper it never calls: the two range functions with no
-  // call site in the emitted script are not inlined (Task 14 review, P2-3).
-  for (const fragment of ["const shiftUtcDay=", "const serializeRangeQuery="]) {
+  // The document ships no helper it never calls: the range functions with no call
+  // site in the emitted script are not inlined (`presetRange`'s preset math is
+  // written inline in `resolveRange`, which the client does call — Task 14 review,
+  // P2-3).
+  for (const fragment of [
+    "const shiftUtcDay=",
+    "const serializeRangeQuery=",
+    "const presetRange=",
+  ]) {
     assert.equal(source.includes(fragment), false, fragment);
   }
   assert.equal(/__name\(/.test(source), false);
@@ -125,19 +129,23 @@ test("the inlined range module evaluates and runs with no module scope", () => {
   // expectation below is checked against the module's own result too.
   const evaluate = new Function(
     `${source}
-return {filterView, parseRangeQuery, resolveRange, presetRange};`,
+return {filterView, parseRangeQuery, resolveRange};`,
   ) as () => {
     filterView: typeof filterView;
     parseRangeQuery: typeof parseRangeQuery;
     resolveRange: typeof resolveRange;
-    presetRange: typeof presetRange;
   };
   const inlined = evaluate();
-  assert.deepEqual(inlined.presetRange(7, ["2026-09-11", "2026-09-12"]), {
-    preset: 7,
-    from: "2026-09-06",
-    to: "2026-09-12",
-  });
+  // A preset intent is the client's own path, and the inlined math is the module's:
+  // same anchor date, same inclusive span.
+  assert.deepEqual(
+    inlined.resolveRange(
+      { kind: "preset", preset: 7 },
+      ["2026-09-11", "2026-09-12"],
+      "current",
+    ),
+    { preset: 7, from: "2026-09-06", to: "2026-09-12" },
+  );
   assert.deepEqual(
     inlined.parseRangeQuery("from=2026-09-01&to=2026-09-12"),
     parseRangeQuery("from=2026-09-01&to=2026-09-12"),
@@ -147,8 +155,16 @@ return {filterView, parseRangeQuery, resolveRange, presetRange};`,
     resolveRange(undefined, ["2026-09-11"], "aggregate"),
   );
   assert.deepEqual(
-    inlined.presetRange(30, ["2026-09-11", "2026-09-12"]),
-    presetRange(30, ["2026-09-11", "2026-09-12"]),
+    inlined.resolveRange(
+      { kind: "preset", preset: 30 },
+      ["2026-09-11", "2026-09-12"],
+      "current",
+    ),
+    resolveRange(
+      { kind: "preset", preset: 30 },
+      ["2026-09-11", "2026-09-12"],
+      "current",
+    ),
   );
   const range: RangeState = {
     preset: null,

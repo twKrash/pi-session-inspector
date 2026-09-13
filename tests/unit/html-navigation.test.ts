@@ -397,6 +397,43 @@ test("a restored range is canonicalized into the address bar, so one navigation 
   assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
 });
 
+test("an address bar that refuses canonicalization never suppresses the render", () => {
+  // The design chose hash routing so the document also works from `file://`
+  // (design R5), where a browser may reject `history.replaceState`. The bootstrap
+  // rewrite must not take the first render with it: the route stays applied in
+  // memory, so the whole view renders and the applied key still dedupes.
+  const harness = runClient(bundleFixture(), "", { replaceStateFails: true });
+  const { element, hashchange, location, renders } = harness;
+
+  assert.equal(renders(), 1);
+  assert.equal(element("title").textContent, "A session, in focus.");
+  assert.equal(element("range-dates").textContent, "2026-02-01 → 2026-02-02");
+  assert.deepEqual(visibleTabs(element("tabs")), [
+    "overview",
+    "models",
+    "tools",
+    "environment",
+    "agents",
+    "integrations",
+    "errors",
+    "ledger",
+  ]);
+  assert.equal(currentTab(element("tabs")), "overview");
+
+  // The address bar could not be canonicalized, so it is still empty — and the
+  // event the browser sends for it re-parses to the route already applied: the
+  // dedupe runs on the applied key, not on the hash, so nothing re-renders.
+  assert.equal(location.hash, "");
+  hashchange();
+  assert.equal(renders(), 1);
+
+  // Navigation still works: a real hash change is applied and rendered.
+  location.hash = "#/history/overview";
+  hashchange();
+  assert.equal(renders(), 2);
+  assert.equal(element("title").textContent, "Pick up the trail.");
+});
+
 test("a discrete change pushes a history entry; only search typing replaces", () => {
   const harness = runClient(bundleFixture());
   const { element, click, change, input, location, preset, replacements } =

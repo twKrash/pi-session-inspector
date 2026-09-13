@@ -19,7 +19,6 @@ import {
   isInRange,
   latestObservedDate,
   parseRangeQuery,
-  presetRange,
   resolveRange,
 } from "./range.ts";
 import { deriveView, parseRoute, routeKey, serializeRoute } from "./route.ts";
@@ -581,7 +580,6 @@ type HistoryEntry = {
  */
 const INLINED_FUNCTIONS = [
   latestObservedDate,
-  presetRange,
   resolveRange,
   isInRange,
   parseRangeQuery,
@@ -2254,9 +2252,12 @@ function adopt(route){state.section=route.section;state.tab=route.tab;state.scop
 function applyLocation(){const previous={section:state.section,tab:state.tab,session:state.session,entity:state.entity},parsed=parseRoute(location.hash||"",{scope:data.initialScope,capabilities:parseCapabilities(),knownIds:knownIds()}),restored=restoreMemory(parsed.route,previous),derived=deriveView(restored,stateCapabilities(restored),routeDaily(restored).map(row=>row.date)),applied={...restored,tab:derived.activeTab},key=routeKey(applied);
 // The range of the active view identity IS navigation state (§5.3), so the address
 // bar is canonicalized to the route that was just applied — a replacement, never a
-// new entry. The hash navigate wrote equals this key afterwards, so the browser's
-// own event for that navigation re-parses to the applied route and renders nothing.
-if(typeof history!=="undefined"&&history.replaceState&&location.hash!==key)history.replaceState(null,"",key);
+// new entry. Canonicalization is best-effort: a file:// document may refuse the
+// call (a SecurityError), and a refused rewrite must never suppress the render, so
+// the route stays applied in memory and the dedupe keeps running on the applied
+// key. The hash navigate wrote equals this key afterwards, so the browser's own
+// event for that navigation re-parses to the applied route and renders nothing.
+if(typeof history!=="undefined"&&history.replaceState&&location.hash!==key){try{history.replaceState(null,"",key);}catch(error){}}
 if(key===lastAppliedKey)return;lastAppliedKey=key;stateNotice=derived.notice!==undefined?derived.notice:parsed.notice;adopt(applied);render({structural:previous.section!==applied.section||previous.tab!==applied.tab||previous.session!==applied.session||previous.entity!==applied.entity,sectionChanged:previous.section!==applied.section});}
 function render(effects){const scrollY=window.scrollY||0,active=document.activeElement,caret=active&&active.id==="search"&&typeof active.selectionStart==="number"?active.selectionStart:null;
 // The one derivation (design §9.2): every value written below — the heading, the

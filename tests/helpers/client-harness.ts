@@ -171,6 +171,13 @@ type ClientInternals = {
 };
 
 /**
+ * The one client-harness behaviour a test may vary. `replaceStateFails` models
+ * the browser that rejects `history.replaceState` for a `file://` document (a
+ * SecurityError), which the design's hash routing has to survive (design R5).
+ */
+export type ClientHarnessOptions = { replaceStateFails?: boolean };
+
+/**
  * Runs the emitted client against a stub document. The generated document is
  * 40 KB of client code that no other test executes, so at least one test has to
  * render it for real: the store below is what the client's own `q(id)` reads.
@@ -180,6 +187,7 @@ type ClientInternals = {
 export function runClient(
   bundle: InspectorBundle,
   initialHash = "",
+  options: ClientHarnessOptions = {},
 ): {
   client: ClientInternals;
   preset(days: string): void;
@@ -324,6 +332,9 @@ export function runClient(
   let replacements = 0;
   const historyStub = {
     replaceState: (_state: unknown, _title: string, url: string): void => {
+      // A document that refuses the call refuses it the way a browser does:
+      // it throws before anything is written, so no replacement is counted.
+      if (options.replaceStateFails === true) throw new Error("SecurityError");
       replacements += 1;
       locationStub.hash = url;
     },
