@@ -77,6 +77,52 @@ function renderTab(
   }).render(width);
 }
 
+test("shows cache hit percentage and native compaction count in Overview", () => {
+  const lines = renderTab(
+    modelWith({
+      usage: {
+        totalTokens: 42,
+        cost: 0.01,
+        inputTokens: 30,
+        cacheReadTokens: 5,
+        cacheWriteTokens: 2,
+      },
+      compactions: [
+        {
+          id: "compaction-1",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          kind: "compaction",
+          usage: { totalTokens: 1, cost: 0 },
+        },
+        {
+          id: "branch-1",
+          timestamp: "2026-01-01T00:00:01.000Z",
+          kind: "branch_summary",
+          usage: { totalTokens: 1, cost: 0 },
+        },
+      ],
+    }),
+    "overview",
+  );
+
+  assert.match(lines.join("\n"), /Cache hit: 13\.5%/);
+  assert.match(lines.join("\n"), /Compactions: 1/);
+
+  const noInput = renderTab(
+    modelWith({
+      usage: {
+        totalTokens: 0,
+        cost: 0,
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    }),
+    "overview",
+  );
+  assert.match(noInput.join("\n"), /Cache hit: Unavailable/);
+});
+
 test("renders inventory, presence, agent activity, and bounded error messages", () => {
   const model = modelWith({
     commands: {

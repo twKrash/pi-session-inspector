@@ -58,6 +58,72 @@ test("reads allowlisted, sanitized Pi-entry integration evidence", async () => {
   });
 });
 
+test("does not reinterpret malformed RTK schema versions as native evidence", () => {
+  const entry = {
+    type: "message",
+    id: "rtk-malformed-version",
+    parentId: null,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    message: {
+      role: "toolResult",
+      details: {
+        rtkCompaction: {
+          schemaVersion: "1",
+          applied: true,
+          truncated: true,
+          originalCharCount: 100,
+          compactedCharCount: 50,
+          originalLineCount: 10,
+          compactedLineCount: 5,
+        },
+      },
+    },
+  } satisfies SessionEntry;
+
+  assert.deepEqual(readPiEntryEvidence([entry]), [
+    { integration: "rtk", state: "unsupported" },
+  ]);
+});
+
+test("reads native RTK compaction details without a schema wrapper", () => {
+  const entry = {
+    type: "message",
+    id: "rtk-native",
+    parentId: null,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    message: {
+      role: "toolResult",
+      details: {
+        rtkCompaction: {
+          applied: true,
+          techniques: ["truncate"],
+          truncated: true,
+          originalCharCount: 54_206,
+          compactedCharCount: 12_671,
+          originalLineCount: 1_017,
+          compactedLineCount: 296,
+        },
+      },
+    },
+  } satisfies SessionEntry;
+
+  assert.deepEqual(readPiEntryEvidence([entry]), [
+    {
+      integration: "rtk",
+      version: 1,
+      state: "supported",
+      counters: {
+        compactions: 1,
+        sourceChars: 54_206,
+        compactedChars: 12_671,
+        sourceLines: 1_017,
+        compactedLines: 296,
+        truncated: true,
+      },
+    },
+  ]);
+});
+
 test("marks RTK v1 evidence unsupported when any required field is malformed", () => {
   const malformed = (id: string, rtkCompaction: Record<string, unknown>) =>
     ({

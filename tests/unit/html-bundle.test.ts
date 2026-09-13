@@ -77,6 +77,141 @@ test("renders one offline document with both current views and initial theme", (
   }
 });
 
+test("renders compaction count and cache hit percentage in current Overview", () => {
+  const client = runClient(bundleFixture(), "#/current/overview");
+  const metrics = client
+    .element("view")
+    .querySelectorAll(".metric")
+    .map((metric) => client.texts(metric).join(" "));
+
+  assert.ok(
+    metrics.some(
+      (metric) => metric.includes("Compactions") && metric.includes("1"),
+    ),
+  );
+  assert.ok(
+    metrics.some(
+      (metric) => metric.includes("Cache hit") && metric.includes("6.1%"),
+    ),
+  );
+});
+
+test("renders Cache hit as Unavailable when its denominator is incomplete", () => {
+  const bundle = bundleFixture();
+  const report = bundle.current.tree.report;
+  if (report === undefined || report.usage === undefined) {
+    throw new Error("bundle fixture must carry a current tree report");
+  }
+  delete report.usage.cacheReadTokens;
+
+  const client = runClient(bundle, "#/current/overview");
+  const metrics = client
+    .element("view")
+    .querySelectorAll(".metric")
+    .map((metric) => client.texts(metric).join(" "));
+  assert.ok(
+    metrics.some(
+      (metric) =>
+        metric.includes("Cache hit") && metric.includes("Unavailable"),
+    ),
+  );
+});
+
+test("compacts overview token breakdown values but keeps Total precise", () => {
+  const bundle = bundleFixture();
+  const report = bundle.current.tree.report;
+  if (report === undefined || report.usage === undefined) {
+    throw new Error("bundle fixture must carry a current tree report");
+  }
+  report.usage = {
+    ...report.usage,
+    inputTokens: 1_000,
+    outputTokens: 1_250,
+    cacheReadTokens: 1_000_000,
+    cacheWriteTokens: 1_500_000,
+  };
+  if (bundle.current.tree.daily === undefined) {
+    throw new Error("bundle fixture must carry dated usage");
+  }
+  bundle.current.tree.daily = bundle.current.tree.daily.map((row, index) => ({
+    ...row,
+    totalTokens: index === 0 ? 1_234_567 : 0,
+  }));
+
+  const client = runClient(bundle, "#/current/overview");
+  const totalTokens = client
+    .element("view")
+    .querySelectorAll(".metric")
+    .map((metric) => client.texts(metric).join(" "))
+    .find((metric) => metric.includes("Total tokens"));
+
+  assert.ok(totalTokens);
+  assert.equal(
+    totalTokens.includes("Input") && totalTokens.includes("1K"),
+    true,
+  );
+  assert.equal(
+    totalTokens.includes("Output") && totalTokens.includes("1.3K"),
+    true,
+  );
+  assert.equal(
+    totalTokens.includes("Cache read") && totalTokens.includes("1M"),
+    true,
+  );
+  assert.equal(
+    totalTokens.includes("Cache write") && totalTokens.includes("1.5M"),
+    true,
+  );
+  assert.equal(
+    totalTokens.includes("Total") && totalTokens.includes("1,234,567"),
+    true,
+  );
+  assert.equal(totalTokens.includes("1.2M"), false);
+});
+
+test("orders Session History by latest persisted date before session id", () => {
+  const bundle = bundleFixture();
+  const source = bundle.history.sessions[0];
+  if (source === undefined || source.availability !== "available") {
+    throw new Error("bundle fixture must carry an available history session");
+  }
+
+  const older = JSON.parse(JSON.stringify(source)) as typeof source;
+  older.sessionId = "session-old";
+  if (older.report === undefined) throw new Error("history report is required");
+  older.report.sessionId = older.sessionId;
+  older.report.generations = older.report.generations.map((row) => ({
+    ...row,
+    timestamp: row.timestamp.replace("2026-02", "2026-01"),
+  }));
+  older.report.tools = older.report.tools.map((row) => ({
+    ...row,
+    timestamp: row.timestamp.replace("2026-02", "2026-01"),
+  }));
+  older.usageByDate = older.usageByDate.map((row) => ({
+    ...row,
+    date: row.date.replace("2026-02", "2026-01"),
+  }));
+
+  const newer = JSON.parse(JSON.stringify(source)) as typeof source;
+  newer.sessionId = "session-new";
+  if (newer.report === undefined) throw new Error("history report is required");
+  newer.report.sessionId = newer.sessionId;
+  bundle.history.sessions = [
+    older,
+    newer,
+    { availability: "unavailable", sessionId: "missing" },
+  ];
+
+  const data = embedOf(renderInspectorBundle(bundle));
+  assert.deepEqual(
+    data.history.sessions.map(
+      (session: { sessionId: string }) => session.sessionId,
+    ),
+    ["session-new", "session-old", "missing"],
+  );
+});
+
 test("normalizes CommonJS import aliases before inlining route functions", () => {
   const original = Function.prototype.toString;
   try {
@@ -956,7 +1091,7 @@ test("an error row's headline is the joined tool's name, never its id", async ()
   );
 });
 
-test("a tool error's message is always Unavailable", async () => {
+test("a tool error renders its bounded redacted message", async () => {
   const html = renderInspectorBundle(
     await loadInspectorBundle({
       ...bundleInput,
@@ -965,11 +1100,15 @@ test("a tool error's message is always Unavailable", async () => {
   );
   assert.equal(ENGLISH_CATALOG["errors.messageUnavailable"], "Unavailable");
 
-  // A tool error has no safe structured message at all (design §7.5-4): the
-  // rule holds even for a forged row, so no path can render text from
-  // `content`, tool output, arguments, or child output.
-  assert.equal(errorMessage({ kind: "tool-error", message: "SECRET" }), null);
-  // A generation error keeps the bounded redacted message the reducer kept.
+  // Both error kinds render only the bounded redacted DTO message; extraction
+  // and redaction happen in the reducer before this browser projection.
+  assert.equal(
+    errorMessage({
+      kind: "tool-error",
+      message: "permission denied for [PATH]",
+    }),
+    "permission denied for [PATH]",
+  );
   assert.equal(
     errorMessage({ kind: "generation-error", message: "429 rate limit" }),
     "429 rate limit",
@@ -982,7 +1121,7 @@ test("a tool error's message is always Unavailable", async () => {
   assert.equal(html.includes('tr("errors.messageUnavailable")'), true);
 
   // The rendered document carries no persisted error text beyond the bounded
-  // `message` field, so an error row's only copy source is the catalog.
+  // redacted `message` field, so an error row's only copy source is its DTO.
   const generation = renderInspectorBundle(
     await loadInspectorBundle({
       ...bundleInput,

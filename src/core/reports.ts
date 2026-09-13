@@ -348,6 +348,21 @@ export type SessionReport = {
   retainedAggregates?: CanonicalRetainedAggregates;
 };
 
+/** Returns cache-read share of input-side tokens, or unknown. */
+export function cacheHitPercent(usage: Usage | undefined): number | undefined {
+  if (
+    usage?.inputTokens === undefined ||
+    usage.cacheReadTokens === undefined ||
+    usage.cacheWriteTokens === undefined
+  ) {
+    return undefined;
+  }
+  const denominator =
+    usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+  if (!Number.isSafeInteger(denominator) || denominator <= 0) return undefined;
+  return Math.round((usage.cacheReadTokens / denominator) * 1_000) / 10;
+}
+
 export function toSessionReport(
   reduced: ReducedSession,
   evidence: SessionReportEvidence = {},

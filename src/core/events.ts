@@ -152,7 +152,8 @@ export type ErrorRecord = {
   confidence: Confidence;
   /**
    * Bounded, single-line, path/URL/secret-redacted persisted assistant
-   * `errorMessage`. Absent for tool errors, older data, or nothing safe left.
+   * `errorMessage` or text from an errored tool result. Absent for older data
+   * or when nothing safe remains.
    */
   message?: string;
 };

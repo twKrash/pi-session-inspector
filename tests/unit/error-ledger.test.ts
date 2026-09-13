@@ -84,7 +84,7 @@ test("emits no error record for an unrecognised stop reason and never leaks it",
   assert.equal(renderJson(report).includes("end_turn"), false);
 });
 
-test("records tool-result errors without copying result content", () => {
+test("records tool-result errors with bounded redacted content", () => {
   const report = toSessionReport(
     reduceEntries("tool-errors", [
       assistant("g1", "2026-01-01T00:00:01.000Z", "toolUse", [
@@ -99,7 +99,7 @@ test("records tool-result errors without copying result content", () => {
           role: "toolResult",
           toolCallId: "call-x",
           isError: true,
-          content: "raw-error-sentinel",
+          content: "ENOENT: open '/home/dev/private.txt'",
           usage: { totalTokens: 1, cost: { total: 0.01 } },
         },
       },
@@ -112,9 +112,10 @@ test("records tool-result errors without copying result content", () => {
       timestamp: "2026-01-01T00:00:02.000Z",
       kind: "tool-error",
       confidence: "native",
+      message: "ENOENT: open '[PATH]'",
     },
   ]);
-  assert.equal(renderJson(report).includes("raw-error-sentinel"), false);
+  assert.equal(renderJson(report).includes("/home/dev/private.txt"), false);
 });
 
 test("exposes only the bounded redacted persisted error message", async () => {
@@ -131,12 +132,12 @@ test("exposes only the bounded redacted persisted error message", async () => {
   assert.equal(message?.includes("http"), false);
   assert.equal(message?.includes("/home/dev"), false);
   assert.equal(
-    JSON.stringify(reduced.errors).includes("PRIVATE_TOOL_BODY"),
+    JSON.stringify(reduced.errors).includes("/home/dev/private-tool.txt"),
     false,
   );
 });
 
-test("a tool error keeps no message even when its result persists one", () => {
+test("exposes only text-block tool errors after bounded redaction", () => {
   const report = toSessionReport(
     reduceEntries("tool-error-message", [
       assistant("g1", "2026-01-01T00:00:01.000Z", "toolUse", [
@@ -151,26 +152,61 @@ test("a tool error keeps no message even when its result persists one", () => {
           role: "toolResult",
           toolCallId: "call-x",
           isError: true,
-          errorMessage: "SECRET_RESULT_BODY",
-          content: [{ type: "text", text: "SECRET_RESULT_BODY" }],
+          errorMessage: "DO_NOT_USE",
+          content: [
+            {
+              type: "text",
+              text: "permission denied for /home/dev/private.txt",
+            },
+            { type: "image", data: "DO_NOT_USE_IMAGE" },
+            { type: "text", text: "https://example.com/private?token=secret" },
+          ],
           usage: { totalTokens: 1, cost: { total: 0.01 } },
         },
       },
     ]),
   );
 
-  // A tool error has no safe structured message (design §7.5-4): the reducer
-  // never reads a tool result's own text, so the row's `Message: Unavailable`
-  // is the projection, not a rendering accident.
   assert.deepEqual(report.errors, [
     {
       id: "tool:call-x",
       timestamp: "2026-01-01T00:00:02.000Z",
       kind: "tool-error",
       confidence: "native",
+      message: "permission denied for [PATH] [URL]",
     },
   ]);
-  assert.equal(renderJson(report).includes("SECRET_RESULT_BODY"), false);
+  const rendered = renderJson(report);
+  assert.equal(rendered.includes("/home/dev/private.txt"), false);
+  assert.equal(rendered.includes("example.com"), false);
+  assert.equal(rendered.includes("DO_NOT_USE"), false);
+});
+
+test("does not expose content from successful tool results", () => {
+  const report = toSessionReport(
+    reduceEntries("successful-tool", [
+      assistant("g1", "2026-01-01T00:00:01.000Z", "toolUse", [
+        { type: "toolCall", id: "call-x", name: "read" },
+      ]),
+      {
+        type: "message",
+        id: "r1",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:02.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-x",
+          isError: false,
+          content: "SHOULD_NOT_APPEAR /home/dev/success.txt",
+        },
+      },
+    ]),
+  );
+
+  assert.deepEqual(report.errors, []);
+  const rendered = renderJson(report);
+  assert.equal(rendered.includes("SHOULD_NOT_APPEAR"), false);
+  assert.equal(rendered.includes("/home/dev/success.txt"), false);
 });
 
 test("omits the message field when no usable persisted error message exists", () => {

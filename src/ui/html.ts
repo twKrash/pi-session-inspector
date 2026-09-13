@@ -1,6 +1,6 @@
 import type { EvidenceState, Scope } from "../core/events.ts";
 import { buildLedger, type LedgerItem } from "../core/ledger.ts";
-import type { SessionReport } from "../core/reports.ts";
+import { cacheHitPercent, type SessionReport } from "../core/reports.ts";
 import type { SessionCoverage } from "../core/session-coverage.ts";
 // `CAPABILITIES` is report wiring, not report data: the document embeds the very
 // table the server built, so the browser's tab strip cannot drift from what each
@@ -91,6 +91,9 @@ export const ENGLISH_CATALOG = {
   "metric.costUnavailable": "Unavailable",
   "metric.tokens": "Total tokens",
   "metric.knownTokens": "Known tokens",
+  "metric.cacheHit": "Cache hit",
+  "metric.compactions": "Compactions",
+  "metric.compactions.note": "Persisted native compaction events",
   "metric.generations": "Generations",
   "metric.tools": "Tool calls",
   "metric.sessions": "Tracked sessions",
@@ -277,8 +280,8 @@ export const ENGLISH_CATALOG = {
   // One row may have many candidates, so the label stays plural-safe and no
   // candidate is ever named as the cause (design §7.5-3).
   "errors.relatedChildren": "Related child run(s)",
-  // A tool error has no safe structured message at all, so this is the only
-  // value its message column may carry (design §7.5-4).
+  // Missing or unusable error messages use this catalog value; sanitized
+  // messages are carried by the shared DTO (design §7.5-4).
   "errors.messageUnavailable": "Unavailable",
   "empty.ledger": "No persisted records to order.",
   "history.note":
@@ -521,6 +524,8 @@ type StatusView = {
 type SessionView = {
   sessionId: string;
   usage?: SafeUsage;
+  cacheHitPercent: number | null;
+  compactionCount: number;
   composition: CompositionView;
   generationCount: number;
   toolCount: number;
@@ -1460,18 +1465,15 @@ export function errorHeadline(row: {
 }
 
 /**
- * The bounded message a row may render, or `null` for `Unavailable`. A tool
- * error has no safe structured message at all (design §7.5-4), so a row for one
- * is `null` whatever it carries; a generation error renders the persisted
- * bounded redacted `errorMessage` when present. No text is ever taken from
- * `content`, tool output, arguments, or child output. Exported and inlined, so
- * the browser and the tests run the same rule.
+ * The bounded redacted message a row may render, or `null` for `Unavailable`.
+ * Reduction owns extraction and redaction; this projection only renders the
+ * validated DTO field. No text is taken from tool arguments or child output.
+ * Exported and inlined, so the browser and the tests run the same rule.
  */
 export function errorMessage(row: {
   kind: string;
   message?: string;
 }): string | null {
-  if (row.kind === "tool-error") return null;
   return row.message ?? null;
 }
 
@@ -1532,6 +1534,10 @@ function sessionView(report: SessionReport): SessionView {
   return {
     sessionId: report.sessionId,
     ...(report.usage === undefined ? {} : { usage: safeUsage(report.usage) }),
+    cacheHitPercent: cacheHitPercent(report.usage) ?? null,
+    compactionCount: report.compactions.filter(
+      (compaction) => compaction.kind === "compaction",
+    ).length,
     composition: compositionView(report),
     generationCount: report.generations.length,
     toolCount: report.tools.length,
@@ -1811,6 +1817,24 @@ function historyEntry(
   };
 }
 
+function compareHistoryEntries(
+  left: HistoryEntry,
+  right: HistoryEntry,
+): number {
+  const leftDate = left.lastDate ?? left.firstDate;
+  const rightDate = right.lastDate ?? right.firstDate;
+  if (leftDate === null)
+    return rightDate === null
+      ? left.sessionId.localeCompare(right.sessionId)
+      : 1;
+  if (rightDate === null) return -1;
+  return (
+    rightDate.localeCompare(leftDate) ||
+    (right.firstDate ?? "").localeCompare(left.firstDate ?? "") ||
+    left.sessionId.localeCompare(right.sessionId)
+  );
+}
+
 function projectReport(input: HtmlReport): Record<string, unknown> {
   if (input.kind === "current") {
     const view = sessionView(input.report);
@@ -1860,7 +1884,9 @@ function projectReport(input: HtmlReport): Record<string, unknown> {
       dailyTruncated: folded.truncated,
       chartMetrics: SESSION_CHART_METRICS,
       evidence: historyEvidenceRows(input.report),
-      sessions: input.report.sessions.map(historyEntry),
+      sessions: input.report.sessions
+        .map(historyEntry)
+        .sort(compareHistoryEntries),
     };
   }
   const daily = input.report.dates.map((row) => ({
@@ -1930,6 +1956,7 @@ const PRESENCE_LABELS={present:"presence.present",absent:"presence.absent",unkno
 const q=id=>document.getElementById(id);
 const text=value=>String(value===null||value===undefined?"":value);
 const number=value=>new Intl.NumberFormat("en").format(Number(value||0));
+const compactNumber=value=>new Intl.NumberFormat("en",{notation:"compact",maximumFractionDigits:1}).format(Number(value||0));
 const money=value=>"$"+Number(value||0).toFixed(2);
 const tr=(key,values)=>text(t[key]).replace(/\{(\w+)\}/g,(match,key)=>text((values||{})[key]));
 const el=(name,cls,value)=>{const node=document.createElement(name);if(cls)node.className=cls;if(value!==undefined)node.textContent=value;return node;};
@@ -2011,7 +2038,7 @@ function chartValue(row,metric){if(metric==="cost")return row.cost;if(metric==="
 function chartText(metric,value){return metric==="cost"?money(value):number(value);}
 function chartLabel(metric){return tr(CHART_LABELS[metric]);}
 function selectedDays(){return activeDaily().filter(row=>row.date>=period().from&&row.date<=period().to);}
-function tokenCell(usage,key){return orUnavailable(usage[key]);}
+function tokenCell(usage,key){const value=usage[key];return value===null||value===undefined?tr("evidence.unavailable"):compactNumber(value);}
 const activeMetrics=()=>activeSection()==="current"?CURRENT_METRICS:(activeSection()==="history"?(data.history.chartMetrics||CURRENT_METRICS):(data.global.chartMetrics||GLOBAL_METRICS));
 const COMPOSITION_PARTS=["generations","toolResults","compactions","branchSummaries"];
 // The period label every widget that is not range-filtered has to carry.
@@ -2084,7 +2111,7 @@ function evidencePanel(evidence){const section=card(tr("panel.evidence"),tr("evi
 function currentEvidence(){const view=data.current[state.scope];return (view&&view.evidence)||[];}
 function activeEvidence(){if(activeSection()==="current")return currentEvidence();if(activeSection()==="history")return data.history.evidence||[];return data.global.evidence||[];}
 function chart(){const rows=selectedDays(),label=chartLabel(activeMetric()),section=card(tr("panel.daily"),rangeText()),select=document.createElement("select");select.id="chart-metric";select.setAttribute("aria-label",tr("chart.metric"));activeMetrics().forEach(value=>{const option=el("option","",chartLabel(value));option.value=value;option.selected=activeMetric()===value;select.append(option);});section.querySelector(".panel-head").append(select);if(rows.length===0){section.append(el("div","chart-note",tr("chart.empty")));return section;}const values=rows.map(row=>chartValue(row,activeMetric())),maximum=Math.max.apply(null,values.concat([1])),firstDate=Date.parse(rows[0].date+"T00:00:00Z"),lastDate=Date.parse(rows[rows.length-1].date+"T00:00:00Z"),span=lastDate-firstDate,points=rows.map((row,index)=>{const x=span<=0?400:8+((Date.parse(row.date+"T00:00:00Z")-firstDate)/span)*784;return {x:x,y:172-(values[index]/maximum)*164,row:row,value:values[index]};}),chartNode=el("div","chart"),axis=el("div","chart-axis");axis.setAttribute("aria-hidden","true");[maximum,maximum/2,0].forEach(value=>axis.append(el("span","",chartText(activeMetric(),value))));const svg=document.createElementNS(SVG_NS,"svg");svg.setAttribute("class","line-chart");svg.setAttribute("viewBox","0 0 800 180");svg.setAttribute("preserveAspectRatio","none");svg.setAttribute("role","img");svg.setAttribute("aria-label",tr("chart.aria",{metric:label,days:rows.length}));[8,90,172].forEach(y=>{const line=document.createElementNS(SVG_NS,"line");line.setAttribute("class","chart-grid");line.setAttribute("x1","8");line.setAttribute("x2","792");line.setAttribute("y1",String(y));line.setAttribute("y2",String(y));svg.append(line);});const polyline=document.createElementNS(SVG_NS,"polyline");polyline.setAttribute("class","activity-line");polyline.setAttribute("points",points.map(point=>point.x.toFixed(2)+","+point.y.toFixed(2)).join(" "));svg.append(polyline);points.forEach(point=>{const circle=document.createElementNS(SVG_NS,"circle");circle.setAttribute("class","line-point");circle.setAttribute("cx",point.x.toFixed(2));circle.setAttribute("cy",point.y.toFixed(2));circle.setAttribute("r","3");const title=document.createElementNS(SVG_NS,"title");title.textContent=point.row.date+" · "+chartText(activeMetric(),point.value);circle.append(title);svg.append(circle);});chartNode.append(axis,svg,el("div","chart-dates",rows[0].date+" → "+rows[rows.length-1].date));section.append(chartNode,el("div","chart-note",tr("chart.note",{metric:label})));const details=document.createElement("details"),summary=el("summary","",tr("chart.data")),headers=[tr("table.date"),tr("table.sessions"),tr("table.tokens"),tr("table.cost")],classes=["status-cell","num","num","num"],withGenerations=activeMetrics().indexOf("generations")>=0,withTools=activeMetrics().indexOf("tools")>=0;if(withGenerations){headers.push(tr("table.generations"));classes.push("num");}if(withTools){headers.push(tr("table.tools"));classes.push("num");}const tableRows=rows.map(row=>{const cells=[row.date,number(row.sessions),number(row.totalTokens),money(row.cost)];if(withGenerations)cells.push(number(row.generations));if(withTools)cells.push(number(row.tools));return cells;});details.append(summary);simpleTable(details,headers,tableRows,classes);section.append(details);return section;}
-function overview(view){if(view.usage===undefined)return unavailableSection(tr("usage.title"),tr("unavailable.usage"));const range=activeRange(),totals=range?periodTotals(activeDaily(),range):null;if(!totals||totals.days===0)return emptyOverview();const partial=rangeTruncated(),cost=money(totals.cost),tokens=number(totals.totalTokens),metrics=el("div","metrics");metrics.append(metric(tr(partial?"metric.knownCost":"metric.cost"),cost,tr("metric.native"),[[tr("evidence.native"),cost],[tr("metric.child")+ALL_DATES,view.agentCount===null?tr("evidence.unavailable"):number(view.agentCount)+" · "+tr("metric.child.note")]]),metric(tr(partial?"metric.knownTokens":"metric.tokens"),tokens,tr("metric.tokens.note"),[[tr("metric.input")+ALL_DATES,tokenCell(view.usage,"inputTokens")],[tr("metric.output")+ALL_DATES,tokenCell(view.usage,"outputTokens")],[tr("metric.cacheRead")+ALL_DATES,tokenCell(view.usage,"cacheReadTokens")],[tr("metric.cacheWrite")+ALL_DATES,tokenCell(view.usage,"cacheWriteTokens")],[tr("usage.total"),tokens]]),metric(tr("metric.generations"),number(totals.generations),tr("metric.generations.note"),[[tr("evidence.native"),number(view.generationCount)+ALL_DATES]]),metric(tr("metric.tools"),number(view.toolCount),tr("metric.tools.note")+ALL_DATES,[[tr("evidence.native"),number(view.toolCount)]]),metric(tr("metric.duration"),orUnavailable(view.durationLabel),tr("metric.duration.note")+ALL_DATES,[[tr("evidence.native"),view.span?view.span.from+" → "+view.span.to:tr("evidence.unavailable")]]));const grid=el("div","grid");grid.append(bars(tr("panel.models"),tr("models.note")+ALL_DATES,view.modelBars,"model"),bars(tr("panel.tools"),tr("tools.bars.note")+ALL_DATES,view.toolBars,"tool"));const all=el("div","");all.append(metrics,grid,compositionCard(totals&&activeDaily().some(row=>row.composition)?periodComposition(totals):view.composition,totals&&activeDaily().some(row=>row.composition)?null:tr("usage.note")+ALL_DATES),evidencePanel(activeEvidence()));return all;}
+function overview(view){if(view.usage===undefined)return unavailableSection(tr("usage.title"),tr("unavailable.usage"));const range=activeRange(),totals=range?periodTotals(activeDaily(),range):null;if(!totals||totals.days===0)return emptyOverview();const partial=rangeTruncated(),cost=money(totals.cost),tokens=number(totals.totalTokens),metrics=el("div","metrics");metrics.append(metric(tr(partial?"metric.knownCost":"metric.cost"),cost,tr("metric.native"),[[tr("evidence.native"),cost],[tr("metric.child")+ALL_DATES,view.agentCount===null?tr("evidence.unavailable"):number(view.agentCount)+" · "+tr("metric.child.note")]]),metric(tr(partial?"metric.knownTokens":"metric.tokens"),tokens,tr("metric.tokens.note"),[[tr("metric.input")+ALL_DATES,tokenCell(view.usage,"inputTokens")],[tr("metric.output")+ALL_DATES,tokenCell(view.usage,"outputTokens")],[tr("metric.cacheRead")+ALL_DATES,tokenCell(view.usage,"cacheReadTokens")],[tr("metric.cacheWrite")+ALL_DATES,tokenCell(view.usage,"cacheWriteTokens")],[tr("metric.cacheHit")+ALL_DATES,typeof view.cacheHitPercent==="number"?view.cacheHitPercent.toFixed(1)+"%":tr("evidence.unavailable")],[tr("usage.total"),tokens]]),metric(tr("metric.compactions"),number(view.compactionCount),tr("metric.compactions.note"),[[tr("evidence.native"),number(view.compactionCount)+ALL_DATES]]),metric(tr("metric.generations"),number(totals.generations),tr("metric.generations.note"),[[tr("evidence.native"),number(view.generationCount)+ALL_DATES]]),metric(tr("metric.tools"),number(view.toolCount),tr("metric.tools.note")+ALL_DATES,[[tr("evidence.native"),number(view.toolCount)]]),metric(tr("metric.duration"),orUnavailable(view.durationLabel),tr("metric.duration.note")+ALL_DATES,[[tr("evidence.native"),view.span?view.span.from+" → "+view.span.to:tr("evidence.unavailable")]]));const grid=el("div","grid");grid.append(bars(tr("panel.models"),tr("models.note")+ALL_DATES,view.modelBars,"model"),bars(tr("panel.tools"),tr("tools.bars.note")+ALL_DATES,view.toolBars,"tool"));const all=el("div","");all.append(metrics,grid,compositionCard(totals&&activeDaily().some(row=>row.composition)?periodComposition(totals):view.composition,totals&&activeDaily().some(row=>row.composition)?null:tr("usage.note")+ALL_DATES),evidencePanel(activeEvidence()));return all;}
 // A selected range with no in-range observation renders the empty state: never
 // a clamped window, never a fabricated zero (design §5.5-4).
 // The one range-qualified empty state: a selected range with no in-range observation.

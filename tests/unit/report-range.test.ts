@@ -959,8 +959,8 @@ test("the Errors tab leads with the failed tool's identity and keeps its record 
   assert.equal(rendered.includes("bash failed"), true);
   assert.equal(rendered.includes("tool-error"), true);
   assert.equal(rendered.includes("2026-02-02T00:01:00.000Z"), true);
-  // A tool error has no safe structured message at all, so the row states
-  // Unavailable rather than text from `content`, arguments, or child output.
+  // This fixture has no sanitized message, so the row states Unavailable
+  // rather than text from `content`, arguments, or child output.
   assert.equal(rendered.includes("Message"), true);
   assert.equal(rendered.includes("Unavailable"), true);
 
@@ -2447,7 +2447,7 @@ test("the tools summary's Last used cell is the newest call of that name", async
   );
 });
 
-test("a tool error's Message CELL says Unavailable, not just its row", async () => {
+test("a tool error without a message says Unavailable in its Message CELL", async () => {
   const harness = runClient(
     await loadInspectorBundle({
       ...bundleInput,
@@ -2459,8 +2459,9 @@ test("a tool error's Message CELL says Unavailable, not just its row", async () 
   const view = harness.element("view");
   const row = rowOf(view, harness.texts, "bash failed");
 
-  // The row states Unavailable in more than one place (its Source line), so a
-  // row-level "any Unavailable" assertion cannot name the message column.
+  // This fixture has no sanitized message. The row states Unavailable in more
+  // than one place (its Source line), so a row-level "any Unavailable"
+  // assertion cannot name the message column.
   assert.ok(
     harness.texts(row).filter((value) => value === "Unavailable").length > 1,
   );

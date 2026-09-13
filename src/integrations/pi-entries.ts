@@ -206,13 +206,26 @@ class PiEntryEvidence {
 
     const compaction = details.rtkCompaction;
     const version = schemaVersion(compaction);
-    if (version === undefined) return;
-    const counters = readPersistedRtkCounters(compaction);
-    if (counters === undefined) {
-      this.#rows.set("rtk", unsupported("rtk", version));
+    if (Object.hasOwn(compaction, "schemaVersion") && version === undefined) {
+      this.#rows.set("rtk", unsupported("rtk"));
       return;
     }
-    this.add("rtk", version, counters);
+    if (version !== undefined) {
+      const counters = readPersistedRtkCounters(compaction);
+      if (counters === undefined) {
+        this.#rows.set("rtk", unsupported("rtk", version));
+        return;
+      }
+      this.add("rtk", version, counters);
+      return;
+    }
+
+    const counters = readNativeRtkCounters(compaction);
+    if (counters === undefined) {
+      this.#rows.set("rtk", unsupported("rtk", SUPPORTED_SCHEMA_VERSION));
+      return;
+    }
+    this.add("rtk", SUPPORTED_SCHEMA_VERSION, counters);
   }
 
   private readToolCallEvidence(entry: SessionEntry): void {
@@ -302,9 +315,13 @@ function mergeCounters(
 
 function unsupported(
   integration: IntegrationKey,
-  version: number,
+  version?: number,
 ): IntegrationObservationInput {
-  return { integration, version, state: "unsupported" };
+  return {
+    integration,
+    ...(version === undefined ? {} : { version }),
+    state: "unsupported",
+  };
 }
 
 function schemaVersion(value: unknown): number | undefined {
@@ -326,6 +343,34 @@ function readPersistedRtkCounters(
   const compactedChars = nonNegativeNumber(value.compactedChars);
   const sourceLines = nonNegativeNumber(value.sourceLines);
   const compactedLines = nonNegativeNumber(value.compactedLines);
+  const truncated = booleanField(value, "truncated");
+  if (
+    sourceChars === undefined ||
+    compactedChars === undefined ||
+    sourceLines === undefined ||
+    compactedLines === undefined ||
+    truncated === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    compactions: 1,
+    sourceChars,
+    compactedChars,
+    sourceLines,
+    compactedLines,
+    truncated,
+  };
+}
+
+function readNativeRtkCounters(
+  value: Record<string, unknown>,
+): BoundedEvidenceValue | undefined {
+  if (value.applied !== true) return undefined;
+  const sourceChars = nonNegativeNumber(value.originalCharCount);
+  const compactedChars = nonNegativeNumber(value.compactedCharCount);
+  const sourceLines = nonNegativeNumber(value.originalLineCount);
+  const compactedLines = nonNegativeNumber(value.compactedLineCount);
   const truncated = booleanField(value, "truncated");
   if (
     sourceChars === undefined ||

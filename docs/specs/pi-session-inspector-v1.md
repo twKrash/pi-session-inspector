@@ -182,8 +182,9 @@ type SessionEvidenceHealth = {
 ```
 
 Counts saturate at the project safe-integer bound and saturation sets `truncated`; sources sort by fixed enum order and diagnostics by source then code; `core` describes Pi/marker reportability only, so an unavailable optional integration never makes native facts partial. `aggregates.detail` is `full` only when retained atomic telemetry covers every recorded stream end, `aggregate-only` when counters survive with an exact fold/seal boundary but their events do not, and `expired` when even the fold is incomplete or absent so no aggregate value may be published. `unavailable`, `unsupported`, `partial`, and `expired` never serialize as zero evidence. L2 may down-project health, but every renderer receives the same result.
+
 - `IntegrationObservation` carries `integration`, `presence`, `state`, optional `version`, and optional allowlisted `counters`; presence never implies activity and state never implies installation.
-- `ErrorRecord.message` is derived only from Pi-persisted `errorMessage`, bounded to one single-line value (≤200 bytes) with secret/path/URL redaction; tool-result text is never read.
+- `ErrorRecord.message` is derived from Pi-persisted assistant `errorMessage` or text from an errored tool result, bounded to one single-line value (≤200 bytes) with secret/path/URL redaction; tool arguments, non-text blocks, and raw tool-result content are never retained.
 - History/global add `inventory: { commands: number | null; skills: number | null; resources: number | null }`; `null` means unknown, never zero.
 
 ## 5. Source precedence and reducer
@@ -591,7 +592,7 @@ nothing about it is fabricated in the meantime.
 | --- | --- | --- |
 | Per-day coverage (which days are incomplete) | Unsupported | Unavailable sessions are unreadable by definition; their dates are unknown |
 | Usage-coverage ratio / estimated unavailable usage | Unsupported | Would fabricate usage; only the session ratio exists, and it is omitted when the denominator is unknown |
-| Tool-error message text | Unsupported | No structured error field exists in persisted tool results, and `content` is outside the privacy boundary → `Message: Unavailable` |
+| Tool-error message text | Supported, bounded | Text-only `content` from an errored tool result passes shared secret/path/URL redaction and a 200-byte cap; arguments, non-text blocks, and unusable values render `Message: Unavailable` |
 | Tool result content / arguments in any view | Unsupported by design | Privacy boundary |
 | Agent run duration | Unsupported | No producer duration field; differencing timestamps would be an estimate |
 | Agent free-text failure reason | Unsupported | The producer exposes bounded enums only |

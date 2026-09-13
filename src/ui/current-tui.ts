@@ -5,6 +5,7 @@ import {
   truncateToWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import { cacheHitPercent } from "../core/reports.ts";
 import { buildLedger } from "../core/ledger.ts";
 import {
   CURRENT_TABS,
@@ -110,9 +111,17 @@ export function createCurrentTuiComponent({
     switch (tab) {
       case "overview": {
         const usage = currentModel.report.usage;
-        return usage === undefined
-          ? ["Usage: unavailable"]
-          : [`Total tokens: ${usage.totalTokens}`, `Cost: ${usage.cost}`];
+        if (usage === undefined) return ["Usage: unavailable"];
+        const cacheHit = cacheHitPercent(usage);
+        const compactions = currentModel.report.compactions.filter(
+          (entry) => entry.kind === "compaction",
+        ).length;
+        return [
+          `Total tokens: ${usage.totalTokens}`,
+          `Cache hit: ${cacheHit === undefined ? "Unavailable" : `${cacheHit.toFixed(1)}%`}`,
+          `Compactions: ${compactions}`,
+          `Cost: ${usage.cost}`,
+        ];
       }
       case "models":
         return [`Models: ${currentModel.report.models.length}`];

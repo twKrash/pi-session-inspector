@@ -101,11 +101,15 @@ export function reduceEntries(
           statusResolvedToolCalls.add(callId);
           tool.status = message.isError === true ? "failed" : "succeeded";
           if (message.isError === true) {
+            const toolErrorMessage = readToolResultMessage(message.content);
             errors.push({
               id: tool.id,
               timestamp: entry.timestamp,
               kind: "tool-error",
               confidence: "native",
+              ...(toolErrorMessage === undefined
+                ? {}
+                : { message: toolErrorMessage }),
             });
           }
         }
@@ -170,8 +174,7 @@ function readGenerationError(
   const stopReason = message.stopReason;
   // Only a bounded classification leaves this function; the raw persisted stop
   // reason is never copied into the report (PRD-08). The optional message is
-  // the persisted assistant `errorMessage`, bounded and redacted; tool-result
-  // bodies are never read here.
+  // the persisted assistant `errorMessage`, bounded and redacted.
   if (
     typeof stopReason !== "string" ||
     !Object.hasOwn(STOP_REASON_ERROR_KINDS, stopReason)
@@ -183,6 +186,28 @@ function readGenerationError(
     kind: STOP_REASON_ERROR_KINDS[stopReason],
     ...(text === undefined ? {} : { message: text }),
   };
+}
+
+/**
+ * Reads only text-bearing tool-result content. Images and other structured
+ * blocks are ignored before the shared bounded redactor runs.
+ */
+function readToolResultMessage(value: unknown): string | undefined {
+  const text =
+    typeof value === "string"
+      ? value
+      : Array.isArray(value)
+        ? value
+            .flatMap((item) =>
+              isRecord(item) &&
+              item.type === "text" &&
+              typeof item.text === "string"
+                ? [item.text]
+                : [],
+            )
+            .join(" ")
+        : undefined;
+  return redactBoundedText(text);
 }
 
 /**
