@@ -42,7 +42,10 @@ import {
   modelWithToolError,
   modelWithToolErrorAndTwoChildren,
 } from "../helpers/bundle-scenarios.ts";
-import { runClient, type StubElement } from "../helpers/client-harness.ts";
+import {
+  runClient,
+  type StubElement,
+} from "../helpers/legacy-client-harness.ts";
 
 function bundleFixture(): InspectorBundle {
   return JSON.parse(

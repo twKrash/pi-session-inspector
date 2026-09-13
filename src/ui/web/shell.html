@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi Session Inspector</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to report</a>
+<div class="shell"><aside aria-label="Workspace"><div class="brand"><span class="mark" aria-hidden="true">π</span><span>Pi Session Inspector<br><small>Understand your agent.</small></span></div><p class="eyebrow">Workspace</p><nav class="nav" id="navigation" aria-label="Report section"></nav><div class="rail-foot"><span class="dot"></span>Local by design<p>Offline report. No tracking.<br>No prompts or outputs.</p><p class="mono">OFFLINE · EN</p></div></aside><div class="workspace">
+<header class="topbar"><span class="trail">Inspector / <strong id="breadcrumb"></strong></span><span class="preview">LOCAL REPORT</span></header>
+<main id="main" class="content" tabindex="-1">
+<div class="heading"><div><p class="eyebrow" id="kicker"></p><h1 id="title" tabindex="-1"></h1><p id="subtitle"></p></div><div class="actions utility-actions"><button id="theme" aria-pressed="false">Dark theme</button></div></div>
+<div class="context"><div><span class="mono" id="session-label"></span> <span class="badge neutral">Local</span><small id="scope-note"></small></div></div>
+<div class="notice" id="wal-detail" hidden><span aria-hidden="true">ⓘ</span><div><strong>Detailed records expired</strong> <p>Records older than the 14-day retention window were pruned. Aggregates and native usage remain.</p></div></div>
+<div class="data-scope" role="group" aria-label="Entry scope"><div class="scope-group"><p class="eyebrow">Entry scope</p><div class="segments" id="scope" aria-label="Entry scope"><button data-scope="active">Active path</button><button data-scope="tree">Full session tree</button></div><small id="scope-sub"></small><small id="scope-fixed" hidden>History &amp; Global use full tree.</small></div>
+<section class="time-range" id="range" aria-label="Date range"><div><p class="eyebrow">Date range</p><strong id="range-name"></strong><div class="mono" id="range-dates" aria-live="polite"></div><small>Inclusive UTC dates</small></div><div class="segments"><button data-days="7">7D</button><button data-days="14">14D</button><button data-days="30">30D</button><button id="custom-range" aria-haspopup="dialog">Custom range</button></div><p class="range-note" id="range-notice" hidden></p></section></div>
+<dialog id="date-dialog" aria-labelledby="date-title"><form id="date-form"><h2 id="date-title">Custom date range</h2><p class="muted">Inclusive UTC dates</p><label>From<input id="date-from" type="date" required aria-describedby="date-error"></label><label>To<input id="date-to" type="date" required aria-describedby="date-error"></label><p id="date-error" class="date-error" role="alert" hidden>From must be on or before To.</p><div class="actions"><button type="button" id="date-cancel">Cancel</button><button type="submit" class="primary">Apply range</button></div></form></dialog>
+<nav class="tabs" id="tabs" aria-label="Report section"></nav>
+<p class="range-note" id="route-notice" hidden></p>
+<p id="loading" hidden>Loading report…</p>
+<section class="notice" id="error" hidden role="alert"><span aria-hidden="true">ⓘ</span><div><strong>The report could not be loaded.</strong> <p id="error-detail">This Inspector session may have stopped, or the page may have lost its access. Reload the tokenized URL from Pi to continue.</p><button id="retry" data-retry="true">Retry</button></div></section>
+<div id="view"></div>
+<div class="notice"><span aria-hidden="true">ⓘ</span><div><strong>Local does not mean safe to share.</strong> Report metadata can be sensitive. Review exports before sharing.</div></div>
+<footer><span>Pi-native usage is billing authority. Child usage is never added.</span><span class="mono">LOCAL · EN</span></footer>
+<p id="announcement" class="sr-only" role="status"></p>
+</main></div></div>
+<script src="/route.js"></script>
+<script src="/range.js"></script>
+<script src="/client.js"></script>
+</body>
+</html>

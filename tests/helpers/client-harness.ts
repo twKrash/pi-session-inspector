@@ -1,11 +1,21 @@
 /**
- * The one client harness: it runs the emitted document's classic script against a
- * stub DOM, because that script is the only code no unit test would otherwise
- * execute. It is shared by every test file that renders the client (the range
- * suite and the navigation suite), so there is one stub DOM to keep honest.
+ * The ordinary-asset harness: it executes the three shipped classic scripts
+ * (`route.js`, `range.js`, `client.js`) in a `vm` context with a stub DOM built
+ * from the shipped `shell.html`, so the browser tests exercise the exact bytes
+ * the server serves rather than a copy of their logic.
+ *
+ * Everything the scripts can reach is stubbed here: the document (ids, tags,
+ * classes and `[data-*]` attributes), the address bar, `history.replaceState`,
+ * `fetch`, and the two event paths. The harness also records what the client did
+ * and in which order — the route parses it performed, the requests it sent with
+ * their `Authorization` header and the address bar they were sent from, and the
+ * times it installed a canonical hash — because bootstrap order is a claim no
+ * rendered value can prove on its own.
  */
-import type { InspectorBundle } from "../../src/ui/bundle.ts";
-import { renderInspectorBundle } from "../../src/ui/html.ts";
+import { createContext, runInContext } from "node:vm";
+
+import { WEB_ASSETS } from "../../src/ui/web-assets.ts";
+import type { InspectorUiSnapshot } from "../../src/ui/ui-projection.ts";
 
 export type StubElement = HarnessNode & {
   id: string;
@@ -13,8 +23,10 @@ export type StubElement = HarnessNode & {
   className: string;
   textContent: string;
   hidden: boolean;
+  disabled: boolean;
   value: string;
   placeholder: string;
+  title: string;
   dataset: Record<string, string>;
   style: Record<string, string>;
   attributes: Record<string, string>;
@@ -36,29 +48,101 @@ export type StubElement = HarnessNode & {
   close(): void;
 };
 
-/** The client is a classic script; its `instanceof Node` checks need a class. */
+/** The scripts are classic; their element checks need one class identity. */
 class HarnessNode {}
 
 /**
- * How the stub reports the two DOM facts focus preservation depends on: a
- * `focus()` call names the active element, and detaching the active element
- * (which `replaceChildren` does) moves focus back to the body.
+ * How the stub reports the two DOM facts focus handling depends on: a `focus()`
+ * call names the active element, and detaching the active element (which
+ * `replaceChildren` does) moves focus back to the body.
  */
 type StubTracking = {
   focus(element: StubElement): void;
   detach(removed: readonly StubElement[]): void;
 };
 
-function descendant(node: StubElement, selector: string): StubElement | null {
-  for (const child of node.children) {
-    const matches = selector.startsWith(".")
-      ? child.className.split(" ").includes(selector.slice(1))
-      : child.tagName === selector;
-    if (matches) return child;
-    const nested = descendant(child, selector);
-    if (nested !== null) return nested;
+/** One ordered observation of what the client did, not only what it rendered. */
+export type WebClientEvent =
+  | { kind: "parse"; hash: string }
+  | { kind: "fetch"; url: string; authorization: string; hash: string }
+  | { kind: "replaceState"; hash: string }
+  | { kind: "hashAssign"; hash: string };
+
+/**
+ * The one harness input. `responses` is consumed one per request (the last one
+ * repeats), so a test can reload with a different DTO; `deferFetch` holds the
+ * response back so the in-flight loading state is observable; `fetchFailure`
+ * makes the boundary fail the way a browser reports it.
+ */
+export type WebClientInput = {
+  responses?: readonly InspectorUiSnapshot[];
+  hash?: string;
+  deferFetch?: boolean;
+  fetchFailure?: "network" | "http";
+  replaceStateFails?: boolean;
+};
+
+export type WebClientHarness = {
+  /** The `vm` globals: the one namespace the scripts own lives here. */
+  context: Record<string, unknown>;
+  events: WebClientEvent[];
+  fetches(): { url: string; authorization: string }[];
+  routeParses(): string[];
+  start(): Promise<void>;
+  /** Releases a deferred response; only meaningful with `deferFetch`. */
+  releaseFetch(): void;
+  element(id: string): StubElement;
+  body(): StubElement;
+  texts(node: StubElement): string[];
+  click(node: StubElement): void;
+  change(node: StubElement): void;
+  input(node: StubElement): void;
+  hashchange(): void;
+  popstate(): void;
+  location: { hash: string };
+  activeElement(): StubElement | null;
+  /** Renders performed so far, counted by the client's one view swap. */
+  renders(): number;
+  /** `history.replaceState` calls so far, so a push and a replace differ. */
+  replacements(): number;
+};
+
+// ---------------------------------------------------------------------------
+// Stub DOM
+// ---------------------------------------------------------------------------
+
+function matches(node: StubElement, selector: string): boolean {
+  const match = /^([A-Za-z][\w-]*)?(?:\.([\w-]+))?(?:\[([\w-]+)\])?$/.exec(
+    selector.trim(),
+  );
+  if (match === null) return false;
+  const [, tag, className, attribute] = match;
+  if (tag !== undefined && node.tagName !== tag.toLowerCase()) return false;
+  if (
+    className !== undefined &&
+    !node.className.split(" ").includes(className)
+  ) {
+    return false;
   }
-  return null;
+  if (
+    attribute !== undefined &&
+    node.dataset[attribute] === undefined &&
+    node.attributes[attribute] === undefined
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function descendants(node: StubElement, selector: string): StubElement[] {
+  const found: StubElement[] = [];
+  for (const child of node.children) {
+    if (selector.split(",").some((part) => matches(child, part))) {
+      found.push(child);
+    }
+    found.push(...descendants(child, selector));
+  }
+  return found;
 }
 
 /** True when `node` is `root` or one of its descendants. */
@@ -74,12 +158,14 @@ function stubElement(
 ): StubElement {
   const element = new HarnessNode() as StubElement;
   element.id = "";
-  element.tagName = tagName;
+  element.tagName = tagName.toLowerCase();
   element.className = "";
   element.textContent = "";
   element.hidden = false;
+  element.disabled = false;
   element.value = "";
   element.placeholder = "";
+  element.title = "";
   element.dataset = {};
   element.style = {};
   element.attributes = {};
@@ -105,32 +191,33 @@ function stubElement(
     element.attributes[name] = String(value);
     if (name === "id") element.id = String(value);
     if (name === "class") element.className = String(value);
+    if (name.startsWith("data-")) {
+      element.dataset[
+        name
+          .slice(5)
+          .replace(/-([a-z])/g, (_all, letter: string) => letter.toUpperCase())
+      ] = String(value);
+    }
   };
   element.removeAttribute = (name) => {
     delete element.attributes[name];
-  };
-  element.querySelector = (selector) => descendant(element, selector);
-  element.querySelectorAll = (selector) => {
-    const found: StubElement[] = [];
-    for (const child of element.children) {
-      if (
-        selector.startsWith(".")
-          ? child.className.split(" ").includes(selector.slice(1))
-          : child.tagName === selector
-      ) {
-        found.push(child);
-      }
-      found.push(...child.querySelectorAll(selector));
+    if (name.startsWith("data-")) {
+      const key = name
+        .slice(5)
+        .replace(/-([a-z])/g, (_all, letter: string) => letter.toUpperCase());
+      delete element.dataset[key];
     }
-    return found;
   };
+  element.querySelector = (selector) =>
+    descendants(element, selector)[0] ?? null;
+  element.querySelectorAll = (selector) => descendants(element, selector);
   element.closest = (selector) => {
     let node: StubElement | null = element;
     while (node !== null) {
-      const matches = selector.startsWith(".")
-        ? node.className.split(" ").includes(selector.slice(1))
-        : node.tagName === selector;
-      if (matches) return node;
+      if (
+        selector.split(",").some((part) => matches(node as StubElement, part))
+      )
+        return node;
       node = node.parentNode;
     }
     return null;
@@ -139,8 +226,6 @@ function stubElement(
     if (element.listeners[type] === undefined) element.listeners[type] = [];
     element.listeners[type].push(listener);
   };
-  // Class changes are recorded on `className`, so the highlight and theme rules
-  // the client writes are rendered evidence a test can read back.
   element.classList = {
     add: (value) => {
       const classes =
@@ -158,8 +243,6 @@ function stubElement(
       return enabled;
     },
   };
-  // The document's activeElement follows real focus calls, so a test can assert
-  // which control the client handed focus to (and which one it preserved).
   element.focus = () => {
     tracking?.focus(element);
   };
@@ -169,109 +252,75 @@ function stubElement(
   return element;
 }
 
-/**
- * The applied route the client exposes to the harness, plus the one derivation it
- * renders from. A test mutates the route exactly like a navigation would and
- * calls render(), so the expectations below are always checked against the
- * document's own client.
- */
-type ClientInternals = {
-  state: {
-    section: string;
-    tab: string;
-    scope: string;
-    session?: string | null;
-    range?: { kind: string; preset?: number; from?: string; to?: string };
-    entity?: { kind: string; id: string };
-    table?: { query?: string; sort?: string };
-  };
-  render(effects?: { structural?: boolean; sectionChanged?: boolean }): void;
-};
+/** The HTML attributes the shell carries that the scripts read back. */
+const VOID_TAGS = new Set([
+  "meta",
+  "link",
+  "input",
+  "br",
+  "hr",
+  "img",
+  "source",
+]);
 
 /**
- * The one client-harness behaviour a test may vary. `replaceStateFails` models
- * the browser that rejects `history.replaceState` for a `file://` document (a
- * SecurityError), which the design's hash routing has to survive (design R5).
+ * Builds the stub tree from the shipped shell markup. The scan is deliberately
+ * small — the shell is fixed, report-free markup — but it keeps real nesting and
+ * the attributes (`id`, `class`, `data-*`, `href`, `src`) the scripts read, so
+ * the client is driven by the actual landmarks rather than by a fixture list.
  */
-export type ClientHarnessOptions = { replaceStateFails?: boolean };
+function markupTree(
+  html: string,
+  tracking: StubTracking,
+  register: (element: StubElement) => void,
+): { body: StubElement; nodes: StubElement[] } {
+  const body = stubElement("body", register, tracking);
+  const stack: StubElement[] = [body];
+  const nodes: StubElement[] = [body];
+  // Tags and text: an element's own text becomes its `textContent`, so the
+  // chrome the shell carries (labels, landmarks, static copy) reads back the way
+  // a browser reports it.
+  const token =
+    /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>|([^<]+)/g;
+  for (const match of html.matchAll(token)) {
+    const [, closing, name, attributeText = "", selfClosing, between] = match;
+    if (between !== undefined) {
+      const open = stack[stack.length - 1];
+      if (open.children.length === 0) open.textContent += between;
+      continue;
+    }
+    if (closing === "/") {
+      if (stack.length > 1) stack.pop();
+      continue;
+    }
+    const element = stubElement(name, register, tracking);
+    for (const attribute of attributeText.matchAll(
+      /([\w:-]+)\s*=\s*"([^"]*)"/g,
+    )) {
+      element.setAttribute(attribute[1], attribute[2]);
+    }
+    if (/\shidden(\s|\/|$)/.test(attributeText)) element.hidden = true;
+    stack[stack.length - 1].append(element);
+    nodes.push(element);
+    if (selfClosing !== "/" && !VOID_TAGS.has(name.toLowerCase())) {
+      stack.push(element);
+    }
+  }
+  return { body, nodes };
+}
+
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
 
 /**
- * Runs the emitted client against a stub document. The generated document is
- * 40 KB of client code that no other test executes, so at least one test has to
- * render it for real: the store below is what the client's own `q(id)` reads.
- * `initialHash` is the address bar the document loads with, so a deep link is
- * exercised exactly as a fresh load would.
+ * Runs the three shipped classic scripts against a stub DOM built from the
+ * shipped shell. Nothing is executed until `start()`, so a test can inspect the
+ * bootstrap's own effects (the loading landmark, the token's disappearance, the
+ * first request) separately from the rendered result.
  */
-export function runClient(
-  bundle: InspectorBundle,
-  initialHash = "",
-  options: ClientHarnessOptions = {},
-): {
-  client: ClientInternals;
-  preset(days: string): void;
-  submit(): void;
-  click(node: StubElement): void;
-  change(node: StubElement): void;
-  input(node: StubElement): void;
-  element(id: string): StubElement;
-  texts(node: StubElement): string[];
-  /** The address bar the client reads and writes; a test drives a deep link. */
-  location: { hash: string };
-  /** Renders performed so far, counted by the one scroll call render() makes. */
-  renders(): number;
-  /** `history.replaceState` calls so far, so a push and a replace differ. */
-  replacements(): number;
-  /** The element the client last focused, exactly as the DOM reports it. */
-  activeElement(): StubElement | null;
-  /** Fires the event the browser fires for a hash the test just set. */
-  hashchange(): void;
-} {
-  const html = renderInspectorBundle(bundle);
-  const payload =
-    /<script type="application\/json" id="report-data">([\s\S]*?)<\/script>/.exec(
-      html,
-    )?.[1] ?? "";
-  const catalog =
-    /<script type="application\/json" id="catalog-data">([\s\S]*?)<\/script>/.exec(
-      html,
-    )?.[1] ?? "";
-  const script =
-    /<script>\n([\s\S]*)\n<\/script><\/body>/.exec(html)?.[1] ?? "";
-  // Every id the server-rendered markup carries; anything else is absent, so
-  // the client's create-on-demand paths (and any stale id) behave as in a browser.
-  const markupIds = [
-    "navigation",
-    "breadcrumb",
-    "kicker",
-    "title",
-    "subtitle",
-    "theme",
-    "session-label",
-    "scope-note",
-    "wal-detail",
-    "scope",
-    "scope-sub",
-    "scope-fixed",
-    "time-range",
-    "range-name",
-    "range-dates",
-    "custom-range",
-    "date-dialog",
-    "date-form",
-    "date-title",
-    "date-from",
-    "date-to",
-    "date-error",
-    "date-cancel",
-    "tabs",
-    "route-notice",
-    "view",
-    "announcement",
-    "report-data",
-    "catalog-data",
-    // The server renders the truncation notice only for a capped view.
-    ...(html.includes('id="range-truncated"') ? ["range-truncated"] : []),
-  ];
+export function createWebClient(input: WebClientInput = {}): WebClientHarness {
+  const events: WebClientEvent[] = [];
   const store = new Map<string, StubElement>();
   const register = (element: StubElement): void => {
     if (element.id !== "") store.set(element.id, element);
@@ -290,151 +339,211 @@ export function runClient(
       }
     },
   };
-  const dayButtons = ["7", "14", "30"].map((days) => {
-    const button = stubElement("button", register, tracking);
-    button.dataset.days = days;
-    return button;
-  });
+  const { body, nodes } = markupTree(WEB_ASSETS.shell, tracking, register);
+  for (const node of nodes) register(node);
+  let renders = 0;
+  const view = store.get("view");
+  if (view !== undefined) {
+    const swap = view.replaceChildren;
+    view.replaceChildren = (...children) => {
+      renders += 1;
+      swap(...children);
+    };
+  }
   const documentStub = {
-    body: stubElement("body"),
+    body,
     activeElement: null as StubElement | null,
-    listeners: {} as Record<string, (event: unknown) => void>,
-    getElementById: (id: string): StubElement | null => {
-      const existing = store.get(id);
-      if (existing !== undefined) return existing;
-      if (!markupIds.includes(id)) return null;
-      const created = stubElement(
-        id === "tabs" ? "nav" : "div",
-        register,
-        tracking,
-      );
-      created.id = id;
-      created.parentNode = stubElement("div");
-      created.textContent =
-        id === "report-data" ? payload : id === "catalog-data" ? catalog : "";
-      store.set(id, created);
-      return created;
-    },
+    listeners: {} as Record<string, ((event: unknown) => void)[]>,
+    getElementById: (id: string): StubElement | null => store.get(id) ?? null,
     createElement: (name: string): StubElement =>
       stubElement(name, register, tracking),
     createElementNS: (_namespace: string, name: string): StubElement =>
       stubElement(name, register, tracking),
+    querySelector: (selector: string): StubElement | null =>
+      descendants(body, selector)[0] ?? null,
     querySelectorAll: (selector: string): StubElement[] =>
-      selector === "[data-days]" ? dayButtons : [],
+      descendants(body, selector),
     addEventListener: (
       type: string,
       listener: (event: unknown) => void,
     ): void => {
-      documentStub.listeners[type] = listener;
+      const listeners = documentStub.listeners[type] ?? [];
+      documentStub.listeners[type] = listeners;
+      listeners.push(listener);
     },
   };
-  let renders = 0;
   const windowStub = {
     scrollX: 0,
     scrollY: 0,
-    // render() makes exactly one scroll call, so this counts renders.
-    scrollTo: () => {
-      renders += 1;
-    },
-    listeners: {} as Record<string, (event: unknown) => void>,
+    scrollTo: () => {},
+    listeners: {} as Record<string, ((event: unknown) => void)[]>,
     addEventListener: (
       type: string,
       listener: (event: unknown) => void,
     ): void => {
-      windowStub.listeners[type] = listener;
+      const listeners = windowStub.listeners[type] ?? [];
+      windowStub.listeners[type] = listeners;
+      listeners.push(listener);
     },
   };
-  // The address bar the client reads on every applyLocation and writes on every
-  // navigate, with the one history surface a replace navigation uses.
-  const locationStub: { hash: string } = { hash: initialHash };
+  // The address bar the client reads and writes; a replacement moves the entry
+  // the client already has, an assignment is the client's own new entry.
+  const locationStub: { hash: string } = { hash: input.hash ?? "" };
   let replacements = 0;
   const historyStub = {
     replaceState: (_state: unknown, _title: string, url: string): void => {
-      // A document that refuses the call refuses it the way a browser does:
-      // it throws before anything is written, so no replacement is counted.
-      if (options.replaceStateFails === true) throw new Error("SecurityError");
+      if (input.replaceStateFails === true) throw new Error("SecurityError");
       replacements += 1;
       locationStub.hash = url;
+      events.push({ kind: "replaceState", hash: url });
     },
   };
-  const factory = new Function(
-    "document",
-    "window",
-    "Node",
-    "location",
-    "history",
-    `${script}\nreturn {state:state,render:render};`,
-  ) as (
-    document: unknown,
-    window: unknown,
-    node: unknown,
-    location: unknown,
-    history: unknown,
-  ) => ClientInternals;
-  const client = factory(
-    documentStub,
-    windowStub,
-    HarnessNode,
-    locationStub,
-    historyStub,
-  );
+
+  // The client reads at most one bounded capability token from the fragment; the
+  // stub below reports exactly the three request facts a test may assert.
+  const responses = input.responses ?? [];
+  let served = 0;
+  let release: (() => void) | null = null;
+  const snapshotFor = (): InspectorUiSnapshot | undefined =>
+    responses.length === 0
+      ? undefined
+      : responses[Math.min(served, responses.length - 1)];
+  const respond = (): Promise<unknown> => {
+    const snapshot = snapshotFor();
+    served += 1;
+    if (input.fetchFailure !== undefined) {
+      return input.fetchFailure === "network"
+        ? Promise.reject(new TypeError("Failed to fetch"))
+        : Promise.resolve(Response(false));
+    }
+    return Promise.resolve(Response(true, snapshot));
+  };
+  const Response = (ok: boolean, snapshot?: InspectorUiSnapshot) => ({
+    ok,
+    status: ok ? 200 : 401,
+    json: async () => snapshot,
+  });
+  const fetchStub = (
+    url: string,
+    init?: { headers?: Record<string, string> },
+  ) => {
+    events.push({
+      kind: "fetch",
+      url,
+      authorization: init?.headers?.Authorization ?? "",
+      hash: locationStub.hash,
+    });
+    if (input.deferFetch === true) {
+      return new Promise<unknown>((resolve) => {
+        release = () => resolve(respond());
+      });
+    }
+    return respond();
+  };
+  const navigatorStub = {
+    clipboard: { writeText: async () => {} },
+  };
+  const context: Record<string, unknown> = {
+    document: documentStub,
+    window: windowStub,
+    location: locationStub,
+    history: historyStub,
+    navigator: navigatorStub,
+    fetch: fetchStub,
+    console,
+    setTimeout,
+  };
+  createContext(context);
+  for (const [name, source] of [
+    ["route.js", WEB_ASSETS.route],
+    ["range.js", WEB_ASSETS.range],
+    ["client.js", WEB_ASSETS.client],
+  ] as const) {
+    runInContext(source, context, { filename: name });
+  }
+  // The scripts are evaluated above; the parse recorder below is installed after
+  // evaluation and before `start()`, so it sees every parse `start()` performs.
+  const namespace = context.SessionInspectorWeb as
+    | { route?: { parse?: (hash: unknown, options?: unknown) => unknown } }
+    | undefined;
+  const routeParse = namespace?.route?.parse;
+  if (typeof routeParse === "function" && namespace?.route !== undefined) {
+    namespace.route.parse = (hash: unknown, options?: unknown) => {
+      events.push({ kind: "parse", hash: String(hash) });
+      return routeParse(hash, options);
+    };
+  }
+
   const texts = (node: StubElement): string[] => {
     const collected = node.textContent === "" ? [] : [node.textContent];
     for (const child of node.children) collected.push(...texts(child));
     return collected;
   };
+  const element = (id: string): StubElement => {
+    const found = store.get(id);
+    if (found === undefined) throw new Error(`no element #${id}`);
+    return found;
+  };
+  const dispatch = (node: StubElement, type: string): void => {
+    const listeners = [
+      ...(node.listeners[type] ?? []),
+      ...(documentStub.listeners[type] ?? []),
+    ];
+    if (listeners.length === 0) throw new Error(`no ${type} handler`);
+    // A real event runs the target's own listeners and then bubbles to the
+    // document, so a control's own handler and the one delegated handler both
+    // see it, in that order.
+    const event = {
+      target: node,
+      currentTarget: node,
+      button: 0,
+      preventDefault: () => {},
+    };
+    for (const listener of listeners) listener(event);
+  };
+  const fire = (type: string): void => {
+    const listeners = windowStub.listeners[type] ?? [];
+    if (listeners.length === 0) throw new Error(`no ${type} listener`);
+    for (const listener of listeners) listener({});
+  };
+  const start = async (): Promise<void> => {
+    const started = (context.SessionInspectorWeb as { start?: () => unknown })
+      ?.start;
+    if (typeof started !== "function") throw new Error("no start member");
+    await started();
+  };
   return {
-    client,
-    preset: (days) => {
-      const button = dayButtons.find(
-        (candidate) => candidate.dataset.days === days,
-      );
-      if (button === undefined) throw new Error(`no preset ${days}`);
-      for (const listener of button.listeners.click ?? []) {
-        listener({ currentTarget: button });
-      }
+    context,
+    events,
+    fetches: () =>
+      events
+        .filter((event) => event.kind === "fetch")
+        .map((event) => ({
+          url: event.url,
+          authorization: event.authorization,
+        })),
+    routeParses: () =>
+      events
+        .filter((event) => event.kind === "parse")
+        .map((event) => event.hash),
+    start,
+    releaseFetch: () => {
+      if (release === null) throw new Error("no deferred fetch");
+      const run = release;
+      release = null;
+      run();
     },
-    submit: () => {
-      for (const listener of documentStub.getElementById("date-form")?.listeners
-        .submit ?? []) {
-        listener({ preventDefault: () => {} });
-      }
-    },
-    // The client delegates every button to one document-level click handler, so
-    // a rendered control is exercised through that handler, not by calling the
-    // state logic the handler would have reached.
-    click: (node) => {
-      const listener = documentStub.listeners.click;
-      if (listener === undefined) throw new Error("no document click handler");
-      listener({ target: node });
-    },
-    // The client's one change handler reads the control it is given, so a select
-    // is exercised the way the browser reports it.
-    change: (node) => {
-      const listener = documentStub.listeners.change;
-      if (listener === undefined) throw new Error("no document change handler");
-      listener({ target: node });
-    },
-    // Typing is the same delegated event path a browser uses for an input.
-    input: (node) => {
-      const listener = documentStub.listeners.input;
-      if (listener === undefined) throw new Error("no document input handler");
-      listener({ target: node });
-    },
-    element: (id) => {
-      const found = documentStub.getElementById(id);
-      if (found === null) throw new Error(`no element #${id}`);
-      return found;
-    },
+    element,
+    body: () => body,
     texts,
+    click: (node) => dispatch(node, "click"),
+    change: (node) => dispatch(node, "change"),
+    input: (node) => dispatch(node, "input"),
+    hashchange: () => fire("hashchange"),
+    popstate: () => fire("popstate"),
     location: locationStub,
+    activeElement: () => documentStub.activeElement,
     renders: () => renders,
     replacements: () => replacements,
-    activeElement: () => documentStub.activeElement,
-    hashchange: () => {
-      const listener = windowStub.listeners.hashchange;
-      if (listener === undefined) throw new Error("no hashchange listener");
-      listener({});
-    },
   };
 }
