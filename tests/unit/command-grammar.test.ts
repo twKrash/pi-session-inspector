@@ -48,6 +48,24 @@ test("parses the documented positional modes, targets, and options", () => {
     theme: "dark",
     noOpen: false,
   });
+  assert.equal(parseInspectorCommand("snapshot").ok, false);
+  assert.deepEqual(report("snapshot current --scope tree --preset 7"), {
+    kind: "report",
+    mode: "snapshot",
+    target: "current",
+    scope: "tree",
+    range: { kind: "preset", preset: 7 },
+    noOpen: false,
+  });
+  assert.deepEqual(report("snapshot session session-a --theme dark"), {
+    kind: "report",
+    mode: "snapshot",
+    target: "session",
+    scope: "tree",
+    sessionId: "session-a",
+    theme: "dark",
+    noOpen: false,
+  });
   assert.deepEqual(report("tui ledger"), {
     kind: "report",
     mode: "tui",
@@ -77,6 +95,8 @@ test("parses the documented positional modes, targets, and options", () => {
 test("rejects invalid combinations and removed syntax with a usable message", () => {
   const cases = [
     "ui history",
+    "ui --output report.html",
+    "ui --preset 7",
     "tui global",
     "json ledger",
     "json history --scope active",
@@ -84,6 +104,16 @@ test("rejects invalid combinations and removed syntax with a usable message", ()
     "tui --theme dark",
     "json --theme light",
     "tui --output /tmp/x.json",
+    "snapshot session session-a --scope tree",
+    "snapshot session session-a --from 2026-01-01 --to 2026-01-02",
+    "snapshot history --scope active",
+    "snapshot global --scope tree",
+    "snapshot current --preset 7 --from 2026-01-01 --to 2026-01-02",
+    "snapshot current --from 2026-02-02",
+    "snapshot current --preset 7 --preset 14",
+    "snapshot current --output ''",
+    "snapshot current --theme dark --theme light",
+    "snapshot current --no-open --no-open",
     "json --no-open",
     "--format tui",
     "current",
@@ -130,7 +160,11 @@ test("every option has exactly one arity entry", () => {
 test("keeps documented target defaults and output ownership", () => {
   assert.equal(reportOptions("json").target, "current");
   assert.equal(reportOptions("json").scope, "active");
-  assert.equal(reportOptions("ui --no-open --output /tmp/a.html").noOpen, true);
+  assert.equal(reportOptions("ui --no-open").noOpen, true);
+  assert.equal(
+    reportOptions("snapshot current --output '/tmp/a.html'").output,
+    "/tmp/a.html",
+  );
   assert.equal(
     reportOptions("json --output 'C:\\reports\\my file.json'").output,
     "C:\\reports\\my file.json",
@@ -138,7 +172,9 @@ test("keeps documented target defaults and output ownership", () => {
 });
 
 test("scanned tokens carry raw spans and the parser's own text", () => {
-  const scanned = scanInspectorArgs('ui --output "/tmp/my report.json" --th');
+  const scanned = scanInspectorArgs(
+    'snapshot current --output "/tmp/my report.html" --th',
+  );
   assert.deepEqual(
     scanned?.tokens.map((token) => [
       token.raw,
@@ -147,29 +183,35 @@ test("scanned tokens carry raw spans and the parser's own text", () => {
       token.quoted,
     ]),
     [
-      ["ui", 0, 2, false],
-      ["--output", 3, 11, false],
-      ['"/tmp/my report.json"', 12, 33, true],
-      ["--th", 34, 38, false],
+      ["snapshot", 0, 8, false],
+      ["current", 9, 16, false],
+      ["--output", 17, 25, false],
+      ['"/tmp/my report.html"', 26, 47, true],
+      ["--th", 48, 52, false],
     ],
   );
-  assert.equal(scanned?.tokens[2]?.text, "/tmp/my report.json");
+  assert.equal(scanned?.tokens[3]?.text, "/tmp/my report.html");
   assert.equal(scanned?.trailingWhitespace, false);
 });
 
 test("the scanner keeps the parser's quote behaviour exactly", () => {
-  const single = scanInspectorArgs("json history --output '/tmp/a b.json'");
+  const single = scanInspectorArgs("snapshot history --output '/tmp/a b.html'");
   assert.deepEqual(
     [single?.tokens.at(-1)?.text, single?.tokens.at(-1)?.quoted],
-    ["/tmp/a b.json", true],
+    ["/tmp/a b.html", true],
   );
-  const midToken = scanInspectorArgs('ui --output="/tmp/a b.json" --th');
+  const midToken = scanInspectorArgs(
+    'snapshot current --output="/tmp/a b.html" --th',
+  );
   assert.deepEqual(
     midToken?.tokens.map((token) => token.text),
-    ["ui", "--output=/tmp/a b.json", "--th"],
+    ["snapshot", "current", "--output=/tmp/a b.html", "--th"],
   );
-  assert.equal(midToken?.tokens[1]?.raw, '--output="/tmp/a b.json"');
-  assert.equal(scanInspectorArgs('ui --output="/tmp/a b.json'), undefined);
+  assert.equal(midToken?.tokens[2]?.raw, '--output="/tmp/a b.html"');
+  assert.equal(
+    scanInspectorArgs('snapshot current --output="/tmp/a b.html'),
+    undefined,
+  );
 });
 
 test("the stripped tokenizer is a projection of the scanner", () => {
@@ -194,7 +236,7 @@ test("the stripped tokenizer is a projection of the scanner", () => {
     "ui --scope tree",
     "tui current --scope active",
     "json history --output '/tmp/x y.json'",
-    'ui --output="/tmp/a b.json" --th',
+    'snapshot current --output="/tmp/a b.html" --th',
     "ui --theme ''",
     '" json " history',
   ];

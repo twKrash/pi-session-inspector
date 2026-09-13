@@ -4,6 +4,7 @@ import {
   INSPECTOR_MODES,
   INSPECTOR_OPTION_ARITY,
   INSPECTOR_OPTIONS,
+  INSPECTOR_PRESET_VALUES,
   INSPECTOR_SCOPE_VALUES,
   INSPECTOR_TARGETS,
   INSPECTOR_THEME_VALUES,
@@ -17,21 +18,31 @@ import {
 type Span = { start: number; end: number };
 
 /** Fixed value choices for value-consuming options; arity lives in the grammar. */
-function valueChoices(
-  option: string,
-  mode: InspectorMode,
-  target: InspectorTarget | undefined,
-): readonly string[] | undefined {
-  // `json history|global` forces `--scope tree`; `active` is a parser error.
-  if (option === "--scope")
-    return mode === "json" && (target === "history" || target === "global")
-      ? ["tree"]
-      : INSPECTOR_SCOPE_VALUES;
+function valueChoices(option: string): readonly string[] | undefined {
+  if (option === "--scope") return INSPECTOR_SCOPE_VALUES;
+  if (option === "--preset") return INSPECTOR_PRESET_VALUES.map(String);
   if (option === "--theme") return INSPECTOR_THEME_VALUES;
   return undefined;
 }
 
 const HELP_TOKENS = new Set(["help", "--help", "-h"]);
+
+function optionsFor(
+  mode: InspectorMode,
+  target: InspectorTarget | undefined,
+): readonly string[] {
+  return INSPECTOR_OPTIONS[mode].filter(
+    (option) =>
+      !(
+        (target === "history" || target === "global") &&
+        option === "--scope"
+      ) &&
+      !(
+        target === "session" &&
+        ["--scope", "--preset", "--from", "--to"].includes(option)
+      ),
+  );
+}
 
 /** Replaces only the current raw token span; every preceding character survives. */
 function withReplacement(
@@ -108,19 +119,20 @@ export function completeInspectorCommand(
   let targetChosen = false;
   let chosenTarget: InspectorTarget | undefined;
   let pendingValue: string | undefined;
+  let sessionIdChosen = false;
   const usedOptions = new Set<string>();
 
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index] as string;
     if (token.startsWith("-")) {
       if (pendingValue) return null;
-      if (!INSPECTOR_OPTIONS[typedMode].includes(token)) return null;
+      if (!optionsFor(typedMode, chosenTarget).includes(token)) return null;
       usedOptions.add(token);
       if (INSPECTOR_OPTION_ARITY[token] === "value") pendingValue = token;
       continue;
     }
     if (pendingValue) {
-      const choices = valueChoices(pendingValue, typedMode, chosenTarget);
+      const choices = valueChoices(pendingValue);
       if (pendingValue === "--output") {
         if (token.length === 0) return null;
       } else if (!choices || !choices.includes(token)) {
@@ -129,24 +141,34 @@ export function completeInspectorCommand(
       pendingValue = undefined;
       continue;
     }
-    if (typedMode === "ui") return null;
+    if (typedMode === "snapshot" && chosenTarget === "session") {
+      if (sessionIdChosen) return null;
+      sessionIdChosen = token.length > 0;
+      continue;
+    }
     if (
+      typedMode === "ui" ||
       targetChosen ||
       !INSPECTOR_TARGETS[typedMode].includes(token as InspectorTarget)
-    ) {
+    )
       return null;
-    }
     targetChosen = true;
     chosenTarget = token as InspectorTarget;
   }
 
   if (pendingValue) {
-    const choices = valueChoices(pendingValue, typedMode, chosenTarget);
+    const choices = valueChoices(pendingValue);
     return choices ? items(choices, current, prefix, span) : null;
   }
 
+  if (
+    typedMode === "snapshot" &&
+    chosenTarget === "session" &&
+    !sessionIdChosen
+  )
+    return null;
   // Options already present are never offered again (§10.2).
-  const options = INSPECTOR_OPTIONS[typedMode].filter(
+  const options = optionsFor(typedMode, chosenTarget).filter(
     (option) => !usedOptions.has(option),
   );
   if (current.startsWith("-")) return items(options, current, prefix, span);

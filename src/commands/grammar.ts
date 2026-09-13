@@ -1,9 +1,19 @@
 import type { Scope } from "../core/events.ts";
+import {
+  parseRangeOptions,
+  type RangeIntent,
+  type RangePreset,
+} from "../ui/range.ts";
 
 /** Renderer/consumer mode selected positionally as the first command token. */
-export type InspectorMode = "ui" | "tui" | "json";
-/** Report target; `ledger` is TUI-only, `history`/`global` are JSON-only. */
-export type InspectorTarget = "current" | "ledger" | "history" | "global";
+export type InspectorMode = "ui" | "snapshot" | "tui" | "json";
+/** Report target; each mode's allowed subset is declared in `INSPECTOR_TARGETS`. */
+export type InspectorTarget =
+  | "current"
+  | "ledger"
+  | "history"
+  | "global"
+  | "session";
 
 export type InspectorCommand =
   | {
@@ -14,6 +24,8 @@ export type InspectorCommand =
       theme?: "dark" | "light";
       output?: string;
       noOpen: boolean;
+      range?: RangeIntent;
+      sessionId?: string;
     }
   | { kind: "help" };
 
@@ -22,7 +34,12 @@ export type InspectorParseResult =
   | { ok: false; message: string };
 
 /** Positional modes in completion order; the single source of truth. */
-export const INSPECTOR_MODES: readonly InspectorMode[] = ["ui", "tui", "json"];
+export const INSPECTOR_MODES: readonly InspectorMode[] = [
+  "ui",
+  "snapshot",
+  "tui",
+  "json",
+];
 /** `help` is a first-token affordance, not a mode. */
 export const INSPECTOR_FIRST_TOKENS: readonly string[] = [
   ...INSPECTOR_MODES,
@@ -33,6 +50,7 @@ export const INSPECTOR_TARGETS: Readonly<
   Record<InspectorMode, readonly InspectorTarget[]>
 > = {
   ui: [],
+  snapshot: ["current", "history", "global", "session"],
   tui: ["current", "ledger"],
   json: ["current", "history", "global"],
 };
@@ -40,7 +58,16 @@ export const INSPECTOR_TARGETS: Readonly<
 export const INSPECTOR_OPTIONS: Readonly<
   Record<InspectorMode, readonly string[]>
 > = {
-  ui: ["--scope", "--theme", "--output", "--no-open"],
+  ui: ["--scope", "--theme", "--no-open"],
+  snapshot: [
+    "--scope",
+    "--preset",
+    "--from",
+    "--to",
+    "--theme",
+    "--output",
+    "--no-open",
+  ],
   tui: ["--scope"],
   json: ["--scope", "--output"],
 };
@@ -53,11 +80,15 @@ export const INSPECTOR_OPTION_ARITY: Readonly<
   Record<string, "value" | "flag">
 > = {
   "--scope": "value",
+  "--preset": "value",
+  "--from": "value",
+  "--to": "value",
   "--theme": "value",
   "--output": "value",
   "--no-open": "flag",
 };
 export const INSPECTOR_SCOPE_VALUES: readonly Scope[] = ["active", "tree"];
+export const INSPECTOR_PRESET_VALUES: readonly RangePreset[] = [7, 14, 30];
 export const INSPECTOR_THEME_VALUES: readonly ("dark" | "light")[] = [
   "dark",
   "light",
@@ -67,7 +98,7 @@ export const INSPECTOR_THEME_VALUES: readonly ("dark" | "light")[] = [
 const LEGACY_TARGETS = new Set(["current", "history", "global", "ledger"]);
 
 const USAGE =
-  "Usage: /session-inspector [ui|tui|json] [target] [options]. Run /session-inspector help.";
+  "Usage: /session-inspector [ui|snapshot|tui|json] [target] [options]. Run /session-inspector help.";
 
 function reject(): InspectorParseResult {
   return { ok: false, message: USAGE };
@@ -193,6 +224,11 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
 
   let target: InspectorTarget = "current";
   const firstTarget = tokens[0];
+  if (
+    mode === "snapshot" &&
+    (firstTarget === undefined || firstTarget.startsWith("-"))
+  )
+    return reject();
   if (firstTarget !== undefined && !firstTarget.startsWith("-")) {
     const candidate = tokens.shift() as string;
     if (!INSPECTOR_TARGETS[mode].includes(candidate as InspectorTarget))
@@ -200,49 +236,63 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
     target = candidate as InspectorTarget;
   }
 
+  let sessionId: string | undefined;
+  if (mode === "snapshot" && target === "session") {
+    const value = tokens.shift();
+    if (!value || value.startsWith("-")) return reject();
+    sessionId = value;
+  }
+
   let scope: Scope | undefined;
   let theme: "dark" | "light" | undefined;
   let output: string | undefined;
   let noOpen = false;
+  const range: { preset?: string; from?: string; to?: string } = {};
+  const usedOptions = new Set<string>();
 
   while (tokens.length > 0) {
     const option = tokens.shift() as string;
-    // `Object.hasOwn` so a prototype member name (`constructor`, `toString`,
-    // `__proto__`, ...) is never mistaken for a declared option.
-    const arity = Object.hasOwn(INSPECTOR_OPTION_ARITY, option)
-      ? INSPECTOR_OPTION_ARITY[option]
-      : undefined;
-    if (arity === undefined) return reject();
-    // Value-consuming options take the next token; flags never do.
+    if (usedOptions.has(option) || !INSPECTOR_OPTIONS[mode].includes(option))
+      return reject();
+    usedOptions.add(option);
+    const arity = INSPECTOR_OPTION_ARITY[option];
     const value = arity === "value" ? tokens.shift() : undefined;
+    if (arity === "value" && (!value || value.startsWith("-"))) return reject();
     if (option === "--scope") {
-      if (!INSPECTOR_SCOPE_VALUES.includes(value as Scope)) return reject();
+      if (
+        target === "session" ||
+        target === "history" ||
+        target === "global" ||
+        !INSPECTOR_SCOPE_VALUES.includes(value as Scope)
+      )
+        return reject();
       scope = value as Scope;
+    } else if (
+      option === "--preset" ||
+      option === "--from" ||
+      option === "--to"
+    ) {
+      if (mode !== "snapshot" || target === "session") return reject();
+      range[option.slice(2) as "preset" | "from" | "to"] = value;
     } else if (option === "--theme") {
-      if (mode !== "ui") return reject();
       if (!INSPECTOR_THEME_VALUES.includes(value as "dark" | "light"))
         return reject();
       theme = value as "dark" | "light";
     } else if (option === "--output") {
-      if (mode === "tui") return reject();
-      if (!value || value.startsWith("-")) return reject();
       output = value;
     } else if (option === "--no-open") {
-      // The only remaining arity entry is ui-only.
-      if (mode !== "ui") return reject();
       noOpen = true;
     } else {
-      // Unknown option: reject explicitly, never fall through to `--no-open`.
       return reject();
     }
   }
 
-  if (mode === "json" && (target === "history" || target === "global")) {
-    if (scope !== undefined && scope !== "tree") return reject();
-    scope = "tree";
-  } else {
-    scope = scope ?? "active";
-  }
+  const parsedRange = parseRangeOptions(range);
+  if (!parsedRange.ok) return reject();
+  const forcedTree =
+    (mode === "snapshot" && target !== "current") ||
+    (mode === "json" && (target === "history" || target === "global"));
+  scope = forcedTree ? "tree" : (scope ?? "active");
 
   return {
     ok: true,
@@ -251,6 +301,8 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
       mode,
       target,
       scope,
+      ...(parsedRange.intent ? { range: parsedRange.intent } : {}),
+      ...(sessionId ? { sessionId } : {}),
       ...(theme ? { theme } : {}),
       ...(output !== undefined ? { output } : {}),
       noOpen,

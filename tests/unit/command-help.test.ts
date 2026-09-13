@@ -13,8 +13,11 @@ test("help copy is frozen shared state", () => {
 test("help lists only valid combinations and every mode", () => {
   const lines = inspectorHelpLines().join("\n");
   assert.match(lines, /session-inspector ui/);
-  assert.match(lines, /session-inspector tui/);
+  assert.match(lines, /session-inspector snapshot/);
+  assert.match(lines, /tui\s+interactive/);
   assert.match(lines, /session-inspector json/);
+  assert.match(lines, /localhost interactive browser application/);
+  assert.match(lines, /--preset 7\|14\|30/);
   assert.match(lines, /--theme dark\|light/);
   assert.equal(lines.includes("--format"), false);
   assert.equal(lines.includes("--subagents-artifact"), false);

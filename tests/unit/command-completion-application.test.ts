@@ -13,29 +13,34 @@ const cases: [string, string, string][] = [
   ["/session-ins ui --th", "--theme", "/session-ins ui --theme"],
   ["/session-ins ui --theme d", "dark", "/session-ins ui --theme dark"],
   [
+    "/session-ins snapshot current --preset 1",
+    "14",
+    "/session-ins snapshot current --preset 14",
+  ],
+  [
     "/session-ins ui --theme dark --",
     "--scope",
     "/session-ins ui --theme dark --scope",
   ],
   [
-    "/session-ins json history --sc",
+    "/session-ins snapshot current --sc",
     "--scope",
-    "/session-ins json history --scope",
+    "/session-ins snapshot current --scope",
   ],
   [
-    "/session-ins json history --scope tr",
+    "/session-ins snapshot current --scope tr",
     "tree",
-    "/session-ins json history --scope tree",
+    "/session-ins snapshot current --scope tree",
   ],
   [
-    '/session-ins ui --output "/tmp/my report.json" --th',
+    '/session-ins snapshot current --output "/tmp/my report.html" --th',
     "--theme",
-    '/session-ins ui --output "/tmp/my report.json" --theme',
+    '/session-ins snapshot current --output "/tmp/my report.html" --theme',
   ],
   [
-    '/session-ins ui --output "/tmp/my report.json" ',
+    '/session-ins snapshot current --output "/tmp/my report.html" ',
     "--theme",
-    '/session-ins ui --output "/tmp/my report.json" --theme',
+    '/session-ins snapshot current --output "/tmp/my report.html" --theme',
   ],
 ];
 
@@ -66,7 +71,6 @@ test("an option already present is not offered again through the real provider",
   const line = "/session-ins ui --theme dark --";
   assert.deepEqual(await suggestionLabelsFor(line, line.length), [
     "--scope",
-    "--output",
     "--no-open",
   ]);
 });
