@@ -251,6 +251,32 @@ when unknown, never echoed — §9.1 is annotated.
 `src/ui/html.ts`). The design is reconciled to the shipped wording; the code was
 not changed. §3.3 is annotated.
 
+### Review-fix round — the session-detail `Known` qualifier, `Total` on detail rows, and the active-tab attribute
+
+§3.3 said a selected history session's detail carries "no coverage panel and no
+`Known` qualifier" because the session replayed, and that `usage.total` in the
+JSON DTO keeps its field name "but the UI label changes". Both statements are
+narrower than the shipped catalogue (`src/ui/html.ts`). The coverage **panel** is
+aggregate-only, but the session detail renders `Known` in two range-scoped cases
+that qualify the selected **range**, not the replay: `rangeTruncated()` is true
+for a session the range reaches before its retained `usageByDateTruncated` window
+(the overview metrics then switch `metric.cost`/`metric.tokens` to
+`metric.knownCost`/`metric.knownTokens`), and a breakdown reports usage for only
+`n` of `m` calls/runs (`tools.usageFraction`, `agents.usageFraction`). And
+`usage.total` still renders the label `Total` on its detail rows (the metric
+breakdown and the composition total); what changed is that no partial figure is
+**headlined** `Total` (`Total tokens` → `Known tokens`). §3.3's two bullets and
+§3.4 criterion 8 are corrected inline, and the §14 UAT step is corrected to
+match; v1 spec §13.1 carries the normative wording.
+
+The same round corrected §9.2's rendering-authority bullet, which named
+`aria-selected` for the active tab: shipped tabs and sidebar items are marked
+`aria-current="page"` and the pressed route-derived controls (scope button,
+range preset) are marked `aria-pressed`; `aria-selected` is not used at all
+(`src/ui/html.ts`). The environment sub-tab and the theme toggle also use
+`aria-pressed` but are ephemeral client state outside the route, so no bullet
+names them as route-derived.
+
 ### Stale prose that names deleted code
 
 §1.3 and §1.8 described the pre-milestone client using identifiers that no longer
@@ -660,8 +686,10 @@ Additional rules:
 > the shipped wording is a superset that adds the `Known` qualifier the rest of
 > this table requires. No code was changed.
 
-- Never the bare word "Total" for a partial sum; `usage.total` in the JSON DTO
-  keeps its field name (compatibility) but the UI label changes.
+- No partial figure is **headlined** the bare word "Total"; `usage.total` keeps
+  its JSON field name *and* its `Total` label on the detail rows it already names
+  (the metric breakdown and the composition total), because the partial metric's
+  own headline is what changes (`Total tokens` → `Known tokens`).
 - The word "Known" is the only qualifier used for partial aggregates; no
   "approximate", no "estimated", no extrapolation.
 - Unavailable sessions contribute **nothing** to `usage`, `dates`, charts, or
@@ -678,10 +706,12 @@ Additional rules:
 - The coverage panel belongs to the **aggregate** sections only (history
   aggregate, global). It carries the bounded diagnostics (`manifest-unavailable`,
   …) as plain tokens, plus `discovery-limited` when discovery hit the cap.
-- A **selected history session's detail carries no coverage panel and no `Known`
-  qualifier**: that session replayed successfully, so its own figures are
-  complete for that session. Workspace coverage qualifies aggregates, never one
-  replayable session's own metrics.
+- A **selected history session's detail carries no coverage panel and no
+  coverage-driven `Known` qualifier**: that session replayed successfully, so its
+  own figures are complete for that session. Workspace coverage qualifies
+  aggregates, never one replayable session's own metrics. (The two range-scoped
+  `Known` cases — a range reaching before the retained dated window, an `n of m`
+  breakdown — qualify the range, not the replay; §0.5.)
 - Per-day coverage is **not** rendered. When `coverage.complete === false`, the
   chart and daily tables carry the overall notice (one line), because the dates
   of unavailable sessions are unknown.
@@ -715,7 +745,9 @@ Additional rules:
 7. A `coverage`-less report (older file) renders the `completeness unknown`
    variants, not `Total`.
 8. A selected history session's detail shows that session's own figures with no
-   coverage panel and no `Known` qualifier.
+   coverage panel and no coverage-driven qualifier; the only `Known` qualifiers
+   there are range-scoped (a range reaching before the retained dated window, an
+   `n of m` breakdown — §0.5).
 9. Byte-identical regeneration of the same inputs (determinism unchanged).
 
 ---
@@ -1488,10 +1520,9 @@ Other rules:
 ### 9.2 Rendering authority
 
 - `render()` derives **all** state from the route: content, which sidebar item
-  is active (`aria-current="page"`), which tab is active
-  (`aria-selected`/`aria-pressed`), which scope button is pressed, which range
-  preset is pressed, the search/sort controls' values, and the section heading's
-  focus target.
+  and which tab are active (`aria-current="page"`), which scope button is
+  pressed, which range preset is pressed (`aria-pressed`), the search/sort
+  controls' values, and the section heading's focus target.
 - Click handlers **only** mutate the route and call `navigate(route, {push:true})`.
   No handler touches `aria-pressed`, `classList`, or another control's state.
   This is the structural fix for the reported active-state bug (§1.7).
@@ -1960,8 +1991,10 @@ its own justification in the slice report.
     with zero network requests (no CDN, no fonts, no fetch/XHR).
 15. `/session-inspector tui` and `/session-inspector tui ledger`: confirm the TUI
     still renders both tabs and the scope switch.
-16. Open a History session detail: confirm that session's own figures appear with
-    **no** coverage panel and **no** `Known` qualifier.
+16. Open a History session detail: confirm no coverage panel and no
+    coverage-driven qualifier appear; the only `Known` qualifier is range-scoped
+    (a range reaching before the retained dated window, or an `n of m`
+    breakdown — §0.5).
 17. Type `/session-ins ui --output "/tmp/my report.json" --th` + TAB: confirm
     `/session-ins ui --output "/tmp/my report.json" --theme` (quotes and embedded
     space preserved); repeat with the cursor inside the option token.

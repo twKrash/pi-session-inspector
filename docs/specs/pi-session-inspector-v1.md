@@ -428,16 +428,22 @@ type SessionCoverage = {
   other than the coverage line, and are never rendered as a zero-cost row.
 - Wording is part of the contract. Partial aggregates are labelled
   `Known native cost` / `Known tokens` (and `Known native cost — completeness
-  unknown` when no coverage exists at all); the bare word `Total` is never used
-  for a partial sum (the JSON field name `usage.total` is kept for
-  compatibility). Unavailable values read `Unavailable`, never `0`, `$0.00`, or a
-  guessed reason. `Known` is the only qualifier for partial figures: never
-  "approximate", "estimated", or an extrapolation.
+  unknown` when no coverage exists at all); no partial figure is **headlined**
+  `Total`, and the `usage.total` label survives on the detail rows it names (the
+  metric breakdown and the composition total), kept for compatibility. Unavailable
+  values read `Unavailable`, never `0`, `$0.00`, or a guessed reason. `Known` is
+  the only qualifier for partial figures: never "approximate", "estimated", or an
+  extrapolation.
 - Coverage belongs to the **aggregate** sections (history aggregate, global). A
-  selected history session's own detail shows no coverage panel and no `Known`
-  qualifier — that session replayed, so its own figures are complete for that
-  session. The TUI has no history/global section and gains no coverage surface;
-  `json history|global` expose `coverage` verbatim.
+  selected history session's own detail shows no coverage **panel** and no
+  coverage-driven qualifier — that session replayed, so its own figures are
+  complete for that session's replay. Two range-scoped cases still render `Known`
+  inside a session detail, and both qualify the selected **range**, not the
+  replay: a range that reaches before the session's retained dated window
+  (`rangeTruncated()`, driven by `usageByDateTruncated`, §13.2), and a breakdown
+  that reports usage for only `n` of `m` calls/runs. The TUI has no
+  history/global section and gains no coverage surface; `json history|global`
+  expose `coverage` verbatim.
 - Per-day coverage is **not** rendered: an unreadable session's dates are unknown.
 
 ### 13.2 Attribution, ranges, and scope
@@ -457,9 +463,13 @@ start, end, or duration:
 - The attribution is computed **once**, by the canonical builder
   (`CanonicalUsageLine.attributedAt`/`domain`/`bucket`), and is only projected:
   one dated projection (`sessionDatedUsage`) feeds every range-aware widget, and
-  nothing re-walks report timestamps to build a second dated view. Tools, agents,
-  and errors are filtered from their own canonical rows (one row per
-  call/run/error); date-indexed duplicates for them do not exist.
+  nothing re-walks report timestamps to build a second dated view. One documented
+  exception: the legacy single-section `renderHtml(HtmlReport)` adapter has no
+  canonical session, so its current-view daily rows keep the pre-attribution
+  `buildDailyActivityRows` bucketing; it has no production caller and removing it
+  is deferred (§13.6). Tools, agents, and errors are filtered from their own
+  canonical rows (one row per call/run/error); date-indexed duplicates for them do
+  not exist.
 - Boundaries are inclusive UTC dates (`from <= date <= to`); presets are anchored
   on the view's **latest observed date**, never the machine clock, so exports stay
   byte-identical.
@@ -522,9 +532,11 @@ string and no server. One canonical parameter order —
 one string.
 
 - `render()` derives **all** state from the route: content, the active sidebar item
-  (`aria-current`), the active tab (`aria-selected`/`aria-pressed`), the scope
-  button, the range preset, the search/sort control values, and the focus target.
-  Click handlers only mutate the route.
+  and the active tab (`aria-current="page"`), the scope button and the range preset
+  (both `aria-pressed`), the search/sort control values, and the focus target.
+  Click handlers only mutate the route. (The environment sub-tab and the theme
+  toggle also use `aria-pressed`, but they are ephemeral client state outside the
+  route.)
 - A **discrete** route change (section, tab, scope, session, entity, range preset,
   custom range, sort) **pushes** a history entry so Back restores the previous
   state; only in-progress search typing **replaces** the current entry. The Tools
