@@ -682,6 +682,92 @@ test("a truncated row inside omitted history reports unknown, never zero", async
   assert.equal(missing?.agentCount, null);
 });
 
+test("a truncated entry with an empty retained window is partial, not complete", () => {
+  const report: HistoryReport = {
+    availability: "available",
+    sessions: [
+      {
+        availability: "available",
+        sessionId: "session-dated",
+        usageByDate: [
+          dateRow({
+            date: "2026-03-10",
+            totalTokens: 300,
+            cost: 0.06,
+            generations: 1,
+          }),
+        ],
+        usageByDateTruncated: false,
+        datedModels: [],
+        modelsTruncated: false,
+        report: historicalReport({
+          sessionId: "session-dated",
+          timestamp: "2026-03-10T10:00:00.000Z",
+          totalTokens: 300,
+          cost: 0.06,
+        }),
+      },
+      {
+        availability: "available",
+        sessionId: "session-truncated-empty",
+        usageByDate: [],
+        usageByDateTruncated: true,
+        datedModels: [],
+        modelsTruncated: false,
+        report: historicalReport({
+          sessionId: "session-truncated-empty",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          totalTokens: 100,
+          cost: 0.02,
+        }),
+      },
+      {
+        availability: "available",
+        sessionId: "session-empty-complete",
+        usageByDate: [],
+        usageByDateTruncated: false,
+        datedModels: [],
+        modelsTruncated: false,
+        report: historicalReport({
+          sessionId: "session-empty-complete",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          totalTokens: 100,
+          cost: 0.02,
+        }),
+      },
+    ],
+    diagnostics: [],
+    coverage: COVERAGE,
+  };
+  const projected = projectHistoryReport(report, {
+    kind: "custom",
+    from: "2026-03-01",
+    to: "2026-03-31",
+  });
+
+  // An empty retained window is complete only when it is untruncated. A
+  // truncated one cannot represent the range, so its usage is unknown and the
+  // row stays partial — no fabricated zero and no "complete" label.
+  const truncated = projected.sessions.find(
+    (session) => session.sessionId === "session-truncated-empty",
+  );
+  assert.equal(truncated?.membership, "unknown");
+  assert.equal(truncated?.totalTokens, null);
+  assert.equal(truncated?.cost, null);
+  assert.equal(truncated?.partial, true);
+  // The same row's own selected view already flags the range as truncated.
+  assert.equal(truncated?.view?.range?.truncated, true);
+  assert.equal(projected.truncated, true);
+
+  // An untruncated empty window keeps its current non-partial verdict.
+  const complete = projected.sessions.find(
+    (session) => session.sessionId === "session-empty-complete",
+  );
+  assert.equal(complete?.membership, "unknown");
+  assert.equal(complete?.totalTokens, null);
+  assert.equal(complete?.partial, false);
+});
+
 test("an in-range retained row stays partial with its known sum", async () => {
   const bundle = await bundleWithDifferentObservedDates();
   const projected = projectInspectorUi({

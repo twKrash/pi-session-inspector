@@ -619,7 +619,10 @@ function partialContribution(
  * The aggregate's verdict for one session (design §5.6): membership needs an
  * in-range retained row, an unavailable session or a range that cannot be
  * resolved is `unknown`, and a truncated window with no in-range row is
- * `unknown` — its usage is `null`, never a fabricated zero.
+ * `unknown` — its usage is `null`, never a fabricated zero. An empty retained
+ * window is only "complete" when it is untruncated; a truncated one still
+ * reaches omitted history, so it falls through to `historyRowRange` and its
+ * per-row partiality matches the view it carries.
  */
 function membershipVerdict(
   entry: HistoricalSession,
@@ -628,7 +631,7 @@ function membershipVerdict(
   if (
     entry.availability !== "available" ||
     range === null ||
-    entry.usageByDate.length === 0
+    (entry.usageByDate.length === 0 && entry.usageByDateTruncated !== true)
   ) {
     return {
       membership: "unknown",
