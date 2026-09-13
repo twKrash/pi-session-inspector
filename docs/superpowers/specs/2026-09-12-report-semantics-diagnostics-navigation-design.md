@@ -1,6 +1,6 @@
 # Report semantics, diagnostics, and navigation — design
 
-**Status:** proposed (awaiting human approval). **Date:** 2026-09-12.
+**Status:** approved and implemented; superseded where §0.5 says so. **Date:** 2026-09-12.
 **Scope:** the Inspector renderer/report surface (`ui`, `tui`, `json`), the
 history/global coverage contract, range/scope semantics, projection integrity,
 agent/tool/error relationships, environment/integration semantics, offline
@@ -8,8 +8,14 @@ navigation, and `/session-inspector` argument completion.
 **Non-goals:** M8 hardening (fuzzers, clean-machine install, CI), collectors,
 new persisted fields, upstream Pi changes.
 
-This is an architectural design. It contains no implementation and authorizes
-no code change until approved.
+This is an architectural design. It contained no implementation and authorized
+no code change until approved; the milestone has since shipped, and §0.5 records
+every place where the shipped code diverges from the text below.
+
+**Post-implementation amendment (ruling R18):** this milestone has shipped. §0.5
+records every place where the shipped code diverges from §1-§18, with the ruling
+that decided it. Where §1-§18 and §0.5 disagree, **§0.5 wins**; the affected
+sections also carry an inline correction.
 
 ---
 
@@ -113,6 +119,150 @@ all remain in force; only the *derivation source* and the *file anchors* changed
 
 ---
 
+## 0.5 Execution amendments after implementation (ruling R18)
+
+The milestone was implemented and reviewed. The sections below were written as
+intentions and this section records what was actually built, so the design does
+not claim behaviour the code does not have. Each amendment names its ruling.
+
+> **Ruling ids here are the implementation ledger's rulings (R1-R21 as decided
+during execution), not §17's design rulings of the same numbers.** The two
+namespaces collide; where an id appears in both, this section means the ledger's
+ruling and §17 keeps its own meaning.
+
+### R6 — `marker-unavailable` means tracking-marker evidence only
+
+§3.1.1 gave `marker-unavailable` the meaning "source is readable but header/id/
+marker re-verification fails", which overlaps §3.1's own split (`marker-unavailable`
+= tracking-marker evidence failed; `session-unreadable` = parse failure, malformed
+JSON, no header, id mismatch). The split is now explicit and narrower: the
+discovery marker-evidence callback tests the tracking marker alone, header, id and
+parse failures are named `session-unreadable` (`sourceReadFailure` in
+`src/ui/load-history.ts`), and `marker-unavailable` is only a genuine
+marker-evidence failure. §3.1.1's table row is corrected inline. (The shipped
+`CoverageReason` comment in `src/storage/history.ts` still carries the older, wider
+"marker/header/id" wording; it is a comment on the same vocabulary and was not
+edited by this documentation task.)
+
+### R9/R13 + the Task 4 fix — the per-session dated window has THREE partial causes, one flag, published on global rows too
+
+§5.4/§5.6 originally enumerated **two** causes for `truncated` /
+`usageByDateTruncated` and said the flag is per-session history evidence. Shipped
+(`src/ui/dated-usage.ts`, `sessionDatedUsage`): the flag is set by **three**
+causes — (a) the 366-date cap dropped older dates, (b) at least one native usage
+line has no known `attributedAt` (`evidenceHealth.usage.dated === "partial"`),
+and (c) the usage aggregate is unavailable/overflowed while native lines exist
+(`usage.state !== "known"`). All three share the one flag, the one `Known`
+qualifier, the one render path and the one bounded `history-daily-truncated`
+diagnostic. `dated === "unavailable"` with zero native lines stays **not**
+truncation — there is nothing to date.
+
+The flag is also published on **global** rows: `GlobalSessionRow` carries a
+required `usageByDateTruncated: boolean` (progress-ledger ruling R10), so an
+aggregate over a partial contribution is visibly partial; the per-session dated
+rows themselves remain on the history report. §5.6's sentence "a truncated
+session is exact for recent ranges and partial only for ranges reaching beyond
+the retained window" holds for cause (a); it does **not** hold for cause (c),
+where the retained rows publish no usage at all and the flag is the only
+publication of that partiality (§5.6 is annotated).
+
+### R11/R12 — Models is range-aware through the projected dated rows, and the P0-B size gate is knowingly exceeded
+
+§5.4's shape is shipped, and the current section's Models tab, the history
+session detail's Models tab, the chart, the metrics and the composition all read
+the one projection (`usageByDate`/`datedModels`), so Models is range-aware rather
+than an aggregate-only table. Where a table is intentionally **not** range
+filtered it renders the explicit `All report dates` label from the projection
+(§5.2), never an unlabelled all-period figure.
+
+The P0-B **relative size gate (≤ +15 % against the pre-slice baseline) is
+knowingly exceeded** and recorded rather than traded away by cutting mandated
+behaviour (progress-ledger ruling R12). Measured on the reference fixture
+(`tests/fixtures/bundles/inspector-bundle.json`,
+`renderInspectorBundle(bundle).length`): **69,221 B** baseline → **69,879 B**
+(Task 5) → **84,039 B** after the range slice (inlined range module **+5,292 B**,
+client range machinery **+7,131 B**, catalog **+331 B**, payload **+607 B**; the
+`Function.prototype.toString()` inlining is design-mandated) → **105,882 B**
+before the routing slice → **126,663 B** at release, i.e. **+57,442 B (+82.98 %)**
+over the baseline. §12's P0-B "Size gate" bullet is annotated with this outcome;
+no spec-mandated behaviour was reduced to fit the gate.
+
+### R15 — the capability table has a session-selected history set
+
+§9.3's table is keyed by section (`current` / `history` aggregate / `global`) but
+requires a selected history session to offer **all** tabs. Shipped as an additive
+`historySession` key on the payload's capability table (`CAPABILITIES` in
+`src/ui/bundle.ts`), consumed by the client once a session is known; the
+`history` aggregate key stays `[overview]` and `global` stays `[overview]`. §9.3
+is annotated.
+
+### R16/R16b — the active view's range and table ARE route state; discrete changes push; typing replaces; the tool filter is not route state
+
+§9.1's route shape and §5.3's "the active range is part of the navigation state"
+are shipped, with four refinements recorded:
+
+1. `applyLocation()` canonicalizes the address bar to the route it just applied
+   (`history.replaceState`, best-effort), because §5.3 puts the **active** view's
+   range in the hash; the canonicalization is a replacement, never a new entry
+   (ruling R16).
+2. A **discrete** route change (section, tab, scope, session, entity, range
+   preset, custom range, sort) **pushes** a history entry, so Back restores the
+   state it came from; only **in-progress search typing** replaces the current
+   entry (ruling R16b). §9.2's push-only wording is therefore narrower than the
+   shipped rule, which §9.2 now states.
+3. The Tools summary → calls **tool filter** is per-view-identity ephemeral client
+   state, not a route field: it re-renders the view it was chosen in and pushes
+   nothing (§9.5).
+4. In an environment that refuses the History API (a `file://` document raising
+   `SecurityError`), both rewrites are guarded and the document still renders: a
+   refused canonicalization leaves the applied route in memory (one render, no
+   suppressed paint), and a refused in-progress replacement falls back to a
+   same-document `location.hash` assignment so the typed state survives, at the
+   cost of one history entry per keystroke in that environment only.
+
+### R17 — the pinned `pi-tui` API cannot satisfy §10.2 row 10 as written
+
+§10.2 row 10 (`/session-ins ui --the|me` → `/session-ins ui --theme`, cursor after
+`--theme`) and §10.4(3)'s statement that the text after the cursor is left intact
+are **unachievable** against the pinned `@earendil-works/pi-tui@0.85.1`:
+`getSuggestions`/`getArgumentCompletions` receive only the pre-cursor text, and
+`applyCompletion` composes `currentLine.slice(0, cursorCol - prefix.length) +
+item.value + currentLine.slice(cursorCol)`, appending the post-cursor remainder
+verbatim. A mid-token completion therefore yields `/session-ins ui --thememe`.
+No extension-side `value` can prevent that append. `tests/unit/command-completion-application.test.ts`
+pins the **actual** composition (with a comment naming this ruling) instead of
+asserting the unreachable row; every other §10.2 row passes as written. §10.2 and
+§10.4(3) are annotated; Pi is not patched and this is not an upstream defect.
+
+### Task 13 adaptations — `RangeIntent` in the route, session id validated against the known id set
+
+§9.1's `InspectorRoute` sketch shows `range: RangeState` (a resolved range). The
+shipped route carries an unresolved `RangeIntent` (`{ kind: "preset", preset }` or
+`{ kind: "custom", from, to }`), because a preset must resolve against the view's
+own observed dates, which are only known after the session is chosen. `scope` is
+always present on the route but serialized for `current` routes only. The session
+id (and every entity id) is validated against the parsed known-id set and dropped
+when unknown, never echoed — §9.1 is annotated.
+
+### §3.3 wording — the shipped coverage-absent label
+
+§3.3's row 1 said `Native cost — completeness unknown`; the shipped catalog says
+**`Known native cost — completeness unknown`** (`coverage.unknownCompleteness` in
+`src/ui/html.ts`). The design is reconciled to the shipped wording; the code was
+not changed. §3.3 is annotated.
+
+### Stale prose that names deleted code
+
+§1.3 and §1.8 described the pre-milestone client using identifiers that no longer
+exist in `src/` (`defaultReportPeriod`, `periods[state.section]`, the embedded
+`latestDate` projection keys). They are corrected inline to say they are
+*historical* problem statements, and the same note records that
+`docs/superpowers/specs/2026-09-11-pre-m8-evidence-coverage-design.md` still
+names the embedded `latestDate` bound in its offline-bundle prose. Neither
+document is a contract, so the names are retained as provenance only.
+
+---
+
 ## 1. Verified current state (facts this design builds on)
 
 > Statements in this section were read from `main` at `ddcbe36`, before the
@@ -163,6 +313,15 @@ called out.
   shows one unconditional usage figure. This is the defect Workstream A fixes.
 
 ### 1.3 Range
+
+> **Execution amendment (R18).** This subsection is a *historical problem
+> statement*: it describes the client before this milestone and names identifiers
+> that no longer exist anywhere in `src/` (`defaultReportPeriod`,
+> `periods[state.section]`, and the embedded `latestDate` projection keys). The
+> shipped client derives every range from the route and one per-view range memory
+> (§5.3, §9.1). `docs/superpowers/specs/2026-09-11-pre-m8-evidence-coverage-design.md`
+> still names the embedded `latestDate` bound in its offline-bundle prose; neither
+> document is a contract, so those names are kept as provenance only.
 
 - The client keeps `periods[state.section]` — **one period per section** — lazily
   initialised from `defaultReportPeriod(kind, daily)`: `current` defaults to the
@@ -278,6 +437,11 @@ the DTO exposes no field that could imply a unique child.
   `td:last-child { text-align: right }` (`src/ui/html.ts:418`).
 
 ### 1.8 Autocomplete (root cause, verified in the pinned Pi TUI)
+
+> **Execution amendment (R18).** The pinned provider's behaviour described here is
+> still current, and the shipped fix (§10.1's full-argument rewrite) is
+> constrained by it: §10.2 row 10 / §10.4(3) are unachievable against this API.
+> See §0.5 (R17).
 
 - Extension wiring: `pi.registerCommand(name, { …, getArgumentCompletions:
   (prefix) => completeInspectorCommand(prefix) })` (`src/index.ts:459-462`).
@@ -415,6 +579,12 @@ renderers must show "Unavailable", never a guessed reason.
 
 #### 3.1.1 Reason vocabulary maps onto existing bounded codes (R20)
 
+> **Execution amendment (R18/R6).** The `marker-unavailable` row below is
+> corrected: it means a failed **tracking-marker** check only. Header, id and
+> parse failures are `session-unreadable` (the next row). Verified against
+> `src/ui/load-history.ts` (`sourceReadFailure`) and `src/storage/history.ts`
+> (the marker-evidence callback tests the marker alone).
+
 `CoverageReason` is a *runnability* vocabulary, not an evidence vocabulary. Every
 member is a projection of a code that already exists, so no third vocabulary is
 introduced and a hostile or unbounded value cannot appear:
@@ -423,7 +593,7 @@ introduced and a hostile or unbounded value cannot appear:
 | --- | --- | --- |
 | `no-manifest` | Discovery found neither metadata nor a readable pending manifest | `HistoryDiagnostic` `manifest-unavailable` |
 | `manifest-unavailable` | Manifest exists but the session cannot be promoted: its source is missing, unresolvable or rejected, the maintenance lease is unavailable, or promotion threw | `EvidenceDiagnosticCode` `source-not-found` |
-| `marker-unavailable` | Source is readable but header/id/marker re-verification fails | `EvidenceDiagnosticCode` `tracking-marker-missing` |
+| `marker-unavailable` | Source is readable but the **tracking-marker** evidence check fails | `EvidenceDiagnosticCode` `tracking-marker-missing` |
 | `session-unreadable` | JSONL does not parse, has no session header, or its id mismatches | `EvidenceDiagnosticCode` `source-malformed` / `source-format-unsupported` |
 | `replay-failed` | Evidence provider absent/threw, canonical builder not `ready`, or the report projection threw | The session's own `evidenceHealth.diagnostics` (`source-format-unsupported`, `cooperative-evidence-conflict`, …) |
 
@@ -473,7 +643,7 @@ without naming the code it projects (`§13`).
 
 | Condition | Cost/token wording | Session wording |
 | --- | --- | --- |
-| `coverage` absent (older report / aggregate unavailable) | `Native cost — completeness unknown` | `Sessions: Unavailable` |
+| `coverage` absent (older report / aggregate unavailable) | `Known native cost — completeness unknown` | `Sessions: Unavailable` |
 | `coverage.complete === true` | `Native cost` / `Total tokens` | `27 / 27 sessions` |
 | `coverage.complete === false`, discovery not capped | **`Known native cost`** / **`Known tokens`** | `5 / 27 sessions · 22 unavailable` |
 | `coverage.discoveryLimited === true` | **`Known native cost`** / **`Known tokens`** | `206 sessions inspected · additional sessions not inspected` (no percentage, never `206 / 206`) |
@@ -481,6 +651,14 @@ without naming the code it projects (`§13`).
 | `available === 0` **and** `inspected === 0` | `Unavailable` | `No tracked sessions` |
 
 Additional rules:
+
+> **Execution amendment (R18).** Row 1's cost wording is reconciled to the shipped
+> catalog above: the coverage-absent case renders
+> `Known native cost — completeness unknown` / `Known tokens — completeness unknown`
+> (`coverage.unknownCompleteness`, `coverage.unknownCompletenessTokens` in
+> `src/ui/html.ts`). The original cell said `Native cost — completeness unknown`;
+> the shipped wording is a superset that adds the `Known` qualifier the rest of
+> this table requires. No code was changed.
 
 - Never the bare word "Total" for a partial sum; `usage.total` in the JSON DTO
   keeps its field name (compatibility) but the UI label changes.
@@ -739,7 +917,8 @@ export function sessionDatedUsage(session: CanonicalSession): {
    *  (≤ 366 dates × `MAX_MODELS_PER_DATE` = 64 rows). */
   models: DatedModelRow[];
   /** True when `dates` cannot represent the session's whole native usage:
-   *  the 366-date cap, or `evidenceHealth.usage.dated === "partial"`. */
+   *  the 366-date cap, `evidenceHealth.usage.dated === "partial"`, or an
+   *  unavailable/overflowed usage aggregate with native lines. */
   truncated: boolean;
   /** True when the model cap dropped a row. */
   modelsTruncated: boolean;
@@ -797,6 +976,18 @@ Rules:
   arbitrary absolute ceiling; the measurement, the fixture path, and the before/
   after bytes are recorded in the slice report.
 
+> **Execution amendment (R18/R11/R12).** The projection is shipped as specified
+> in `src/ui/dated-usage.ts`, and the current section's Models tab, the history
+> session detail's Models tab, the metrics, the chart and the composition all read
+> it, so Models is genuinely range-aware. The three truncated causes of §0.5 are
+> the shipped ones. The ≤ +15 % gate is **knowingly exceeded and recorded**, not
+> satisfied: 69,221 B → 84,039 B after the range slice (inlined range module
+> +5,292 B, client range machinery +7,131 B, catalog +331 B, payload +607 B) →
+> 105,882 B before the routing slice → **126,663 B** at release (+57,442 B,
+> +82.98 %). See §0.5 (R11/R12) and the annotated §12 P0-B size gate. Tables that
+> are intentionally not range-filtered carry the projection's explicit
+> `All report dates` label (§5.2).
+
 ### 5.5 Acceptance criteria
 
 1. 7D and 14D produce different numbers on **every** range-aware widget in the
@@ -845,13 +1036,15 @@ Rules:
   the canonical builder's native usage lines (R19; §0.2 item 2) rather than from a
   second walk of `SessionReport`. `usageByDateTruncated` is true whenever the
   retained rows cannot represent the session's whole native usage — because the
-  window was capped (§17 R16) **or** because the builder reported
+  window was capped (§17 R16), because the builder reported
   `evidenceHealth.usage.dated === "partial"` (at least one native usage line has
-  no known `attributedAt`). Either way the row is partial and must say so; both
-  causes share one flag, one `Known` qualifier and one render path, and no
-  unattributed usage is ever silently dropped. `dated === "unavailable"` with zero
-  native lines is *not* truncation — there is simply nothing to date. The row's
-  cost/tokens for a range are the sum over its in-range dates.
+  no known `attributedAt`), **or** because the usage aggregate itself is
+  unavailable/overflowed while native lines exist (`usage.state !== "known"`).
+  All three causes share one flag, one `Known` qualifier and one render path, and
+  no unattributed or unpublished usage is ever silently dropped or dated as a
+  fabricated zero. `dated === "unavailable"` with zero native lines is *not*
+  truncation — there is simply nothing to date. The row's cost/tokens for a range
+  are the sum over its in-range dates.
 - **Reconciliation contract** (what truncation must not break):
   - Within the retained dated window, a range-filtered aggregate session row
     reconciles **exactly** with the same session's detail view for that range.
@@ -871,6 +1064,23 @@ Rules:
   cannot be attributed to any range. They are listed in a separate
   `Unavailable · dates unknown` group, are never counted in range totals, and are
   never rendered as `$0`.
+
+> **Execution amendments (R18/R9, R13 + the Task 4 fix).** The bullet above is the
+> shipped rule: **three** causes, one flag (`src/ui/dated-usage.ts`,
+> `sessionDatedUsage`: `capped || unattributed || usageUnavailable ||
+> health.usage.dated === "partial"`). The flag is no longer per-session history
+> evidence only: global aggregate rows carry a **required**
+> `GlobalSessionRow.usageByDateTruncated: boolean` (progress-ledger ruling R10), so
+> an aggregate over a partial contribution is visibly partial while the dated rows
+> themselves stay on the history report. The per-date model rows are projected for
+> history sessions too (ruling R13), so a history session's Models tab is
+> range-aware exactly like the current section's.
+>
+> The "exact for recent ranges" sentence in the reconciliation contract holds for
+> the cap cause only. For the unavailable/overflow cause the retained date rows
+> publish **no** usage at all, so a range inside the retained window is not exact
+> for that session either; `usageByDateTruncated` is the only place that partiality
+> is published (§0.5).
 
 ### 5.7 Timestamp attribution (normative)
 
@@ -944,14 +1154,22 @@ Rules:
 | `AgentRow` drops `agent`, `artifacts` | pass through validated values (renderer) | P1-C | DTO carries them; the browser row must be extended |
 | `AgentRow` has no time field | `AgentRun.observedAt` derived from the publishing entry (§5.7) | P1-C | derivation **done** (`projectAgent` validates `observedAt`); projection must pass it through |
 | `ToolRow` drops `timestamp` | pass through (renderer) | P1-C | DTO carries `Tool.timestamp`; the row must be extended |
-| Models cannot be range-filtered | per-date model rows in the browser projection (derivation) | P0-B | open |
+| Models cannot be range-filtered | per-date model rows in the browser projection (derivation) | P0-B | **shipped** (`datedModels`, projected for current views *and* history sessions) |
 | Composition cannot be range-filtered | per-date composition in `DailyRow` (derivation) | P0-B | open |
-| Agents cannot be range-filtered | `AgentRun.observedAt` (derivation, §5.7); the canonical agent row is filtered directly, no dated copy | P0-B | `observedAt` **done**; filtering open |
+| Agents cannot be range-filtered | `AgentRun.observedAt` (derivation, §5.7); the canonical agent row is filtered directly, no dated copy | P0-B | `observedAt` **done**; range filtering **shipped** |
 | Tools/errors cannot be range-filtered | `Tool.timestamp` and `ErrorRecord.timestamp` pass through (renderer) | P1-C | both fields **exist** in the DTO; the rows must carry them |
 | `AgentRun` has no model/thinking | `model?`, `thinking?` validated from `results[]` (derivation, producer-version dependent) | P1-C | derivation **done**; projection must pass them through |
 | `AgentRun` has no bounded failure class | `failure?: AgentFailure` from validated enums (derivation) | P1-C | derivation **done**; projection must pass it through |
 | Errors cannot link to a child run | `AgentRun.evidenceToolId = "tool:" + message.toolCallId` (derivation; one-to-many) | P1-D | field **done**; the join and its rendering are open |
-| Child usage completeness unknown | **Derived, never carried as evidence**: `toSessionReport` derives `agentUsage = { runsTotal: runs.length, runsWithUsage: runs.filter((run) => run.usage !== undefined).length }` from the already-projected run set, and the browser derives the same fraction from the rows it is rendering (so a range filter narrows it instead of reusing a full-session count) | P1-D | open |
+| Child usage completeness unknown | **Derived, never carried as evidence**: `toSessionReport` derives `agentUsage = { runsTotal: runs.length, runsWithUsage: runs.filter((run) => run.usage !== undefined).length }` from the already-projected run set, and the browser derives the same fraction from the rows it is rendering (so a range filter narrows it instead of reusing a full-session count) | P1-D | **shipped** (`SessionReport.agentUsage` + the browser's recomputation) |
+
+> **Execution amendment (R18/R11/R12).** Every "open"/"must be extended" status
+> above is closed in the shipped code: the P1-C pass-throughs (agent role and
+> artifacts, `observedAt`, `Tool.timestamp`, model/thinking, failure class) reach
+> the browser rows, composition and Models are range-filtered through the §5.4
+> projection, tools/errors are filtered from their canonical rows, and the
+> error → child join renders the one-to-many `Related child run(s)` list. The
+> Status column keeps its `v0.8.0` meaning; this note records the shipped state.
 
 Three rows that the pre-merge design listed as derivations — agent model, thinking
 and failure class, plus `observedAt`/`evidenceToolId` and the tool timestamp — are
@@ -1214,13 +1432,22 @@ type EntityRef = {
 type InspectorRoute = {
   section: "current" | "history" | "global";
   tab: Tab;                       // capability-checked per section
-  session?: string;               // history only, opaque sessionId
+  session?: string;               // history only, opaque sessionId, validated against the known-id set
   scope: Scope;                   // current only; ignored elsewhere
-  range: RangeState;              // ACTIVE view identity only (§5.3)
+  range: RangeIntent;             // ACTIVE view identity only (§5.3); unresolved, see the amendment below
   entity?: EntityRef;             // drill-down target
   table?: { query?: string; sort?: string }; // ACTIVE table only (§9.5)
 };
 ```
+
+> **Execution amendment (R18, Task 13).** The shipped route (`src/ui/route.ts`) is
+> this shape with two adaptations. `range` is a **`RangeIntent`**
+> (`{ kind: "preset", preset }` or `{ kind: "custom", from, to }`), not a resolved
+> `RangeState`: a preset must resolve against the view's own observed dates, which
+> are only known once the session is chosen. And `session` (like every entity id)
+> is validated against the parsed **known-id set** and dropped when unknown, so
+> only an id the projection already exposes can enter the route. `scope` is always
+> present on a route but serialized for `current` routes only.
 
 Serialization (hash only, no query string, no server). Canonical parameter
 order — the order every serializer emits, so one route has exactly one string:
@@ -1282,6 +1509,17 @@ Other rules:
   `role="tablist"` semantics; focus moves to the section `h1` on section change
   and returns to the originating link on Back.
 
+> **Execution amendment (R18/R16b/R16).** The push-only rule above is the rule for
+> **discrete** changes. Shipped refinements: in-progress search typing **replaces**
+> the current entry (`navigate(route, {push:false})`) so a search box never fills
+> the Back stack; the Tools summary → calls tool filter is per-view-identity
+> ephemeral state, is **not** a route field, and pushes nothing; and in an
+> environment that refuses the History API (a `file://` document raising
+> `SecurityError`) every write is guarded so the document still renders — a refused
+> canonicalization keeps the applied route in memory, and a refused in-progress
+> replacement falls back to a same-document `location.hash` assignment at the cost
+> of one entry per keystroke there only.
+
 ### 9.3 Section capabilities (no dead tabs)
 
 Capabilities are computed **server-side** per section from the data contract,
@@ -1294,6 +1532,14 @@ not hand-maintained in the client:
 | history (aggregate) | overview (+ chart, session list) | per-model/tool/agent breakdowns are **deferred** in this milestone (§15), so the aggregate section offers only what it computes |
 | history (session selected) | all tabs | full `SessionReport` present |
 | global | overview (+ chart) | per-model/tool/agent breakdowns are **deferred** in this milestone (§15) |
+
+> **Execution amendment (R18/R15).** The shipped capability table
+> (`CAPABILITIES` in `src/ui/bundle.ts`) is keyed `current` | `history` |
+> `historySession` | `global`, where **`historySession`** is the additive set the
+> history route offers once a session is selected (all tabs) while `history`
+> (aggregate) and `global` stay `[overview]`. The client parses with the session
+> set once the session id is known, so `#/history/models?session=…` is honoured
+> while `#/history/models` for the aggregate still coerces to overview.
 
 The client renders only capable tabs, and route validation coerces an
 unsupported tab to the section default with the notice above. Tabs are never
@@ -1424,6 +1670,15 @@ In the table `␠` marks a literal trailing space in the typed input.
 | `/session-ins ui --output "/tmp/my report.json"␠` | `--theme` | `/session-ins ui --output "/tmp/my report.json" --theme` |
 | `/session-ins ui --the\|me` (cursor after `--the`) | `--theme` | `/session-ins ui --theme`, cursor after `--theme` |
 
+> **Execution amendment (R18/R17).** The last row above is **unachievable** against
+> the pinned `@earendil-works/pi-tui@0.85.1`: `getSuggestions` receives only the
+> pre-cursor text, and `applyCompletion` appends the post-cursor remainder
+> (`currentLine.slice(cursorCol)`) verbatim after `item.value`, so the real result
+> is `/session-ins ui --thememe`. No extension-side `value` can prevent that
+> append. `tests/unit/command-completion-application.test.ts` pins the actual
+> composition instead; every other row in this table passes as written. §10.4(3) is
+> corrected the same way.
+
 Additional rules:
 
 - Options already present in the token stream are not offered again.
@@ -1472,9 +1727,14 @@ approach; no Inspector-specific string hack beyond it is acceptable.
 1. All rows of §10.2 pass through the real provider, including the quoted-argument
    and cursor-mid-token rows.
 2. Existing suggestion-set tests keep passing (they document intent).
-3. Cursor-position coverage: completing with the cursor mid-argument leaves the
-   text after the cursor intact (`adjustedAfterCursor` semantics preserved) and
-   never duplicates the remainder of the current token.
+3. Cursor-position coverage: completing with the cursor mid-argument preserves
+   Pi's `adjustedAfterCursor` append (the post-cursor text is never dropped and
+   never duplicated *by the extension*), and the extension never duplicates the
+   remainder of the current token. **Amended (R18/R17):** Pi itself appends the
+   post-cursor remainder after the extension's rewritten value, so a mid-token
+   completion of `/session-ins ui --the|me` yields `/session-ins ui --thememe`;
+   the pinned test asserts that actual composition, and this criterion is met only
+   up to what the pinned API allows.
 4. No completion path ever returns a bare token value when the raw prefix has
    preceding content (asserted for every non-empty preceding-span case).
 5. A quoted prior argument survives completion byte-for-byte, and the span-aware
@@ -1563,6 +1823,18 @@ the v0.8.0 baseline is 588 passing tests at `81f65b7`.
   document growth ≤ +15 % versus the baseline captured before the slice, with
   before/after bytes and the fixture path recorded in the slice report. No
   arbitrary absolute ceiling.
+
+> **Execution amendment (R18/R12).** This gate is **knowingly exceeded and
+> recorded**, not met: 69,221 B baseline → **84,039 B** after P0-B (**+21.41 %**, the
+> ceiling was 79,604 B; over by 4,435 B) → 105,882 B before P1-F → **126,663 B** at
+> release (**+57,442 B, +82.98 %**). The measured P0-B breakdown: inlined range
+> module **+5,292 B**, client range machinery **+7,131 B**, catalog **+331 B**,
+> payload **+607 B** (the remainder is the fixture's own dated/day content). The
+> `Function.prototype.toString()` inlining is design-mandated and the emitted
+> function sources have no recoverable bytes, so the overage was accepted rather
+> than traded by cutting §5.5/§5.2 behaviour. Fixture:
+> `tests/fixtures/bundles/inspector-bundle.json`, measured with
+> `renderInspectorBundle(bundle).length`.
 
 ### P1-C — Projection integrity
 
