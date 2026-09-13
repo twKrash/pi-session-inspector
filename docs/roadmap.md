@@ -1,9 +1,9 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `0.9.2`
+**Current release:** `0.9.3`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones, and
-Pre-M8.1–Pre-M8.2 are complete. M8 is not started.
+Pre-M8.1–Pre-M8.3 are complete. M8 is not started.
 
 **Next gate:** complete the Pre-M8 readiness sequence below before starting M8.
 
@@ -218,7 +218,7 @@ reviewed without a safe production extraction.
 
 ### Pre-M8.3 — architecture, invariant, and reconciliation audit
 
-**Status:** Planned. **Depends on:** Pre-M8.2.
+**Status:** Complete. **Depends on:** Pre-M8.2.
 
 Establish machine-enforced module boundaries and verify that canonical
 reconciliation, scope, range, coverage, privacy, and renderer projections have

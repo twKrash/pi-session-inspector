@@ -4,6 +4,10 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.9.3]
+
+- Pre-M8.3 architecture, invariant, and reconciliation audit: added deterministic dependency boundaries, centralized canonical report projection, and removed duplicate loader-side reconciliation.
+
 ## [0.9.2]
 
 - Pre-M8.2 static inventory cleanup: validated Knip dispositions, removed stale internal exports/types, and retained intentional report/type contracts.
