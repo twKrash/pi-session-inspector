@@ -39,15 +39,23 @@ Superpowers execution artifacts are local working material, not product
 documentation.
 
 Keep local-only:
+
 - `.superpowers/specs/`
 - `.superpowers/plans/`
 - `.superpowers/sdd/`
 - task briefs, ledgers, review reports and scratch artifacts
 
 Keep tracked when durable:
+
 - `docs/architecture/adr/`
 - product/user-facing specs under `docs/specs/`
 - `CHANGELOG.md`
 
 Use `.git/info/exclude` for developer-local Superpowers artifacts when possible
 instead of imposing those ignores on every repository consumer.
+
+## Agent instructions
+
+All wait_agent tool calls MUST use at least 10 minutes timeout.
+`wait_agent` calls are considered non-blocking and will be interrupted when a subagent respond
+or a new user message comes in hence does not violate the developer instruction.
