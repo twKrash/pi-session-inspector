@@ -2,11 +2,19 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import type { InspectorBundle } from "../../src/ui/bundle.ts";
+import {
+  loadInspectorBundle,
+  type InspectorBundle,
+} from "../../src/ui/bundle.ts";
 import {
   assertInlinedModulesEvaluate,
   renderInspectorBundle,
 } from "../../src/ui/html.ts";
+import {
+  bundleInput,
+  modelWithErrorAndThreeChildren,
+  modelWithOrphanChildAndParent,
+} from "../helpers/bundle-scenarios.ts";
 import { runClient, type StubElement } from "../helpers/client-harness.ts";
 
 function bundleFixture(): InspectorBundle {
@@ -94,6 +102,30 @@ function currentTab(tabs: StubElement): string | undefined {
     .querySelectorAll("a")
     .find((candidate) => candidate.attributes["aria-current"] === "page");
   return link?.dataset.tab;
+}
+
+/**
+ * Every rendered element carrying the one entity vocabulary, in document order.
+ * The walk reads `children` directly, because the stub DOM resolves a selector
+ * against a tag or a class and the vocabulary is an attribute.
+ */
+function entityNodes(node: StubElement): StubElement[] {
+  const found: StubElement[] = [];
+  const walk = (current: StubElement): void => {
+    if (current.dataset.entity !== undefined) found.push(current);
+    for (const child of current.children) walk(child);
+  };
+  walk(node);
+  return found;
+}
+
+/** One rendered entity element, by the id its route carries. */
+function entityNode(node: StubElement, entity: string): StubElement {
+  const found = entityNodes(node).find(
+    (candidate) => candidate.dataset.entity === entity,
+  );
+  if (found === undefined) throw new Error(`no rendered entity ${entity}`);
+  return found;
 }
 
 test("a deep link opens the exact view, and a selected session offers every tab", () => {
@@ -575,4 +607,351 @@ test("a tab that had keyboard focus keeps it across a re-render", () => {
   // A section change belongs to the heading: the strip does not take that focus.
   click(navLink(element("navigation"), "history"));
   assert.equal(activeElement()?.id, "title");
+});
+
+test("rows link to their destination with the route context preserved", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  // Document-level: the highlight rule and its one writer are the document's own.
+  assert.match(html, /\.entity-focus\{/);
+  assert.match(html, /classList\.add\("entity-focus"\)/);
+  assert.match(html, /"nav\.entityFocus":/);
+
+  const harness = runClient(bundleFixture());
+  const { activeElement, click, element, location, preset } = harness;
+  preset("7");
+
+  // The Overview's model row is an anchor aimed at the Models tab: it keeps the
+  // active scope and range and names the model's own id in the route.
+  const model = entityNode(element("view"), "model:acme/alpha");
+  assert.equal(model.tagName, "a");
+  assert.equal(
+    model.attributes.href,
+    "#/current/models?scope=tree&preset=7&entity=model%3Aacme%2Falpha",
+  );
+
+  click(model);
+  assert.equal(location.hash, model.attributes.href);
+  assert.equal(currentTab(element("tabs")), "models");
+  // The destination row is what received the focus effect, and the range the
+  // link was built with is the range the destination renders.
+  assert.equal(activeElement()?.dataset.entity, "model:acme/alpha");
+  assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
+});
+
+test("an Overview tool row links to the tools summary focused on that tool", () => {
+  const harness = runClient(bundleFixture());
+  const { activeElement, click, element, location } = harness;
+
+  const tool = entityNode(element("view"), "tool:read");
+  assert.equal(tool.tagName, "a");
+  assert.equal(tool.textContent, "read");
+  assert.equal(
+    tool.attributes.href,
+    "#/current/tools?scope=tree&entity=tool%3Aread",
+  );
+
+  click(tool);
+  assert.equal(location.hash, tool.attributes.href);
+  assert.equal(currentTab(element("tabs")), "tools");
+  // The focused row is the tool's own summary row, which is also the filter
+  // control that narrows the calls timeline in place (design §9.4, §9.5).
+  assert.equal(activeElement()?.dataset.entity, "tool:read");
+  assert.equal(activeElement()?.dataset.toolFilter, "read");
+});
+
+test("there is no Agent to Models link", () => {
+  const html = renderInspectorBundle(bundleFixture());
+  // The agent row's own code builds no model destination at all: child model and
+  // thinking stay agent-detail metadata (design §9.4, R17).
+  const agents = html.slice(
+    html.indexOf("function parentCell"),
+    html.indexOf("function agentSummary"),
+  );
+  assert.equal(/linkRow\("model"|tabFor\("model"|"models"/.test(agents), false);
+
+  const harness = runClient(bundleFixture(), "#/current/agents?scope=tree");
+  const view = harness.element("view");
+  assert.equal(
+    view
+      .querySelectorAll("a")
+      .filter((link) => (link.attributes.href ?? "").includes("models")).length,
+    0,
+  );
+  assert.equal(
+    entityNodes(view).filter((node) =>
+      (node.dataset.entity ?? "").startsWith("model:"),
+    ).length,
+    0,
+  );
+});
+
+test("an entity anchor carries an id already present in the payload", () => {
+  const harness = runClient(bundleFixture());
+  const { click, client, element, location } = harness;
+  const followed: string[] = [];
+
+  // Every entity link every tab renders is followed: the document's own
+  // validation keeps the id in the route, and an id the payload does not expose
+  // would be dropped (and canonicalized out of the address bar) instead.
+  for (const tab of [
+    "overview",
+    "models",
+    "tools",
+    "environment",
+    "agents",
+    "integrations",
+    "errors",
+  ]) {
+    client.state.section = "current";
+    client.state.tab = tab;
+    client.state.scope = "tree";
+    client.render();
+    const links = entityNodes(element("view")).filter(
+      (node) => node.tagName === "a",
+    );
+    for (const link of links) {
+      const entity = link.dataset.entity as string;
+      const separator = entity.indexOf(":");
+      followed.push(entity);
+      click(link);
+      assert.deepEqual(
+        client.state.entity,
+        { kind: entity.slice(0, separator), id: entity.slice(separator + 1) },
+        entity,
+      );
+      assert.equal(
+        location.hash.includes(`entity=${encodeURIComponent(entity)}`),
+        true,
+        entity,
+      );
+    }
+  }
+
+  // The links the fixture can render are actually covered by the loop above.
+  assert.equal(followed.includes("command:review"), true);
+  assert.equal(followed.includes("integration:context"), true);
+  assert.equal(followed.includes("model:acme/alpha"), true);
+});
+
+test("the error join links a failed call to its error and the error row back", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithErrorAndThreeChildren(),
+    }),
+    "#/current/tools?scope=tree",
+  );
+  const { activeElement, click, element } = harness;
+
+  // The failed call is joined to its error by the canonical tool id (§7.5-1).
+  const failed = entityNode(element("view"), "error:tool:call_bash");
+  assert.equal(failed.tagName, "a");
+  assert.equal(failed.textContent, "Failed");
+  assert.equal(
+    failed.attributes.href,
+    "#/current/errors?scope=tree&entity=error%3Atool%3Acall_bash",
+  );
+  click(failed);
+  assert.equal(currentTab(element("tabs")), "errors");
+  assert.equal(activeElement()?.dataset.entity, "error:tool:call_bash");
+
+  // The error row's own references: its tool call, and every candidate child run
+  // labelled with that run's own role (one-to-many, none named as the cause).
+  const tool = entityNode(element("view"), "tool:tool:call_bash");
+  assert.equal(tool.textContent, "bash");
+  const runs = entityNodes(element("view")).filter((node) =>
+    (node.dataset.entity ?? "").startsWith("agent:"),
+  );
+  assert.deepEqual(
+    runs.map((node) => node.textContent),
+    ["reviewer", "researcher", "validator"],
+  );
+
+  click(tool);
+  assert.equal(currentTab(element("tabs")), "tools");
+  assert.equal(activeElement()?.dataset.entity, "tool:tool:call_bash");
+  assert.equal(activeElement()?.textContent, "bash");
+
+  const last = runs[2] as StubElement;
+  click(last);
+  assert.equal(currentTab(element("tabs")), "agents");
+  assert.equal(activeElement()?.dataset.entity, last.dataset.entity);
+  assert.equal(activeElement()?.textContent, "validator");
+});
+
+test("an agent row links its resolved parent run", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithOrphanChildAndParent(),
+    }),
+    "#/current/agents?scope=tree",
+  );
+  const { activeElement, click, element } = harness;
+  const view = element("view");
+
+  // Exactly one parent is resolved in this projection, and it is a real anchor
+  // labelled with that run's own role — never the bare opaque id.
+  const links = entityNodes(view).filter(
+    (node) =>
+      node.tagName === "a" && (node.dataset.entity ?? "").startsWith("agent:"),
+  );
+  assert.equal(links.length, 1);
+  const parent = links[0] as StubElement;
+  assert.equal(parent.textContent, "reviewer");
+  assert.equal(
+    parent.attributes.href,
+    `#/current/agents?scope=tree&entity=${encodeURIComponent(parent.dataset.entity as string)}`,
+  );
+
+  click(parent);
+  assert.equal(activeElement()?.dataset.entity, parent.dataset.entity);
+  assert.equal(activeElement()?.textContent, "reviewer");
+
+  // The parent verdicts that are not resolved stay plain text.
+  assert.equal(
+    view
+      .querySelectorAll("a")
+      .filter((link) => link.textContent === "Unavailable").length,
+    0,
+  );
+});
+
+test("an in-scope parent whose role is unknown is a real anchor, not a bare id", async () => {
+  const model = modelWithOrphanChildAndParent();
+  const parent = model.report.agents.find((run) => run.agent === "reviewer");
+  if (parent === undefined)
+    throw new Error("the fixture carries no parent run");
+  const parentId = parent.id;
+  // The producer published no role for the parent: the row is still in scope.
+  delete parent.agent;
+
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => model,
+    }),
+    "#/current/agents?scope=tree",
+  );
+  const links = entityNodes(harness.element("view")).filter(
+    (node) =>
+      node.tagName === "a" && node.dataset.entity === `agent:${parentId}`,
+  );
+  assert.equal(links.length, 1);
+  const link = links[0] as StubElement;
+  assert.equal(link.textContent, "Unavailable");
+  assert.equal(link.textContent.includes(parentId), false);
+  assert.equal(
+    link.attributes.href,
+    `#/current/agents?scope=tree&entity=${encodeURIComponent(`agent:${parentId}`)}`,
+  );
+});
+
+test("integration and inventory rows link to their own detail", () => {
+  const integrations = runClient(
+    bundleFixture(),
+    "#/current/integrations?scope=tree",
+  );
+  const integration = entityNode(
+    integrations.element("view"),
+    "integration:context",
+  );
+  assert.equal(integration.tagName, "a");
+  assert.equal(
+    integration.attributes.href,
+    "#/current/integrations?scope=tree&entity=integration%3Acontext",
+  );
+  integrations.click(integration);
+  assert.equal(
+    integrations.activeElement()?.dataset.entity,
+    "integration:context",
+  );
+
+  const commands = runClient(
+    bundleFixture(),
+    "#/current/environment?scope=tree",
+  );
+  const command = entityNode(commands.element("view"), "command:review");
+  assert.equal(
+    command.attributes.href,
+    "#/current/environment?scope=tree&entity=command%3Areview",
+  );
+  commands.click(command);
+  assert.equal(commands.activeElement()?.dataset.entity, "command:review");
+});
+
+test("an inventory destination opens the Environment sub-section that lists it", () => {
+  const skills = runClient(
+    bundleFixture(),
+    "#/current/environment?scope=tree&entity=skill%3Abuild",
+  );
+  // The entity kind selects the sub-section, so the destination renders the row
+  // the link named and that row is the one focused.
+  assert.equal(
+    skills.texts(skills.element("view")).includes("Invocations"),
+    true,
+  );
+  assert.equal(skills.activeElement()?.dataset.entity, "skill:build");
+
+  const resources = runClient(
+    bundleFixture(),
+    "#/current/environment?scope=tree&entity=resource%3Alocal",
+  );
+  assert.equal(
+    resources.texts(resources.element("view")).includes("Prompts"),
+    true,
+  );
+  assert.equal(resources.activeElement()?.dataset.entity, "resource:local");
+
+  // The default sub-section is still the first one when no inventory is named.
+  const plain = runClient(bundleFixture(), "#/current/environment?scope=tree");
+  assert.equal(
+    plain.texts(plain.element("view")).includes("Description"),
+    true,
+  );
+});
+
+test("the entity focus effect fires on a navigation, never on a range or table change", () => {
+  const harness = runClient(
+    bundleFixture(),
+    "#/current/models?scope=tree&entity=model%3Aacme%2Falpha",
+  );
+  const { activeElement, element, input, preset } = harness;
+
+  // The deep link lands on the row it named.
+  assert.equal(activeElement()?.dataset.entity, "model:acme/alpha");
+
+  // A range change re-renders the same view without stealing focus.
+  preset("7");
+  assert.equal(activeElement()?.dataset.entity, undefined);
+  assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
+
+  // A table-only change keeps the caret where the reader put it, even though the
+  // route still carries the entity: the stub input models a real caret here.
+  const search = element("search") as StubElement & { selectionStart?: number };
+  search.selectionStart = 0;
+  search.focus();
+  search.value = "acme";
+  input(search);
+  assert.equal(activeElement()?.id, "search");
+  assert.equal(activeElement()?.dataset.entity, undefined);
+});
+
+test("an entity link inside a history session keeps the session, not the scope", () => {
+  const harness = runClient(
+    bundleFixture(),
+    "#/history/overview?session=session-a",
+  );
+  const { activeElement, click, element, location } = harness;
+
+  const model = entityNode(element("view"), "model:acme/alpha");
+  assert.equal(
+    model.attributes.href,
+    "#/history/models?session=session-a&entity=model%3Aacme%2Falpha",
+  );
+
+  click(model);
+  assert.equal(location.hash, model.attributes.href);
+  assert.equal(element("breadcrumb").textContent, "session-a");
+  assert.equal(activeElement()?.dataset.entity, "model:acme/alpha");
 });

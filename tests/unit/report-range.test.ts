@@ -673,14 +673,11 @@ function nodesWithText(view: StubElement, value: string): StubElement[] {
   return found;
 }
 
-/** The rendered anchors carrying one reference attribute. */
-function anchorsWith(
-  view: StubElement,
-  attribute: "childLink" | "toolLink",
-): StubElement[] {
+/** The rendered entity anchors naming one entity kind, in document order. */
+function anchorsWith(view: StubElement, kind: string): StubElement[] {
   return view
     .querySelectorAll("a")
-    .filter((node) => node.dataset[attribute] !== undefined);
+    .filter((node) => (node.dataset.entity ?? "").startsWith(`${kind}:`));
 }
 
 /**
@@ -907,22 +904,23 @@ test("the Errors tab lists every related child run and names none as the cause",
   const view = element("view");
 
   // One anchor per candidate, labelled with that candidate's own role: the
-  // relation is one-to-many and no candidate is named as the cause.
+  // relation is one-to-many and no candidate is named as the cause. Each anchor
+  // is a Task 15 entity link, so following it lands on that run's own row.
   assert.equal(texts(view).includes("Related child run(s)"), true);
   assert.deepEqual(
-    anchorsWith(view, "childLink").map((anchor) => anchor.textContent),
+    anchorsWith(view, "agent").map((anchor) => anchor.textContent),
     ["reviewer", "researcher", "validator"],
   );
   assert.equal(has(texts(view), "caused by"), false);
   assert.equal(has(texts(view), "cause of"), false);
-  // The tool-call reference carries the call's canonical id, so Task 15 can
-  // point it at the calls route without re-deriving the join.
+  // The tool-call reference is an entity link to the call it joins: the route it
+  // carries names the call's canonical id, so the join is not re-derived.
   assert.deepEqual(
-    anchorsWith(view, "toolLink").map((anchor) => [
+    anchorsWith(view, "tool").map((anchor) => [
       anchor.textContent,
-      anchor.dataset.toolLink,
+      anchor.dataset.entity,
     ]),
-    [["bash", "tool:call_bash"]],
+    [["bash", "tool:tool:call_bash"]],
   );
 
   // A candidate whose run carries no role is labelled Unavailable: a role is
@@ -936,7 +934,7 @@ test("the Errors tab lists every related child run and names none as the cause",
   roleless.client.state.tab = "errors";
   roleless.client.render();
   assert.deepEqual(
-    anchorsWith(roleless.element("view"), "childLink").map(
+    anchorsWith(roleless.element("view"), "agent").map(
       (anchor) => anchor.textContent,
     ),
     ["Unavailable", "Unavailable"],

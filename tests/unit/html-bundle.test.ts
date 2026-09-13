@@ -941,9 +941,11 @@ test("related child runs are one-to-many and never causal", async () => {
   );
 
   // The rendered list is one anchor per candidate, and zero candidates omit the
-  // section entirely rather than padding it or inferring one.
+  // section entirely rather than padding it or inferring one. Each candidate's
+  // anchor is an entity link (Task 15): data-entity carries the run it names.
   for (const fragment of [
-    "dataset.childLink",
+    'entityMark(summary,"error",row.id)',
+    'linkRow("agent",id,',
     'tr("errors.relatedChildren")',
     "row.relatedChildIds.length===0)return null",
   ]) {
