@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 
 import type { EvidenceState } from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
-import type { SkillInventory } from "../core/reports.ts";
 import type { DailyRow } from "./daily.ts";
 import {
   ENGLISH_CATALOG,
@@ -17,14 +16,16 @@ import {
   type IntegrationRow,
   type SessionReportView,
   type ToolRow,
-  type ToolSummaryRow,
 } from "./report-projection.ts";
 import type {
+  UiChildUsage,
   UiGlobalProjection,
   UiHistoryProjection,
   UiHistorySession,
+  UiInventoryAvailability,
   UiRangeProjection,
   UiSessionProjection,
+  UiToolSummaryRow,
 } from "./ui-projection.ts";
 
 /**
@@ -220,7 +221,7 @@ function frame(theme: SnapshotTheme, target: SnapshotTarget): string {
     `<meta name="referrer" content="no-referrer">` +
     `<title>${text(catalog["report.title"])} · ${text(target.title)}</title>` +
     `<style>${SNAPSHOT_STYLESHEET}</style></head>` +
-    `<body${dark ? ' class="theme-dark"' : ""}><a class="skip" href="#main">Skip to report</a>` +
+    `<body${dark ? ' class="theme-dark"' : ""}>` +
     `<div class="shell"><aside aria-label="${attr(catalog.workspace)}"><div class="brand"><span class="mark" aria-hidden="true">π</span><span>${text(catalog["report.title"])}<br><small>${text(catalog["brand.tagline"])}</small></span></div>` +
     `<p class="eyebrow">${text(catalog.workspace)}</p>` +
     `<div class="rail-foot"><span class="dot"></span>${text(catalog["local.design"])}<p>Offline report. No tracking.<br>No prompts or outputs.</p><p class="mono">${text(catalog.offline)}</p></div></aside>` +
@@ -319,7 +320,7 @@ function cellContent(cell: Cell): string {
 }
 
 function badge(label: string, tone: "neutral" | "warn" | ""): string {
-  return `<span class="badge${tone === "" ? "" : ` ${tone}`}">${text(label)}</span>`;
+  return `<span class="badge${tone === "" ? "" : ` ${attr(tone)}`}">${text(label)}</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -467,8 +468,9 @@ function sessionSections(
     );
   }
   // A resolved range with no in-range observation states that instead of
-  // publishing a zero; an unresolved range labels every range figure.
-  if (range.resolved !== null && (view.range?.daily.length ?? 0) === 0) {
+  // publishing a zero; an unresolved range labels every range figure. The
+  // in-range day count is the DTO's own figure, never the rendered row count.
+  if (range.resolved !== null && (view.range?.totals.days ?? 0) === 0) {
     return (
       emptyCard(catalog["usage.title"], catalog["chart.empty"]) +
       evidenceSection(view.evidence)
@@ -481,7 +483,7 @@ function sessionSections(
     dailySection(rangeProjection?.daily ?? []),
     modelsSection(rangeProjection),
     toolsSections(rangeProjection, report.durationEvidence),
-    environmentSections(report),
+    environmentSections(report, view.inventoryAvailability),
     agentsSections(report, rangeProjection),
     integrationsSection(report),
     errorsSection(rangeProjection?.errors ?? []),
@@ -812,16 +814,17 @@ function toolsSections(
 }
 
 /**
- * Known usage only: a row whose calls reported no usage states Unavailable, and a
- * partial row keeps its Known qualifier with the fraction over its own calls.
+ * Known usage only: a row whose calls reported no usage states Unavailable, and
+ * a row L2 marks partial keeps its Known qualifier with the fraction over its
+ * own calls.
  */
 function toolUsageCell(
   value: string,
   labelKey: "metric.knownTokens" | "metric.knownCost",
-  row: ToolSummaryRow,
+  row: UiToolSummaryRow,
 ): Cell {
   if (row.withUsage === 0) return ENGLISH_CATALOG["evidence.unavailable"];
-  if (row.withUsage < row.calls) {
+  if (row.partial) {
     return raw(
       `${text(value)} ${badge(ENGLISH_CATALOG[labelKey], "warn")}` +
         `<small>${text(fill(ENGLISH_CATALOG["tools.usageFraction"], { withUsage: row.withUsage, total: row.calls }))}</small>`,
@@ -842,7 +845,10 @@ function timestampCell(timestamp: string): Cell {
   return raw(`<time datetime="${attr(timestamp)}">${text(timestamp)}</time>`);
 }
 
-function environmentSections(report: SessionReportView): string {
+function environmentSections(
+  report: SessionReportView,
+  inventoryAvailability: UiInventoryAvailability,
+): string {
   const catalog = ENGLISH_CATALOG;
   const commands = report.commands;
   const skills = report.skills;
@@ -859,21 +865,21 @@ function environmentSections(report: SessionReportView): string {
     metrics([
       metric(
         catalog["env.commands"],
-        inventoryAvailability(
-          commands.count,
-          commands.state,
-          commands.items.length,
-        ),
+        numberOrUnavailable(inventoryAvailability.commands),
         // Commands carry no counter evidence, so their observed side is
         // Unavailable: inventory availability is never activity.
         fill(catalog["env.observed"], {
           value: catalog["evidence.unavailable"],
         }),
       ),
-      metric(catalog["env.skills"], skillsAvailability(skills), observed),
+      metric(
+        catalog["env.skills"],
+        numberOrUnavailable(inventoryAvailability.skills),
+        observed,
+      ),
       metric(
         catalog["env.resources"],
-        inventoryAvailability(null, resources.state, resources.items.length),
+        numberOrUnavailable(inventoryAvailability.resources),
         catalog["resources.note"],
       ),
     ]),
@@ -989,46 +995,22 @@ function environmentSections(report: SessionReportView): string {
   return summary + commandRows + skillRows + resourceRows;
 }
 
-/**
- * The inventory's availability: its own persisted count when the DTO carries
- * one, else its rows, else Unavailable — never zero (design §8.1).
- */
-function inventoryAvailability(
-  declared: number | null,
-  state: EvidenceState,
-  rows: number,
-): string {
-  if (typeof declared === "number") return count(declared);
-  return state === "supported"
-    ? count(rows)
-    : ENGLISH_CATALOG["evidence.unavailable"];
-}
-
-/**
- * Skills availability is the inventory's own count of inventory rows; a missing
- * count is Unavailable, never the rendered row count, which is activity.
- */
-function skillsAvailability(skills: SkillInventory): string {
-  return typeof skills.count === "number"
-    ? count(skills.count)
-    : ENGLISH_CATALOG["evidence.unavailable"];
-}
-
 function agentsSections(
   report: SessionReportView,
   range: SnapshotRange | undefined,
 ): string {
   const catalog = ENGLISH_CATALOG;
   const runs = range?.agents ?? [];
+  const childUsage = range?.childUsage;
   const childSection =
     report.agentEvidence !== "supported"
       ? emptyCard(catalog["tab.agents"], catalog["agents.none"])
-      : runs.length === 0
+      : childUsage === undefined || childUsage.runsTotal === 0
         ? emptyCard(catalog["tab.agents"], catalog["bars.empty"])
         : card(
             catalog["tab.agents"],
             catalog["agents.note"],
-            agentSummary(runs) +
+            childUsageSummary(childUsage) +
               elapsedTable(
                 [
                   catalog["table.role"],
@@ -1101,64 +1083,58 @@ function agentsSections(
 }
 
 /**
- * The child-run summary over the rows being rendered: usage stays a breakdown,
- * and a set whose runs reported no usage reads Unavailable, never a zero.
+ * The child-run summary: every figure is L2's published breakdown over the
+ * selected runs, so no renderer sums them and child usage stays a breakdown.
  */
-function agentSummary(runs: readonly AgentRow[]): string {
+function childUsageSummary(childUsage: UiChildUsage): string {
   const catalog = ENGLISH_CATALOG;
-  const withUsage = runs.filter((run) => run.usage !== null);
   const fraction = fill(catalog["agents.usageFraction"], {
-    withUsage: withUsage.length,
-    total: runs.length,
+    withUsage: childUsage.runsWithUsage,
+    total: childUsage.runsTotal,
   });
-  const tokens = withUsage.reduce(
-    (sum, run) => sum + (run.usage?.totalTokens ?? 0),
-    0,
-  );
-  const cost = withUsage.reduce((sum, run) => sum + (run.usage?.cost ?? 0), 0);
-  const failed = runs.filter((run) => run.status === "failed");
-  const failedWithUsage = failed.filter((run) => run.usage !== null);
   const cards = [
     metric(
       catalog["agents.childRuns"],
-      count(runs.length),
+      count(childUsage.runsTotal),
       catalog["metric.child.note"],
     ),
-    ...["succeeded", "failed", "interrupted", "running", "unknown"].flatMap(
-      (status) => {
-        const total = runs.filter((run) => run.status === status).length;
-        return total === 0
-          ? []
-          : [
-              metric(
-                catalogEntry(`agents.${status}`),
-                count(total),
-                catalog["metric.child.note"],
-              ),
-            ];
-      },
-    ),
+    ...(
+      ["succeeded", "failed", "interrupted", "running", "unknown"] as const
+    ).flatMap((status) => {
+      const total = childUsage.byStatus[status];
+      return total === 0
+        ? []
+        : [
+            metric(
+              catalogEntry(`agents.${status}`),
+              count(total),
+              catalog["metric.child.note"],
+            ),
+          ];
+    }),
     metric(
       catalog["agents.knownTokens"],
-      withUsage.length === 0 ? catalog["evidence.unavailable"] : count(tokens),
+      childUsage.totalTokens === null
+        ? catalog["evidence.unavailable"]
+        : count(childUsage.totalTokens),
       fraction,
     ),
     metric(
       catalog["agents.knownCost"],
-      withUsage.length === 0 ? catalog["evidence.unavailable"] : money(cost),
+      childUsage.cost === null
+        ? catalog["evidence.unavailable"]
+        : money(childUsage.cost),
       fraction,
     ),
   ];
-  if (failedWithUsage.length > 0) {
+  if (childUsage.failedCost !== null) {
     cards.push(
       metric(
         catalog["agents.knownFailedCost"],
-        money(
-          failedWithUsage.reduce((sum, run) => sum + (run.usage?.cost ?? 0), 0),
-        ),
+        money(childUsage.failedCost),
         fill(catalog["agents.usageFraction"], {
-          withUsage: failedWithUsage.length,
-          total: failed.length,
+          withUsage: childUsage.failedRunsWithUsage,
+          total: childUsage.byStatus.failed,
         }),
       ),
     );
@@ -1367,9 +1343,9 @@ function historyTarget(projection: SnapshotHistoryProjection): SnapshotTarget {
     truncated: projection.truncated,
   };
   const labels = projection.usageLabels;
-  const datable = projection.resolved !== null && projection.daily.length > 0;
+  const datable = projection.totals.days > 0;
   const overview =
-    projection.resolved !== null && projection.daily.length === 0
+    projection.resolved !== null && projection.totals.days === 0
       ? emptyCard(catalog["usage.title"], catalog["chart.empty"])
       : metrics(
           aggregateMetrics({
@@ -1469,9 +1445,9 @@ function globalTarget(projection: SnapshotGlobalProjection): SnapshotTarget {
     truncated: projection.truncated,
   };
   const labels = projection.usageLabels;
-  const datable = projection.resolved !== null && projection.daily.length > 0;
+  const datable = projection.totals.days > 0;
   const overview =
-    projection.resolved !== null && projection.daily.length === 0
+    projection.resolved !== null && projection.totals.days === 0
       ? emptyCard(catalog["usage.title"], catalog["chart.empty"])
       : metrics([
           ...aggregateMetrics({

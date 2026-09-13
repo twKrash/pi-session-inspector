@@ -1,4 +1,4 @@
-import type { Scope } from "../core/events.ts";
+import type { EvidenceState, Scope } from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
 import {
   CAPABILITIES,
@@ -75,6 +75,41 @@ const COMPOSITION_PARTS: readonly CompositionView["parts"][number]["key"][] = [
 ];
 
 /**
+ * One inventory's bounded availability figure, or `null` for Unavailable:
+ * inventory counts are availability, never activity.
+ */
+export type UiInventoryAvailability = {
+  commands: number | null;
+  skills: number | null;
+  resources: number | null;
+};
+
+/**
+ * One range selection's child-run breakdown. Runs are a breakdown only and are
+ * never added to a native or global total; `totalTokens`/`cost` are the known
+ * sums over the runs that reported usage (`null` when none did, never a
+ * fabricated zero) and `byStatus` counts the selected runs per status.
+ */
+export type UiChildUsage = {
+  runsTotal: number;
+  runsWithUsage: number;
+  totalTokens: number | null;
+  cost: number | null;
+  failedCost: number | null;
+  failedRunsWithUsage: number;
+  byStatus: {
+    succeeded: number;
+    failed: number;
+    interrupted: number;
+    running: number;
+    unknown: number;
+  };
+};
+
+/** One tool-summary row plus L2's own partial-usage verdict. */
+export type UiToolSummaryRow = ToolSummaryRow & { partial: boolean };
+
+/**
  * One projection's range and everything that changes with it. `requested` is
  * the intent the route/command carried (`null` when none) and `resolved` the
  * range that intent produced against this projection's own observed dates —
@@ -96,9 +131,10 @@ export type UiRangeProjection = {
   composition: CompositionView | null;
   models: readonly ModelRow[];
   modelsTruncated: boolean;
-  toolSummary: readonly ToolSummaryRow[];
+  toolSummary: readonly UiToolSummaryRow[];
   toolCalls: readonly ToolRow[];
   agents: readonly AgentRow[];
+  childUsage: UiChildUsage;
   errors: readonly ErrorRow[];
   ledger: readonly LedgerItem[];
 };
@@ -118,6 +154,8 @@ export type UiSessionProjection = {
   capabilities: readonly string[];
   report?: SessionReportView;
   evidence: readonly EvidenceRow[];
+  /** Per-inventory availability: the count the DTO carries, `null` unknown. */
+  inventoryAvailability: UiInventoryAvailability;
   walDetail?: "expired";
   range?: UiRangeProjection;
 };
@@ -230,6 +268,7 @@ export function projectCurrentView(
     capabilities: view.capabilities ?? CAPABILITIES.current,
     report,
     evidence: sessionEvidenceRows(view.report, report),
+    inventoryAvailability: inventoryAvailabilityOf(report),
     ...(view.report.walDetail === "expired"
       ? { walDetail: "expired" as const }
       : {}),
@@ -277,6 +316,7 @@ export function projectHistoricalSession(
     capabilities: CAPABILITIES.historySession,
     report,
     evidence: sessionEvidenceRows(session.report, report),
+    inventoryAvailability: inventoryAvailabilityOf(report),
     ...(session.report.walDetail === "expired"
       ? { walDetail: "expired" as const }
       : {}),
@@ -469,6 +509,7 @@ function noSessionProjection(
     ...(scope === undefined ? {} : { scope }),
     capabilities: NO_CAPABILITIES,
     evidence: [],
+    inventoryAvailability: { commands: null, skills: null, resources: null },
   };
 }
 
@@ -506,6 +547,7 @@ function sessionRange(input: {
       toolSummary: [],
       toolCalls: [],
       agents: [],
+      childUsage: emptyChildUsage(),
       errors: [],
       ledger: [],
     };
@@ -533,9 +575,10 @@ function sessionRange(input: {
       (input.datedModels ?? []).filter((row) => isInRange(row.date, resolved)),
     ),
     modelsTruncated: input.modelsTruncated,
-    toolSummary: toolSummary({ tools: filtered.tools }),
+    toolSummary: toolSummary({ tools: filtered.tools }).map(toolUsageVerdict),
     toolCalls: toolCalls({ tools: filtered.tools }, null),
     agents: filtered.agents,
+    childUsage: childUsageBreakdown(filtered.agents),
     errors: filtered.errors,
     // A ledger row is dated by its own persisted timestamp, the same field the
     // tab renders.
@@ -682,6 +725,90 @@ function historySessionRow(
 
 function zeroTotals(): UiRangeProjection["totals"] {
   return { totalTokens: 0, cost: 0, generations: 0, tools: 0, days: 0 };
+}
+
+/** One range selection's bounded child breakdown (never a native-total input). */
+function childUsageBreakdown(runs: readonly AgentRow[]): UiChildUsage {
+  const byStatus = {
+    succeeded: 0,
+    failed: 0,
+    interrupted: 0,
+    running: 0,
+    unknown: 0,
+  };
+  let runsWithUsage = 0;
+  let failedRunsWithUsage = 0;
+  let totalTokens = 0;
+  let cost = 0;
+  let failedCost = 0;
+  for (const run of runs) {
+    byStatus[run.status] += 1;
+    if (run.usage === null) continue;
+    runsWithUsage += 1;
+    totalTokens += run.usage.totalTokens;
+    cost = roundCost(cost + run.usage.cost);
+    if (run.status === "failed") {
+      failedRunsWithUsage += 1;
+      failedCost = roundCost(failedCost + run.usage.cost);
+    }
+  }
+  return {
+    runsTotal: runs.length,
+    runsWithUsage,
+    totalTokens: runsWithUsage === 0 ? null : totalTokens,
+    cost: runsWithUsage === 0 ? null : cost,
+    failedCost: failedRunsWithUsage === 0 ? null : failedCost,
+    failedRunsWithUsage,
+    byStatus,
+  };
+}
+
+/** A selection with no runs: zero runs, no known usage, never a zero sum. */
+function emptyChildUsage(): UiChildUsage {
+  return childUsageBreakdown([]);
+}
+
+/**
+ * The partial-usage verdict of one summary row: known only when some of its
+ * calls reported usage, partial when fewer did than its call count. A row with
+ * no usage-bearing call is Unavailable rather than partial.
+ */
+function toolUsageVerdict(row: ToolSummaryRow): UiToolSummaryRow {
+  return { ...row, partial: row.withUsage > 0 && row.withUsage < row.calls };
+}
+
+/**
+ * Each inventory's availability figure: its own persisted count when it has
+ * one, else the inventory rows only while the state says they are the whole
+ * inventory, else `null` (Unavailable, never a fabricated zero). Skills use the
+ * inventory's own count only: its counter-only rows are activity and would
+ * inflate a rendered-row count.
+ */
+function inventoryAvailabilityOf(
+  report: SessionReportView,
+): UiInventoryAvailability {
+  return {
+    commands: declaredOrRows(
+      report.commands.count,
+      report.commands.state,
+      report.commands.items.length,
+    ),
+    skills: report.skills.count,
+    resources: declaredOrRows(
+      null,
+      report.resources.state,
+      report.resources.items.length,
+    ),
+  };
+}
+
+function declaredOrRows(
+  declared: number | null,
+  state: EvidenceState,
+  rows: number,
+): number | null {
+  if (typeof declared === "number") return declared;
+  return state === "supported" ? rows : null;
 }
 
 function roundCost(value: number): number {

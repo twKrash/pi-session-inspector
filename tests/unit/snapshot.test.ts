@@ -609,6 +609,19 @@ test("renders a static, script-free and network-free document", () => {
   assert.equal(html.includes('"sessionId"'), false);
   assert.equal(html.includes("application/json"), false);
   assert.equal(html.includes("JSON.parse"), false);
+  // No link or external reference of any kind survives, and the one inlined
+  // stylesheet is the only <style> block the CSP hash covers.
+  assert.equal(/<a[\s>]/.test(html), false);
+  assert.equal(html.includes("href="), false);
+  assert.equal((html.match(/<style>/g) ?? []).length, 1);
+  assert.equal((html.match(/<\/style>/g) ?? []).length, 1);
+  for (const tag of ["td", "th", "section"]) {
+    assert.equal(
+      (html.match(new RegExp(`<${tag}[\\s>]`, "g")) ?? []).length,
+      (html.match(new RegExp(`</${tag}>`, "g")) ?? []).length,
+      `${tag} tags must be balanced`,
+    );
+  }
 });
 
 test("escapes hostile values for their exact text and attribute context", () => {
@@ -732,6 +745,14 @@ test("escapes hostile values for their exact text and attribute context", () => 
   assert.equal(text.includes("<"), false);
   assert.equal(text.includes('"'), false);
   assert.equal(text.includes("'"), false);
+
+  // The escaped forms themselves are pinned literally: a helper that stopped
+  // escaping `&` or `>` fails here instead of only being read back through its
+  // own output, and the rendered document carries the same escaped sequence.
+  const markup = `& < > " '`;
+  assert.equal(escapeSnapshotText(markup), "&amp; &lt; &gt; &quot; &#39;");
+  assert.equal(escapeSnapshotAttribute(markup), "&amp; &lt; &gt; &quot; &#39;");
+  assert.equal(html.includes("&amp; &quot; &#39; &lt; &gt;"), true);
 
   // A visible cell and a visible attribute decode back to the hostile value.
   const cell = /<td class="status-cell">([^<]*)<\/td>/.exec(html)?.[1];
@@ -929,4 +950,198 @@ test("the renderer resolves no range and reaches no loader or filesystem", () =>
       `snapshot.ts must not reference ${fragment}`,
     );
   }
+});
+
+test("prints the DTO's child breakdown instead of summing the rendered runs", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const range = base.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const run = range.agents[0];
+  const html = renderSnapshot({
+    ...base,
+    projection: {
+      ...base.projection,
+      range: {
+        ...range,
+        // The two rendered runs carry $0.11 + $0.22 of usage; the published
+        // breakdown deliberately disagrees with every figure a sum would give.
+        agents: [
+          {
+            ...run,
+            id: "run-one",
+            status: "failed",
+            usage: { totalTokens: 11, cost: 0.11 },
+          },
+          {
+            ...run,
+            id: "run-two",
+            status: "running",
+            usage: { totalTokens: 22, cost: 0.22 },
+          },
+        ],
+        childUsage: {
+          runsTotal: 40,
+          runsWithUsage: 20,
+          totalTokens: 9999,
+          cost: 99.99,
+          failedCost: 44.44,
+          failedRunsWithUsage: 10,
+          byStatus: {
+            succeeded: 20,
+            failed: 20,
+            interrupted: 0,
+            running: 0,
+            unknown: 0,
+          },
+        },
+      },
+    },
+  });
+
+  // Every summary figure is the DTO's, including the failed-run card.
+  assert.equal(html.includes("20 of 40 runs reported usage"), true);
+  assert.equal(html.includes("10 of 20 runs reported usage"), true);
+  assert.equal(html.includes("9,999"), true);
+  assert.equal(html.includes("$99.99"), true);
+  assert.equal(html.includes("$44.44"), true);
+  // The rows still render their own bounded usage.
+  assert.equal(html.includes("$0.11"), true);
+  assert.equal(html.includes("$0.22"), true);
+  // A renderer that summed the rows would print the naive figures instead.
+  assert.equal(html.includes("$0.33"), false);
+  assert.equal(html.includes("2 of 2 runs reported usage"), false);
+});
+
+test("prints the DTO's tool-usage partiality instead of comparing row counts", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const range = base.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const html = renderSnapshot({
+    ...base,
+    projection: {
+      ...base.projection,
+      range: {
+        ...range,
+        // `read` reported every call but the DTO marks the row partial, and
+        // `bash` reported fewer than its calls but the DTO does not: a renderer
+        // comparing withUsage to calls prints the opposite of both.
+        toolSummary: [
+          {
+            name: "read",
+            calls: 2,
+            succeeded: 2,
+            failed: 0,
+            interrupted: 0,
+            tokens: 12,
+            cost: 0.12,
+            withUsage: 2,
+            lastUsed: READ_AT,
+            partial: true,
+          },
+          {
+            name: "bash",
+            calls: 3,
+            succeeded: 1,
+            failed: 2,
+            interrupted: 0,
+            tokens: 7,
+            cost: 0.07,
+            withUsage: 1,
+            lastUsed: BASH_AT,
+            partial: false,
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(html.includes("2 of 2 calls reported usage"), true);
+  assert.equal(html.includes("1 of 3 calls reported usage"), false);
+  assert.equal(
+    html.includes(
+      `12 <span class="badge warn">${CATALOG["metric.knownTokens"]}</span>`,
+    ),
+    true,
+  );
+  assert.equal(
+    html.includes(
+      `$0.07 <span class="badge warn">${CATALOG["metric.knownCost"]}</span>`,
+    ),
+    false,
+  );
+});
+
+test("reads its range emptiness and day count from the DTO, never from rows", () => {
+  // A DTO whose published day count disagrees with the rows it carries: a
+  // renderer deciding from `daily.length` renders the range-empty card instead.
+  const current = currentDto();
+  if (current.kind !== "current") throw new Error("the fixture is current");
+  const range = current.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const currentHtml = renderSnapshot({
+    ...current,
+    projection: {
+      ...current.projection,
+      range: {
+        ...range,
+        daily: [],
+        totals: { ...range.totals, days: 4321 },
+      },
+    },
+  });
+  assert.equal(currentHtml.includes("4,321"), true);
+  assert.equal(currentHtml.includes(CATALOG["chart.empty"]), false);
+
+  const history = historyDto();
+  if (history.kind !== "history") throw new Error("the fixture is history");
+  const historyHtml = renderSnapshot({
+    ...history,
+    projection: {
+      ...history.projection,
+      daily: [],
+      totals: {
+        ...history.projection.totals,
+        totalTokens: 987654,
+        cost: 9.87,
+        days: 4321,
+      },
+    },
+  });
+  assert.equal(historyHtml.includes("987,654"), true);
+  assert.equal(historyHtml.includes("$9.87"), true);
+  assert.equal(historyHtml.includes(CATALOG["chart.empty"]), false);
+
+  const global = globalDto();
+  if (global.kind !== "global") throw new Error("the fixture is global");
+  const globalHtml = renderSnapshot({
+    ...global,
+    projection: {
+      ...global.projection,
+      daily: [],
+      totals: { totalTokens: 987654, cost: 9.87, days: 4321 },
+    },
+  });
+  assert.equal(globalHtml.includes("987,654"), true);
+  assert.equal(globalHtml.includes("4,321"), true);
+  assert.equal(globalHtml.includes(CATALOG["chart.empty"]), false);
+});
+
+test("prints each inventory's published availability, never a row count", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  // The fixture's own inventory carries one command, one skill and one source,
+  // so a renderer inferring the figure from those rows prints `1` instead.
+  const html = renderSnapshot({
+    ...base,
+    projection: {
+      ...base.projection,
+      inventoryAvailability: { commands: 4711, skills: 4712, resources: 4713 },
+    },
+  });
+
+  assert.equal(html.includes("4,711"), true);
+  assert.equal(html.includes("4,712"), true);
+  assert.equal(html.includes("4,713"), true);
 });

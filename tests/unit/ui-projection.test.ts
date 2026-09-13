@@ -24,6 +24,7 @@ import {
   sessionDatedUsage,
   type DateUsageRow,
 } from "../../src/ui/dated-usage.ts";
+import { buildDailyRows } from "../../src/ui/daily.ts";
 import type { GlobalReport, HistoryReport } from "../../src/ui/load-history.ts";
 import {
   projectCurrentView,
@@ -248,6 +249,14 @@ function dateRow(input: {
       branchSummaries: { totalTokens: 0, cost: 0 },
     },
   };
+}
+
+/** One view-level daily fold, the shape `CurrentView.daily` carries. */
+function foldedDaily(
+  rows: readonly DateUsageRow[],
+  sessionId: string,
+): ReturnType<typeof buildDailyRows>["rows"] {
+  return buildDailyRows([{ sessionId, rows, truncated: false }]).rows;
 }
 
 /** One generation-only session, the minimum a history row's report needs. */
@@ -596,6 +605,249 @@ test("child usage stays a breakdown and never enters the native range total", as
   );
   assert.equal(projected.current.tree.report?.agentCount, 1);
   assert.equal(projected.current.active.report?.agentCount, null);
+
+  // The bounded breakdown is published beside the rows, so no renderer sums
+  // them: one succeeded run with 50 tokens and $0.01 of known usage.
+  assert.deepEqual(range.childUsage, {
+    runsTotal: 1,
+    runsWithUsage: 1,
+    totalTokens: 50,
+    cost: 0.01,
+    failedCost: null,
+    failedRunsWithUsage: 0,
+    byStatus: {
+      succeeded: 1,
+      failed: 0,
+      interrupted: 0,
+      running: 0,
+      unknown: 0,
+    },
+  });
+  // A selection with no run reports nothing, never a fabricated zero.
+  assert.deepEqual(projected.current.active.range?.childUsage, {
+    runsTotal: 0,
+    runsWithUsage: 0,
+    totalTokens: null,
+    cost: null,
+    failedCost: null,
+    failedRunsWithUsage: 0,
+    byStatus: {
+      succeeded: 0,
+      failed: 0,
+      interrupted: 0,
+      running: 0,
+      unknown: 0,
+    },
+  });
+});
+
+test("a tool summary row carries L2's partial-usage verdict", () => {
+  const report = toSessionReport(
+    reduceEntries("session-partial-tools", [
+      {
+        type: "message",
+        id: "gen-tools",
+        parentId: null,
+        timestamp: "2026-02-02T10:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: { totalTokens: 10, cost: { total: 0.001 } },
+          content: [
+            { type: "toolCall", id: "call_read_1", name: "read" },
+            { type: "toolCall", id: "call_read_2", name: "read" },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "res-read-1",
+        parentId: "gen-tools",
+        timestamp: "2026-02-02T10:00:01.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call_read_1",
+          toolName: "read",
+          isError: false,
+          usage: { totalTokens: 4, cost: { total: 0.001 } },
+          content: [],
+        },
+      },
+      {
+        type: "message",
+        id: "res-read-2",
+        parentId: "gen-tools",
+        timestamp: "2026-02-02T10:00:02.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call_read_2",
+          toolName: "read",
+          isError: false,
+          content: [],
+        },
+      },
+    ]),
+  );
+  const view = projectCurrentView(
+    {
+      availability: "available",
+      report,
+      daily: foldedDaily(
+        [
+          dateRow({
+            date: "2026-02-02",
+            totalTokens: 14,
+            cost: 0.002,
+            generations: 1,
+          }),
+        ],
+        "session-partial-tools",
+      ),
+    },
+    "tree",
+  );
+
+  // One of two calls reported usage: the row is partial. A row whose calls
+  // reported none at all is Unavailable, which is not the same verdict.
+  assert.deepEqual(
+    view.range?.toolSummary.map((row) => [
+      row.name,
+      row.calls,
+      row.withUsage,
+      row.partial,
+    ]),
+    [["read", 2, 1, true]],
+  );
+});
+
+test("each inventory publishes its availability figure, never its rows", () => {
+  const report = toSessionReport(
+    reduceEntries("session-inventory", [
+      {
+        type: "message",
+        id: "gen-inventory",
+        parentId: null,
+        timestamp: "2026-02-02T10:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: { totalTokens: 10, cost: { total: 0.001 } },
+          content: [],
+        },
+      },
+    ]),
+    {
+      inventory: {
+        schemaVersion: 1,
+        commands: [
+          {
+            name: "cmd-one",
+            source: "extension",
+            sourceLabel: "local",
+            scope: "user",
+            origin: "package",
+            description: "A command.",
+          },
+        ],
+        skills: [
+          {
+            name: "skill-one",
+            sourceLabel: "local",
+            scope: "user",
+            origin: "package",
+          },
+          {
+            name: "skill-two",
+            sourceLabel: "local",
+            scope: "user",
+            origin: "package",
+          },
+        ],
+        resources: [
+          {
+            sourceLabel: "local",
+            scope: "user",
+            origin: "package",
+            commands: 1,
+            skills: 1,
+            prompts: 0,
+            tools: 0,
+          },
+          {
+            sourceLabel: "local",
+            scope: "user",
+            origin: "package",
+            commands: 0,
+            skills: 0,
+            prompts: 1,
+            tools: 0,
+          },
+          {
+            sourceLabel: "local",
+            scope: "user",
+            origin: "package",
+            commands: 0,
+            skills: 0,
+            prompts: 0,
+            tools: 1,
+          },
+        ],
+        toolSources: {},
+      },
+      counters: {
+        counters: {},
+        // A counted name the inventory does not list is activity, so it must
+        // not raise the skills figure above the two inventory rows.
+        skillInvocations: { unlisted: 4 },
+        otherInvocations: 0,
+        presence: { permission: false },
+      },
+    },
+  );
+  const view = projectCurrentView(
+    {
+      availability: "available",
+      report,
+      daily: foldedDaily(
+        [
+          dateRow({
+            date: "2026-02-02",
+            totalTokens: 10,
+            cost: 0.001,
+            generations: 1,
+          }),
+        ],
+        "session-inventory",
+      ),
+    },
+    "tree",
+  );
+  assert.deepEqual(view.inventoryAvailability, {
+    commands: 1,
+    skills: 2,
+    resources: 3,
+  });
+
+  // No inventory snapshot: every figure is Unavailable, never a fabricated zero.
+  const withoutInventory = projectCurrentView(
+    {
+      availability: "available",
+      report: historicalReport({
+        sessionId: "session-no-inventory",
+        timestamp: "2026-02-02T10:00:00.000Z",
+        totalTokens: 10,
+        cost: 0.001,
+      }),
+    },
+    "tree",
+  );
+  assert.deepEqual(withoutInventory.inventoryAvailability, {
+    commands: null,
+    skills: null,
+    resources: null,
+  });
 });
 
 test("each named entry point projects one section on its own", async () => {
