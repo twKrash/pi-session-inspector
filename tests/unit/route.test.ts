@@ -9,8 +9,6 @@ import {
   parseRangeQuery,
   presetRange,
   resolveRange,
-  serializeRangeQuery,
-  shiftUtcDay,
 } from "../../src/ui/range.ts";
 import {
   deriveView,
@@ -57,6 +55,19 @@ test("a route round-trips with the canonical parameter order", () => {
   );
   assert.deepEqual(parseRoute(hash, defaults).route, route);
   assert.equal(routeKey(parseRoute(hash, defaults).route), hash);
+});
+
+test("a route with no table never serializes one", () => {
+  const base = { section: "current", tab: "tools", scope: "tree" } as const;
+  // An emptied table is the absence of state, and serialization is total for the
+  // null an older caller may still pass: neither value may ever throw.
+  for (const table of [undefined, null, {}, { query: "" }, { sort: "" }]) {
+    assert.equal(
+      serializeRoute({ ...base, table } as unknown as InspectorRoute),
+      "#/current/tools?scope=tree",
+      String(table),
+    );
+  }
 });
 
 test("a preset stays unresolved in the hash and resolves against the view's dates", () => {
@@ -149,6 +160,29 @@ test("an untrusted capability table parses as no tabs instead of throwing", () =
   const view = deriveView(
     parsed.route,
     { current: null, global: ["overview"] } as unknown as typeof capabilities,
+    observed,
+  );
+  assert.deepEqual([view.visibleTabs, view.activeTab], [[], "overview"]);
+});
+
+test("a null capability table parses as no tabs instead of throwing", () => {
+  // A caller-supplied table is untrusted input in its entirety: a missing table,
+  // a null table and a non-array section value all list no tab, so both parsing
+  // and derivation stay total.
+  const nulled = {
+    scope: "active" as const,
+    capabilities: null,
+    knownIds: new Set<string>(),
+  } as unknown as typeof defaults;
+  const parsed = parseRoute("#/current/models", nulled);
+  assert.deepEqual(
+    [parsed.route.tab, parsed.notice],
+    ["overview", "tab-unavailable"],
+  );
+  assert.equal(serializeRoute(parsed.route), "#/current/overview?scope=active");
+  const view = deriveView(
+    parsed.route,
+    null as unknown as typeof capabilities,
     observed,
   );
   assert.deepEqual([view.visibleTabs, view.activeTab], [[], "overview"]);
@@ -472,15 +506,13 @@ test("parseRoute and deriveView coerce a section and tab identically", () => {
 });
 
 test("every exported function survives inlining with no module scope", () => {
-  // Mirrors Task 14's inline list: the range helpers the route functions call,
+  // Mirrors the client's inline list: the range helpers the route functions call,
   // then the route module's own functions, declared in the same block order.
   const source = [
-    shiftUtcDay,
     latestObservedDate,
     presetRange,
     resolveRange,
     isInRange,
-    serializeRangeQuery,
     parseRangeQuery,
     filterView,
     historyRowRange,

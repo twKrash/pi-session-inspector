@@ -184,7 +184,9 @@ export function serializeRoute(route: InspectorRoute): string {
     pairs.push(`entity=${encodeURIComponent(`${entity.kind}:${entity.id}`)}`);
   }
   const table = route.table;
-  if (table !== undefined) {
+  // An emptied table is the absence of state: a null table is as empty as a
+  // missing one, so serialization stays total for either.
+  if (table !== undefined && table !== null) {
     if (typeof table.query === "string" && table.query !== "") {
       pairs.push(`q=${encodeURIComponent(table.query)}`);
     }
@@ -277,10 +279,13 @@ export function parseRoute(hash: string, options: RouteOptions): ParsedRoute {
       : "current";
   const requestedTab =
     segments.length > 1 && segments[1] !== "" ? segments[1] : undefined;
-  // A caller-supplied table is untrusted input: a missing or non-array section
-  // value lists no tab, so parsing stays total instead of throwing.
+  // A caller-supplied table is untrusted input: a missing, null or non-array
+  // section value lists no tab, so parsing stays total instead of throwing.
   const sectionTable = options.capabilities;
-  const listed = sectionTable === undefined ? undefined : sectionTable[section];
+  const listed =
+    sectionTable === undefined || sectionTable === null
+      ? undefined
+      : sectionTable[section];
   const tabs: readonly string[] = Array.isArray(listed) ? listed : [];
   const defaultTab = tabs.length > 0 ? tabs[0] : "overview";
 
@@ -371,7 +376,9 @@ export function deriveView(
     requested === "history" || requested === "global" ? requested : "current";
   const sectionTable: SectionCapabilities | undefined = capabilities;
   const listed =
-    sectionTable === undefined ? undefined : sectionTable[activeSection];
+    sectionTable === undefined || sectionTable === null
+      ? undefined
+      : sectionTable[activeSection];
   const visibleTabs: string[] = Array.isArray(listed) ? listed.slice() : [];
   const defaultTab = visibleTabs.length > 0 ? visibleTabs[0] : "overview";
   let notice: RouteNotice | undefined;

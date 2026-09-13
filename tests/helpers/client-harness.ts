@@ -39,6 +39,16 @@ export type StubElement = HarnessNode & {
 /** The client is a classic script; its `instanceof Node` checks need a class. */
 class HarnessNode {}
 
+/**
+ * How the stub reports the two DOM facts focus preservation depends on: a
+ * `focus()` call names the active element, and detaching the active element
+ * (which `replaceChildren` does) moves focus back to the body.
+ */
+type StubTracking = {
+  focus(element: StubElement): void;
+  detach(removed: readonly StubElement[]): void;
+};
+
 function descendant(node: StubElement, selector: string): StubElement | null {
   for (const child of node.children) {
     const matches = selector.startsWith(".")
@@ -51,9 +61,16 @@ function descendant(node: StubElement, selector: string): StubElement | null {
   return null;
 }
 
+/** True when `node` is `root` or one of its descendants. */
+function containsNode(root: StubElement, node: StubElement): boolean {
+  if (root === node) return true;
+  return root.children.some((child) => containsNode(child, node));
+}
+
 function stubElement(
   tagName: string,
   onAppend?: (element: StubElement) => void,
+  tracking?: StubTracking,
 ): StubElement {
   const element = new HarnessNode() as StubElement;
   element.id = "";
@@ -79,8 +96,10 @@ function stubElement(
     }
   };
   element.replaceChildren = (...nodes) => {
+    const removed = element.children;
     element.children = [];
     element.append(...nodes);
+    tracking?.detach(removed);
   };
   element.setAttribute = (name, value) => {
     element.attributes[name] = String(value);
@@ -121,7 +140,11 @@ function stubElement(
     element.listeners[type].push(listener);
   };
   element.classList = { add: () => {}, toggle: () => false };
-  element.focus = () => {};
+  // The document's activeElement follows real focus calls, so a test can assert
+  // which control the client handed focus to (and which one it preserved).
+  element.focus = () => {
+    tracking?.focus(element);
+  };
   element.setSelectionRange = () => {};
   element.showModal = () => {};
   element.close = () => {};
@@ -163,12 +186,17 @@ export function runClient(
   submit(): void;
   click(node: StubElement): void;
   change(node: StubElement): void;
+  input(node: StubElement): void;
   element(id: string): StubElement;
   texts(node: StubElement): string[];
   /** The address bar the client reads and writes; a test drives a deep link. */
   location: { hash: string };
   /** Renders performed so far, counted by the one scroll call render() makes. */
   renders(): number;
+  /** `history.replaceState` calls so far, so a push and a replace differ. */
+  replacements(): number;
+  /** The element the client last focused, exactly as the DOM reports it. */
+  activeElement(): StubElement | null;
   /** Fires the event the browser fires for a hash the test just set. */
   hashchange(): void;
 } {
@@ -222,20 +250,38 @@ export function runClient(
   const register = (element: StubElement): void => {
     if (element.id !== "") store.set(element.id, element);
   };
+  // documentStub is read only when a control is focused or detached, which is
+  // always after the store below exists.
+  const tracking: StubTracking = {
+    focus: (element) => {
+      documentStub.activeElement = element;
+    },
+    detach: (removed) => {
+      const active = documentStub.activeElement;
+      if (active === null) return;
+      if (removed.some((child) => containsNode(child, active))) {
+        documentStub.activeElement = documentStub.body;
+      }
+    },
+  };
   const dayButtons = ["7", "14", "30"].map((days) => {
-    const button = stubElement("button", register);
+    const button = stubElement("button", register, tracking);
     button.dataset.days = days;
     return button;
   });
   const documentStub = {
     body: stubElement("body"),
-    activeElement: null,
+    activeElement: null as StubElement | null,
     listeners: {} as Record<string, (event: unknown) => void>,
     getElementById: (id: string): StubElement | null => {
       const existing = store.get(id);
       if (existing !== undefined) return existing;
       if (!markupIds.includes(id)) return null;
-      const created = stubElement(id === "tabs" ? "nav" : "div", register);
+      const created = stubElement(
+        id === "tabs" ? "nav" : "div",
+        register,
+        tracking,
+      );
       created.id = id;
       created.parentNode = stubElement("div");
       created.textContent =
@@ -243,9 +289,10 @@ export function runClient(
       store.set(id, created);
       return created;
     },
-    createElement: (name: string): StubElement => stubElement(name, register),
+    createElement: (name: string): StubElement =>
+      stubElement(name, register, tracking),
     createElementNS: (_namespace: string, name: string): StubElement =>
-      stubElement(name, register),
+      stubElement(name, register, tracking),
     querySelectorAll: (selector: string): StubElement[] =>
       selector === "[data-days]" ? dayButtons : [],
     addEventListener: (
@@ -274,8 +321,10 @@ export function runClient(
   // The address bar the client reads on every applyLocation and writes on every
   // navigate, with the one history surface a replace navigation uses.
   const locationStub: { hash: string } = { hash: initialHash };
+  let replacements = 0;
   const historyStub = {
     replaceState: (_state: unknown, _title: string, url: string): void => {
+      replacements += 1;
       locationStub.hash = url;
     },
   };
@@ -337,6 +386,12 @@ export function runClient(
       if (listener === undefined) throw new Error("no document change handler");
       listener({ target: node });
     },
+    // Typing is the same delegated event path a browser uses for an input.
+    input: (node) => {
+      const listener = documentStub.listeners.input;
+      if (listener === undefined) throw new Error("no document input handler");
+      listener({ target: node });
+    },
     element: (id) => {
       const found = documentStub.getElementById(id);
       if (found === null) throw new Error(`no element #${id}`);
@@ -345,6 +400,8 @@ export function runClient(
     texts,
     location: locationStub,
     renders: () => renders,
+    replacements: () => replacements,
+    activeElement: () => documentStub.activeElement,
     hashchange: () => {
       const listener = windowStub.listeners.hashchange;
       if (listener === undefined) throw new Error("no hashchange listener");

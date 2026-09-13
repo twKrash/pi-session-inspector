@@ -104,17 +104,20 @@ test("tool usage stays on the call day while its error is observed the next day"
 test("the inlined range module evaluates and runs with no module scope", () => {
   const source = inlineModuleSource();
   for (const fragment of [
-    "const shiftUtcDay=",
     "const latestObservedDate=",
     "const presetRange=",
     "const resolveRange=",
     "const isInRange=",
-    "const serializeRangeQuery=",
     "const parseRangeQuery=",
     "const filterView=",
     "const historyRowRange=",
   ]) {
     assert.equal(source.includes(fragment), true, fragment);
+  }
+  // The document ships no helper it never calls: the two range functions with no
+  // call site in the emitted script are not inlined (Task 14 review, P2-3).
+  for (const fragment of ["const shiftUtcDay=", "const serializeRangeQuery="]) {
+    assert.equal(source.includes(fragment), false, fragment);
   }
   assert.equal(/__name\(/.test(source), false);
 

@@ -196,10 +196,12 @@ test("a view's range and table settings are remembered, never linked", () => {
   preset("14");
   assert.equal(location.hash, "#/history/overview?preset=14");
 
-  // ...and returning to the current view restores that view's remembered range
-  // without the entering view's memory riding in the hash (design §5.3).
+  // ...and returning to the current view restores that view's remembered range.
+  // The link itself carries no range (the entering view's memory is what
+  // restores it), and the address bar is then canonicalized to the route the
+  // document actually applied (R16), so the hash and the render cannot drift.
   click(navLink(element("navigation"), "current"));
-  assert.equal(location.hash, "#/current/overview?scope=tree");
+  assert.equal(location.hash, "#/current/overview?scope=tree&preset=7");
   assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
 
   // A table's own query follows the same rule: the active table's is the route's
@@ -319,4 +321,197 @@ test("a hash whose range cannot be restored falls back with the notice", () => {
   hashchange();
   assert.equal(element("route-notice").hidden, true);
   assert.equal(element("range-dates").textContent, "2026-02-02 → 2026-02-02");
+});
+
+test("clearing a table search returns every row and never throws", () => {
+  const harness = runClient(bundleFixture(), "#/current/models?scope=tree");
+  const { element, input, location, texts } = harness;
+  const rows = (): number => element("view").querySelectorAll("tr").length;
+  const rendersModel = (): boolean => texts(element("view")).includes("acme");
+  const all = rows();
+  assert.equal(all, 2); // the header row plus the one model row the fixture has
+  assert.equal(rendersModel(), true);
+
+  // Typing narrows the table and the active table's query is the route's.
+  const typed = element("search");
+  typed.value = "acme";
+  assert.doesNotThrow(() => input(typed));
+  assert.equal(rows(), all);
+  assert.equal(location.hash, "#/current/models?scope=tree&q=acme");
+
+  const narrowed = element("search");
+  narrowed.value = "zzz";
+  assert.doesNotThrow(() => input(narrowed));
+  assert.equal(rows(), 1);
+  assert.equal(rendersModel(), false);
+
+  // Clearing the box empties the active table's state. It must be a route with
+  // no `q` at all — not a null table — and the table renders every row again.
+  const cleared = element("search");
+  cleared.value = "";
+  assert.doesNotThrow(() => input(cleared));
+  assert.equal(rows(), all);
+  assert.equal(rendersModel(), true);
+  assert.equal(location.hash, "#/current/models?scope=tree");
+});
+
+test("clearing a sort selection, and sorting, never throws", () => {
+  const harness = runClient(bundleFixture(), "#/current/models?scope=tree");
+  const { element, change, location } = harness;
+
+  const sort = element("sort");
+  sort.value = "name";
+  assert.doesNotThrow(() => change(sort));
+  assert.equal(location.hash, "#/current/models?scope=tree&sort=name");
+
+  // "Default" clears the sort: the table state empties and no `sort` is left.
+  const cleared = element("sort");
+  cleared.value = "default";
+  assert.doesNotThrow(() => change(cleared));
+  assert.equal(location.hash, "#/current/models?scope=tree");
+  assert.equal(element("sort").querySelectorAll("option").length, 3);
+});
+
+test("a restored range is canonicalized into the address bar, so one navigation renders once", () => {
+  const harness = runClient(bundleFixture());
+  const { element, click, location, hashchange, preset, renders } = harness;
+
+  preset("7");
+  assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
+
+  const before = renders();
+  click(navLink(element("navigation"), "history"));
+  assert.equal(renders() - before, 1);
+
+  // Back to the current view: its remembered 7D range is restored, and the
+  // address bar now names the route that was applied — exactly one render.
+  click(navLink(element("navigation"), "current"));
+  assert.equal(renders() - before, 2);
+  assert.equal(location.hash, "#/current/overview?scope=tree&preset=7");
+  assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
+
+  // The event the browser fires for the hash navigate() wrote re-parses to the
+  // applied route, so it renders nothing and the restored range stays put.
+  hashchange();
+  assert.equal(renders() - before, 2);
+  assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
+});
+
+test("a discrete change pushes a history entry; only search typing replaces", () => {
+  const harness = runClient(bundleFixture());
+  const { element, click, change, input, location, preset, replacements } =
+    harness;
+  const start = replacements(); // the bootstrap canonicalization
+
+  // Selecting a preset is a discrete navigation, so it may not overwrite the
+  // entry it came from (design §9.2, R16b).
+  preset("7");
+  assert.equal(replacements() - start, 0);
+  assert.equal(location.hash, "#/current/overview?scope=tree&preset=7");
+
+  // Back restores the previous entry's range, because the preset change is its
+  // own entry: the browser restores that hash and reports it.
+  location.hash = "#/current/overview?scope=tree";
+  harness.hashchange();
+  assert.equal(element("range-dates").textContent, "2026-02-01 → 2026-02-02");
+
+  // A sort change is discrete too.
+  click(tabLink(element("tabs"), "models"));
+  const sort = element("sort");
+  sort.value = "name";
+  change(sort);
+  assert.equal(replacements() - start, 0);
+  assert.equal(location.hash, "#/current/models?scope=tree&sort=name");
+
+  // Typing in a search box is in progress, not a destination: it replaces.
+  const search = element("search");
+  search.value = "acme";
+  input(search);
+  assert.equal(replacements() - start, 1);
+  assert.equal(location.hash, "#/current/models?scope=tree&q=acme&sort=name");
+});
+
+test("the Back and Inspect controls are real hash links", () => {
+  const aggregate = runClient(bundleFixture(), "#/history/overview");
+  // Only a session whose detail this document carries offers the control (the
+  // fixture's second session is unavailable), and it is an anchor, not a bare
+  // script-only element: Enter, middle-click and copy-link all work.
+  const inspect = aggregate
+    .element("view")
+    .querySelectorAll("a")
+    .filter((link) => link.dataset.session !== undefined);
+  assert.equal(inspect.length, 1);
+  assert.match(inspect[0]?.attributes.href ?? "", /^#\//);
+  assert.equal(
+    inspect[0]?.attributes.href,
+    "#/history/overview?session=session-a",
+  );
+
+  // A selected session's detail carries the Back control, pointed at the
+  // aggregate it came from.
+  const detail = runClient(
+    bundleFixture(),
+    "#/history/models?session=session-a",
+  );
+  const back = detail
+    .element("view")
+    .querySelectorAll("a")
+    .find((link) => link.dataset.back !== undefined);
+  assert.match(back?.attributes.href ?? "", /^#\//);
+  assert.equal(back?.attributes.href, "#/history/overview");
+
+  // The href and the delegated click handler are the same destination.
+  detail.click(back as StubElement);
+  assert.equal(detail.location.hash, "#/history/overview");
+});
+
+test("every declared entity kind has an id space the route can name", () => {
+  const harness = runClient(bundleFixture());
+  const { client, location, hashchange } = harness;
+  const ids: [string, string][] = [
+    ["model", "acme/alpha"],
+    ["tool", "tool:call-a"],
+    [
+      "agent",
+      "subagent-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ],
+    ["error", "generation:g2"],
+    ["integration", "context"],
+    ["command", "review"],
+    ["skill", "build"],
+    ["resource", "local"],
+  ];
+  for (const [kind, id] of ids) {
+    location.hash = `#/current/overview?scope=tree&entity=${encodeURIComponent(`${kind}:${id}`)}`;
+    hashchange();
+    assert.deepEqual(client.state.entity, { kind, id }, kind);
+  }
+
+  // A resource label the payload does not carry is still dropped, never echoed.
+  location.hash =
+    "#/current/overview?scope=tree&entity=resource%3A%2Fhome%2Fsecret";
+  hashchange();
+  assert.equal(client.state.entity, undefined);
+});
+
+test("a tab that had keyboard focus keeps it across a re-render", () => {
+  const harness = runClient(bundleFixture());
+  const { activeElement, click, element, preset } = harness;
+  const tabs = element("tabs");
+
+  tabLink(tabs, "models").focus();
+  assert.equal(activeElement()?.dataset.tab, "models");
+
+  // A range change rebuilds the strip: the focused tab is put back, not dropped.
+  preset("7");
+  assert.equal(activeElement()?.dataset.tab, "models");
+
+  // Activating a tab by keyboard (Enter on the focused anchor) keeps focus on it.
+  click(tabLink(tabs, "models"));
+  assert.equal(currentTab(tabs), "models");
+  assert.equal(activeElement()?.dataset.tab, "models");
+
+  // A section change belongs to the heading: the strip does not take that focus.
+  click(navLink(element("navigation"), "history"));
+  assert.equal(activeElement()?.id, "title");
 });
