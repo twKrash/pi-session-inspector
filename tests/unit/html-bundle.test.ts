@@ -27,6 +27,7 @@ import {
   currentModelWithPartialToolUsage,
   currentModelWithTools,
   embedOf,
+  FORBIDDEN_PRODUCER_KEYS,
   hostileToolArgumentEntries,
   modelWithActivityAndRuns,
   modelWithAbsentDetectedTelemetry,
@@ -41,6 +42,7 @@ import {
   modelWithToolError,
   modelWithToolErrorAndTwoChildren,
 } from "../helpers/bundle-scenarios.ts";
+import { runClient } from "../helpers/client-harness.ts";
 
 function bundleFixture(): InspectorBundle {
   return JSON.parse(
@@ -226,18 +228,34 @@ function withAggregateCoverage(
   return bundle;
 }
 
+/** One committed coverage fixture, exactly as a report serializes it. */
+function coverageFixture(
+  name: "coverage-partial.json" | "coverage-capped.json",
+): SessionCoverage {
+  return JSON.parse(
+    readFileSync(
+      new URL(`../fixtures/reports/${name}`, import.meta.url),
+      "utf8",
+    ),
+  ) as SessionCoverage;
+}
+
 test("a partial aggregate renders Known wording and never an unqualified total", () => {
-  const html = renderInspectorBundle(
-    withAggregateCoverage({
-      inspected: 27,
-      available: 5,
-      unavailable: 22,
-      sessionRatio: 0.1852,
-      complete: false,
-      discoveryLimited: false,
-      reasons: { "manifest-unavailable": 22 },
-    }),
+  const coverage = coverageFixture("coverage-partial.json");
+  assert.deepEqual(
+    [
+      coverage.inspected,
+      coverage.available,
+      coverage.unavailable,
+      coverage.complete,
+    ],
+    [27, 5, 22, false],
   );
+  assert.equal(
+    Object.values(coverage.reasons).reduce((sum, count) => sum + count, 0),
+    22,
+  );
+  const html = renderInspectorBundle(withAggregateCoverage(coverage));
   assert.match(html, /Known native cost/);
   assert.match(html, /Known tokens/);
   assert.match(html, /5 \/ 27 sessions · 22 unavailable/);
@@ -251,17 +269,18 @@ test("legacy aggregates show their value qualified as completeness-unknown", () 
 });
 
 test("a capped discovery shows counts and never a ratio", () => {
-  const html = renderInspectorBundle(
-    withAggregateCoverage({
-      inspected: 206,
-      available: 206,
-      unavailable: 0,
-      sessionRatio: null,
-      complete: false,
-      discoveryLimited: true,
-      reasons: {},
-    }),
+  const coverage = coverageFixture("coverage-capped.json");
+  assert.deepEqual(
+    [
+      coverage.inspected,
+      coverage.available,
+      coverage.sessionRatio,
+      coverage.complete,
+      coverage.discoveryLimited,
+    ],
+    [206, 206, null, false, true],
   );
+  const html = renderInspectorBundle(withAggregateCoverage(coverage));
   assert.match(
     html,
     /206 sessions inspected · additional sessions not inspected/,
@@ -273,6 +292,44 @@ test("a capped discovery shows counts and never a ratio", () => {
     ),
     false,
   );
+});
+
+test("a complete coverage set publishes complete wording, not a Known qualifier", () => {
+  const complete: SessionCoverage = {
+    inspected: 3,
+    available: 3,
+    unavailable: 0,
+    sessionRatio: 1,
+    complete: true,
+    discoveryLimited: false,
+    reasons: {},
+  };
+  const html = renderInspectorBundle(withAggregateCoverage(complete));
+  const data = embedOf(html);
+  // Payload-level, so the ladder itself is pinned: the pre-rendered line and the
+  // chosen catalog keys, which the whole embedded catalog could otherwise mask.
+  assert.deepEqual(
+    [
+      data.history.coverage.complete,
+      data.history.coverage.line,
+      data.history.usageLabels.cost,
+      data.history.usageLabels.tokens,
+      data.history.usageLabels.sessions,
+    ],
+    [
+      true,
+      "3 / 3 sessions",
+      "metric.cost",
+      "metric.tokens",
+      "coverage.complete",
+    ],
+  );
+  assert.deepEqual(
+    [data.global.coverage.line, data.global.usageLabels.sessions],
+    ["3 / 3 sessions", "coverage.complete"],
+  );
+  assert.match(html, /"line":"3 \/ 3 sessions"/);
+  assert.equal(/sessions · \d+ unavailable/.test(html), false);
 });
 
 test("an empty inspection set is unavailable, never zero", () => {
@@ -481,14 +538,9 @@ test("an error with no publishing result joins no child run", async () => {
 
 test("the browser payload never carries producer text or paths", () => {
   const html = renderInspectorBundle(bundleFixture());
-  for (const forbidden of [
-    "task",
-    "finalOutput",
-    "progressSummary",
-    "transcriptPath",
-    "artifactPaths",
-    "sessionFile",
-  ]) {
+  // The one shared forbidden-key list, so this scan and the privacy corpus can
+  // never disagree about which producer fields must not be projected.
+  for (const forbidden of FORBIDDEN_PRODUCER_KEYS) {
     assert.equal(html.includes(`"${forbidden}"`), false, forbidden);
   }
 });
@@ -525,9 +577,16 @@ test("the history projection carries each session's dated model rows", () => {
 
   assert.deepEqual(projected.datedModels, session.datedModels);
   assert.equal(projected.modelsTruncated, true);
-  // A payload without the dated projection keeps the keys absent, so the
-  // legacy adapter still renders its labelled aggregate model table.
-  const legacy = embedOf(renderInspectorBundle(bundleFixture())).history
+  // A payload whose history session carries no dated projection keeps the keys
+  // absent, so the legacy adapter still renders its labelled aggregate table.
+  const legacyBundle = bundleFixture();
+  const legacySession = legacyBundle.history.sessions[0];
+  if (legacySession?.availability !== "available") {
+    throw new Error("the fixture's first history session must be available");
+  }
+  delete (legacySession as { datedModels?: unknown }).datedModels;
+  delete (legacySession as { modelsTruncated?: unknown }).modelsTruncated;
+  const legacy = embedOf(renderInspectorBundle(legacyBundle)).history
     .sessions[0];
   assert.equal("datedModels" in legacy, false);
   assert.equal("modelsTruncated" in legacy, false);
@@ -1177,6 +1236,9 @@ test("numbers right-align, messages wrap, ids truncate but stay copyable", () =>
   assert.match(html, /\.id-cell\{[^}]*text-overflow:ellipsis/);
   assert.match(html, /data-full-id="/);
   assert.match(html, /table\.copyId/);
+  // Every cell shares the row's box, so a wrapped message must not drag the
+  // row's other cells to the baseline (the plan's `th,td` rule).
+  assert.match(html, /th,td\{[^}]*vertical-align:top/);
   assert.equal(
     /table\{width:100%;border-collapse:collapse;text-align:left;white-space:nowrap\}/.test(
       html,
@@ -1184,6 +1246,25 @@ test("numbers right-align, messages wrap, ids truncate but stay copyable", () =>
     false,
   );
   assert.equal(/td:last-child\{text-align:right\}/.test(html), false);
+
+  // Rendered evidence for the id column: each cell really carries the id it
+  // truncates and its copy control, and the column itself is the opaque class.
+  // A cell losing either attribute, or a table losing the column class, fails
+  // here rather than passing on the document's own comment.
+  const view = runClient(bundleFixture(), "#/history/overview").element("view");
+  const headers = view
+    .querySelectorAll("th")
+    .filter((header) => header.className === "id-cell");
+  assert.equal(headers.length, 1);
+  const cells = view
+    .querySelectorAll("td")
+    .filter((cell) => cell.className === "id-cell");
+  assert.ok(cells.length > 0);
+  for (const cell of cells) {
+    assert.equal(typeof cell.attributes["data-full-id"], "string");
+    assert.ok((cell.attributes["data-full-id"] ?? "").length > 0);
+    assert.notEqual(cell.querySelector(".copy-id"), null);
+  }
 });
 
 test("no decorative dashboard was added", () => {

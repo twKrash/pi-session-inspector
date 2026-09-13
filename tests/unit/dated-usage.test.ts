@@ -180,6 +180,44 @@ test("the retained window is capped and flagged", async () => {
   assert.equal(session.usageByDateTruncated, true);
 });
 
+test("the long fixture retains the newest 366 of its observed days", async () => {
+  const history = await loadHistoryReports(
+    await historyOptionsWith({
+      source: readFileSync(LONG_FIXTURE, "utf8"),
+      sessionId: LONG_SESSION_ID,
+    }),
+  );
+  const session = history.sessions[0];
+  assert.equal(session?.availability, "available");
+  if (session?.availability !== "available") return;
+  // The fixture spans 400 observed days, so the retained window is the newest
+  // 366 and states that it cannot represent the session's whole usage.
+  assert.equal(session.usageByDate.length, 366);
+  assert.equal(session.usageByDateTruncated, true);
+  assert.deepEqual(
+    [session.usageByDate[0]?.date, session.usageByDate.at(-1)?.date],
+    ["2026-02-04", "2027-02-04"],
+  );
+});
+
+test("a session whose dated evidence is partial reports a truncated window", async () => {
+  const history = await loadHistoryReports(
+    await historyOptionsWith({
+      source: unattributableSource(),
+      sessionId: UNATTRIBUTED_SESSION_ID,
+    }),
+  );
+  const session = history.sessions[0];
+  assert.equal(session?.availability, "available");
+  if (session?.availability !== "available") return;
+  // The second partial cause: a native usage line whose persisted timestamp
+  // cannot be attributed to a date makes the report's dated verdict `partial`,
+  // and the dated window must say so rather than read as complete.
+  assert.equal(session.report.evidenceHealth.usage.dated, "partial");
+  assert.equal(session.usageByDateTruncated, true);
+  assert.deepEqual(session.usageByDate, []);
+});
+
 test("a short session is exact and not truncated", async () => {
   const history = await loadHistoryReports(
     await longSessionOptions({ days: 3 }),
@@ -297,6 +335,12 @@ function overflowSource(): string {
 /** The one session id the long-window loader cases use. */
 const LONG_SESSION_ID = "22222222-2222-4222-8222-222222222222";
 
+/** The committed 400-observed-day fixture (marker first, one generation per day). */
+const LONG_FIXTURE = "tests/fixtures/pi/0.85.1/long-session.jsonl";
+
+/** The session id the unattributable-timestamp case writes its manifest under. */
+const UNATTRIBUTED_SESSION_ID = "33333333-3333-4333-8333-333333333333";
+
 /** The deterministic UTC timestamp of one day index of the long window. */
 function dayTimestamp(index: number): string {
   return new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString();
@@ -352,25 +396,24 @@ function longSessionSource(days: number): string {
 }
 
 /**
- * Writes one manifest plus a marker-bearing JSONL with one usage-bearing
- * generation per day into a fresh temp root and returns LoadHistoryOptions.
+ * Writes one manifest plus an already-built marker-bearing JSONL into a fresh
+ * temp root and returns LoadHistoryOptions.
  */
-async function longSessionOptions({
-  days,
+async function historyOptionsWith({
+  source,
+  sessionId,
 }: {
-  days: number;
+  source: string;
+  sessionId: string;
 }): Promise<Parameters<typeof loadHistoryReports>[0]> {
   const root = await mkdtemp(join(tmpdir(), "inspector-dated-usage-"));
   const sessionDirectory = join(root, "public-sessions");
   await mkdir(sessionDirectory);
+  await writeFile(join(sessionDirectory, `${sessionId}.jsonl`), source);
+  await mkdir(join(root, "sessions", sessionId), { recursive: true });
   await writeFile(
-    join(sessionDirectory, `${LONG_SESSION_ID}.jsonl`),
-    longSessionSource(days),
-  );
-  await mkdir(join(root, "sessions", LONG_SESSION_ID), { recursive: true });
-  await writeFile(
-    join(root, "sessions", LONG_SESSION_ID, "meta.json"),
-    `${JSON.stringify({ schemaVersion: 2, sessionId: LONG_SESSION_ID, sourceFile: `${LONG_SESSION_ID}.jsonl`, state: "tracking" })}\n`,
+    join(root, "sessions", sessionId, "meta.json"),
+    `${JSON.stringify({ schemaVersion: 2, sessionId, sourceFile: `${sessionId}.jsonl`, state: "tracking" })}\n`,
   );
   return {
     root,
@@ -382,4 +425,41 @@ async function longSessionOptions({
       isPidAlive: () => false,
     },
   };
+}
+
+/**
+ * The generated counter-example of the long fixture: one usage-bearing
+ * generation per day for `days` days.
+ */
+async function longSessionOptions({
+  days,
+}: {
+  days: number;
+}): Promise<Parameters<typeof loadHistoryReports>[0]> {
+  return historyOptionsWith({
+    source: longSessionSource(days),
+    sessionId: LONG_SESSION_ID,
+  });
+}
+
+/**
+ * One usage-bearing generation whose persisted timestamp cannot be attributed
+ * to a date, so the report's dated verdict is `partial` (design §5.4's second
+ * truncation cause).
+ */
+function unattributableSource(): string {
+  return `${[
+    JSON.stringify({
+      type: "session",
+      version: 3,
+      id: UNATTRIBUTED_SESSION_ID,
+    }),
+    inlineMarker(),
+    inlineGeneration({
+      id: "g1",
+      parentId: "marker",
+      timestamp: "not-a-timestamp",
+      usage: { totalTokens: 5, cost: { total: 0.05 } },
+    }),
+  ].join("\n")}\n`;
 }

@@ -12,10 +12,37 @@
           "totalTokens": 600,
           "cost": 0.12,
           "generations": 1,
-          "tools": 0
+          "tools": 0,
+          "composition": {
+            "generations": { "totalTokens": 600, "cost": 0.12 },
+            "toolResults": { "totalTokens": 0, "cost": 0 },
+            "compactions": { "totalTokens": 0, "cost": 0 },
+            "branchSummaries": { "totalTokens": 0, "cost": 0 }
+          }
         }
       ],
       "dailyTruncated": false,
+      "capabilities": [
+        "overview",
+        "models",
+        "tools",
+        "environment",
+        "agents",
+        "integrations",
+        "errors",
+        "ledger"
+      ],
+      "datedModels": [
+        {
+          "date": "2026-02-02",
+          "provider": "acme",
+          "model": "alpha",
+          "generations": 1,
+          "totalTokens": 600,
+          "cost": 0.12
+        }
+      ],
+      "modelsTruncated": false,
       "report": {
         "sessionId": "session-a",
         "usage": {
@@ -129,7 +156,13 @@
           "totalTokens": 400,
           "cost": 0.08,
           "generations": 1,
-          "tools": 1
+          "tools": 1,
+          "composition": {
+            "generations": { "totalTokens": 400, "cost": 0.08 },
+            "toolResults": { "totalTokens": 0, "cost": 0 },
+            "compactions": { "totalTokens": 0, "cost": 0 },
+            "branchSummaries": { "totalTokens": 0, "cost": 0 }
+          }
         },
         {
           "date": "2026-02-02",
@@ -137,10 +170,45 @@
           "totalTokens": 800,
           "cost": 0.16,
           "generations": 1,
-          "tools": 1
+          "tools": 1,
+          "composition": {
+            "generations": { "totalTokens": 600, "cost": 0.12 },
+            "toolResults": { "totalTokens": 180, "cost": 0.04 },
+            "compactions": { "totalTokens": 20, "cost": 0 },
+            "branchSummaries": { "totalTokens": 0, "cost": 0 }
+          }
         }
       ],
       "dailyTruncated": false,
+      "capabilities": [
+        "overview",
+        "models",
+        "tools",
+        "environment",
+        "agents",
+        "integrations",
+        "errors",
+        "ledger"
+      ],
+      "datedModels": [
+        {
+          "date": "2026-02-01",
+          "provider": "acme",
+          "model": "alpha",
+          "generations": 1,
+          "totalTokens": 400,
+          "cost": 0.08
+        },
+        {
+          "date": "2026-02-02",
+          "provider": "acme",
+          "model": "alpha",
+          "generations": 1,
+          "totalTokens": 600,
+          "cost": 0.12
+        }
+      ],
+      "modelsTruncated": false,
       "report": {
         "sessionId": "session-a",
         "usage": {
@@ -371,7 +439,8 @@
           "diagnostics": []
         }
       }
-    }
+    },
+    "sameReportProjection": false
   },
   "history": {
     "availability": "available",
@@ -410,6 +479,25 @@
           }
         ],
         "usageByDateTruncated": false,
+        "datedModels": [
+          {
+            "date": "2026-02-01",
+            "provider": "acme",
+            "model": "alpha",
+            "generations": 1,
+            "totalTokens": 400,
+            "cost": 0.08
+          },
+          {
+            "date": "2026-02-02",
+            "provider": "acme",
+            "model": "alpha",
+            "generations": 1,
+            "totalTokens": 600,
+            "cost": 0.12
+          }
+        ],
+        "modelsTruncated": false,
         "report": {
           "sessionId": "session-a",
           "usage": { "totalTokens": 1200, "cost": 0.24 },
@@ -512,9 +600,22 @@
           }
         }
       },
-      { "availability": "unavailable", "sessionId": "session-b" }
+      {
+        "availability": "unavailable",
+        "sessionId": "session-b",
+        "reason": "marker-unavailable"
+      }
     ],
-    "diagnostics": []
+    "diagnostics": [],
+    "coverage": {
+      "inspected": 2,
+      "available": 1,
+      "unavailable": 1,
+      "sessionRatio": 0.5,
+      "complete": false,
+      "discoveryLimited": false,
+      "reasons": { "marker-unavailable": 1 }
+    }
   },
   "global": {
     "availability": "available",
@@ -536,6 +637,15 @@
       }
     ],
     "diagnostics": [],
-    "inventory": { "commands": 1, "skills": 1, "resources": 2 }
+    "inventory": { "commands": 1, "skills": 1, "resources": 2 },
+    "coverage": {
+      "inspected": 2,
+      "available": 1,
+      "unavailable": 1,
+      "sessionRatio": 0.5,
+      "complete": false,
+      "discoveryLimited": false,
+      "reasons": { "marker-unavailable": 1 }
+    }
   }
 }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,10 @@ import { createCurrentTuiComponent } from "../../src/ui/current-tui.ts";
 import { renderInspectorBundle } from "../../src/ui/html.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { emptyObservation } from "../../src/ui/observation.ts";
-import { embedOf } from "../helpers/bundle-scenarios.ts";
+import {
+  embedOf,
+  FORBIDDEN_PRODUCER_KEYS,
+} from "../helpers/bundle-scenarios.ts";
 
 const SUBAGENT_SESSION_ID = "session-privacy-test";
 const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
@@ -383,14 +387,8 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
   assertNoSentinels(sentinels, projected.agents, "projected agent rows");
   assertNoSentinels(sentinels, projected.tools, "projected tool rows");
   for (const row of [...projected.agents, ...projected.tools]) {
-    for (const forbidden of [
-      "task",
-      "finalOutput",
-      "progressSummary",
-      "transcriptPath",
-      "artifactPaths",
-      "sessionFile",
-    ]) {
+    // The one shared forbidden-key list (no producer text, no path field).
+    for (const forbidden of FORBIDDEN_PRODUCER_KEYS) {
       assert.equal(forbidden in row, false, forbidden);
     }
   }
@@ -437,4 +435,107 @@ test("missing subagent tool results remain unavailable rather than supported", (
   assert.equal(evidence.activity.calls, 0);
   assert.equal(report.agentEvidence, "unavailable");
   assert.deepEqual(report.agents, []);
+});
+
+function bundleFixture(): InspectorBundle {
+  return JSON.parse(
+    readFileSync(
+      new URL("../fixtures/bundles/inspector-bundle.json", import.meta.url),
+      "utf8",
+    ),
+  ) as InspectorBundle;
+}
+
+/**
+ * The fixture bundle with hostile producer strings planted in the fields the
+ * projection must never read. They live in test code only (no committed fixture
+ * carries producer text), and each one is a single-purpose sentinel: the
+ * privacy guarantee is that none of them reaches the payload.
+ */
+function hostileBundle(): InspectorBundle {
+  const bundle = bundleFixture();
+  const report = bundle.current.tree.report;
+  if (report === undefined) throw new Error("the fixture tree report");
+  Object.assign(report, {
+    sessionName: "SECRET_TASK",
+    progressSummary: "SECRET_PROMPT",
+    finalOutput: "SECRET_OUTPUT",
+    transcriptPath: "/home/dev/private/transcript.jsonl",
+    artifactPaths: ["/home/dev/private/artifact.json"],
+    sessionFile: "file:///home/dev/private/session.jsonl",
+  });
+  const tool = report.tools[0];
+  if (tool === undefined) throw new Error("the fixture tree tool");
+  Object.assign(tool, {
+    arguments: "SECRET_ARGUMENT",
+    result: "SECRET_RESULT",
+  });
+  return bundle;
+}
+
+/**
+ * The same fixture with `markup` planted in the bounded string fields the
+ * projection does read, so the escaping of the inlined payload is exercised by
+ * values that really do reach the document.
+ */
+function bundleWithHostileStrings(markup: string): InspectorBundle {
+  const bundle = bundleFixture();
+  const report = bundle.current.tree.report;
+  const command = report?.commands.items[0];
+  const tool = report?.tools[0];
+  if (report === undefined || command === undefined || tool === undefined) {
+    throw new Error(
+      "the fixture tree projection must carry a command and tool",
+    );
+  }
+  report.sessionId = markup;
+  command.name = markup;
+  tool.name = markup;
+  return bundle;
+}
+
+test("the browser payload never carries raw producer text or paths", () => {
+  const html = renderInspectorBundle(hostileBundle());
+  const sentinels = [
+    "SECRET_PROMPT",
+    "SECRET_TASK",
+    "SECRET_RESULT",
+    "SECRET_ARGUMENT",
+    "SECRET_OUTPUT",
+    "progressSummary",
+    "finalOutput",
+    "transcriptPath",
+    "artifactPaths",
+    "sessionFile",
+    "sessionName",
+    "/home/",
+    "https://",
+  ];
+  for (const forbidden of sentinels) {
+    assert.equal(html.includes(forbidden), false, forbidden);
+  }
+  // The planted keys are the ones no producer field may publish under.
+  for (const key of FORBIDDEN_PRODUCER_KEYS) {
+    assert.equal(html.includes(`"${key}"`), false, key);
+  }
+  // The projection still rendered the rows those hostile fields sat on, so the
+  // absence above is not a scenario that planted nothing.
+  const projected = embedOf(html).current.tree.report;
+  assert.deepEqual(
+    [projected.tools[0].name, projected.commands.items[0].name],
+    ["read", "review"],
+  );
+});
+
+test("hostile strings cannot break out of the inlined payload", () => {
+  const markup = "</script><script>alert(1)</script>";
+  const html = renderInspectorBundle(bundleWithHostileStrings(markup));
+  assert.equal(/<\/script><script>alert\(1\)/.test(html), false);
+  assert.equal(
+    html.includes("</script"),
+    true,
+    "the document still ends its script",
+  );
+  // The escaped payload round-trips the value it carried.
+  assert.equal(embedOf(html).current.tree.report.sessionId, markup);
 });

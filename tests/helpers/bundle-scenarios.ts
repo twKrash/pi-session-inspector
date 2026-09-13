@@ -25,6 +25,22 @@ import {
  */
 
 /**
+ * The producer-only fields no browser payload, report or document may carry.
+ * One list, shared by the bundle-key scan and the privacy corpus, so the two
+ * suites cannot drift; `sessionName` is the producer's session label (spec
+ * §18.7), a raw unbounded string this projection never reads.
+ */
+export const FORBIDDEN_PRODUCER_KEYS = [
+  "task",
+  "finalOutput",
+  "progressSummary",
+  "transcriptPath",
+  "artifactPaths",
+  "sessionFile",
+  "sessionName",
+] as const;
+
+/**
  * The one embedded-payload decoder every browser-payload test shares: the same
  * regex the document emits its payload with, so an assertion reads exactly what
  * the browser would. Sections are heterogeneous JSON and each test reads only

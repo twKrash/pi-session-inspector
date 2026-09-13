@@ -297,6 +297,18 @@ test("json current, history and global export deterministically and never open",
       await readFile(join(harness.cache, "history.json"), "utf8"),
     );
     assert.equal(history.sessions[0].report.usage.totalTokens, 18);
+    // The command writes the report DTO verbatim, so the inspection verdict and
+    // the per-session dated-window flag travel with it (UAT 8).
+    assert.deepEqual(
+      [
+        history.coverage.inspected,
+        history.coverage.available,
+        history.coverage.complete,
+        history.sessions[0].usageByDateTruncated,
+        "usageByDate" in history.sessions[0],
+      ],
+      [1, 1, true, false, true],
+    );
     await harness.handler()(
       "json global",
       harness.context({ mode: "interactive" }),

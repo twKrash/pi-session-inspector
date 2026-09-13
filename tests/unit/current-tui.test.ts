@@ -166,6 +166,48 @@ test("keeps counted skill names visible after the inventory expires", () => {
   assert.ok(empty.includes("Unavailable"));
 });
 
+test("states the skills inventory count, never the activity-inflated row count", () => {
+  // The snapshot lists two skills while the folded counters name a third the
+  // snapshot does not carry: the line is availability, so it counts the
+  // inventory rows only and leaves the counted name to the row list.
+  const counted = modelWith({
+    skills: {
+      state: "supported",
+      invocationState: "supported",
+      invocationCount: 5,
+      otherInvocations: 1,
+      items: [
+        { name: "council-mode", explicitInvocations: 2 },
+        { name: "guard-mode" },
+        { name: "retired-mode", explicitInvocations: 3 },
+      ],
+      count: 2,
+    },
+  });
+  const lines = renderTab(counted, "skills");
+  const rendered = lines.join("\n");
+  assert.match(rendered, /Skills: 2/);
+  assert.equal(/Skills: 3/.test(rendered), false);
+  assert.match(rendered, /retired-mode/);
+
+  // A supported inventory whose count is unknown states Unavailable rather
+  // than falling back to the rows it renders.
+  const unknownCount = modelWith({
+    skills: {
+      state: "supported",
+      invocationState: "unavailable",
+      invocationCount: null,
+      otherInvocations: null,
+      items: [{ name: "council-mode" }],
+      count: null,
+    },
+  });
+  assert.match(
+    renderTab(unknownCount, "skills").join("\n"),
+    /Skills: Unavailable/,
+  );
+});
+
 test("shares the ≠ inventory copy with the HTML renderer", () => {
   const expected =
     "Inventory ≠ invocations. Counts are availability, never activity.";

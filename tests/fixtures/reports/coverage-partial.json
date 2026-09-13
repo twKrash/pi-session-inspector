@@ -1,0 +1,13 @@
+{
+  "inspected": 27,
+  "available": 5,
+  "unavailable": 22,
+  "sessionRatio": 0.1852,
+  "complete": false,
+  "discoveryLimited": false,
+  "reasons": {
+    "manifest-unavailable": 20,
+    "marker-unavailable": 1,
+    "session-unreadable": 1
+  }
+}

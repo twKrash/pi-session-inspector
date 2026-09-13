@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
+import type { SessionCoverage } from "../../src/core/session-coverage.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
   loadInspectorBundle,
@@ -21,7 +22,9 @@ import {
 } from "../../src/ui/range.ts";
 import {
   bundleInput,
+  currentModelWithAgents,
   currentModelWithMixedToolUsage,
+  currentModelWithOutOfOrderToolCalls,
   currentModelWithPartialToolUsage,
   currentModelWithTools,
   modelWithAbsentDetectedTelemetry,
@@ -33,6 +36,7 @@ import {
   modelWithInventory,
   modelWithOrphanChild,
   modelWithOrphanChildAndParent,
+  modelWithStatuses,
   modelWithToolError,
   modelWithToolErrorAndTwoChildren,
 } from "../helpers/bundle-scenarios.ts";
@@ -253,14 +257,37 @@ test("the client renders every section and tab from the one active range", () =>
     narrow.some((value) => value === "2026-02-02"),
     true,
   );
+  // The projected dated composition is the range's own fold: the selected day's
+  // split stands on its own and is never labelled as all report dates.
+  assert.deepEqual(
+    narrow.filter((value) => value.startsWith("Generations, tool results")),
+    [
+      "Generations, tool results, compactions, and branch summaries are persisted native usage, counted once.",
+    ],
+  );
   // A payload without a dated composition keeps the session's own split, which
   // must then carry the all-report-dates label instead of passing as the range.
+  const undated = bundleFixture();
+  for (const currentView of [undated.current.active, undated.current.tree]) {
+    for (const row of currentView.daily ?? []) {
+      delete (row as { composition?: unknown }).composition;
+    }
+  }
+  const legacy = runClient(undated);
+  legacy.client.state.range = {
+    kind: "custom",
+    from: "2026-02-02",
+    to: "2026-02-02",
+  };
+  legacy.client.render();
   assert.equal(
-    narrow.some(
-      (value) =>
-        value.startsWith("Generations, tool results") &&
-        value.endsWith("All report dates"),
-    ),
+    legacy
+      .texts(legacy.element("view"))
+      .some(
+        (value) =>
+          value.startsWith("Generations, tool results") &&
+          value.endsWith("All report dates"),
+      ),
     true,
   );
 
@@ -774,16 +801,71 @@ test("the current Models tab stays range-scoped and never falls back to an aggre
   );
 });
 
-test("a history session detail keeps the aggregate model table labelled for all report dates", () => {
+/**
+ * The fixture with every dated model projection removed: the payload shape a
+ * pre-Task-8 generator and the legacy single-section adapter emit.
+ */
+function undatedBundleFixture(): InspectorBundle {
+  const bundle = bundleFixture();
+  for (const view of [bundle.current.active, bundle.current.tree]) {
+    delete view.datedModels;
+    delete view.modelsTruncated;
+  }
+  for (const session of bundle.history.sessions) {
+    if (session.availability !== "available") continue;
+    const legacy = session as {
+      datedModels?: unknown;
+      modelsTruncated?: unknown;
+    };
+    delete legacy.datedModels;
+    delete legacy.modelsTruncated;
+  }
+  return bundle;
+}
+
+test("a history session detail ranges its own dated models like the current view", () => {
   const harness = runClient(bundleFixture());
   const { client, element, texts } = harness;
   client.state.section = "history";
   client.state.session = "session-a";
   client.state.tab = "models";
 
-  // This payload carries no dated model rows for its history sessions (the
-  // pre-Task-8 shape and the legacy adapter), so its table is the aggregate
-  // one, labelled, and it is never emptied by the range.
+  // A history session carries its own dated model rows (R13), so the selected
+  // day's figures stand on their own rather than as an all-report-dates table.
+  client.state.range = {
+    kind: "custom",
+    from: "2026-02-02",
+    to: "2026-02-02",
+  };
+  client.render();
+  const day = texts(element("view"));
+  assert.equal(has(day, "All report dates"), false);
+  assert.deepEqual(modelCells(day, "alpha"), ["1", "600", "$0.12"]);
+
+  // A range with no dated model day is a range statement, never the aggregate
+  // rows and never a fabricated zero.
+  client.state.range = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  client.render();
+  const outside = texts(element("view"));
+  assert.equal(
+    has(outside, "No daily observations match the selected range."),
+    true,
+  );
+  assert.equal(has(outside, "acme"), false);
+});
+
+test("a payload without the dated projection keeps the aggregate model table labelled", () => {
+  // No dated model rows at all (the legacy adapter's shape), so the table is
+  // the aggregate one, labelled, and it is never emptied by the range.
+  const harness = runClient(undatedBundleFixture());
+  const { client, element, texts } = harness;
+  client.state.section = "history";
+  client.state.session = "session-a";
+  client.state.tab = "models";
   client.state.range = {
     kind: "custom",
     from: "2020-01-01",
@@ -807,10 +889,9 @@ test("a history session detail keeps the aggregate model table labelled for all 
     false,
   );
 
-  // A current view without a dated projection (the fixture's shape, and what
-  // the legacy adapter emits) keeps the same aggregate table, and the range
-  // never empties it either.
-  const legacy = runClient(bundleFixture());
+  // A current view without a dated projection keeps the same aggregate table,
+  // and the range never empties it either.
+  const legacy = runClient(undatedBundleFixture());
   legacy.client.state.section = "current";
   legacy.client.state.tab = "models";
   legacy.client.state.range = {
@@ -1749,4 +1830,241 @@ test("an absent producer with persisted telemetry stays a valid row", async () =
   // Nothing is reconciled: both verdicts stand side by side and no copy claims
   // the contradiction was resolved.
   assert.equal(has(texts(view), "reconcil"), false);
+});
+
+/** One metric card's rendered value, matched by its exact title. */
+function metricValue(view: StubElement, title: string): string {
+  const metric = view
+    .querySelectorAll(".metric")
+    .find((node) => node.children[0]?.textContent === title);
+  if (metric === undefined) throw new Error(`no metric titled ${title}`);
+  return metric.children[1]?.textContent ?? "";
+}
+
+/**
+ * One rendered cell under a column header of the table row named `label`. It
+ * indexes the row's own cells, so the assertion cannot be satisfied by the same
+ * text appearing anywhere else on the row.
+ */
+function cellUnder(
+  harness: { texts(node: StubElement): string[] },
+  view: StubElement,
+  header: string,
+  label: string,
+): StubElement {
+  const row = rowOf(view, harness.texts, label);
+  const body = row.parentNode;
+  const table = body?.parentNode ?? null;
+  if (body === null || table === null) {
+    throw new Error(`row ${label} is not inside a table`);
+  }
+  const head = table.querySelectorAll("tr")[0];
+  if (head === undefined) throw new Error(`table of ${label} has no header`);
+  const column = head.children.findIndex((cell) => cell.textContent === header);
+  if (column < 0)
+    throw new Error(`no column ${header} in the table of ${label}`);
+  const cell = row.children[column];
+  if (cell === undefined) throw new Error(`row ${label} has no ${header} cell`);
+  return cell;
+}
+
+test("a complete coverage set renders its own complete line and unqualified labels", () => {
+  const complete: SessionCoverage = {
+    inspected: 2,
+    available: 2,
+    unavailable: 0,
+    sessionRatio: 1,
+    complete: true,
+    discoveryLimited: false,
+    reasons: {},
+  };
+  const bundle = bundleFixture();
+  bundle.history.coverage = complete;
+  bundle.global.coverage = complete;
+  const harness = runClient(bundle);
+  const { client, element, texts } = harness;
+  client.state.section = "history";
+  client.state.session = null;
+  client.state.tab = "overview";
+  client.render();
+  const rendered = texts(element("view"));
+
+  // The complete set states its own line and drops the Known qualifier from the
+  // headline (the partial fixture's ladder would render both). The unavailable
+  // session's own row still renders Unavailable, so the coverage line is what
+  // is asserted here, never the absence of the word in the whole view.
+  assert.equal(rendered.includes("2 / 2 sessions"), true);
+  assert.equal(
+    rendered.some((value) => value.includes("sessions ·")),
+    false,
+  );
+  assert.equal(rendered.includes("Native cost"), true);
+  assert.equal(rendered.includes("Known native cost"), false);
+
+  // The same payload's ladder is what the panel reads: a partial set says so.
+  const partial = runClient(bundleFixture());
+  partial.client.state.section = "history";
+  partial.client.state.session = null;
+  partial.client.state.tab = "overview";
+  partial.client.render();
+  const partialView = partial.texts(partial.element("view"));
+  assert.equal(
+    partialView.some((value) => value.includes("1 / 2 sessions")),
+    true,
+  );
+  assert.equal(partialView.includes("Known native cost"), true);
+});
+
+test("the agents panel metric cards are the per-status buckets of the rows it renders", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () =>
+        modelWithStatuses([
+          "succeeded",
+          "failed",
+          "interrupted",
+          "running",
+          "unknown",
+        ]),
+    }),
+  );
+  harness.client.state.scope = "tree";
+  harness.client.state.tab = "agents";
+  harness.client.render();
+  const view = harness.element("view");
+
+  // One bucket metric per non-zero status, counted from the rows this panel
+  // renders, beside the total.
+  assert.deepEqual(
+    [
+      "Child runs",
+      "Succeeded",
+      "Failed",
+      "Interrupted",
+      "Running",
+      "Unknown",
+    ].map((title) => metricValue(view, title)),
+    ["5", "1", "1", "1", "1", "1"],
+  );
+  // A bucket with no row is omitted rather than rendered as a zero.
+  assert.equal(
+    view
+      .querySelectorAll(".metric")
+      .some((node) => node.children[0]?.textContent === "Zero"),
+    false,
+  );
+});
+
+test("an agents tab whose runs carry no observed time names that cause", async () => {
+  // The fixture's only run carries no observedAt, so no range can place it.
+  const undated = runClient(bundleFixture());
+  undated.client.state.scope = "tree";
+  undated.client.state.tab = "agents";
+  undated.client.state.range = {
+    kind: "custom",
+    from: "2026-02-01",
+    to: "2026-02-02",
+  };
+  undated.client.render();
+  const undatedText = undated.texts(undated.element("view"));
+  assert.equal(
+    undatedText.includes(
+      "Child runs carry no observed time, so none can be placed in the selected range.",
+    ),
+    true,
+  );
+  assert.equal(
+    undatedText.includes("No child run falls inside the selected range."),
+    false,
+  );
+
+  // A partly dated set states both causes instead of blaming the range alone.
+  const mixed = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithAgents(),
+    }),
+  );
+  mixed.client.state.scope = "tree";
+  mixed.client.state.tab = "agents";
+  mixed.client.state.range = {
+    kind: "custom",
+    from: "2020-01-01",
+    to: "2020-12-31",
+  };
+  mixed.client.render();
+  assert.equal(
+    mixed
+      .texts(mixed.element("view"))
+      .includes(
+        "No child run falls inside the selected range, and runs without an observed time cannot be placed in one.",
+      ),
+    true,
+  );
+});
+
+test("a tools summary row states its own partial fraction in the cell it qualifies", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithPartialToolUsage(),
+    }),
+  );
+  harness.client.state.scope = "tree";
+  harness.client.state.tab = "tools";
+  harness.client.render();
+  const view = harness.element("view");
+
+  // The row's Known tokens cell carries the row's own sentence (`1 of 3`), not
+  // the panel's fraction over every call.
+  const tokens = cellUnder(harness, view, "Tokens", "read");
+  assert.equal(
+    harness.texts(tokens).includes("1 of 3 calls reported usage"),
+    true,
+  );
+  assert.equal(harness.texts(tokens).includes("Known tokens"), true);
+});
+
+test("the tools summary's Last used cell is the newest call of that name", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => currentModelWithOutOfOrderToolCalls(),
+    }),
+  );
+  harness.client.state.scope = "tree";
+  harness.client.state.tab = "tools";
+  harness.client.render();
+  const view = harness.element("view");
+
+  // The name's older call is persisted after its newer one, so the cell can only
+  // be the maximum timestamp: the last row's timestamp would be the older one.
+  assert.equal(
+    cellUnder(harness, view, "Last used", "read").textContent,
+    "2026-02-01T10:00:09.000Z",
+  );
+});
+
+test("a tool error's Message CELL says Unavailable, not just its row", async () => {
+  const harness = runClient(
+    await loadInspectorBundle({
+      ...bundleInput,
+      loadCurrent: async () => modelWithToolError(),
+    }),
+  );
+  harness.client.state.tab = "errors";
+  harness.client.render();
+  const view = harness.element("view");
+  const row = rowOf(view, harness.texts, "bash failed");
+
+  // The row states Unavailable in more than one place (its Source line), so a
+  // row-level "any Unavailable" assertion cannot name the message column.
+  assert.ok(
+    harness.texts(row).filter((value) => value === "Unavailable").length > 1,
+  );
+  assert.equal(
+    cellUnder(harness, view, "Message", "bash failed").textContent,
+    "Unavailable",
+  );
 });

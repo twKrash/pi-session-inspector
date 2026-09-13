@@ -139,7 +139,25 @@ function stubElement(
     if (element.listeners[type] === undefined) element.listeners[type] = [];
     element.listeners[type].push(listener);
   };
-  element.classList = { add: () => {}, toggle: () => false };
+  // Class changes are recorded on `className`, so the highlight and theme rules
+  // the client writes are rendered evidence a test can read back.
+  element.classList = {
+    add: (value) => {
+      const classes =
+        element.className === "" ? [] : element.className.split(" ");
+      if (!classes.includes(value)) classes.push(value);
+      element.className = classes.join(" ");
+    },
+    toggle: (value) => {
+      const classes =
+        element.className === "" ? [] : element.className.split(" ");
+      const enabled = !classes.includes(value);
+      element.className = (
+        enabled ? [...classes, value] : classes.filter((name) => name !== value)
+      ).join(" ");
+      return enabled;
+    },
+  };
   // The document's activeElement follows real focus calls, so a test can assert
   // which control the client handed focus to (and which one it preserved).
   element.focus = () => {

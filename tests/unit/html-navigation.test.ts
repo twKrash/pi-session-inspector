@@ -635,7 +635,17 @@ test("rows link to their destination with the route context preserved", () => {
   // The destination row is what received the focus effect, and the range the
   // link was built with is the range the destination renders.
   assert.equal(activeElement()?.dataset.entity, "model:acme/alpha");
+  // The highlight is a real class on that row, not only a document-level rule:
+  // the stub records classList.add, so the rendered element carries it.
+  assert.equal(activeElement()?.className.includes("entity-focus"), true);
   assert.equal(element("range-dates").textContent, "2026-01-27 → 2026-02-02");
+  // No other row is highlighted by the same navigation.
+  assert.equal(
+    element("view")
+      .querySelectorAll(".entity-focus")
+      .filter((node) => node.dataset.entity !== "model:acme/alpha").length,
+    0,
+  );
 });
 
 test("an Overview tool row links to the tools summary focused on that tool", () => {
