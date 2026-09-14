@@ -19,7 +19,10 @@ module.exports = {
         "remove it. If it's logical this module is an orphan (i.e. it's a config file), " +
         "add an exception for it in your dependency-cruiser configuration. By default " +
         "this rule does not scrutinize dot-files (e.g. .eslintrc.js), TypeScript declaration " +
-        "files (.d.ts), tsconfig.json and some of the babel and webpack configs.",
+        "files (.d.ts), tsconfig.json and some of the babel and webpack configs. " +
+        "The browser assets under src/ui/web/ are loaded by src/ui/web-assets.ts as " +
+        "fixed-order bytes read by path (ADR 0018), so they are deliberately not statically " +
+        "importable and are exempted here.",
       severity: 'warn',
       from: {
         orphan: true,
@@ -27,7 +30,8 @@ module.exports = {
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$',                  // dot files
           '[.]d[.]ts$',                                                       // TypeScript declaration files
           '(^|/)tsconfig[.]json$',                                            // TypeScript config
-          '(^|/)(?:babel|webpack)[.]config[.](?:js|cjs|mjs|ts|cts|mts|json)$' // other configs
+          '(^|/)(?:babel|webpack)[.]config[.](?:js|cjs|mjs|ts|cts|mts|json)$', // other configs
+          '^src/ui/web/'                                                      // browser assets: read by path at runtime
         ]
       },
       to: {},

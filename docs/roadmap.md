@@ -1,9 +1,9 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `0.9.3`
+**Current release:** `0.10.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones, and
-Pre-M8.1–Pre-M8.3 are complete. M8 is not started.
+Pre-M8.1–Pre-M8.4 are complete. M8 is not started.
 
 **Next gate:** complete the Pre-M8 readiness sequence below before starting M8.
 
@@ -55,10 +55,9 @@ by the explicitly named post-M8 cleanup tail.
 - Once accepted, a later ADR, durable spec amendment, or roadmap decision
   supersedes conflicting portions of the original v1 implementation plan. The
   plan remains an execution/history guide only where it has not been superseded.
-- Pre-M8.4 must first update the relevant durable ADR/spec (and any mirrored
-  public documentation) to adopt the localhost transport. Until that gate is
-  accepted, the current spec's no-server wording remains normative; no server
-  implementation may begin.
+- Pre-M8.4's durable ADR/spec and mirrored public documentation now adopt the
+  localhost transport and immutable snapshot split. Implementation remains
+  blocked until the written records receive final user approval.
 - Transport changes preserve existing semantic contracts: canonical report
   loading, navigation/routing, ranges, active/tree scope, projections,
   evidence/coverage, privacy, determinism, and unsupported/unavailable
@@ -258,137 +257,155 @@ turn into executable checks; it does not replace those checks.
 
 **Release:** compatible rule/audit changes may bump the next patch version.
 
-### Pre-M8.4 — ephemeral localhost UI server and normal client
+### Pre-M8.4 — ephemeral localhost UI, normal client, and immutable snapshots
 
-**Status:** Planned. **Depends on:** Pre-M8.3. **Must precede:** HTML
-optimization and release hardening.
+**Status:** Complete (`0.10.0`). **Depends on:** Pre-M8.3.
+**Must precede:** HTML optimization and release hardening.
 
 Replace the fragile browser-side report logic in interactive `ui` with a small,
-read-only localhost server. This is an in-process command facility, not a
-background product service.
+read-only localhost application. Make `snapshot` the only immutable HTML
+artifact command. This is an in-process command facility, not a background
+product service.
 
 **Authority and adoption gate**
 
-Pre-M8.4 owns and accepts the localhost transport architecture; it is not a
-prototype awaiting a later bundler decision. Before any production migration
-PR, update the relevant durable ADR/spec and mirrored public documentation to
-replace the current no-server transport wording. That amendment must preserve
-all existing semantic contracts listed below. Until the amendment is accepted,
-that current no-server wording remains normative and no server implementation
-may merge.
+Pre-M8.4 owns the accepted transport boundary. ADR 0018, the v1 spec, this
+roadmap, README, command help, and CHANGELOG must remain mirrored before the
+implementation PR. The design preserves existing L0/L1/L2, privacy,
+availability, coverage, attribution, scope, navigation, usage, deterministic,
+and autocomplete contracts. No implementation may merge until the written
+records have received final user approval; no later bundler decision may reopen
+whether the localhost server exists.
+
+**Product surfaces and command boundary**
+
+- `ui` is exclusively the interactive localhost application. It starts or
+  reuses one lazy server, opens a tokenized URL, and rejects `--output`.
+- `snapshot current|history|global|session <sessionId>` is the only immutable
+  HTML artifact command and requires an explicit target. `snapshot` never
+  starts the server. It renders one already-resolved L2 projection and remains
+  self-contained/offline through `file://`.
+- `snapshot current` accepts `--scope active|tree` and range options;
+  `snapshot history|global` accept range options and are full-tree;
+  `snapshot session <sessionId>` is atomic and rejects scope/range options.
+  Range input is either `--preset 7|14|30` or a complete `--from`/`--to` pair.
+- `--output` is valid only for `snapshot` and `json`. Without it, snapshots use
+  the generated report cache under `session-inspector/v1/reports/`; explicit
+  output is user-owned. `--no-open` suppresses only the platform opener. It
+  does not suppress generation, server startup, or path/URL notification.
+- `json` remains deterministic and `tui` remains interactive. Their report
+  semantics and output contracts are unchanged.
 
 **Required boundary**
 
 - Use Node's built-in `node:http` and `node:crypto` facilities. Do **not** add
-  Express, Fastify, or another server framework.
+  Express, Fastify, a generic query DSL, runtime TypeScript, a bundler, or
+  another server framework before the Pre-M8.6 client comparison.
 - `/session-ins ui` starts one ephemeral server instance for that Pi process,
   binds only to `127.0.0.1:0`, prints/opens its tokenized URL, and exposes an
-  explicit close path for tests. No daemon, service, autostart, global listener,
-  or cross-process server is allowed.
-- `loadInspectorBundle` remains the only report loader. The browser obtains
-  Current (active/tree), History, and Global through bounded API calls; JSON and
-  HTML exporters consume the same DTO rather than re-deriving report state.
-- The interactive browser client is a normal JavaScript client. It must not
-  depend on `Function.prototype.toString()` to inline `route.ts`, `range.ts`,
-  or any other module.
-- Recommended compatibility boundary: the localhost server is the interactive
-  `ui` default; explicit static HTML remains available as an offline
-  `file://` export/fallback and does not require the server.
-- Theme preference is browser-local (for example, local storage); the server
-  does not persist user preference or accept arbitrary state mutations.
+  explicit `close()` path for tests. No daemon, service, autostart, global
+  listener, or cross-process server is allowed.
+- `loadInspectorBundle()` remains the only aggregate report loader. A
+  `/api/v1/ui` request calls it once and runs TypeScript L2 projection to emit
+  one `InspectorUiSnapshot` containing Current active/tree, History, and
+  Global. JSON, TUI, API, and snapshot renderers never re-derive report state.
+- Independent `/api/v1/reports/sessions/{sessionId}` and
+  `/api/v1/reports/global` requests are independent observations; no
+  cross-request snapshot guarantee exists. The session resource is one bounded
+  atomic `SessionReport` and rejects `scope` and range input; range returns
+  `400 range-not-supported`.
+- L2 owns scope, ranges, attribution, aggregation, coverage, truncation,
+  evidence health, unavailable-vs-zero semantics, and native/child usage.
+  HTTP handlers own only routing, bounded validation, callbacks, auth, and
+  serialization. Browser code owns interaction/presentation only.
+- Interactive assets are ordinary classic files under `src/ui/web/`:
+  `shell.html`, `style.css`, `route.js`, `range.js`, and `client.js`. They do
+  not use `Function.prototype.toString()` to inline TypeScript modules.
+- Browser-local theme preference is allowed; the server persists no preference
+  and accepts no arbitrary state mutation.
 
 **HTTP/security contract**
 
-- Accept only documented `GET`/`HEAD` shell, asset, API, export, and bounded
-  read-only refresh routes. No POST/PUT/PATCH/DELETE mutation API.
-- Bind only to `127.0.0.1:0`. Validate the `Host` header and peer address as
-  loopback for every request; reject non-loopback, malformed, or missing
-  host/peer state.
-- The initial browser URL carries a random process/server-instance capability
-  token in the URL fragment, for example:
-  `http://127.0.0.1:<port>/#token=<random-token>`.
-  The fragment is never transmitted in the HTTP request, so the server must not
-  depend on receiving the bootstrap token through the request URL.
-- The shell document and known static JavaScript/CSS assets may be served
-  without the capability token because they contain no report, session, user,
-  evidence, filesystem, or other Inspector-derived data. They are immutable
-  application assets only. No report DTO or session-specific state may be
-  embedded in the unauthenticated shell or static assets.
-- The bootstrap fragment is the only permitted transient non-route hash state.
-  On startup, before route parsing begins, the client recognizes exactly the
-  bounded bootstrap form `#token=<random-token>`, extracts and validates the
-  capability token, and retains it only in memory. It then immediately replaces
-  the bootstrap fragment with the canonical default Inspector route produced by
-  the existing route serializer, using same-document `history.replaceState`
-  rather than adding a history entry. After this transition, hash-route
-  authority applies normally and every visible hash must conform to the
-  canonical route grammar. The bootstrap fragment must never be interpreted as
-  an Inspector route, persisted as route state, restored by Back/Forward
-  navigation, or exposed to report/export logic.
-- Every report-bearing or Inspector-data-bearing API request, including
-  Current, History, Global, refresh, JSON export, and any future bounded
-  diagnostic/report endpoint, requires one explicit authentication header such
-  as `Authorization: Bearer <token>`. Reject missing, malformed, oversized,
-  expired, or incorrect credentials without echoing them.
-- Reloading after the bootstrap fragment has been replaced does not restore
-  authentication state. The user must reopen a fresh bootstrap URL generated by
-  the running Inspector instance. Do not persist the capability token in
-  cookies, local storage, session storage, browser databases, Inspector state,
-  route state, or exported files.
-- The expected browser API origin is the exact server origin
-  `http://127.0.0.1:<port>`. A present unexpected `Origin`, including `null`
-  for protected API calls, is rejected. Requests without `Origin` are allowed
-  only for documented same-origin navigations/static assets and intended
-  non-browser/internal calls that still satisfy the applicable host, peer, and
-  authentication checks.
-- Disable CORS and arbitrary filesystem/path APIs. Serve only the known
-  shell/client assets plus explicitly bounded report/export routes. Do not
-  follow user-supplied redirects or expose arbitrary local paths.
-- Send a restrictive CSP at minimum equivalent to:
+- Use only Node `node:http` and `node:crypto`. Shell/assets allow `GET` and
+  `HEAD`; `/api/v1/*` allows `GET` only. No POST/PUT/PATCH/DELETE mutation API,
+  generic query DSL, redirect, or arbitrary filesystem/path route exists.
+- Bind only to `127.0.0.1:0`. Validate exact `Host` and loopback peer for every
+  request; reject malformed/missing/non-loopback values. Normalize only the
+  equivalent IPv4-mapped loopback representation. Do not add IPv6/private-
+  network exceptions or trust forwarded headers.
+- The initial URL is
+  `http://127.0.0.1:<port>/#token=<token>`. Generate `<token>` with at least
+  256 random bits (`randomBytes(32)` encoded bounded base64url). The fragment
+  is not sent in HTTP and the token remains in memory only.
+- The shell and known static assets are unauthenticated because they contain no
+  report, session, user, evidence, filesystem, or other Inspector-derived data.
+  Every report-bearing API request uses exactly one bounded
+  `Authorization: Bearer <token>` credential. Reject missing, malformed,
+  oversized, expired, or incorrect credentials without echoing them.
+- Before route parsing, consume exactly `#token=<token>`, retain its value only
+  in memory, and use `history.replaceState()` to replace it with the canonical
+  default route without adding history. The token fragment is never route
+  state, export state, diagnostics, or a Back/Forward-restorable fragment.
+  Reloading the sanitized route loses authentication and requires a fresh URL.
+- Validate a present `Origin` against exact
+  `http://127.0.0.1:<port>`; reject `null`, aliases, and other origins. Missing
+  Origin is allowed for documented shell/static-asset navigations after Host/
+  peer validation; non-browser/internal protected API calls may omit it only
+  after Host/peer and bearer-auth validation. Disable CORS.
+- Server responses use restrictive same-origin CSP equivalent to
   `default-src 'self'`; `script-src 'self'`; `style-src 'self'`;
   `connect-src 'self'`; `object-src 'none'`; `base-uri 'none'`;
-  `frame-ancestors 'none'`.
-  Add only directives required by the final normal-client implementation; never
-  weaken the boundary for convenience.
-- Capability tokens, token-bearing bootstrap URLs/fragments, authorization
-  headers, report payloads, and raw exception text must never enter logs,
-  diagnostics, referrers, exported HTML, persisted Inspector state, or other
-  durable storage.
-- Set no-cache and no-referrer protections. A refresh recomputes bounded reports
-  safely and must not write Pi session JSONL or double-count WAL/checkpoint
-  evidence.
+  `form-action 'none'`; `frame-ancestors 'none'`. Snapshot CSP is separate:
+  no executable JavaScript/network permission and only the exact stylesheet
+  hash may be allowed.
+- Capability tokens, token-bearing URLs/fragments, auth headers, report
+  payloads, paths, and raw exceptions never enter logs, diagnostics, referrers,
+  exported HTML, persisted Inspector state, or other durable storage. Use
+  no-store/no-cache and no-referrer protections.
+- WSL2-to-Windows-browser localhost forwarding is an explicit UAT case. If it
+  presents a non-loopback peer, record the conflict; do not weaken validation
+  preemptively.
 
 **Logging and error reporting**
 
 - Add one bounded diagnostic path using existing standard output/error
   facilities; do not introduce a logging framework for this feature.
-- Startup, asset, API, refresh, and export failures log an event code, phase,
-  bounded status, correlation/request id, and `redactBoundedText`-sanitized
-  reason. Token-bearing URLs and raw exception text never leave the process.
-- `/session-ins ui` reports a concise actionable startup/render failure instead
-  of silently failing. API failures return a bounded structured error envelope;
-  the browser renders an error state with retry guidance and the correlation
-  id. Inspector errors remain isolated from Pi execution.
-- Logging itself is best-effort and must not block or change command/agent flow.
+- Transport failures return bounded RFC 9457-style `application/problem+json`
+  with fixed safe fields/codes, status, retryability, and opaque correlation
+  id. Report-level degradation remains an HTTP 200 DTO state.
+- Startup, asset, API, refresh, and snapshot/export failures log only event
+  code, phase, bounded status, correlation/request id, and
+  `redactBoundedText`-sanitized bounded reason. Token-bearing URLs, auth
+  headers, paths, report payloads, and raw exceptions never leave the process.
+- `/session-ins ui` reports concise actionable startup/render failure instead
+  of silently failing. The browser renders bounded error state with retry
+  guidance and correlation id. Inspector errors remain isolated from Pi.
+- Logging is best-effort and must not block or change command/agent flow.
 
 **Semantic/UI compatibility requirements**
 
-The transport migration must preserve the existing browser contracts, not merely
-make an HTML page load:
+The migration must preserve the existing browser contracts, not merely make a
+page load:
 
-- hash route authority, canonical deep links, active sidebar state, active tab
-  state, and capability-driven tabs;
-- active/tree scope and per-view range state, including 7D/14D/30D presets,
-  validated custom ranges, remembered view state, and range membership;
-- Back/Forward navigation, entity cross-navigation, entity focus, search/sort
-  route semantics, and safe degraded/unavailable/unsupported routes and
+- hash route authority, canonical deep links, active sidebar/tab state,
+  capability-driven tabs, Back/Forward behavior, entity cross-navigation and
+  focus, search/sort route semantics, and safe degraded/unavailable/unsupported
   rendering;
+- active/tree scope and per-view range intent, including 7D/14D/30D presets,
+  complete validated custom ranges, remembered view state, and inclusive range
+  membership; each UI projection carries its own resolved range metadata;
+- `#token=...` bootstrap consumption before route parsing, canonical
+  `replaceState` transition without a history entry, in-memory auth only, and
+  no Back/Forward restoration of the token fragment;
+- immutable snapshots contain one resolved projection only and do not provide
+  offline navigation, refresh, range runtime, API/auth runtime, or executable
+  JavaScript;
 - the pinned autocomplete contract: preserve preceding argument text and quoted
   values, retain the real provider-boundary mid-token limitation test, and do
   not claim Inspector can fix Pi's provider-side append behaviour;
-- one canonical `loadInspectorBundle`/report projection path, with no
-  browser-only business-rule arithmetic, duplicate reconciliation, or new
-  renderer-specific evidence semantics.
+- one canonical `loadInspectorBundle`/L2 projection path, with no browser-only
+  business-rule arithmetic, duplicate reconciliation, or new renderer-specific
+  evidence semantics. Snapshot HTML escapes each value for its output context.
 
 Existing route/navigation/range/autocomplete tests should continue unchanged
 where possible. Replace a test only when the replacement gives equivalent or
@@ -396,49 +413,56 @@ stronger coverage, and keep the pinned provider limitation documented.
 
 **Small deliverables**
 
-1. Server lifecycle, route/method allowlist, loopback binding, token handling,
-   shutdown, and security tests; no report migration yet.
-2. Read-only bundle/current/history/global API and bounded error envelope,
-   backed directly by `loadInspectorBundle`.
-3. Normal browser client fetch/bootstrap, loading/error states, offline-safe
-   static exporter compatibility, and browser-local theme preference.
-4. JSON export, safe refresh, removal of the module-to-string client path, and
-   focused determinism/no-double-count tests.
-5. Measure the accepted server migration against the pre-existing static path
-   without reopening the transport decision; record regressions and follow-up
-   work in the RC evidence package.
+1. Server lifecycle, route/method allowlist, exact loopback Host/peer/origin
+   validation, token handling, shutdown, and security tests; no report
+   migration yet.
+2. TypeScript L2 `InspectorUiSnapshot` projection and protected UI/session/
+   global API with strict range validation, bounded Problem Details, and
+   request-time callbacks.
+3. Normal browser assets with token bootstrap, canonical route transition,
+   loading/error states, API refresh, per-view range metadata, and browser-local
+   theme preference.
+4. Immutable snapshot DTO/HTML renderer with one-target projection, no
+   JavaScript/network/runtime, deterministic CSP, context escaping, generated
+   cache output, and `--no-open` behavior.
+5. JSON/TUI compatibility, removal of the module-to-string client path, and
+   focused determinism/no-double-count/privacy tests.
+6. WSL2-to-Windows-browser UAT and measurement against the pre-existing static
+   path; record regressions and follow-up work in the RC evidence package
+   without reopening the transport decision.
 
 **Acceptance gates**
 
-- A normal `/session-ins ui` invocation starts an ephemeral loopback server and
-  the browser receives Current, History, and Global from API responses.
-- Wrong host, peer, API token, method, route, path, and origin cases fail
-  safely; protected API routes reject missing authentication, while the
-  unauthenticated shell/static assets expose no report or session data. No CORS
-  or arbitrary filesystem access exists.
-- Refresh and repeated reads remain byte/datum deterministic, preserve native
-  usage authority, and do not double-count or mutate Pi data.
-- JSON, interactive UI, and explicit static HTML use the same bounded DTO;
-  the UI can request JSON export through the API, and static HTML still works
-  offline when the server is absent.
-- Startup/API/render failures are visible to both CLI and browser users without
-  leaking secrets or unbounded data.
+- A normal `/session-ins ui` invocation starts one ephemeral loopback server;
+  the browser receives Current, History, and Global from `/api/v1/ui`.
+- `/api/v1/ui` calls `loadInspectorBundle()` once per response; session/global
+  resources are bounded and independently observed; no browser arithmetic or
+  cross-request consistency claim exists.
+- `snapshot current|history|global|session <sessionId>` requires an explicit
+  target, writes one immutable self-contained projection, and works offline
+  through `file://` without executable JavaScript or network access.
+- Wrong host, peer, bearer token, method, route, path, range, and origin cases
+  fail safely; shell/assets contain no report/session data; no CORS or
+  arbitrary filesystem access exists.
+- Refresh and repeated reads remain deterministic, preserve native usage
+  authority, do not double-count, do not mutate Pi data, and keep unavailable
+  evidence distinct from zero.
+- `--output` is accepted only by `snapshot` and `json`; default snapshots use
+  generated cache output; `--no-open` suppresses only the opener and the CLI
+  still reports the generated path or server URL.
 - Existing route, navigation, scope, range, deep-link, cross-navigation,
-  entity-focus, search/sort, capability, unavailable/unsupported rendering, and
-  autocomplete boundary tests remain green or are replaced only by stronger
-  equivalent tests; no provider-side autocomplete limitation is falsely marked
-  fixed.
-- Bootstrap-to-route transition is deterministic: `#token=...` is consumed
-  before route parsing, replaced without adding a history entry, and leaves the
-  browser on the canonical default route. Back/Forward navigation can never
-  restore the bootstrap token fragment, and subsequent route
-  parsing/serialization remains canonical and idempotent.
-- No browser-only reconciliation or business-rule arithmetic is introduced.
-- No Express/Fastify/server daemon/autostart is present, and the server has no
-  production dependency beyond Node/Pi facilities.
+  entity-focus, search/sort, capability, unavailable/unsupported rendering,
+  and autocomplete boundary tests remain green or gain stronger equivalents;
+  provider-side autocomplete limitations are not falsely marked fixed.
+- Bootstrap-to-route transition consumes `#token=...` before parsing, uses
+  `replaceState` without adding history, and never restores the token through
+  Back/Forward. Route parse/serialize remains canonical and idempotent.
+- Startup/API/render failures are visible to CLI/browser users with bounded
+  redacted diagnostics and correlation IDs. No Express/Fastify/server
+  daemon/autostart or production dependency beyond Node/Pi facilities exists.
 
-**Release:** compatible implementation slices may bump the next patch version;
-any public command-contract change requires SemVer review.
+**Release:** this intentional pre-1.0 command/transport break is planned for
+`0.10.0`; compatible implementation slices may bump the next patch version.
 
 ### Pre-M8.5 — executable reconciliation and property suite
 
@@ -669,10 +693,114 @@ reviews.
   hash. M8 may publish only that unchanged candidate or must requalify a
   changed candidate through the affected gates.
 
-### Pre-M8.8 — Bugfixes and addressing the feedback
+### Pre-M8.8 — Production hardening and review follow-ups
 
-For now it is a placeholder to address all findings and feedback before
-the public release, making sure that we have production ready code.
+Address release-blocking defects, high-risk validation gaps, and actionable
+review findings before the public release. This milestone must leave the
+production paths validated and the remaining non-blocking technical debt
+explicitly documented.
+
+1. P1 — Same-session replacement / stale live-counter registration
+
+   - `src/integrations/live-counters.ts` keeps module-global
+     `activeRegistrations`.
+   - `src/index.ts:setupProductionSessionWal` currently discards the
+     `LiveCounterRegistration` disposer.
+   - Pi 0.85.1 tears down the previous session runtime and removes its old
+     listeners, so cross-session event contamination is unlikely.
+   - A remaining lifecycle mismatch may occur on `A → B → A`: the cached
+     registration for A can survive after Pi removed its underlying listeners,
+     causing the resumed session to reuse an inert registration and silently
+     undercount permission/skill telemetry.
+
+   Required work:
+   - Make live-counter registration ownership and disposal explicit.
+   - Ensure stale registrations cannot survive session replacement.
+   - Add regression coverage for same-session reactivation.
+   - Run production-path UAT covering `/new`, `/resume`, `/fork`, and `/reload`.
+
+   Exit criteria:
+   - No duplicated or missing permission/skill telemetry across session
+     transitions.
+   - `A → B → A` resumes counting correctly.
+   - Production-path lifecycle UAT passes.
+   - Any failure is release-blocking.
+
+2. High-risk storage and recovery validation
+
+   Highest-consequence modules:
+
+   - `src/storage/wal.ts`
+   - `src/storage/checkpoint.ts`
+   - `src/storage/recovery.ts`
+   - `src/storage/maintenance.ts`
+   - `src/storage/retention.ts`
+
+   Validate:
+   - crash recovery and interrupted writes;
+   - cursor monotonicity;
+   - exact-once / non-duplicating folds across checkpoint + WAL recovery;
+   - WAL sealing and segment rotation;
+   - checkpoint replacement and recovery;
+   - retention/deletion boundaries;
+   - recovery from stale, partial, or corrupted durable state.
+
+   Exit criteria:
+   - Failure-path and crash-recovery tests cover the critical durability
+     invariants.
+   - No known path can silently double-count, lose retained evidence, or delete
+     data outside the documented retention contract.
+
+3. P2 — Tighten architectural layering
+
+   - The directory-level dependency graph currently contains an SCC spanning
+     `core`, `integrations`, `pi`, and `storage`.
+   - There is no file-level import cycle; `npm run depcruise` currently reports
+     0 errors.
+   - Treat this as a maintainability concern rather than an immediate release
+     blocker.
+
+   Required work:
+   - Define explicit allowed dependency directions between architectural layers.
+   - Encode the important boundaries in dependency-cruiser rules.
+   - Break the directory-level SCC where doing so does not require speculative
+     restructuring.
+
+   Exit criteria:
+   - Layer boundaries are machine-checkable.
+   - Any intentionally retained exceptions are documented.
+   - `npm run depcruise` remains clean.
+
+4. P2 — Eliminate competing report projection paths
+
+   Relevant paths:
+
+   - `src/core/reports.ts:toSessionReport`
+   - `src/ui/html.ts:renderHtml`
+   - `src/ui/html.ts:buildDailyActivityRows`
+   - legacy `ReducedSession` projection paths
+
+   Risk:
+   - Parallel projection logic can evolve into multiple semantic authorities
+     for the same report data, causing HTML/TUI/JSON views to disagree.
+
+   Required work:
+   - Establish one canonical semantic projection.
+   - Make UI-specific code presentation-only where practical.
+   - Deprecate, isolate, or remove legacy `ReducedSession` paths.
+
+   Exit criteria:
+   - HTML, TUI, and JSON derive equivalent values from the same canonical
+     report semantics.
+   - Legacy compatibility paths cannot silently become an alternative source
+     of truth.
+
+5. Low — Dependency hygiene
+
+   - Verify whether `publint` is used by build, packaging, CI, or release
+     validation.
+   - If it is tooling-only, move it to `devDependencies`.
+   - Remove it if unused.
 
 **Release:** a compatible RC hardening pass may bump the next patch version;
 publication remains part of M8.

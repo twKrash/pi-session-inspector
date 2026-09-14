@@ -18,5 +18,7 @@ Pi Session Inspector uses small, explicit ADRs. Canonical behavior lives in [v1 
 | [0012](adr/0012-hot-retention.md) | maximum 14-day detailed retention |
 | [0013](adr/0013-manifest-source-locator.md) | manifest-only source locator |
 | [0014](adr/0014-durable-live-integration-evidence.md) | durable live integration evidence (partially superseded by 0016) |
-| [0015](adr/0015-resource-inventory-and-offline-ui-bundle.md) | resource inventory, presence, offline UI bundle, subagent discovery |
+| [0015](adr/0015-resource-inventory-and-offline-ui-bundle.md) | resource inventory, presence, and subagent discovery |
 | [0016](adr/0016-evidence-foundation-and-canonical-session-model.md) | evidence foundation and canonical session model (L0/L1/L2) |
+| [0017](adr/0017-report-coverage-attribution-and-navigation.md) | report coverage, attribution, and navigation authority |
+| [0018](adr/0018-ephemeral-localhost-ui-and-immutable-snapshots.md) | ephemeral localhost UI and immutable snapshot exports |

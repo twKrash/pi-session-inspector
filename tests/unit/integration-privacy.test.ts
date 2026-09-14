@@ -17,13 +17,11 @@ import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { CURRENT_TABS, createCurrentTuiModel } from "../../src/ui/current.ts";
 import { createCurrentTuiComponent } from "../../src/ui/current-tui.ts";
-import { renderInspectorBundle } from "../../src/ui/html.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { emptyObservation } from "../../src/ui/observation.ts";
-import {
-  embedOf,
-  FORBIDDEN_PRODUCER_KEYS,
-} from "../helpers/bundle-scenarios.ts";
+import { renderSnapshot } from "../../src/ui/snapshot.ts";
+import { projectInspectorUi } from "../../src/ui/ui-projection.ts";
+import { FORBIDDEN_PRODUCER_KEYS } from "../helpers/bundle-scenarios.ts";
 
 const SUBAGENT_SESSION_ID = "session-privacy-test";
 const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
@@ -370,12 +368,13 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
       inventory: { commands: null, skills: null, resources: null },
     },
   };
-  const bundleHtml = renderInspectorBundle(bundle);
-  assertNoSentinels(sentinels, bundleHtml, "bundle HTML");
+  const { ui, html: bundleHtml } = treeSnapshot(bundle);
+  assertNoSentinels(sentinels, bundleHtml, "snapshot HTML");
 
   // The projected agent and tool rows carry their bounded role/label fields and
   // the canonical ids only: no producer text, no content, no path field.
-  const projected = embedOf(bundleHtml).current.tree.report;
+  const projected = ui.current.tree.report;
+  if (projected === undefined) throw new Error("the tree report must project");
   assert.deepEqual(
     [
       projected.agents[0].agent,
@@ -452,6 +451,27 @@ function bundleFixture(): InspectorBundle {
  * carries producer text), and each one is a single-purpose sentinel: the
  * privacy guarantee is that none of them reaches the payload.
  */
+/**
+ * The one snapshot document for a bundle's tree view: the L2 projection and the
+ * rendered snapshot are produced by the same pair of production functions the
+ * `snapshot` command calls, so a privacy assertion reads the real output.
+ */
+function treeSnapshot(bundle: InspectorBundle): {
+  ui: ReturnType<typeof projectInspectorUi>;
+  html: string;
+} {
+  const ui = projectInspectorUi({ bundle });
+  return {
+    ui,
+    html: renderSnapshot({
+      kind: "current",
+      schemaVersion: 1,
+      theme: bundle.theme,
+      projection: ui.current.tree,
+    }),
+  };
+}
+
 function hostileBundle(): InspectorBundle {
   const bundle = bundleFixture();
   const report = bundle.current.tree.report;
@@ -495,8 +515,8 @@ function bundleWithHostileStrings(markup: string): InspectorBundle {
   return bundle;
 }
 
-test("the browser payload never carries raw producer text or paths", () => {
-  const html = renderInspectorBundle(hostileBundle());
+test("the snapshot never carries raw producer text or paths", () => {
+  const { ui, html } = treeSnapshot(hostileBundle());
   const sentinels = [
     "SECRET_PROMPT",
     "SECRET_TASK",
@@ -516,28 +536,32 @@ test("the browser payload never carries raw producer text or paths", () => {
   for (const forbidden of sentinels) {
     assert.equal(html.includes(forbidden), false, forbidden);
   }
-  // The planted keys are the ones no producer field may publish under.
+  // The planted keys are the ones no producer field may publish under, in the
+  // rendered document and in the UI payload the browser receives.
+  const payload = JSON.stringify(ui);
   for (const key of FORBIDDEN_PRODUCER_KEYS) {
     assert.equal(html.includes(`"${key}"`), false, key);
+    assert.equal(payload.includes(`"${key}"`), false, key);
   }
   // The projection still rendered the rows those hostile fields sat on, so the
   // absence above is not a scenario that planted nothing.
-  const projected = embedOf(html).current.tree.report;
+  const projected = ui.current.tree.report;
+  if (projected === undefined) throw new Error("the tree report must project");
   assert.deepEqual(
-    [projected.tools[0].name, projected.commands.items[0].name],
+    [projected.tools[0]?.name, projected.commands.items[0]?.name],
     ["read", "review"],
   );
 });
 
-test("hostile strings cannot break out of the inlined payload", () => {
+test("hostile strings cannot break out of the rendered snapshot", () => {
   const markup = "</script><script>alert(1)</script>";
-  const html = renderInspectorBundle(bundleWithHostileStrings(markup));
-  assert.equal(/<\/script><script>alert\(1\)/.test(html), false);
-  assert.equal(
-    html.includes("</script"),
-    true,
-    "the document still ends its script",
-  );
-  // The escaped payload round-trips the value it carried.
-  assert.equal(embedOf(html).current.tree.report.sessionId, markup);
+  const { ui, html } = treeSnapshot(bundleWithHostileStrings(markup));
+  // A snapshot carries no script at all: the value is escaped for its text
+  // context rather than embedded in a script payload.
+  assert.equal(/<script/i.test(html), false);
+  assert.equal(html.includes(markup), false);
+  assert.equal(html.includes("&lt;/script&gt;&lt;script&gt;alert(1)"), true);
+  // The projection still carries the value it read, so the escaping is what
+  // dropped the markup, not a projection that discarded the badge.
+  assert.equal(ui.current.tree.report?.sessionId, markup);
 });

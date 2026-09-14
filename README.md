@@ -2,9 +2,9 @@
 
 Deterministic, local-only session analytics for [Pi](https://github.com/earendil-works/pi). Reconstructs Pi-native session data with confidence-aware live/cooperative metadata. No LLM analytics. No cloud. No daemon.
 
-> **Status: current, history, global, ledger, HTML, and JSON reports are available.**
+> **Status: current, history, global, ledger, localhost UI, immutable snapshots, TUI, and JSON reports are available in `0.10.0`.**
 
-## Planned install
+## Install
 
 ```bash
 pi install npm:pi-session-inspector
@@ -14,24 +14,80 @@ pi install npm:pi-session-inspector
 Commands and aliases:
 
 ```text
-/session-inspector [current|history|global|ledger] [--scope active|tree] [--format tui|html|json] [--output PATH] [--no-open] [--subagents-artifact PATH]
+/session-inspector [ui|snapshot|tui|json] [target] [options]
 /session-ins ...
 ```
 
-Current and ledger default to active scope/TUI; `/ledger` opens directly on the lazy Ledger tab. History and global output reports use only durable full-tree scope (history/global TUI selection remains unavailable). `--output` creates a user-owned export that cache cleanup never removes, including when placed in the cache directory. HTML opens with the platform opener unless `--no-open`; JSON and HTML share the same report DTO as TUI.
+The four modes are separate surfaces: `ui` is the interactive localhost
+application, `snapshot` is the only immutable HTML artifact command, `tui`
+renders the current session inside Pi, and `json` is the deterministic export.
+Only `ui` starts a server; `ui` displays its tokenized URL and opens it unless
+`--no-open` is given, while `snapshot` writes its artifact and reports the path
+without starting a server or opening a browser.
 
 ```text
-/session-ins current                              # active-scope full-screen TUI
-/session-ins current --format html                # generate and open in browser
-/session-ins current --format html --no-open      # generate and print path only
-/session-ins current --format html --output "report.html"
-/session-ins history --format html --no-open      # manifest-discovered tree reports
-/session-ins global                               # tree totals, HTML, opens browser
+/session-ins ui
+/session-ins snapshot current --scope active --preset 14
+/session-ins snapshot history --from 2026-01-01 --to 2026-01-31 --no-open
+/session-ins snapshot global --output "global.html"
+/session-ins snapshot session <sessionId>
+/session-ins json history --output report.json
 ```
 
-Generated reports are created lazily under Pi's agent directory at `session-inspector/v1/reports/`: `<safe-session-id>.html`, `history.html`, and `global.html` (or `.json`). Unsafe/non-portable IDs use an opaque hashed basename. Generated cache expires after 14 days and is capped at 100 MiB, oldest first; explicit exports are never pruned. Relative `--output` paths resolve against the extension process working directory; notifications and the browser receive the absolute path. Browser failures still return the saved report path. Plain `history` and `global --format tui` explicitly report unavailable; use HTML/JSON until the history picker ships.
+`snapshot` requires an explicit target: `current`, `history`, `global`, or
+`session <sessionId>`. `--output` is valid only for `snapshot` and `json`, so
+`ui` never writes a file; `--no-open` suppresses only the platform browser
+opener. Atomic snapshots (`snapshot session <sessionId>`) take no `--scope` and
+no range options: one requested session, nothing else.
 
-`--subagents-artifact PATH` reads one bounded, local public pi-subagents JSON artifact for current HTML, JSON, or TUI reports. The path and raw artifact are never persisted or rendered; missing or unreadable artifacts show unavailable evidence.
+Snapshots are created lazily under Pi's agent directory at
+`session-inspector/v1/reports/` when `--output` is omitted. Unsafe/non-portable
+identities use an opaque hashed basename. Generated cache expires after 14 days
+and is capped at 100 MiB, oldest first; explicit exports are never pruned.
+Relative `--output` paths resolve against the extension process working
+directory. An explicit output that names a Pi session JSONL (directly or
+through a hard/symbolic link) is refused: Inspector never overwrites Pi's own
+session data.
+
+`snapshot` HTML is one resolved, self-contained `file://` artifact: it opens
+with no server, runs no JavaScript, performs no network request, carries no
+report payload the eye cannot already see, and ships a `default-src 'none'`
+content-security-policy with one hash for its own inlined stylesheet. Repeated
+renders of the same projection are byte-identical, and only the chosen theme
+changes the bytes.
+
+## Localhost UI security boundary
+
+`ui` starts (or reuses) one ephemeral loopback server bound to `127.0.0.1`
+on an OS-chosen port, and prints the browser URL it serves. Its token is
+created in memory per server instance, delivered once in the URL fragment
+(`http://127.0.0.1:<port>/#token=<token>`), removed from the address bar before
+the first request, and never written to storage, disk, or a log; a reload or a
+new tab loses authentication and asks for a fresh URL. Every API request must
+carry that token as `Authorization: Bearer`. The boundary is exact:
+
+- Only `127.0.0.1` is bound; the request's `Host` must be exactly
+  `127.0.0.1:<port>`, an unexpected `Origin` is refused, and `Forwarded` /
+  `X-Forwarded-*` headers are never trusted.
+- A request whose peer address is not loopback is refused boundedly. That
+  includes a port-forwarding setup that presents a non-loopback peer: the
+  refusal is the contract, not a case for a broader allowlist.
+- Static assets are the five known files (`/`, `/style.css`, `/route.js`,
+  `/range.js`, `/client.js`), served by a fixed table with `GET`/`HEAD` only.
+  API routes are `/api/v1/ui`, `/api/v1/reports/global`, and
+  `/api/v1/reports/sessions/<sessionId>` with `GET` only.
+- Every response is `no-store`, `nosniff`, and `no-referrer`; errors are bounded
+  Problem Details that echo no input, and the diagnostics written to stderr
+  carry a bounded code, status and correlation id rather than a session id, a
+  path, or a token.
+
+The browser only navigates, requests, formats and renders: every scope, range,
+partiality, evidence and unavailable-versus-zero decision comes from the
+server's own projection.
+
+The legacy `--subagents-artifact` option is removed; subagent runs are
+auto-discovered from persisted tool results. Missing or unreadable evidence
+renders unavailable rather than synthetic zeros.
 
 ## Guarantees
 

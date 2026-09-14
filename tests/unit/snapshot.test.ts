@@ -1293,3 +1293,62 @@ test("renders a child whose parent exists only outside the selected range", () =
   // The parent's own row is outside the selection, so it is never rendered.
   assert.equal(html.includes("parent-role"), false);
 });
+
+test("prints Unavailable, never a zero, for a row with no published usage", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const range = base.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  // One tool call whose result persisted no usage at all: the DTO publishes the
+  // zero-count verdict with no figure, and the row must state the catalog's
+  // Unavailable rather than a fabricated `0`/`$0.00`.
+  const html = renderSnapshot({
+    ...base,
+    projection: {
+      ...base.projection,
+      range: {
+        ...range,
+        toolSummary: [
+          {
+            name: "bash",
+            calls: 1,
+            succeeded: 0,
+            failed: 1,
+            interrupted: 0,
+            tokens: 0,
+            cost: 0,
+            withUsage: 0,
+            lastUsed: BASH_AT,
+            partial: false,
+          },
+        ],
+        toolCalls: [
+          {
+            id: "tool:call_bash",
+            name: "bash",
+            timestamp: BASH_AT,
+            status: "failed",
+            usage: null,
+            durationMs: null,
+            durationLabel: null,
+          },
+        ],
+      },
+    },
+  });
+  const summaryRow =
+    /<tr>(?:(?!<\/tr>)[\s\S])*bash(?:(?!<\/tr>)[\s\S])*<\/tr>/.exec(html);
+  assert.notEqual(summaryRow, null, "the tool row must render");
+  const cells = summaryRow?.[0] ?? "";
+  // Tokens, cost and the absent source label are all Unavailable rather than a
+  // fabricated `0` / `$0.00` / empty cell.
+  assert.equal(
+    cells.split(CATALOG["evidence.unavailable"]).length - 1 >= 3,
+    true,
+    cells,
+  );
+  assert.equal(cells.includes("$0.00"), false, cells);
+  // Duration is live-correlated evidence only: without it the cell is
+  // Unavailable, never an estimated `0 ms`.
+  assert.equal(html.includes("0 ms"), false);
+});

@@ -1344,13 +1344,14 @@ test("P6: repeated maintenance passes are idempotent and never regress the seal"
   }
 });
 
-test("cold-detail notice reaches JSON and HTML while native data stays available", async () => {
+test("cold-detail notice reaches JSON and the snapshot while native data stays available", async () => {
   const { maintainSession } = await import("../../src/storage/maintenance.ts");
   const { loadCurrentSessionReport } = await import(
     "../../src/ui/load-current.ts"
   );
   const { renderJson } = await import("../../src/ui/json.ts");
-  const { renderHtml } = await import("../../src/ui/html.ts");
+  const { renderSnapshot } = await import("../../src/ui/snapshot.ts");
+  const { projectCurrentView } = await import("../../src/ui/ui-projection.ts");
   const root = await mkdtemp(join(tmpdir(), "inspector-retention-"));
   const directory = join(root, "sessions", "session-1");
   const shard = join(directory, "wal", "writer-1");
@@ -1414,20 +1415,18 @@ test("cold-detail notice reaches JSON and HTML while native data stays available
     assert.match(json, /"totalTokens":9/);
     assert.match(json, /"name":"read"/);
 
-    const html = renderHtml({
+    const snapshot = renderSnapshot({
       kind: "current",
-      report,
-      scope: "tree",
+      schemaVersion: 1,
+      theme: "light",
+      projection: projectCurrentView(
+        { availability: "available", report, daily: [] },
+        "tree",
+      ),
     });
-    // The notice markup and its catalog copy are static template text that is
-    // emitted regardless of state, so assert the dynamic embedded report data
-    // itself carries the cold state.
-    const embedded =
-      /<script type="application\/json" id="report-data">([\s\S]*?)<\/script>/.exec(
-        html,
-      );
-    assert.notEqual(embedded, null);
-    assert.equal(JSON.parse(embedded?.[1] ?? "{}").walDetail, "expired");
+    // The cold-state notice is the one visible difference: the rendered
+    // snapshot carries it, and the report's own native aggregates survive.
+    assert.match(snapshot, /Detailed records expired/);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

@@ -1,6 +1,6 @@
 # ADR 0015: resource inventory, presence model, offline UI bundle, and subagent discovery
 
-**Status:** accepted.
+**Status:** accepted; the interactive offline `ui` bundle delivery is superseded by ADR 0018. Inventory, presence, retention, and subagent-discovery decisions remain in force.
 
 ## Context
 

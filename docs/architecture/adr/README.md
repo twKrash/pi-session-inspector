@@ -22,6 +22,7 @@ Amend an ADR only to correct it. Add a superseding ADR for a changed decision.
 | [0012](0012-hot-retention.md) | Maximum 14-day detailed retention |
 | [0013](0013-manifest-source-locator.md) | Manifest source locator |
 | [0014](0014-durable-live-integration-evidence.md) | Durable live integration evidence |
-| [0015](0015-resource-inventory-and-offline-ui-bundle.md) | Resource inventory, presence model, offline UI bundle, and subagent discovery |
+| [0015](0015-resource-inventory-and-offline-ui-bundle.md) | Resource inventory, presence model, and subagent discovery |
 | [0016](0016-evidence-foundation-and-canonical-session-model.md) | Evidence foundation and canonical session model |
 | [0017](0017-report-coverage-attribution-and-navigation.md) | Report coverage, attribution, and navigation authority |
+| [0018](0018-ephemeral-localhost-ui-and-immutable-snapshots.md) | Ephemeral localhost UI and immutable snapshot exports |

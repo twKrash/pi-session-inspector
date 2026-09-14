@@ -10,13 +10,17 @@ Pi Session Inspector is a deterministic, local-only Pi extension that reconstruc
 
 | Version | Included |
 | --- | --- |
-| v1 | latest stable Pi only; current/history/global reports; active/tree selection; full-screen TUI; self-contained HTML; deterministic JSON; Pi replay; metadata WAL/checkpoint/recovery; 14-day hot retention; integrations in §10 |
+| v1 | latest stable Pi only; current/history/global reports; active/tree selection; full-screen TUI; localhost interactive UI; immutable self-contained HTML snapshots; deterministic JSON; Pi replay; metadata WAL/checkpoint/recovery; 14-day hot retention; integrations in §10 |
 | v1.x | German/Russian catalogs, richer charts, Lens-specific view, RTK rewrite telemetry if upstream supports it, repair command, Markdown export, comparison, configurable retention/redaction |
 | Later | Hermes adapter, external SDK, database justified by benchmark, performance regression detector, semantic skill effectiveness, external export |
 
 ### Explicit exclusions
 
-No cloud/backend/daemon/always-running server, SQLite, mandatory Bun, provider wire tracing, prompt/output/raw-argument storage, generic extension scraping, output scraping, or Hermes implementation.
+No cloud service, persistent backend, daemon, or always-running service,
+SQLite, mandatory Bun, provider wire tracing, prompt/output/raw-argument
+storage, generic extension scraping, output scraping, or Hermes implementation.
+The `ui` command may start one lazy, process-local, loopback-only HTTP server;
+it is not a service or persistent backend.
 
 ## 2. Requirements
 
@@ -28,7 +32,7 @@ No cloud/backend/daemon/always-running server, SQLite, mandatory Bun, provider w
 | PRD-04 | Current view defaults to active branch; history/global resource views default to full tree. Scope and renderer are independent. |
 | PRD-05 | UI distinguishes `0` from unavailable, unsupported, inferred, or partial observation. |
 | PRD-06 | Reports include models/usage/cost, generations, tools, errors, command families, compactions, agents, skills, integrations, and chronological ledger only where evidence permits. |
-| PRD-07 | JSON is deterministic; HTML is self-contained/offline and uses no CDN/network; TUI uses full-screen `ctx.ui.custom()`. |
+| PRD-07 | JSON is deterministic; `snapshot` HTML is immutable, self-contained/offline, contains no executable JavaScript, and uses no CDN/network; `ui` is a local HTTP application; TUI uses full-screen `ctx.ui.custom()`. |
 | PRD-08 | Local persistence excludes prompt/output/result/raw arguments and applies allowlist/redaction before any Inspector write. |
 | PRD-09 | Per-process writers are append-only shards; maintenance is crash-recoverable and cannot regress source cursors. |
 | PRD-10 | History discovery is bounded to Inspector manifests, not a full Pi-session rescan. |
@@ -37,41 +41,155 @@ No cloud/backend/daemon/always-running server, SQLite, mandatory Bun, provider w
 
 ## 3. Commands and scope
 
-The renderer is positional; the previous `--format` flag and the `current|history|global|ledger` first-token targets are removed.
+The renderer is positional. `ui` is the localhost interactive application;
+`snapshot` is the only static HTML artifact command. The previous `--format`
+flag and the `current|history|global|ledger` first-token targets are removed.
 
 ```text
-/session-inspector [ui|tui|json] [target] [options]
+/session-inspector [ui|snapshot|tui|json] [target] [options]
 /session-ins ...                                  # identical alias
 
 modes
-  ui       one self-contained HTML document containing Current, History, and Global
+  ui       localhost interactive browser application
+  snapshot immutable self-contained HTML artifact
   tui      interactive Pi full-screen TUI
   json     deterministic JSON export
 
 targets
-  tui   current | ledger           (default current)
-  json  current | history | global (default current)
-  ui    — none: the document carries its own in-page navigation
+  ui       — no target; the application carries its own navigation
+  snapshot current | history | global | session <sessionId>
+  tui      current | ledger           (default current)
+  json     current | history | global (default current)
 
-options
-  --scope active|tree    default active; for `ui` it selects only the initial view; for
-                         json history|global it stays fixed at tree
-  --theme dark|light     ui only
-  --output PATH          ui, json
-  --no-open              ui only
-  help | --help | -h     usage panel (esc/q closes)
+snapshot options
+  current  --scope active|tree; range options allowed
+  history  full-tree; range options allowed
+  global   full-tree; range options allowed
+  session  atomic; scope and range options rejected
+
+shared snapshot options
+  --preset 7|14|30
+  --from YYYY-MM-DD --to YYYY-MM-DD
+  --theme dark|light
+  --output PATH
+  --no-open
+
+ui options
+  --scope active|tree    default active; selects initial current view
+  --theme dark|light
+  --no-open
+
+json options
+  --scope active|tree    current only; history/global stay full tree
+  --output PATH
+
+help | --help | -h        usage panel (esc/q closes)
 ```
 
 - No arguments behaves as the common case: `/session-inspector` → `tui current`.
-- `ui` always produces exactly one bundle with both precomputed current views (active and tree); `--scope` never changes what is precomputed, only which view renders first.
-- `getArgumentCompletions(prefix)` is implemented on both registrations and is token-aware: first token → modes plus `help`; after a mode → that mode's targets; after `-`/`--` → options valid for that mode; after `--theme`/`--scope` → their values; `null` when nothing matches.
-- `--format`, `current|history|global|ledger` as a first token, unknown modes/targets/options, missing or empty values, `--scope active` with `json history|global`, `--theme` with `tui`/`json`, `--output` with `tui`, and `--no-open` with `json` all return one-line usage plus `Run /session-inspector help`, never the generic failure text.
-- Runtime unavailability (current session unavailable / history TUI unavailable) keeps its own distinct message so bad syntax and no data are never conflated.
-- For `tui`/`json current` `--scope` selects the replayed entry set. Ephemeral (`--no-session`) runs may show current in-memory state but are explicitly non-durable and unavailable to history/global.
+- `ui` starts or reuses one lazy loopback server and opens its tokenized URL.
+  It never accepts `--output`, range options, or a static-export alias.
+- `snapshot` requires one target and renders one resolved L2 projection. It
+  does not start the localhost server. With no `--output`, it writes to the
+  generated report cache under Pi's `session-inspector/v1/reports/` directory;
+  explicit output files are user-owned and are not pruned by cache cleanup.
+  `--no-open` suppresses only the platform browser opener: it does not suppress
+  generation, server startup for `ui`, or the user-visible output path/URL.
+- `snapshot current` accepts scope and range. `snapshot history` and
+  `snapshot global` are full-tree and accept range only. `snapshot session
+  <sessionId>` accepts neither scope nor range because the session report is
+  atomic.
+- Range presets resolve against each projection's latest observed date. Custom
+  ranges use inclusive real calendar dates. Invalid, mixed, duplicate, or
+  unsupported range input is rejected; no range is silently clamped or
+  substituted.
+- `getArgumentCompletions(prefix)` is implemented on both registrations and is
+  token-aware: first token → modes plus `help`; after a mode → that mode's
+  targets; after `-`/`--` → options valid for that mode; after a value option
+  → its values; `null` when nothing matches.
+- `--format`, `current|history|global|ledger` as a first token, unknown
+  modes/targets/options, missing or empty values, `ui --output`, snapshot scope
+  or range options in `snapshot session`, scope in `snapshot history|global`,
+  invalid range forms, `--theme` with `tui`/`json`, `--output` with `ui`/`tui`,
+  and `--no-open` with `json` return one-line usage plus `Run
+  /session-inspector help`, never generic failure text.
+- Runtime unavailability (current session unavailable / history TUI unavailable)
+  keeps its own distinct message so bad syntax and no data are never conflated.
+- For `tui`/`json current` and `snapshot current`, `--scope` selects the
+  replayed/projected entry set. Ephemeral (`--no-session`) runs may show
+  current in-memory state but are explicitly non-durable and unavailable to
+  history/global.
 
-### Offline `ui` bundle
+### Localhost UI and immutable snapshots
 
-`ui` returns one self-contained document (`InspectorBundle`, `schemaVersion: 1`) with the theme, initial scope, both precomputed `CurrentView`s, `history`, and `global`. Report-derived tables live only under `view.report.*` with bounded `daily` range rows and a precomputed `evidence?` sibling; `--scope` only selects the initially displayed view, and in-page scope switching swaps the two precomputed DTOs with no host call, re-replay, or browser-side fold. Range presets filter only the embedded bounded rows. A section or view that fails becomes `availability: "unavailable"` with a bounded diagnostic code while the rest renders; rows past a cap are marked truncated rather than silently dropped. The document inlines escaped JSON with no network, CDN, or server and is byte-identical for identical inputs.
+The localhost application serves known immutable assets and obtains an
+`InspectorUiSnapshot` through protected API requests. The browser owns route,
+range intent, navigation, loading/error state, and presentation only. It does
+not resolve report ranges, filter report rows, aggregate usage, or interpret
+evidence.
+
+The initial protected API surface is:
+
+```text
+GET /api/v1/ui
+GET /api/v1/reports/sessions/{sessionId}
+GET /api/v1/reports/global
+```
+
+`GET /api/v1/ui` calls `loadInspectorBundle()` once per response and then runs
+TypeScript L2 projection. Its range metadata is per projection/view: the
+shared intent is retained, while `current.active`, `current.tree`, History,
+and Global may carry different resolved anchors. Independent session/global
+resource calls are independent observations and do not promise cross-request
+snapshot consistency. The atomic session resource rejects `scope` and range
+input; range input returns `400 range-not-supported`.
+
+An immutable snapshot is one resolved projection only. It contains no router,
+API client, authentication/bootstrap runtime, refresh path, range projection,
+or executable JavaScript. It uses native HTML/CSS and is self-contained for
+`file://`; custom ranges are resolved before rendering by TypeScript L2.
+Snapshot HTML context-escapes every dynamic value. Report/session/model/tool/
+diagnostic values are data, never trusted markup.
+
+The interactive assets are ordinary classic files under `src/ui/web/`:
+`shell.html`, `style.css`, `route.js`, `range.js`, and `client.js`. The server
+serves them unchanged. The static snapshot does not include the route, range,
+or API client assets.
+
+### Pre-M8.4 HTTP and security contract
+
+The server uses Node `node:http` and `node:crypto`, binds only to
+`127.0.0.1:0`, and is one lazy singleton per Pi process. Shell/assets accept
+`GET` and `HEAD`; `/api/v1/*` accepts `GET` only. Unsupported methods return a
+bounded structured error.
+
+The server generates a process/server-instance capability token from 32 bytes
+of `node:crypto.randomBytes`, encoded base64url. It is not derived from any
+session, report, process, path, or timestamp data and remains in memory only.
+The bootstrap fragment is consumed before route parsing, replaced with the
+canonical default route using `history.replaceState()` without adding history,
+and can never return through Back/Forward. Reloading the sanitized canonical URL
+loses authentication and requires a fresh bootstrap URL.
+
+Every report-bearing request uses `Authorization: Bearer <token>`. Exact Host,
+loopback peer, and exact Origin checks apply; CORS, redirects, forwarded-header
+trust, private-network exceptions, and arbitrary filesystem paths do not.
+Missing Origin is allowed for documented shell/static-asset navigations after
+Host/peer validation; non-browser/internal protected API calls may omit it only
+after Host/peer and bearer-auth validation. WSL2-to-Windows-browser localhost
+forwarding remains an explicit UAT case; a non-loopback peer is test evidence
+for a deliberate future security decision, not a reason to weaken this contract
+preemptively.
+
+API errors use bounded RFC 9457-style `application/problem+json` with fixed safe
+codes/messages, status, retryability, and an opaque correlation ID. Startup,
+asset, API, refresh, and export failures emit one-line bounded JSON stderr
+records. Logging is best-effort and never changes Pi execution.
+
+Server CSP is same-origin and permits only the normal client assets and API.
+Snapshot CSP is separate and deterministic: snapshot HTML has no executable
+JavaScript, no network permission, and only the exact inlined stylesheet may be
+allowed by hash. Both modes use no-referrer and no-store/no-cache protections.
 
 ## 4. Canonical data model
 
@@ -99,7 +217,7 @@ Report data flows through exactly three layers (ADR 0016):
 
 - **L0 safe evidence.** Source adapters are the only code that reads Inspector-owned raw sources (Inspector WAL, checkpoint, inventory snapshot, pi-subagents results/archives, producer telemetry, current environment). The Pi session file is read only to hand its bytes to the L0 parser — by the Pi adapter, its composition-root/maintenance callers, and the L2 loaders — while Inspector-owned sources (WAL, checkpoint, inventory, archives) remain off-limits to L2 except the ruled manifest-discovery import in `src/ui/load-history.ts`. An adapter validates structure, bounds, redaction, enums, timestamps, and provenance, drops prohibited fields, and emits exactly two disjoint classes: `AtomicEvidence` (one validated observation per fact) and `FoldedAggregateEvidence` (already-folded checkpoint counters plus their exact cursor/seal boundary). L0 never merges, selects scope, combines atomic and folded values, computes totals, or infers relationships.
 - **L1 canonical session.** `buildCanonicalSession` is the single semantic boundary. It validates identity/marker, owns the full entry graph, reconciles exact call/result and live-timing identities, reconciles repeated cooperative child observations, exposes retained explicit skill-invocation detail, reconciles retained atomic telemetry against the checkpoint boundary, builds native/child usage ledgers, classifies timestamps, and emits evidence health. L1 is rebuilt in memory and never written as a file.
-- **L2 report/navigation projections.** L2 consumes the L1 model and emits the bounded DTOs TUI/HTML/JSON render verbatim. L2 projects scope and date ranges and maps provenance to confidence/health. L2 never reads WAL, checkpoint, inventory, or producer archives directly, and never folds counters, subtracts cursor overlap, recomputes joins, or re-derives scope. Only the L0 source coordinator in the composition root may read storage for semantic evidence; history/global receive it through an injected `SessionEvidenceProvider`, where a throw or absent result degrades exactly that session to `unavailable` (never a fabricated zero). Maintenance/retention may read storage for storage ownership only.
+- **L2 report/navigation projections.** L2 consumes the L1 model and emits the bounded DTOs consumed by TUI/JSON, the localhost UI API, and the immutable HTML snapshot renderer. L2 projects scope and date ranges and maps provenance to confidence/health. L2 never reads WAL, checkpoint, inventory, or producer archives directly, and never folds counters, subtracts cursor overlap, recomputes joins, or re-derives scope. Only the L0 source coordinator in the composition root may read storage for semantic evidence; history/global receive it through an injected `SessionEvidenceProvider`, where a throw or absent result degrades exactly that session to `unavailable` (never a fabricated zero). Maintenance/retention may read storage for storage ownership only. Browser assets and snapshot HTML never become a second L2 owner.
 
 ### Canonical session additions
 
@@ -275,7 +393,12 @@ Detailed Inspector data has a **maximum 14-calendar-day window from record creat
 
 ## 8. Privacy and security
 
-Default local-only means no network calls, analytics, external assets, or native-content duplication. WAL permits IDs, times, statuses, bounded numeric/boolean metrics, bounded redacted string state, and redacted bounded metadata only. UI reads local source detail only on demand; exports omit bodies and redact commands/paths.
+Default local-only means no external network calls, analytics, external assets,
+or native-content duplication. The interactive UI uses only its loopback HTTP
+server; snapshots use no network. WAL permits IDs, times, statuses, bounded
+numeric/boolean metrics, bounded redacted string state, and redacted bounded
+metadata only. UI reads local source detail only on demand; exports omit bodies
+and redact commands/paths.
 
 Redact secret-like keys, bearer/authorization values, JWT/token/private-key shapes, credential URLs, environment assignments, and `.env`/credential paths. Redaction is defense-in-depth, not a safe-sharing guarantee. Reports show warning. Create Inspector directories/files user-only when supported.
 
@@ -285,9 +408,18 @@ Threat boundary: Inspector cannot protect against same-user processes reading so
 
 Tabs: Overview, Models, Tools, Commands, Agents, Skills, Integrations, Errors, Ledger. Narrow terminals use selector. Ledger materializes on opening. English catalog ships; all labels are translation keys. Commands/Skills render sanitized inventory tables with explicit "inventory ≠ invocations" copy; Agents renders native `agentActivity` above the rich rows (never empty when native activity exists); Integrations renders presence + evidence state + version + allowlisted counters with distinct `not observed`/`unavailable`/`unsupported` labels plus the generic resource-source table (loaded/available only); Errors gains the bounded message column.
 
-`help`/`--help`/`-h` opens a compact full-screen `ctx.ui.custom()` panel (esc/q closes, width-safe), listing modes, targets, options, defaults, and a few valid examples only. `getArgumentCompletions` is token-aware and returns `null` when nothing valid matches. `ui --theme dark|light` sets the initial HTML theme class; the in-page toggle keeps working from that state, and `--theme` on `tui`/`json` is rejected with usage. Parsing, completions, and help are deterministic and table-driven.
+`help`/`--help`/`-h` opens a compact full-screen `ctx.ui.custom()` panel (esc/q closes, width-safe), listing modes, targets, options, defaults, and a few valid examples only. `getArgumentCompletions` is token-aware and returns `null` when nothing valid matches. `ui --theme dark|light` sets the initial browser theme class; the in-page toggle
+keeps working from that state. `ui --output` and `--theme` on `tui`/`json` are
+rejected with usage; `snapshot` accepts `--theme`. Parsing, completions, and
+help are deterministic and table-driven.
 
-HTML inlines escaped report JSON, CSS and vanilla JS. v1 charts: daily sessions/cost/tokens and model/tool bars. Browser opening failure returns path, not command failure.
+The interactive `ui` serves ordinary classic browser assets and obtains bounded
+report DTOs from its protected localhost API. Its charts and controls are
+presentation only; TypeScript L2 owns all report arithmetic. `snapshot` renders
+one already-resolved projection as self-contained HTML/CSS with no executable
+JavaScript, embedded DTO for later interpretation, network access, or offline
+range/navigation runtime. Browser opening failure returns the saved snapshot
+path or server URL, not command failure.
 
 Initial target SLOs (not v1 release blockers until measured): observer scheduling p95 <1 ms/p99 <5 ms; no high-frequency synchronous disk; <=10 MiB incremental memory for 10k records; current TUI warm paint <150 ms; 10k delta reconcile <250 ms; cold 100-MiB replay <2 s; global fold 1,000 checkpoints <2 s; HTML <3 s/<5 MiB; startup p95 <25 ms warm/<75 ms cold.
 
@@ -313,6 +445,23 @@ Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, cor
 Unknown Pi entries/fields, telemetry schema, integration version, artifact absence, corrupted WAL tail, stale checkpoint, source rewrite, missing browser, and storage errors must degrade to diagnostics/confidence—not crashes or Pi behavior changes.
 
 Persisted schema starts at v1. Additive reads ignore unknown fields. Breaking schema changes require explicit migration/reader, fixture proof, and ADR. Pre-1.0 minor may change persisted/public formats only with migration note.
+
+### Pre-M8.4 transport and command migration
+
+- `ui` changes from a self-contained interactive HTML document to the normal
+  localhost application. It starts one lazy process-local server on
+  `127.0.0.1:0`, and the browser receives protected API DTOs.
+- `snapshot current|history|global|session <sessionId>` becomes the only static
+  HTML artifact command. `snapshot` requires an explicit target and emits one
+  already-resolved immutable projection that works without a server or network.
+- `ui --output` is invalid. `--output` is valid only for `snapshot` and `json`.
+  `--no-open` suppresses only the platform browser opener.
+- The removed no-server wording applies to `ui`'s prior transport only; no
+  daemon, always-running service, cross-process listener, or generic backend is
+  introduced. JSON/TUI behavior and report DTO semantics remain unchanged.
+- This is an intentional pre-1.0 breaking command change, planned for
+  `0.10.0`. See ADR 0018 and §3 for the complete server, token, API, range,
+  snapshot, CSP, and error contracts.
 
 ### 0.6.1 → 0.7.0 migration
 
@@ -368,7 +517,7 @@ The Evidence Foundation (ADR 0016) is accepted only if all of the following hold
 22. Every producer string is enum-validated, bounded/redacted, hashed, or dropped.
 23. Privacy scanner finds no prohibited key/value in WAL, checkpoints, health JSON, or report JSON.
 24. Current/history/global derive from the same canonical builder.
-25. TUI/HTML/JSON consume the same L2 DTO.
+25. TUI/JSON, the localhost UI API, and immutable snapshot HTML consume the same L2 DTO.
 26. Replaying unchanged sources yields byte-identical canonical JSON and reports.
 27. Adapter/storage failures never alter Pi execution.
 28. Inspector never mutates Pi JSONL except the tracking marker.
@@ -379,15 +528,22 @@ The Evidence Foundation (ADR 0016) is accepted only if all of the following hold
 33. Opaque IDs are deterministic, session-scoped, domain-separated, and computed only through the canonical helper; raw IDs never persist beside them.
 34. Parent-session resolution enforces approved-root containment, regular-file and symlink checks, bounded header read, and v3 header validation; every failure is `unavailable` with no path leakage.
 35. Skill inventory and skill invocation remain separate evidence classes and are never summed together.
+36. `GET /api/v1/ui` invokes `loadInspectorBundle()` once per response; independent resource requests make no cross-request consistency claim.
+37. Valid range intent is resolved by TypeScript L2 per projection; invalid, mixed, duplicate, oversized, inverted, or half ranges never fall back or clamp, and unavailable evidence never becomes zero.
+38. The bootstrap token is 32 random bytes encoded base64url, consumed before route parsing, replaced with the canonical route without a history entry, retained in memory only, and never restored by Back/Forward.
+39. Unauthenticated shell/assets contain no Inspector-derived data; immutable snapshots contain no executable JavaScript or network capability and escape every dynamic value in its output context.
+40. The server accepts only its documented methods/routes, exact loopback Host/peer/Origin, and bearer authentication for report data; CSP/no-store/no-referrer and bounded redacted diagnostics are enforced.
 
 ## 13. Report semantics
 
 This section states the `0.9.0` report-semantics contracts in [ADR 0017](../architecture/adr/0017-report-coverage-attribution-and-navigation.md).
-Every addition here is additive: no persisted field, no collector, no
-WAL/checkpoint/retention change, no `schemaVersion` bump, no command-surface
-change, and no Pi mutation beyond the existing tracking marker. The new fields
-live on the report DTOs (`json` writes them verbatim) and inside the generated
-document; they are read-time derivations of already-persisted evidence.
+Every report/evidence addition here is additive: no persisted field, no
+collector, no WAL/checkpoint/retention change, no `schemaVersion` bump, and no
+Pi mutation beyond the existing tracking marker. Pre-M8.4 intentionally changes
+the public command/transport surface as documented in §3 and the migration
+note above. The fields live on report DTOs (`json` writes them verbatim), the
+localhost UI payload, and the resolved immutable snapshot; they remain read-time
+derivations of already-persisted evidence.
 
 ### 13.1 Coverage contract and wording rules
 
@@ -531,10 +687,12 @@ the same `SessionReport`.
 
 ### 13.4 Route authority
 
-The hash (`#/…`) is the single authority for navigation state; there is no query
-string and no server. One canonical parameter order —
+The hash (`#/…`) is the single authority for browser navigation state. API query
+parameters are transport inputs only and never become route state; the server
+never parses or owns browser navigation. One canonical parameter order —
 `scope, preset, from, to, session, entity, q, sort` — means one route has exactly
-one string.
+one string. The bootstrap `#token=…` fragment is the one bounded exception: it
+is consumed before route parsing and replaced with the canonical default route.
 
 - `render()` derives **all** state from the route: content, the active sidebar item
   and the active tab (`aria-current="page"`), the scope button and the range preset
@@ -549,10 +707,11 @@ one string.
   route state, and pushes nothing.
 - Parsing is total and never throws: any unknown section/tab/option/date degrades
   to the section default with a bounded one-line notice. A custom range serializes
-  only as a validated `from`/`to` pair; a preset serializes alone; `preset` wins
-  when both are present. Ids (session, entity) are validated against the id set the
-  projection already exposes and are dropped, never echoed, otherwise, so no
-  prompt/argument/result/path text can reach the hash.
+  only as a validated `from`/`to` pair; a preset serializes alone; mixed
+  preset/custom forms are rejected rather than resolved by precedence. Ids
+  (session, entity) are validated against the id set the projection already
+  exposes and are dropped, never echoed, otherwise, so no prompt/argument/result/
+  path text can reach the hash.
 - Capabilities are parsed from the payload; a history route with a selected
   session uses the session-selected capability set (§13.3).
 - Environment degradation is explicit: in an environment that refuses the History

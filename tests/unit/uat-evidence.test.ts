@@ -10,9 +10,8 @@ import type { FoldedAggregateEvidence } from "../../src/core/evidence.ts";
 import type { SessionReport } from "../../src/core/reports.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { readIntegrationPresence } from "../../src/integrations/presence.ts";
-import { loadInspectorBundle } from "../../src/ui/bundle.ts";
+import { loadInspectorBundle, loadCurrentView } from "../../src/ui/bundle.ts";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
-import { renderInspectorBundle } from "../../src/ui/html.ts";
 import { renderJson } from "../../src/ui/json.ts";
 import type { GlobalReport, HistoryReport } from "../../src/ui/load-history.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
@@ -20,6 +19,11 @@ import {
   emptyObservation,
   type SessionObservation,
 } from "../../src/ui/observation.ts";
+import { renderSnapshot } from "../../src/ui/snapshot.ts";
+import {
+  projectCurrentView,
+  projectInspectorUi,
+} from "../../src/ui/ui-projection.ts";
 
 const UAT_FILE = fileURLToPath(
   new URL("../fixtures/pi/0.85.1/uat-session.jsonl", import.meta.url),
@@ -245,19 +249,118 @@ test("repeated reads are byte-identical and leave the checkpoint untouched", asy
   });
 });
 
-test("two identical generations of the bundle fixture are byte-identical", async () => {
+test("two identical generations of the fixture projection are byte-identical", async () => {
   const source = await readFile(
     new URL("../fixtures/bundles/inspector-bundle.json", import.meta.url),
     "utf8",
   );
-  // Two independent decodes of the same fixture: the document may not depend on
-  // object identity, insertion accidents, or a clock read.
-  const generate = (): string =>
-    renderInspectorBundle(JSON.parse(source) as InspectorBundle);
+  // Two independent decodes of the same fixture: the resolved projection and
+  // its rendered snapshot may not depend on object identity, insertion
+  // accidents, or a clock read.
+  const generate = (): string => {
+    const projection = projectInspectorUi({
+      bundle: JSON.parse(source) as InspectorBundle,
+    });
+    assert.equal(projection.current.tree.range?.resolved !== null, true);
+    return renderSnapshot({
+      kind: "current",
+      schemaVersion: 1,
+      theme: "light",
+      projection: projection.current.tree,
+    });
+  };
   assert.equal(generate(), generate());
 });
 
-test("bundle render is deterministic across repeated loads of the same inputs", async () => {
+test("a resolved UAT snapshot is deterministic and leaves its sources untouched", async () => {
+  await withUatRoot(async (root) => {
+    const checkpointPath = join(
+      root,
+      "sessions",
+      UAT_SESSION_ID,
+      "checkpoint.json",
+    );
+    // Both authorities the brief names: the folded checkpoint and Pi's own
+    // session JSONL are read-only inputs to a snapshot.
+    const checkpointBefore = await readFile(checkpointPath, "utf8");
+    const piSourceBefore = await readFile(UAT_FILE, "utf8");
+
+    // The exact current-snapshot path the command runs: one scope loaded for
+    // the target, projected once, rendered once.
+    const render = async (): Promise<{
+      html: string;
+      projection: ReturnType<typeof projectCurrentView>;
+    }> => {
+      const view = await loadCurrentView(
+        (scope) =>
+          loadCurrentSessionReport(UAT_FILE, scope, {
+            leafId: UAT_LEAF_ID,
+            observation: uatObservation(),
+            evidence: { atomic: [], folded: [uatFoldedEvidence()] },
+          }),
+        "tree",
+      );
+      const projection = projectCurrentView(view, "tree", {
+        kind: "preset",
+        preset: 30,
+      });
+      return {
+        projection,
+        html: renderSnapshot({
+          kind: "current",
+          schemaVersion: 1,
+          theme: "light",
+          projection,
+        }),
+      };
+    };
+
+    const first = await render();
+    const second = await render();
+
+    // The projection resolved a real range from the session's own observed
+    // dates, so the deterministic render is a resolved one.
+    assert.equal(first.projection.availability, "available");
+    assert.deepEqual(first.projection.range?.resolved, {
+      preset: 30,
+      from: "2026-08-13",
+      to: "2026-09-11",
+    });
+    assert.equal(first.html, second.html);
+    assert.equal(
+      JSON.stringify(first.projection),
+      JSON.stringify(second.projection),
+    );
+
+    // No raw producer content rides the rendered snapshot or the UI payload:
+    // the sanitized inventory's paths, the producer-only task/body fields, and
+    // the absent-vs-unavailable sentinels stay absent.
+    const payload = JSON.stringify(first.projection);
+    for (const sentinel of [
+      "PRIVATE_TASK",
+      "PRIVATE_BODY",
+      "/home/dev/private",
+      "C:\\Users\\dev\\private",
+      "file:///home/dev/private",
+      "promptGuidelines",
+      "sourceInfo",
+      "promptGuidelines-must-not-surface",
+    ]) {
+      assert.equal(first.html.includes(sentinel), false, sentinel);
+      assert.equal(payload.includes(sentinel), false, sentinel);
+    }
+    // The inventory still published its sanitized rows, so the absence above is
+    // not a projection that dropped the environment section.
+    assert.equal(first.html.includes("caveman"), true);
+    assert.equal(first.projection.inventoryAvailability.commands, 3);
+
+    // Reading both authorities never wrote them.
+    assert.equal(await readFile(checkpointPath, "utf8"), checkpointBefore);
+    assert.equal(await readFile(UAT_FILE, "utf8"), piSourceBefore);
+  });
+});
+
+test("the resolved projection document is deterministic across repeated loads", async () => {
   await withUatRoot(async (root) => {
     const history: HistoryReport = {
       availability: "unavailable",
@@ -291,24 +394,19 @@ test("bundle render is deterministic across repeated loads of the same inputs", 
       loadGlobal: async () => global,
     };
 
-    const first = await loadInspectorBundle(input);
-    const second = await loadInspectorBundle(input);
+    const render = async (): Promise<string> => {
+      const ui = projectInspectorUi({
+        bundle: await loadInspectorBundle(input),
+      });
+      assert.equal(ui.current.tree.availability, "available");
+      return renderSnapshot({
+        kind: "current",
+        schemaVersion: 1,
+        theme: ui.theme,
+        projection: ui.current.tree,
+      });
+    };
 
-    assert.equal(JSON.stringify(first), JSON.stringify(second));
-    const html = renderInspectorBundle(first);
-    assert.equal(renderInspectorBundle(second), html);
-    assert.equal(first.current.tree.availability, "available");
-
-    // No raw producer content rides the bundle payload.
-    for (const sentinel of [
-      "PRIVATE_TASK",
-      "PRIVATE_BODY",
-      "/home/dev/private",
-      "C:\\Users\\dev\\private",
-      "file:///home/dev/private",
-      "promptGuidelines",
-    ]) {
-      assert.equal(html.includes(sentinel), false, sentinel);
-    }
+    assert.equal(await render(), await render());
   });
 });

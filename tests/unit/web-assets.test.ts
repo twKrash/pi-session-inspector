@@ -199,7 +199,6 @@ test("the shipped scripts contain no L2 range, aggregation, or verdict function"
     "presetRange",
     "parseRangeOptions",
     "sessionView",
-    "projectReport",
     "projectInspectorUi",
     "aggregateUsageLabels",
     "toolSummary(",
@@ -612,6 +611,116 @@ test("the derived view coerces a tab the section cannot render", () => {
   );
   assert.deepEqual(nothing.visibleTabs, []);
   assert.equal(nothing.notice, undefined);
+});
+
+test("the route parses anything, keeps no null field, and derives only render state", () => {
+  const { route } = namespaces();
+  const options = {
+    scope: "active",
+    capabilities: CAPABILITIES,
+    knownIds: [],
+  };
+  // Parsing is total: a hostile or malformed hash degrades to a section default
+  // and at most a bounded notice code, and nothing from the input is echoed.
+  for (const hash of [
+    "",
+    "#",
+    "#/",
+    "#/current",
+    "#/current/tools?",
+    "#/%E0%A4%A/overview",
+    "#/current/tools?q=%E0%A4%A",
+    "#/current/tools?entity=%E0%A4%A&q=ok",
+    "https://example.test/#/current/tools?scope=tree",
+    "#/current/tools?scope",
+    "#/current/tools?=value",
+    "#/current/tools?entity=tool:call-abc",
+    undefined as unknown as string,
+    null as unknown as string,
+  ]) {
+    const parsed = route.parse(hash, options);
+    assert.equal(
+      ["current", "history", "global"].includes(parsed.route.section),
+      true,
+      String(hash),
+    );
+    assert.equal(typeof parsed.route.tab, "string", String(hash));
+    assert.equal(
+      /"|%E0|SECRET/.test(route.serialize(parsed.route)),
+      false,
+      String(hash),
+    );
+  }
+  // A malformed escape is not a value: the parameter is dropped, never echoed,
+  // and a full URL contributes only its fragment.
+  assert.deepEqual(
+    plain(
+      route.parse("#/current/tools?q=%E0%A4%A&sort=cost", options).route.table,
+    ),
+    { sort: "cost" },
+  );
+  assert.equal(
+    route.serialize(
+      route.parse(
+        "https://example.test/secret/path#/current/tools?scope=tree",
+        options,
+      ).route,
+    ),
+    "#/current/tools?scope=tree",
+  );
+  // An optional field that is absent or null serializes and keys as absent.
+  const absent = { section: "current", tab: "models", scope: "tree" };
+  const nulled = {
+    ...absent,
+    range: null,
+    entity: null,
+    table: null,
+  };
+  assert.equal(route.key(nulled), "#/current/models?scope=tree");
+  assert.equal(route.key(nulled), route.key(absent));
+  // Deriving exposes exactly the state that drives rendering: the resolved
+  // range is not the browser's to know.
+  const derived = route.derive(
+    {
+      section: "global",
+      tab: "models",
+      scope: "tree",
+      range: { kind: "preset", preset: 30 },
+    },
+    CAPABILITIES,
+  );
+  assert.deepEqual(Object.keys(derived).sort(), [
+    "activeSection",
+    "activeTab",
+    "focusTarget",
+    "notice",
+    "scope",
+    "visibleTabs",
+  ]);
+  assert.deepEqual(
+    [
+      derived.activeSection,
+      derived.activeTab,
+      derived.notice,
+      derived.focusTarget,
+    ],
+    ["global", "overview", "tab-unavailable", "section-heading"],
+  );
+  // An untrusted capability table is no tabs, never a throw.
+  const untrusted = {
+    current: null,
+    history: 7,
+    global: ["overview"],
+  } as unknown as Record<string, string[]>;
+  assert.deepEqual(
+    plain(
+      route.derive(
+        { section: "current", tab: "overview", scope: "active" },
+        untrusted,
+      ).visibleTabs,
+    ),
+    [],
+  );
 });
 
 // ---------------------------------------------------------------------------

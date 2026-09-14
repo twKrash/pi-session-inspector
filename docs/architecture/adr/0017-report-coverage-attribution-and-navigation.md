@@ -1,6 +1,6 @@
 # ADR 0017: report coverage, attribution, and navigation authority
 
-**Status:** accepted.
+**Status:** accepted; browser delivery, static-HTML application, and inlined range/runtime assumptions are superseded by ADR 0018. Coverage, attribution, navigation semantics, and completion-provider findings remain in force.
 
 ## Context
 

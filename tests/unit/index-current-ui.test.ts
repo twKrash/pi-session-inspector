@@ -16,10 +16,10 @@ import registerSessionInspector, {
   readLiveTimings,
   registerTracking,
 } from "../../src/index.ts";
-import { renderHtml } from "../../src/ui/html.ts";
-import { renderInspectorBundle } from "../../src/ui/html.ts";
 import { renderJson } from "../../src/ui/json.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
+import { renderSnapshot } from "../../src/ui/snapshot.ts";
+import { projectCurrentView } from "../../src/ui/ui-projection.ts";
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -63,7 +63,7 @@ test("loaders never import storage readers", async () => {
   }
 });
 
-test("overflow usage remains unavailable through the bundle and JSON production paths", async () => {
+test("overflow usage remains unavailable through the snapshot and JSON production paths", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const sessionFile = join(directory, "overflow-session.jsonl");
   const max = Number.MAX_SAFE_INTEGER;
@@ -117,26 +117,20 @@ test("overflow usage remains unavailable through the bundle and JSON production 
     });
     assert.ok(model);
     const report = model.report;
-    const bundle = renderInspectorBundle({
+    // The one production renderer: the same projection the `snapshot` command
+    // and the `/api/v1/ui` payload publish.
+    const projection = projectCurrentView(
+      { availability: "available", report, daily: [] },
+      "tree",
+    );
+    const snapshot = renderSnapshot({
+      kind: "current",
       schemaVersion: 1,
       theme: "light",
-      initialScope: "tree",
-      current: {
-        active: { availability: "available", report, daily: [] },
-        tree: { availability: "available", report, daily: [] },
-        sameReportProjection: true,
-      },
-      history: { availability: "unavailable", sessions: [], diagnostics: [] },
-      global: {
-        availability: "unavailable",
-        sessions: [],
-        usage: { totalTokens: 0, cost: 0 },
-        dates: [],
-        diagnostics: [],
-        inventory: { commands: null, skills: null, resources: null },
-      },
+      projection,
     });
-    assert.match(bundle, /Usage unavailable/);
+    assert.match(snapshot, /Usage unavailable/);
+    assert.equal(projection.report?.usage, undefined);
     const json = JSON.parse(renderJson(report)) as Record<string, unknown>;
     assert.equal(Object.hasOwn(json, "usage"), false);
     assert.equal(Object.hasOwn(json, "usageComposition"), false);
@@ -1026,13 +1020,25 @@ test("exports auto-discovered subagent evidence in current JSON without renderin
   });
   assert.ok(model);
   assert.equal(model.report.agentEvidence, "supported");
-  const html = renderHtml({
+  const projection = projectCurrentView(
+    { availability: "available", report: model.report, daily: [] },
+    "active",
+  );
+  assert.equal((projection.report?.agents.length ?? 0) > 0, true);
+  const snapshot = renderSnapshot({
     kind: "current",
-    report: model.report,
-    scope: "active",
+    schemaVersion: 1,
+    theme: "light",
+    projection,
   });
-  assert.match(html, /"agents":\[/);
-  assert.equal(html.includes("/home/dev/PRIVATE"), false);
+  // The payload the UI publishes carries the two discovered runs, and neither
+  // it nor the rendered snapshot carries a producer path.
+  assert.deepEqual(
+    projection.report?.agents.map((row) => row.agent),
+    ["worker", "reviewer"],
+  );
+  assert.equal(JSON.stringify(projection).includes("/home/dev/PRIVATE"), false);
+  assert.equal(snapshot.includes("/home/dev/PRIVATE"), false);
 });
 
 test("rejects the removed subagent artifact flag without opening the current view", async () => {

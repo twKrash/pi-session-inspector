@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { reduceEntries } from "../../src/core/reduce.ts";
+import { toSessionReport } from "../../src/core/reports.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
   filterView,
   historyRowRange,
@@ -277,5 +281,51 @@ test("aggregate membership needs an in-range record, truncation decides first", 
       to: "2020-12-31",
     }),
     { member: false, totalTokens: null, cost: null, partial: true },
+  );
+});
+
+test("tool usage stays on the call day while its error is observed the next day", () => {
+  const entries = parseSessionJsonl(
+    readFileSync("tests/fixtures/pi/0.85.1/cross-midnight.jsonl", "utf8"),
+  ).entries;
+  const report = toSessionReport(
+    reduceEntries("cross-midnight-session", entries),
+  );
+  assert.deepEqual(
+    [
+      report.tools[0]?.timestamp,
+      report.tools[0]?.usage?.totalTokens,
+      report.errors[0]?.timestamp,
+      report.errors[0]?.kind,
+    ],
+    ["2026-09-11T23:59:00.000Z", 2, "2026-09-12T00:01:00.000Z", "tool-error"],
+  );
+  const view = {
+    rows: [],
+    models: [],
+    tools: report.tools,
+    agents: [],
+    errors: report.errors,
+  };
+  // A tool call is dated by its call, its error by its own observation: the two
+  // persist on different sides of midnight and are filtered apart.
+  const callDay = filterView(view, {
+    preset: null,
+    from: "2026-09-11",
+    to: "2026-09-11",
+  });
+  const nextDay = filterView(view, {
+    preset: null,
+    from: "2026-09-12",
+    to: "2026-09-12",
+  });
+  assert.deepEqual(
+    [
+      callDay.tools.length,
+      callDay.errors.length,
+      nextDay.tools.length,
+      nextDay.errors.length,
+    ],
+    [1, 0, 0, 1],
   );
 });

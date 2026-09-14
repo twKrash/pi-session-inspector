@@ -4,6 +4,51 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.10.0]
+
+**Breaking (Pre-M8.4 ephemeral localhost UI and immutable snapshots; see ADR 0018 and the v1 spec).**
+
+### Added
+
+- `ui`: the interactive application, served by one lazy loopback server bound
+  to `127.0.0.1` on an OS-chosen port, whose per-instance token is delivered
+  once in the URL fragment and held in memory only. The browser navigates,
+  requests, formats and renders; every scope, range, partiality, evidence and
+  unavailable-versus-zero decision stays in the server projection.
+- `snapshot current|history|global|session <sessionId>`: one resolved
+  self-contained `file://` HTML artifact per target, with no executable
+  JavaScript, no network access, and byte-identical output for equal inputs.
+- Generated snapshot cache under `session-inspector/v1/reports/` with opaque
+  identities, 14-day expiry and a 100 MiB cap; explicit outputs stay user-owned.
+
+### Changed
+
+- Command grammar is now `/session-inspector [ui|snapshot|tui|json] [target]
+  [options]`; `--output` is valid for `snapshot` and `json`, never `ui`.
+- Snapshot range options are strict: presets resolve against each projection's
+  own latest observed date, custom ranges are inclusive real dates, and invalid,
+  mixed, duplicate or unsupported range input is rejected instead of clamped.
+- `snapshot session <sessionId>` is atomic: scope and range options are
+  rejected.
+- One request-time projection serves `/api/v1/ui`, and one bundle load happens
+  per response, so a response can never mix two sessions.
+
+### Removed
+
+- `--format tui|html|json` and the bare `current|history|global|ledger` first
+  token form; `--subagents-artifact` (subagent runs are auto-discovered from
+  persisted tool results).
+- The legacy inline-script HTML document, its static route and range modules,
+  and the module inlining they relied on. Browser behaviour moved to the five
+  ordinary files under `src/ui/web/`, and archived output to the snapshot
+  renderer.
+
+### Fixed
+
+- Explicit report and snapshot outputs never overwrite an authoritative Pi
+  session JSONL: an output that aliases one (including through a hard or
+  symbolic link) is refused, and a write replaces its destination atomically.
+
 ## [0.9.3]
 
 - Pre-M8.3 architecture, invariant, and reconciliation audit: added deterministic dependency boundaries, centralized canonical report projection, and removed duplicate loader-side reconciliation.

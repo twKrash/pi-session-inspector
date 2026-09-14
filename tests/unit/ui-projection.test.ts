@@ -34,11 +34,23 @@ import {
   projectInspectorUi,
   type GlobalReportProjection,
 } from "../../src/ui/ui-projection.ts";
-import { historyEntry } from "../../src/ui/report-projection.ts";
+import {
+  aggregateUsageLabels,
+  ENGLISH_CATALOG,
+  errorHeadline,
+  errorMessage,
+  historyEntry,
+  sessionView,
+  toolCalls,
+  toolDuration,
+  toolSummary,
+} from "../../src/ui/report-projection.ts";
 import {
   bundleInput,
+  currentModelWithOutOfOrderToolCalls,
   currentModelWithTools,
   FORBIDDEN_PRODUCER_KEYS,
+  modelWithToolError,
 } from "../helpers/bundle-scenarios.ts";
 
 /**
@@ -1364,5 +1376,163 @@ test("each rendered run carries L2's own parent verdict", () => {
       [orphanChildId, "unknown"],
       [rootlessId, "none"],
     ],
+  );
+});
+
+test("the tools summary reads the newest call of a name, never its last row", () => {
+  const rows = sessionView(currentModelWithOutOfOrderToolCalls().report).tools;
+  // The session persisted the name's older call after its newer one, so "the
+  // last row wins" would report the older instant as Last used.
+  assert.deepEqual(
+    rows.map((row) => row.timestamp),
+    ["2026-02-01T10:00:09.000Z", "2026-02-01T10:00:00.000Z"],
+  );
+  assert.deepEqual(
+    toolSummary({ tools: rows }).map((row) => [
+      row.name,
+      row.calls,
+      row.lastUsed,
+    ]),
+    [["read", 2, "2026-02-01T10:00:09.000Z"]],
+  );
+});
+
+test("one summary row groups the calls the timeline lists, with availability", () => {
+  const rows = sessionView(currentModelWithTools().report).tools;
+
+  // One row per tool name, sorted by name, each status counted separately and
+  // the maximum persisted call timestamp as Last used.
+  assert.deepEqual(
+    toolSummary({ tools: rows }).map((row) => [
+      row.name,
+      row.calls,
+      row.succeeded,
+      row.failed,
+      row.interrupted,
+      row.lastUsed,
+    ]),
+    [
+      ["bash", 1, 0, 1, 0, "2026-02-01T23:59:00.000Z"],
+      ["read", 1, 1, 0, 0, "2026-03-01T10:00:00.000Z"],
+    ],
+  );
+  // The first known source label of a name survives, even when only a later
+  // call of that name attributed one.
+  assert.equal(
+    toolSummary({
+      tools: [
+        {
+          name: "read",
+          status: "succeeded",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          usage: null,
+        },
+        {
+          name: "read",
+          source: "extension",
+          status: "succeeded",
+          timestamp: "2026-02-01T10:00:01.000Z",
+          usage: null,
+        },
+      ],
+    })[0].source,
+    "extension",
+  );
+  // The drawn calls stay one row per call, newest first, and a selected summary
+  // row narrows them to its own name (`null` is the cleared state).
+  assert.deepEqual(
+    toolCalls({ tools: rows }, null).map((row) => [row.name, row.timestamp]),
+    [
+      ["read", "2026-03-01T10:00:00.000Z"],
+      ["bash", "2026-02-01T23:59:00.000Z"],
+    ],
+  );
+  assert.deepEqual(
+    toolCalls({ tools: rows }, "bash").map((row) => row.name),
+    ["bash"],
+  );
+  // Duration is live-correlated evidence only: without supported timing the row
+  // is unavailable, and no value is estimated from the call timestamps.
+  assert.equal(toolDuration({ durationLabel: "42 ms" }, "unavailable"), null);
+  assert.equal(toolDuration({ durationLabel: "42 ms" }, "supported"), "42 ms");
+  assert.equal(toolDuration({ durationLabel: null }, "supported"), null);
+});
+
+test("an error row leads with its joined tool and states only its bounded message", () => {
+  const [error] = sessionView(modelWithToolError().report).errors;
+  if (error === undefined) throw new Error("the view must carry its error row");
+
+  // The join L2 resolved is what the headline reads: the raw id stays a detail
+  // of the row, and the tool's own status travels with it.
+  assert.deepEqual(
+    [error.id, error.toolName, error.toolSource, error.toolStatus],
+    ["tool:call_bash", "bash", null, "failed"],
+  );
+  assert.deepEqual(errorHeadline(error), {
+    key: "errors.toolFailed",
+    values: { tool: "bash" },
+  });
+  // A tool error with no joined tool has no name to lead with, so the bounded
+  // classification label takes the headline instead of a fabricated name, and a
+  // generation error never joins a tool at all.
+  assert.deepEqual(errorHeadline({ kind: "tool-error", toolName: null }), {
+    key: "errors.failed",
+    values: null,
+  });
+  assert.deepEqual(
+    errorHeadline({ kind: "generation-error", toolName: null }),
+    {
+      key: "errors.generation",
+      values: null,
+    },
+  );
+  assert.equal(
+    ENGLISH_CATALOG["errors.toolFailed"].replace("{tool}", "bash"),
+    "bash failed",
+  );
+
+  // Only the bounded redacted DTO message is ever stated; an absent message is
+  // Unavailable, never an empty string or a guess.
+  assert.equal(
+    errorMessage({
+      kind: "tool-error",
+      message: "permission denied for [PATH]",
+    }),
+    "permission denied for [PATH]",
+  );
+  assert.equal(errorMessage({ kind: "generation-error" }), null);
+  assert.equal(ENGLISH_CATALOG["errors.messageUnavailable"], "Unavailable");
+});
+
+test("the label resolver separates value availability from coverage availability", () => {
+  assert.deepEqual(
+    aggregateUsageLabels({ availability: "available", coverage: undefined }),
+    {
+      cost: "coverage.unknownCompletenessCost",
+      tokens: "coverage.unknownCompletenessTokens",
+      usageUnavailable: false,
+      sessions: "coverage.unknown",
+    },
+  );
+  assert.equal(
+    aggregateUsageLabels({ availability: "unavailable", coverage: undefined })
+      .usageUnavailable,
+    true,
+  );
+  const empty = aggregateUsageLabels({
+    availability: "available",
+    coverage: {
+      inspected: 0,
+      available: 0,
+      unavailable: 0,
+      sessionRatio: null,
+      complete: false,
+      discoveryLimited: false,
+      reasons: {},
+    },
+  });
+  assert.deepEqual(
+    [empty.usageUnavailable, empty.sessions],
+    [true, "coverage.none"],
   );
 });

@@ -1,22 +1,16 @@
-import type { EvidenceState, Scope } from "../core/events.ts";
+import type { EvidenceState } from "../core/events.ts";
 import { buildLedger, type LedgerItem } from "../core/ledger.ts";
 import { cacheHitPercent, type SessionReport } from "../core/reports.ts";
 import type { SessionCoverage } from "../core/session-coverage.ts";
-import {
-  buildDailyRows,
-  type DailyContribution,
-  type DailyRow,
-} from "./daily.ts";
 import type { DateUsageRow, DatedModelRow } from "./dated-usage.ts";
 import type { GlobalReport, HistoryReport } from "./load-history.ts";
 
 /**
  * The one catalog-independent report projection (ADR 0018): every safe, bounded
  * row and total the report surfaces read, with no renderer, route, loader,
- * filesystem or browser state. `html.ts` consumes these functions for the
- * legacy single-section adapter and re-exports them for its existing consumers;
- * the L2 DTO in `ui-projection.ts` builds on the same transforms, so no surface
- * reimplements report semantics.
+ * filesystem or browser state. The L2 DTO in `ui-projection.ts` builds on these
+ * transforms and `snapshot.ts` renders them, so no surface reimplements report
+ * semantics.
  *
  * Every function here is pure: it reads a `SessionReport`/`HistoryReport`/
  * `GlobalReport` (or the bounded dated rows a loader published) and returns
@@ -403,11 +397,6 @@ export const ENGLISH_CATALOG = {
   "coverage.unknownCompletenessTokens": "Known tokens — completeness unknown",
 } as const;
 
-export type HtmlReport =
-  | { kind: "current"; report: SessionReport; scope: Scope }
-  | { kind: "history"; report: HistoryReport }
-  | { kind: "global"; report: GlobalReport };
-
 type SafeUsage = NonNullable<SessionReport["usage"]>;
 type CompositionKey =
   | "generations"
@@ -569,14 +558,6 @@ export type HistoryEntryView = {
   view?: SessionReportView;
 };
 
-const SESSION_CHART_METRICS = [
-  "sessions",
-  "cost",
-  "tokens",
-  "generations",
-  "tools",
-] as const;
-const GLOBAL_CHART_METRICS = ["sessions", "cost", "tokens"] as const;
 const COMPOSITION_KEYS: readonly CompositionKey[] = [
   "generations",
   "toolResults",
@@ -707,107 +688,8 @@ export function safeUsage(
   };
 }
 
-/**
- * The legacy pre-attribution bucketing of raw report records (spec §5.4, the
- * one documented exception): it dates records itself instead of folding the
- * session's own dated projection, and only the no-production-caller
- * single-section adapter still calls it. The bundle path uses
- * `buildDailyRows` over the published projection.
- */
-export function buildDailyActivityRows(
-  reports: readonly SessionReport[],
-): DailyRow[] {
-  const rows = new Map<string, DailyAccumulator>();
-  const at = (date: string): DailyAccumulator => {
-    const existing = rows.get(date);
-    if (existing !== undefined) return existing;
-    const created: DailyAccumulator = {
-      date,
-      sessionIds: new Set(),
-      totalTokens: 0,
-      cost: 0,
-      generations: 0,
-      tools: 0,
-      composition: {
-        generations: { totalTokens: 0, cost: 0 },
-        toolResults: { totalTokens: 0, cost: 0 },
-        compactions: { totalTokens: 0, cost: 0 },
-        branchSummaries: { totalTokens: 0, cost: 0 },
-      },
-    };
-    rows.set(date, created);
-    return created;
-  };
-  for (const report of reports) {
-    for (const generation of report.generations) {
-      const date = utcDate(generation.timestamp);
-      if (date === undefined) continue;
-      const row = at(date);
-      row.sessionIds.add(report.sessionId);
-      row.generations += 1;
-      addDailyUsage(row, generation.usage, "generations");
-    }
-    for (const tool of report.tools) {
-      const date = utcDate(tool.timestamp);
-      if (date === undefined) continue;
-      const row = at(date);
-      row.sessionIds.add(report.sessionId);
-      row.tools += 1;
-      if (tool.usage !== undefined)
-        addDailyUsage(row, tool.usage, "toolResults");
-    }
-    for (const compaction of report.compactions) {
-      const date = utcDate(compaction.timestamp);
-      if (date === undefined) continue;
-      const row = at(date);
-      row.sessionIds.add(report.sessionId);
-      addDailyUsage(
-        row,
-        compaction.usage,
-        compaction.kind === "branch_summary"
-          ? "branchSummaries"
-          : "compactions",
-      );
-    }
-  }
-  return [...rows.values()]
-    .sort((left, right) => left.date.localeCompare(right.date))
-    .map((row) => ({
-      date: row.date,
-      sessions: row.sessionIds.size,
-      totalTokens: row.totalTokens,
-      cost: row.cost,
-      generations: row.generations,
-      tools: row.tools,
-      composition: row.composition,
-    }));
-}
-
-type DailyAccumulator = {
-  date: string;
-  sessionIds: Set<string>;
-  totalTokens: number;
-  cost: number;
-  generations: number;
-  tools: number;
-  composition: DailyRow["composition"];
-};
-
-function addDailyUsage(
-  row: DailyAccumulator,
-  usage: SafeUsage,
-  part: keyof DailyRow["composition"],
-): void {
-  row.totalTokens += usage.totalTokens;
-  row.cost = roundCost(row.cost + usage.cost);
-  row.composition[part].totalTokens += usage.totalTokens;
-  row.composition[part].cost = roundCost(
-    row.composition[part].cost + usage.cost,
-  );
-}
-
 /** Earliest to latest native record span; fewer than two records is unknown. */
-export function sessionSpanMs(report: SessionReport): number | undefined {
+function sessionSpanMs(report: SessionReport): number | undefined {
   let earliest = Number.POSITIVE_INFINITY;
   let latest = Number.NEGATIVE_INFINITY;
   let count = 0;
@@ -844,7 +726,7 @@ function utcDate(timestamp: string): string | undefined {
   return DAY.exec(timestamp)?.[1];
 }
 
-export function formatDuration(ms: number): string {
+function formatDuration(ms: number): string {
   const total = Math.max(0, Math.round(ms));
   if (total < 1_000) return `${total} ms`;
   const seconds = Math.floor(total / 1_000);
@@ -1531,108 +1413,6 @@ export function compareHistoryEntries(
     (right.firstDate ?? "").localeCompare(left.firstDate ?? "") ||
     left.sessionId.localeCompare(right.sessionId)
   );
-}
-
-/**
- * The legacy per-section projection the single-section HTML adapter embeds. It
- * is the pre-M8.4 payload shape the inline browser script consumes; the L2 DTO
- * in `ui-projection.ts` is the projection new surfaces build on, and this one
- * is deleted with the adapter in the cleanup task.
- */
-export function projectReport(input: HtmlReport): Record<string, unknown> {
-  if (input.kind === "current") {
-    const view = sessionView(input.report);
-    const daily = buildDailyActivityRows([input.report]);
-    return {
-      kind: "current",
-      scope: input.scope,
-      ...(input.report.walDetail === "expired"
-        ? { walDetail: "expired" as const }
-        : {}),
-      daily,
-      chartMetrics: SESSION_CHART_METRICS,
-      evidence: sessionEvidenceRows(input.report, view),
-      report: view,
-    };
-  }
-  if (input.kind === "history") {
-    // R19: the aggregate folds the sessions' own dated rows. It never walks a
-    // session timestamp and it never looks complete while a contributing
-    // window is partial (spec §5.4).
-    const contributions: DailyContribution[] = input.report.sessions.flatMap(
-      (session) =>
-        session.availability === "available"
-          ? [
-              {
-                sessionId: session.sessionId,
-                rows: session.usageByDate,
-                truncated: session.usageByDateTruncated,
-              },
-            ]
-          : [],
-    );
-    const folded = buildDailyRows(contributions);
-    const daily = folded.rows;
-    return {
-      kind: "history",
-      availability: input.report.availability,
-      coverage: coverageProjection(
-        input.report.availability,
-        input.report.coverage,
-      ),
-      usageLabels: aggregateUsageLabels({
-        availability: input.report.availability,
-        coverage: input.report.coverage,
-      }),
-      daily,
-      dailyTruncated: folded.truncated,
-      chartMetrics: SESSION_CHART_METRICS,
-      evidence: historyEvidenceRows(input.report),
-      sessions: input.report.sessions
-        .map(historyEntry)
-        .sort(compareHistoryEntries),
-    };
-  }
-  const daily = input.report.dates.map((row) => ({
-    date: row.date,
-    sessions: row.sessions,
-    totalTokens: row.usage.totalTokens,
-    cost: row.usage.cost,
-  }));
-  // The loader folds the sessions' own dated rows into `dates`; a session whose
-  // window cannot represent its spend still makes the aggregate partial.
-  const dailyTruncated = input.report.sessions.some(
-    (session) =>
-      session.availability === "available" &&
-      session.usageByDateTruncated === true,
-  );
-  return {
-    kind: "global",
-    availability: input.report.availability,
-    coverage: coverageProjection(
-      input.report.availability,
-      input.report.coverage,
-    ),
-    usageLabels: aggregateUsageLabels({
-      availability: input.report.availability,
-      coverage: input.report.coverage,
-    }),
-    daily,
-    dailyTruncated,
-    chartMetrics: GLOBAL_CHART_METRICS,
-    evidence: globalEvidenceRows(input.report),
-    usage: safeUsage(input.report.usage),
-    composition: {
-      available: false,
-      parts: [],
-      total: safeUsage(input.report.usage),
-      reconciles: false,
-    },
-    trackedSessions: input.report.sessions.length,
-    unavailableSessions: input.report.sessions.filter(
-      (session) => session.availability === "unavailable",
-    ).length,
-  };
 }
 
 function money(value: number): string {
