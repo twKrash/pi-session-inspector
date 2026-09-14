@@ -67,7 +67,7 @@ import type { SessionObservation } from "./ui/observation.ts";
 import {
   generatedReportPath,
   generatedSnapshotPath,
-  isExplicitSnapshotOutput,
+  isExplicitReportOutput,
   writeReportOutput,
 } from "./ui/report-output.ts";
 import type { InspectorServerContext } from "./ui/server.ts";
@@ -105,6 +105,13 @@ const SESSION_SNAPSHOT_UNAVAILABLE =
  */
 const SNAPSHOT_OUTPUT_REFUSED =
   "Inspector snapshot output must be a user-owned .html file outside the Pi session directory.";
+
+/**
+ * Bounded refusal for an explicit JSON export destination that could name a
+ * Pi session source. It names the constraint, never the rejected path.
+ */
+const JSON_OUTPUT_REFUSED =
+  "Inspector JSON output must be a user-owned .json file, never a Pi session source.";
 
 /**
  * Live observer state kept per tracked session so a repeated promotion cannot
@@ -1035,9 +1042,10 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             // cache paths never take this guard.
             if (
               command.output !== undefined &&
-              !isExplicitSnapshotOutput(
+              !isExplicitReportOutput(
                 command.output,
                 sessionManager.getSessionDir(),
+                "html",
               )
             )
               return notifyWarning(ctx, SNAPSHOT_OUTPUT_REFUSED);
@@ -1143,7 +1151,18 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             }
             return;
           }
-          // json: deterministic export, never opens a browser.
+          // json: deterministic export, never opens a browser. An explicit
+          // destination is refused before any read or write so a JSON export
+          // can never name Pi's persisted session source (invariant 1).
+          if (
+            command.output !== undefined &&
+            !isExplicitReportOutput(
+              command.output,
+              sessionManager.getSessionDir(),
+              "json",
+            )
+          )
+            return notifyWarning(ctx, JSON_OUTPUT_REFUSED);
           const common = { ...historyRead, scope: "tree" as const };
           let dto: unknown;
           let reportName: string;

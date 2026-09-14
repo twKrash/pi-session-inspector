@@ -141,19 +141,25 @@ export function generatedSnapshotPath(
 }
 
 /**
- * Whether one explicit snapshot destination may be written: a user-owned
- * `.html` export outside Pi's live session directory, where the authoritative
- * session JSONL lives (AGENTS.md invariant 1). Generated cache paths never
- * take this guard, and an accepted path keeps its user-owned cleanup
- * registration. Lexical resolution only: nothing here reads, creates, or
- * writes, so a refusal can never touch the destination.
+ * Whether one explicit report destination may be written: a user-owned file
+ * that carries the report's own `extension` and never names Pi's persisted
+ * session source (AGENTS.md invariant 1). Pi keeps every session source as a
+ * `.jsonl` path, so requiring a `.json` JSON export or a `.html` snapshot
+ * refuses one directly in either mode; a snapshot additionally stays outside
+ * Pi's session directory, where those sources live. Lexical resolution only:
+ * nothing here reads, creates, or writes, so a refusal can never touch the
+ * destination.
  */
-export function isExplicitSnapshotOutput(
+export function isExplicitReportOutput(
   output: string,
   sessionDirectory: string,
+  extension: "html" | "json",
 ): boolean {
   const resolved = resolve(output);
-  if (!resolved.toLowerCase().endsWith(".html")) return false;
+  if (!resolved.toLowerCase().endsWith(`.${extension}`)) return false;
+  // A `.json` export can never be a session source, so only the artifact
+  // destination takes the extra directory rule.
+  if (extension === "json") return true;
   const inside = relative(resolve(sessionDirectory), resolved);
   if (inside === "") return false;
   const outsideSessionDirectory =

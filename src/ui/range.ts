@@ -282,8 +282,6 @@ export type ViewRows = {
  * The one range filter every tab renders from (design §5.4): keeps the rows
  * whose UTC date is inside the range and preserves each array's order. It is
  * generic over the view so a caller's concrete row types survive the filter.
- * Each predicate is written inline: a named nested helper would be transpiled
- * with a module-scope `__name`, which the inlined source cannot resolve.
  */
 export function filterView<T extends ViewRows>(view: T, range: RangeState): T {
   const DATE = /^\d{4}-\d{2}-\d{2}$/;

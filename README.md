@@ -46,9 +46,13 @@ Snapshots are created lazily under Pi's agent directory at
 identities use an opaque hashed basename. Generated cache expires after 14 days
 and is capped at 100 MiB, oldest first; explicit exports are never pruned.
 Relative `--output` paths resolve against the extension process working
-directory. An explicit output that names a Pi session JSONL (directly or
-through a hard/symbolic link) is refused: Inspector never overwrites Pi's own
-session data.
+directory. An explicit output carries its own extension (`.html` for
+`snapshot`, `.json` for `json`) and never names Pi's own session data: a direct
+session-source path (a `.jsonl` file, or for `snapshot` anything inside Pi's
+session directory) is refused before any read or write. A destination that is a
+hard or symbolic link to a session source is not followed: the report replaces
+that directory entry atomically, so the session source keeps its own bytes and
+inode.
 
 `snapshot` HTML is one resolved, self-contained `file://` artifact: it opens
 with no server, runs no JavaScript, performs no network request, carries no

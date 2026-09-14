@@ -45,9 +45,12 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Fixed
 
-- Explicit report and snapshot outputs never overwrite an authoritative Pi
-  session JSONL: an output that aliases one (including through a hard or
-  symbolic link) is refused, and a write replaces its destination atomically.
+- Explicit `snapshot` and `json` outputs never name Pi's authoritative session
+  JSONL: a direct session-source destination (any `.jsonl` path, or for
+  `snapshot` anything inside the Pi session directory) is refused before any
+  read or write, while a destination that is a hard or symbolic link to a
+  session source is replaced atomically instead of followed, so the source
+  keeps its own bytes and inode.
 
 ## [0.9.3]
 

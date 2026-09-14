@@ -459,7 +459,7 @@ Persisted schema starts at v1. Additive reads ignore unknown fields. Breaking sc
 - The removed no-server wording applies to `ui`'s prior transport only; no
   daemon, always-running service, cross-process listener, or generic backend is
   introduced. JSON/TUI behavior and report DTO semantics remain unchanged.
-- This is an intentional pre-1.0 breaking command change, planned for
+- This is an intentional pre-1.0 breaking command change, released in
   `0.10.0`. See ADR 0018 and §3 for the complete server, token, API, range,
   snapshot, CSP, and error contracts.
 

@@ -68,8 +68,7 @@ terminal interaction surface. `--output` is valid for `snapshot` and `json`,
 never `ui`.
 
 This is an intentional pre-1.0 public command change. The implementation
-release is planned as `0.10.0`; no compatibility alias for `ui --output` is
-provided.
+release is `0.10.0`; no compatibility alias for `ui --output` is provided.
 
 ### Canonical loading and L2 ownership
 

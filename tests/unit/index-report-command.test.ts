@@ -876,6 +876,119 @@ test("legacy syntax and removed flags return usage instead of the generic messag
   }
 });
 
+test("json refuses a destination that could overwrite Pi session authority", async () => {
+  const harness = await createHarness();
+  try {
+    await writeSessionManifest(harness);
+    // Pi keeps every session source as a JSONL path, so an explicit JSON
+    // export never names one: not the live session, not another tracked
+    // session, and not a nested path inside the session directory.
+    for (const destination of [
+      harness.sessionFile,
+      join(harness.sessionDirectory, "other-session.jsonl"),
+      join(harness.sessionDirectory, "nested", "report.jsonl"),
+    ]) {
+      harness.notices.length = 0;
+      await harness.handler()(
+        `json --scope tree --output ${JSON.stringify(destination)}`,
+        harness.context({ mode: "interactive" }),
+      );
+      const notice = harness.notices.at(-1) ?? "";
+      assert.match(notice, /json output/i, destination);
+      // Bounded refusal: neither the destination nor exception text leaks,
+      // and no report is written anywhere.
+      assert.equal(notice.includes(destination), false, destination);
+      assert.equal(await countFiles(harness.cache), 0, destination);
+      if (destination !== harness.sessionFile)
+        await assert.rejects(access(destination), destination);
+      assert.equal(
+        await readFile(harness.sessionFile, "utf8"),
+        SESSION_SOURCE,
+        destination,
+      );
+    }
+
+    // A user-owned JSON destination outside Pi's session directory still
+    // writes, including one whose directory merely shares the session
+    // directory's name prefix.
+    for (const json of [
+      join(harness.directory, "report.json"),
+      join(`${harness.sessionDirectory}-exports`, "report.json"),
+    ]) {
+      harness.notices.length = 0;
+      await harness.handler()(
+        `json --scope tree --output ${JSON.stringify(json)}`,
+        harness.context({ mode: "interactive" }),
+      );
+      assert.equal(harness.notices.at(-1), `Inspector report written: ${json}`);
+      assert.equal(
+        JSON.parse(await readFile(json, "utf8")).usage.totalTokens,
+        18,
+        json,
+      );
+      assert.equal(
+        await readFile(harness.sessionFile, "utf8"),
+        SESSION_SOURCE,
+        json,
+      );
+    }
+
+    // A filesystem alias that merely names the session source is not a direct
+    // session-source destination: the write replaces the alias atomically, so
+    // the source inode and its bytes survive.
+    const aliasKinds: Array<[string, (destination: string) => Promise<void>]> =
+      [
+        ["hard-link", (destination) => link(harness.sessionFile, destination)],
+        ["symlink", (destination) => symlink(harness.sessionFile, destination)],
+      ];
+    let checked = 0;
+    for (const [kind, createAlias] of aliasKinds) {
+      const destination = join(harness.directory, `${kind}-alias.json`);
+      try {
+        await createAlias(destination);
+      } catch (error) {
+        assert.equal(
+          isAliasUnsupported(error),
+          true,
+          `${kind}: ${String(error)}`,
+        );
+        continue;
+      }
+      checked += 1;
+      harness.notices.length = 0;
+      await harness.handler()(
+        `json --scope tree --output ${JSON.stringify(destination)}`,
+        harness.context({ mode: "interactive" }),
+      );
+      assert.equal(
+        await readFile(harness.sessionFile, "utf8"),
+        SESSION_SOURCE,
+        kind,
+      );
+      assert.equal(
+        harness.notices.at(-1),
+        `Inspector report written: ${destination}`,
+        kind,
+      );
+      assert.equal((await lstat(destination)).isSymbolicLink(), false, kind);
+      assert.equal(
+        JSON.parse(await readFile(destination, "utf8")).usage.totalTokens,
+        18,
+        kind,
+      );
+      if (kind === "hard-link")
+        assert.notEqual(
+          (await stat(destination)).ino,
+          (await stat(harness.sessionFile)).ino,
+          kind,
+        );
+    }
+    assert.ok(checked > 0, "no alias kind was creatable");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 test("json current, history and global export deterministically and never open", async () => {
   const harness = await createHarness();
   try {
