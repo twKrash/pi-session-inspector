@@ -398,6 +398,21 @@ async function handleRequest(
     return;
   }
 
+  // Browsers request this conventional icon even though no icon asset is shipped.
+  if (path === "/favicon.ico") {
+    if (method !== "GET" && method !== "HEAD") {
+      sendProblem(res, "method-not-allowed", {
+        head,
+        allow: "GET, HEAD",
+        reason: "method",
+      });
+      return;
+    }
+    res.writeHead(204, securityHeaders("image/x-icon"));
+    res.end();
+    return;
+  }
+
   if (path === "/api/v1/ui" || path === "/api/v1/reports/global") {
     if (method !== "GET") {
       sendProblem(res, "method-not-allowed", {

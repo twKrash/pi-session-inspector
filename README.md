@@ -79,7 +79,9 @@ carry that token as `Authorization: Bearer`. The boundary is exact:
   refusal is the contract, not a case for a broader allowlist.
 - Static assets are the five known files (`/`, `/style.css`, `/route.js`,
   `/range.js`, `/client.js`), served by a fixed table with `GET`/`HEAD` only.
-  API routes are `/api/v1/ui`, `/api/v1/reports/global`, and
+  The exact `/favicon.ico` compatibility probe returns empty `204` for
+  `GET`/`HEAD` and is not an additional asset. API routes are `/api/v1/ui`,
+  `/api/v1/reports/global`, and
   `/api/v1/reports/sessions/<sessionId>` with `GET` only.
 - Every response is `no-store`, `nosniff`, and `no-referrer`; errors are bounded
   Problem Details that echo no input, and the diagnostics written to stderr

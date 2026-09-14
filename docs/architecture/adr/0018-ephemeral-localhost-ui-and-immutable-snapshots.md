@@ -213,9 +213,11 @@ GET /api/v1/reports/sessions/{sessionId}
 GET /api/v1/reports/global
 ```
 
-Shell and known static assets support `GET` and `HEAD`. `/api/v1/*` supports
-`GET` only. There is no mutation API and no separate refresh route; refresh is
-a new request to `/api/v1/ui`. The deferred collection resource is:
+Shell and known static assets support `GET` and `HEAD`. The exact
+`/favicon.ico` compatibility route returns empty `204` for `GET` and `HEAD`
+without adding an asset. `/api/v1/*` supports `GET` only. There is no mutation
+API and no separate refresh route; refresh is a new request to `/api/v1/ui`.
+The deferred collection resource is:
 
 ```text
 GET /api/v1/reports/sessions

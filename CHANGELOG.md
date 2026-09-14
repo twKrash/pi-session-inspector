@@ -4,6 +4,13 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+### Fixed
+
+- `ui` now bootstraps its browser client on page load, so the authenticated
+  report request and in-memory theme control work in ordinary browsers.
+- `ui` answers browser favicon probes with an empty `204` response, avoiding
+  misleading 404 diagnostics without expanding its known asset surface.
+
 ## [0.10.0]
 
 **Breaking (Pre-M8.4 ephemeral localhost UI and immutable snapshots; see ADR 0018 and the v1 spec).**

@@ -599,6 +599,10 @@ test("the Host, peer, and Origin boundary admits only the exact loopback origin"
       headers: { Host: "evil.example:1" },
     });
     assertProblem(wrongHost, 403, "forbidden", ["evil.example"]);
+    const wrongFaviconHost = await call(server, "/favicon.ico", {
+      headers: { Host: "evil.example:1" },
+    });
+    assertProblem(wrongFaviconHost, 403, "forbidden", ["evil.example"]);
 
     const missingHost = await call(server, "/", { setHost: false });
     assertProblem(missingHost, 403, "forbidden");
@@ -778,6 +782,46 @@ test("only normalized IPv4 loopback peers are accepted", () => {
 // Methods, unknown routes, and traversal
 // ---------------------------------------------------------------------------
 
+test("favicon requests return an empty success without a diagnostic", async () => {
+  const { context } = fixtureContext();
+  const server = await getInspectorServer(context);
+  const lines: string[] = [];
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    lines.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    for (const method of ["GET", "HEAD"]) {
+      const response = await call(server, "/favicon.ico", { method });
+      assert.equal(response.status, 204, method);
+      assert.equal(response.body, "", method);
+      assert.equal(response.headers["content-type"], "image/x-icon", method);
+      assert.equal(
+        response.headers["cache-control"],
+        "no-store, no-cache",
+        method,
+      );
+      assert.equal(
+        response.headers["x-content-type-options"],
+        "nosniff",
+        method,
+      );
+    }
+    assert.deepEqual(lines, []);
+
+    for (const method of ["POST", "PUT", "DELETE", "OPTIONS"]) {
+      const response = await call(server, "/favicon.ico", { method });
+      assertProblem(response, 405, "method-not-allowed", [method]);
+      assert.equal(response.headers.allow, "GET, HEAD");
+    }
+    assert.equal(lines.length, 4);
+  } finally {
+    process.stderr.write = original;
+    await closeInspectorServer();
+  }
+});
+
 test("unsupported methods, traversal paths, and unknown routes fail boundedly", async () => {
   const { context, calls } = fixtureContext();
   const server = await getInspectorServer(context);
@@ -814,7 +858,6 @@ test("unsupported methods, traversal paths, and unknown routes fail boundedly", 
       "/style.css/",
       "/etc/passwd",
       "/index.html",
-      "/favicon.ico",
       "/.env",
       "/api/v1/ui/",
       "/api/v1/",

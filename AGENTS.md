@@ -59,3 +59,14 @@ instead of imposing those ignores on every repository consumer.
 All wait_agent tool calls MUST use at least 10 minutes timeout.
 `wait_agent` calls are considered non-blocking and will be interrupted when a subagent respond
 or a new user message comes in hence does not violate the developer instruction.
+
+## Session and subagent artifacts
+
+Files under `~/.pi/agent/sessions/` are outside the project workspace.
+
+Do not use `ctx_execute_file` for subagent transcripts, fork session JSONL,
+or other Pi session artifacts. Use the regular `read` tool instead.
+
+`ctx_execute_file` is intended for files inside the current project root.
+
+Use Pi's `read` tool for session JSONL and subagent artifacts instead.

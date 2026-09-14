@@ -327,9 +327,9 @@ function markupTree(
 
 /**
  * Runs the three shipped classic scripts against a stub DOM built from the
- * shipped shell. Nothing is executed until `start()`, so a test can inspect the
- * bootstrap's own effects (the loading landmark, the token's disappearance, the
- * first request) separately from the rendered result.
+ * shipped shell. The scripts bootstrap on evaluation as they do in a browser;
+ * `start()` remains awaitable so tests can wait for the initial request and
+ * inspect its effects (the loading landmark, token disappearance, and render).
  */
 export function createWebClient(input: WebClientInput = {}): WebClientHarness {
   const events: WebClientEvent[] = [];
@@ -499,8 +499,8 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
   ] as const) {
     runInContext(source, context, { filename: name });
   }
-  // The scripts are evaluated above; the parse recorder below is installed after
-  // evaluation and before `start()`, so it sees every parse `start()` performs.
+  // The client starts during evaluation; this recorder is installed before the
+  // asynchronous response resolves, so it sees every request-driven parse.
   const namespace = context.SessionInspectorWeb as
     | { route?: { parse?: (hash: unknown, options?: unknown) => unknown } }
     | undefined;

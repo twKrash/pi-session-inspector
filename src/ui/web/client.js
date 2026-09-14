@@ -331,6 +331,7 @@
   let lastAppliedKey = "";
   let stateNotice = undefined;
   let inFlight = null;
+  let startPromise = null;
   let state = { section: "current", tab: "overview", scope: "active" };
   let view = null;
   // One remembered range intent per view identity, and the ephemeral per-(view,
@@ -2213,8 +2214,10 @@
     if (held === undefined || effects.sectionChanged === true) return;
     const links = tabs.querySelectorAll("a");
     const link =
-      links.filter((candidate) => candidate.dataset.tab === held)[0] ||
-      links.filter((candidate) => candidate.dataset.tab === view.activeTab)[0];
+      Array.from(links).find((candidate) => candidate.dataset.tab === held) ||
+      Array.from(links).find(
+        (candidate) => candidate.dataset.tab === view.activeTab,
+      );
     if (link !== undefined && typeof link.focus === "function") link.focus();
   };
 
@@ -2368,9 +2371,9 @@
     const output = q("view");
     if (output === null) return false;
     const key = state.entity.kind + ":" + state.entity.id;
-    const found = output
-      .querySelectorAll(".entity")
-      .filter((candidate) => candidate.dataset.entity === key)[0];
+    const found = Array.from(output.querySelectorAll(".entity")).find(
+      (candidate) => candidate.dataset.entity === key,
+    );
     if (found === undefined) return false;
     found.classList.add("entity-focus");
     if (typeof found.focus === "function") found.focus();
@@ -2755,14 +2758,21 @@
 
   /**
    * Bootstrap, load, and apply. The capability fragment is consumed before the
-   * address bar is parsed, so no route and no request can ever carry it.
+   * address bar is parsed, so no route and no request can ever carry it. The
+   * promise is shared because the browser starts the client on script load while
+   * any later caller may await the same startup work.
    */
-  const start = async () => {
-    token = consumeToken();
-    wire();
-    apply();
-    if (inFlight !== null) await inFlight;
+  const start = () => {
+    if (startPromise !== null) return startPromise;
+    startPromise = (async () => {
+      token = consumeToken();
+      wire();
+      apply();
+      if (inFlight !== null) await inFlight;
+    })();
+    return startPromise;
   };
 
   web.start = start;
+  void start().catch(() => {});
 })();

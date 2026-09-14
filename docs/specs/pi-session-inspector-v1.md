@@ -154,14 +154,17 @@ diagnostic values are data, never trusted markup.
 The interactive assets are ordinary classic files under `src/ui/web/`:
 `shell.html`, `style.css`, `route.js`, `range.js`, and `client.js`. The server
 serves them unchanged. The static snapshot does not include the route, range,
-or API client assets.
+or API client assets. Browsers may probe exact `/favicon.ico`; `GET` and `HEAD`
+return an empty `204` response without report data or a diagnostic, and this
+compatibility route is not an additional browser asset.
 
 ### Pre-M8.4 HTTP and security contract
 
 The server uses Node `node:http` and `node:crypto`, binds only to
 `127.0.0.1:0`, and is one lazy singleton per Pi process. Shell/assets accept
-`GET` and `HEAD`; `/api/v1/*` accepts `GET` only. Unsupported methods return a
-bounded structured error.
+`GET` and `HEAD`; the exact `/favicon.ico` compatibility route returns empty
+`204` for `GET` and `HEAD`; `/api/v1/*` accepts `GET` only. Unsupported methods
+return a bounded structured error.
 
 The server generates a process/server-instance capability token from 32 bytes
 of `node:crypto.randomBytes`, encoded base64url. It is not derived from any

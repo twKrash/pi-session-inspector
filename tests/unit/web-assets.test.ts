@@ -130,6 +130,11 @@ test("the shell is report-free and loads the known assets in explicit order", ()
   for (const tag of scriptTags) {
     assert.match(tag, /^<script src="\/[a-z]+\.js">$/);
   }
+  assert.equal(
+    shell.indexOf('<script src="/client.js">') >
+      shell.indexOf('id="announcement"'),
+    true,
+  );
   assert.deepEqual(
     [...shell.matchAll(/(?:href|src)="(\/[^"]+)"/g)].map((match) => match[1]),
     ["/style.css", "/route.js", "/range.js", "/client.js"],
@@ -786,6 +791,26 @@ function kinds(events: readonly { kind: string }[]): string[] {
   return events.map((event) => event.kind);
 }
 
+test("the loaded browser scripts bootstrap data and wire the theme control", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: `#token=${TOKEN}`,
+  });
+  // A browser evaluates classic scripts from shell.html without a host calling
+  // an exported entry point.
+  await settle();
+
+  assert.deepEqual(harness.fetches(), [
+    { url: "/api/v1/ui", authorization: `Bearer ${TOKEN}` },
+  ]);
+  assert.equal(harness.element("title").textContent, "A session, in focus.");
+  const theme = harness.element("theme");
+  assert.equal(harness.body().className.includes("theme-dark"), true);
+  harness.click(theme);
+  assert.equal(harness.body().className.includes("theme-dark"), false);
+  assert.equal(theme.textContent, "Dark theme");
+});
+
 test("the bootstrap consumes the token fragment before parsing or requesting", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
@@ -970,6 +995,26 @@ function metrics(harness: Harness): string[] {
 }
 
 type Harness = ReturnType<typeof createWebClient>;
+
+test("tab navigation supports browser DOM collections", async () => {
+  const harness = createWebClient({ responses: [uiSnapshot()] });
+  await harness.start();
+  const tabs = harness.element("tabs");
+  const querySelectorAll = tabs.querySelectorAll.bind(tabs);
+  tabs.querySelectorAll = (selector) => {
+    const result = querySelectorAll(selector);
+    if (selector === "a") {
+      // NodeList has forEach but does not inherit Array.prototype.filter.
+      Object.defineProperty(result, "filter", { value: undefined });
+    }
+    return result;
+  };
+  // A native click focuses its link before the delegated navigation handler
+  // rebuilds the tab strip.
+  tabLink(harness, "overview").focus();
+  harness.click(tabLink(harness, "models"));
+  assert.equal(currentTab(harness), "models");
+});
 
 test("one navigation renders once, however many events report it", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()] });
@@ -1583,6 +1628,16 @@ test("a row link is a real route that keeps the context and focuses its row", as
     row.attributes.href,
     "#/current/models?scope=tree&preset=7&entity=model%3Aacme%2Falpha",
   );
+  const view = harness.element("view");
+  const querySelectorAll = view.querySelectorAll.bind(view);
+  view.querySelectorAll = (selector) => {
+    const result = querySelectorAll(selector);
+    if (selector === ".entity") {
+      // NodeList has no Array.prototype.filter method.
+      Object.defineProperty(result, "filter", { value: undefined });
+    }
+    return result;
+  };
   harness.click(row);
   assert.equal(harness.location.hash, row.attributes.href);
   // No new request: the destination renders the projection already in hand.
