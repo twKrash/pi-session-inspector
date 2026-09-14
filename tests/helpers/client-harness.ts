@@ -5,12 +5,13 @@
  * the server serves rather than a copy of their logic.
  *
  * Everything the scripts can reach is stubbed here: the document (ids, tags,
- * classes and `[data-*]` attributes), the address bar, `history.replaceState`,
- * `fetch`, and the two event paths. The harness also records what the client did
- * and in which order — the route parses it performed, the requests it sent with
- * their `Authorization` header and the address bar they were sent from, and the
- * times it installed a canonical hash — because bootstrap order is a claim no
- * rendered value can prove on its own.
+ * classes, `[data-*]` attributes, focus, and an input's selection), the address
+ * bar, `history.replaceState`, both storages, `fetch`, and the two event paths.
+ * The harness also records what the client did and in which order — the route
+ * parses it performed, the requests it sent with their `Authorization` header
+ * and the address bar they were sent from, the times it installed a canonical
+ * hash, and every storage write — because bootstrap order and a missing write
+ * are claims no rendered value can prove on its own.
  */
 import { createContext, runInContext } from "node:vm";
 
@@ -24,6 +25,7 @@ export type StubElement = HarnessNode & {
   textContent: string;
   hidden: boolean;
   disabled: boolean;
+  selected: boolean;
   value: string;
   placeholder: string;
   title: string;
@@ -43,7 +45,9 @@ export type StubElement = HarnessNode & {
   addEventListener(type: string, listener: (event: unknown) => void): void;
   classList: { add(value: string): void; toggle(value: string): boolean };
   focus(): void;
-  setSelectionRange(): void;
+  selectionStart: number;
+  selectionEnd: number;
+  setSelectionRange(start: number, end: number): void;
   showModal(): void;
   close(): void;
 };
@@ -101,6 +105,8 @@ export type WebClientHarness = {
   popstate(): void;
   location: { hash: string };
   activeElement(): StubElement | null;
+  /** Every storage write the client performed, though both storages exist. */
+  storageWrites(): readonly { area: string; key: string }[];
   /** Renders performed so far, counted by the client's one view swap. */
   renders(): number;
   /** `history.replaceState` calls so far, so a push and a replace differ. */
@@ -163,6 +169,7 @@ function stubElement(
   element.textContent = "";
   element.hidden = false;
   element.disabled = false;
+  element.selected = false;
   element.value = "";
   element.placeholder = "";
   element.title = "";
@@ -246,7 +253,12 @@ function stubElement(
   element.focus = () => {
     tracking?.focus(element);
   };
-  element.setSelectionRange = () => {};
+  element.selectionStart = 0;
+  element.selectionEnd = 0;
+  element.setSelectionRange = (start, end) => {
+    element.selectionStart = start;
+    element.selectionEnd = end;
+  };
   element.showModal = () => {};
   element.close = () => {};
   return element;
@@ -387,17 +399,41 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     },
   };
   // The address bar the client reads and writes; a replacement moves the entry
-  // the client already has, an assignment is the client's own new entry.
-  const locationStub: { hash: string } = { hash: input.hash ?? "" };
+  // the client already has, an assignment is the client's own history entry —
+  // the difference the event log exists to prove.
+  let hashValue = input.hash ?? "";
+  const locationStub = {
+    get hash(): string {
+      return hashValue;
+    },
+    set hash(value: string) {
+      hashValue = value;
+      events.push({ kind: "hashAssign", hash: value });
+    },
+  };
   let replacements = 0;
   const historyStub = {
     replaceState: (_state: unknown, _title: string, url: string): void => {
       if (input.replaceStateFails === true) throw new Error("SecurityError");
       replacements += 1;
-      locationStub.hash = url;
+      hashValue = url;
       events.push({ kind: "replaceState", hash: url });
     },
   };
+
+  // Both storages exist and record every write, so "no token reaches storage"
+  // is a behavior of the client rather than an API this harness never built.
+  const storageWrites: { area: string; key: string }[] = [];
+  const storage = (area: string): Record<string, unknown> =>
+    new Proxy(
+      {},
+      {
+        set: (_target, key) => {
+          storageWrites.push({ area: area, key: String(key) });
+          return true;
+        },
+      },
+    );
 
   // The client reads at most one bounded capability token from the fragment; the
   // stub below reports exactly the three request facts a test may assert.
@@ -448,6 +484,8 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     window: windowStub,
     location: locationStub,
     history: historyStub,
+    localStorage: storage("localStorage"),
+    sessionStorage: storage("sessionStorage"),
     navigator: navigatorStub,
     fetch: fetchStub,
     console,
@@ -543,6 +581,7 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     popstate: () => fire("popstate"),
     location: locationStub,
     activeElement: () => documentStub.activeElement,
+    storageWrites: () => storageWrites,
     renders: () => renders,
     replacements: () => replacements,
   };

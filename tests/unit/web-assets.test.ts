@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { ENGLISH_CATALOG } from "../../src/ui/report-projection.ts";
+import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
   projectInspectorUi,
   type InspectorUiSnapshot,
@@ -98,12 +99,9 @@ test("the loader reads exactly the five known files and serves their bytes", () 
 });
 
 test("the stylesheet is the one source for the asset and the snapshot", () => {
-  // The snapshot hashes the shipped bytes, so the bytes cannot drift apart.
-  const snapshot = readFileSync(
-    new URL("src/ui/snapshot.ts", PROJECT_ROOT),
-    "utf8",
-  );
-  assert.equal(snapshot.includes("WEB_ASSETS"), true);
+  // The snapshot inlines and hashes the shipped bytes themselves, so the two
+  // cannot drift apart.
+  assert.equal(SNAPSHOT_STYLESHEET, WEB_ASSETS.style);
   assert.equal(
     WEB_ASSETS.style.startsWith("\n\n:root{color-scheme:light"),
     true,
@@ -249,6 +247,9 @@ test("no raw producer field name or host path reaches a browser asset", () => {
 });
 
 test("the browser copy is the server catalog, not a second set of strings", () => {
+  // Scope: every string this table carries is the catalog's own text for the
+  // same key. That the table carries every key the renderer looks up — the
+  // other half of "no second catalog" — is pinned by the next test.
   const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(WEB_ASSETS.client);
   assert.notEqual(literal, null, "client.js must declare its copy literal");
   const copy = JSON.parse(literal?.[1] as string) as Record<string, string>;
@@ -256,6 +257,83 @@ test("the browser copy is the server catalog, not a second set of strings", () =
   const catalog: Readonly<Record<string, string>> = ENGLISH_CATALOG;
   for (const [key, value] of Object.entries(copy)) {
     assert.equal(catalog[key], value, key);
+  }
+});
+
+test("every copy key the renderer names resolves in the catalog", () => {
+  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(WEB_ASSETS.client);
+  assert.notEqual(literal, null, "client.js must declare its copy literal");
+  const declared = literal as RegExpExecArray;
+  const copy = JSON.parse(declared[1] as string) as Record<string, string>;
+  const catalog: Readonly<Record<string, string>> = ENGLISH_CATALOG;
+  // The renderer only: a key named outside the table is a lookup this test has
+  // to see, and a key named inside it would otherwise pass by construction.
+  const renderer =
+    WEB_ASSETS.client.slice(0, declared.index) +
+    WEB_ASSETS.client.slice(declared.index + declared[0].length);
+
+  const named = new Set<string>();
+  // A dotted key written literally is a copy lookup; a prefix with a trailing
+  // dot is one half of a concatenation, covered by the families below.
+  for (const found of renderer.matchAll(
+    /"([a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+\.?)"/g,
+  )) {
+    if (!found[1].endsWith(".")) named.add(found[1]);
+  }
+  // The two single-word keys the renderer reads through a dotted access.
+  for (const found of renderer.matchAll(/COPY\.([A-Za-z][\w]*)/g)) {
+    named.add(found[1]);
+  }
+
+  // The families the renderer builds from a bounded vocabulary: each prefix and
+  // every value the DTO can carry under it.
+  const { route } = namespaces();
+  const sections = plain(route.sections) as string[];
+  const families: [string, readonly string[]][] = [
+    ["nav.", [...sections, "back", "unavailable", "entityFocus"]],
+    ["tab.", plain(route.tabs) as string[]],
+    ["kicker.", sections],
+    ["heading.", sections],
+    ["subtitle.", sections],
+    ["chart.", ["sessions", "cost", "tokens", "generations", "tools"]],
+    [
+      "metric.usage.",
+      ["generations", "toolResults", "compactions", "branchSummaries"],
+    ],
+    ["tools.", ["succeeded", "failed", "interrupted"]],
+    ["agents.", ["succeeded", "failed", "interrupted", "running", "unknown"]],
+    ["presence.", ["present", "absent", "unknown"]],
+    // An integration's evidence state, plus the confidence the ledger's own
+    // rows carry (the reducer records native rows only).
+    ["evidence.", ["native", "supported", "unavailable", "unsupported"]],
+    // The one status verdict L2 publishes per history row.
+    ["status.", ["errors", "interrupted", "clean"]],
+  ];
+  for (const [prefix, values] of families) {
+    for (const value of values) named.add(prefix + value);
+  }
+  // The label keys a projection publishes for its own usage ladder and the
+  // coverage wording it renders through `coverage.line`.
+  for (const key of [
+    "metric.cost",
+    "metric.knownCost",
+    "metric.tokens",
+    "metric.knownTokens",
+    "coverage.unknown",
+    "coverage.none",
+    "coverage.complete",
+    "coverage.sessions",
+    "coverage.sessionsLimited",
+    "coverage.unknownCompletenessCost",
+    "coverage.unknownCompletenessTokens",
+  ]) {
+    named.add(key);
+  }
+
+  assert.equal(named.size > 150, true);
+  for (const key of named) {
+    assert.equal(typeof copy[key], "string", key);
+    assert.equal(copy[key], catalog[key], key);
   }
 });
 
@@ -267,6 +345,8 @@ test("the assets own one namespace with route, range, and start", async () => {
     "window",
     "location",
     "history",
+    "localStorage",
+    "sessionStorage",
     "navigator",
     "fetch",
     "console",
@@ -334,6 +414,8 @@ type ParsedRoute = {
 };
 
 type RouteNamespace = {
+  sections: readonly string[];
+  tabs: readonly string[];
   parse(
     hash: string,
     options: {
@@ -603,11 +685,13 @@ test("the bootstrap consumes the token fragment before parsing or requesting", a
   await harness.start();
 
   // The fragment is replaced first, then the request is made, then the address
-  // bar is parsed: the token cannot reach either step.
-  assert.deepEqual(kinds(harness.events).slice(0, 3), [
+  // bar is parsed, then the canonical scope is installed on the same entry: the
+  // token cannot reach either step, and the bootstrap adds no history entry.
+  assert.deepEqual(kinds(harness.events), [
     "replaceState",
     "fetch",
     "parse",
+    "replaceState",
   ]);
   assert.equal(kinds(harness.events).includes("hashAssign"), false);
   for (const hash of harness.routeParses()) {
@@ -637,9 +721,9 @@ test("a token is never accepted from a query, storage, or a cookie", async () =>
     { url: "/api/v1/ui", authorization: "" },
   ]);
   assert.equal(harness.location.hash, "#/current/overview?scope=tree");
-  // The page's own scratch space carries no credential surface at all.
-  assert.equal("localStorage" in harness.context, false);
-  assert.equal("sessionStorage" in harness.context, false);
+  // Both storages exist and recorded nothing: the page's own scratch space
+  // carries no credential surface at all.
+  assert.deepEqual(harness.storageWrites(), []);
 });
 
 test("a range intent is the only query the client sends", async () => {
@@ -735,6 +819,14 @@ function visibleTabs(harness: Harness): (string | undefined)[] {
     .element("tabs")
     .querySelectorAll("a")
     .map((link) => link.dataset.tab);
+}
+
+/** The sort option the client marked selected; `selected` is render output. */
+function selectedSort(harness: Harness): string | undefined {
+  return harness
+    .element("sort")
+    .querySelectorAll("option")
+    .find((option) => option.selected)?.value;
 }
 
 /** The tab the client marked current; `aria-current` is render output. */
@@ -1033,6 +1125,26 @@ test("a view's range and table settings are remembered, never linked", async () 
   assert.equal(harness.element("search").value, "acme");
 });
 
+test("a table's sort is remembered across a tab switch", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/models?scope=tree",
+  });
+  await harness.start();
+  const sort = harness.element("sort");
+  sort.value = "name";
+  harness.change(sort);
+  assert.equal(harness.location.hash, "#/current/models?scope=tree&sort=name");
+
+  // The leaving table's sort is not the next table's; it is remembered for the
+  // table it belongs to and restored when that table comes back.
+  harness.click(tabLink(harness, "tools"));
+  assert.equal(selectedSort(harness), "default");
+  harness.click(tabLink(harness, "models"));
+  assert.equal(selectedSort(harness), "name");
+  assert.equal(harness.location.hash, "#/current/models?scope=tree&sort=name");
+});
+
 test("focus moves to the section heading on a section change only", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()], hash: "" });
   await harness.start();
@@ -1049,6 +1161,53 @@ test("focus moves to the section heading on a section change only", async () => 
   assert.equal(focused, 1);
   harness.click(navLink(harness, "current"));
   assert.equal(focused, 2);
+});
+
+test("a tab that held keyboard focus keeps it across a re-render", async () => {
+  const harness = createWebClient({ responses: [uiSnapshot()], hash: "" });
+  await harness.start();
+  harness.click(tabLink(harness, "models"));
+  const models = tabLink(harness, "models");
+  models.focus();
+  assert.equal(harness.activeElement(), models);
+
+  // A range change rebuilds the strip: the focused tab gets its focus back.
+  harness.click(control(harness, "range", "days", "14"));
+  await settle();
+  assert.equal(currentTab(harness), "models");
+  assert.equal(harness.activeElement()?.dataset.tab, "models");
+
+  // A section change leaves focus to the heading instead.
+  harness.click(navLink(harness, "history"));
+  await settle();
+  assert.equal(harness.activeElement(), harness.element("title"));
+});
+
+test("the search box keeps its focus and caret across its own re-render", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/models?scope=tree",
+  });
+  await harness.start();
+  const search = harness.element("search");
+  search.focus();
+  search.value = "ac";
+  search.selectionStart = 1;
+  harness.input(search);
+  // Typing rebuilds the table, so the box is a new node: both the focus and the
+  // caret came back to it, at the position the typing left.
+  const rebuilt = harness.element("search");
+  assert.notEqual(rebuilt, search);
+  assert.equal(harness.activeElement(), rebuilt);
+  assert.equal(rebuilt.value, "ac");
+  assert.equal(rebuilt.selectionStart, 1);
+
+  // A re-render the search box did not ask for leaves focus where it was.
+  harness.body().focus();
+  const cleared = harness.element("search");
+  cleared.value = "";
+  harness.input(cleared);
+  assert.equal(harness.activeElement(), harness.body());
 });
 
 test("an address bar that refuses canonicalization never suppresses the render", async () => {
@@ -1075,6 +1234,38 @@ test("an address bar that refuses canonicalization never suppresses the render",
   harness.hashchange();
   assert.equal(harness.renders(), 2);
   assert.equal(harness.element("title").textContent, "Pick up the trail.");
+});
+
+test("a refused replacement applies the search route through one hash assignment", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/models?scope=tree",
+    replaceStateFails: true,
+  });
+  await harness.start();
+  const renders = harness.renders();
+  const before = harness.events.length;
+  const search = harness.element("search");
+  search.value = "acme";
+  harness.input(search);
+  // The replacement was refused, so the fallback assignment carried the route
+  // once: one history entry, no request, and the render still happened.
+  assert.deepEqual(kinds(harness.events.slice(before)), [
+    "hashAssign",
+    "parse",
+  ]);
+  assert.deepEqual(harness.events.slice(before, before + 1), [
+    { kind: "hashAssign", hash: "#/current/models?scope=tree&q=acme" },
+  ]);
+  assert.equal(harness.location.hash, "#/current/models?scope=tree&q=acme");
+  assert.equal(harness.element("search").value, "acme");
+  assert.equal(harness.renders(), renders + 1);
+  assert.equal(harness.fetches().length, 1);
+  // The event the browser sends for that assignment re-parses to the applied
+  // key, so it renders nothing a second time.
+  harness.hashchange();
+  assert.equal(harness.renders(), renders + 1);
+  assert.equal(harness.element("search").value, "acme");
 });
 
 test("the theme control toggles the DTO's theme in memory only", async () => {
@@ -1243,7 +1434,8 @@ test("a tools row narrows the calls list in place, and the clear control restore
   await harness.start();
   const view = (): StubElement => harness.element("view");
   // The summary table comes first, the calls timeline second.
-  const calls = (): StubElement => view().querySelectorAll("table")[1] as StubElement;
+  const calls = (): StubElement =>
+    view().querySelectorAll("table")[1] as StubElement;
   const rows = (): number => calls().querySelectorAll("tr").length;
   assert.equal(rows(), 3); // the header row plus the fixture's two calls
 
@@ -1279,11 +1471,11 @@ test("a row link is a real route that keeps the context and focuses its row", as
   const row = link as StubElement;
   // The destination keeps the active scope and range and names the row's id.
   assert.equal(
-    row.attributes["href"],
+    row.attributes.href,
     "#/current/models?scope=tree&preset=7&entity=model%3Aacme%2Falpha",
   );
   harness.click(row);
-  assert.equal(harness.location.hash, row.attributes["href"]);
+  assert.equal(harness.location.hash, row.attributes.href);
   // No new request: the destination renders the projection already in hand.
   assert.equal(harness.fetches().length, 1);
   assert.equal(harness.activeElement()?.dataset.entity, "model:acme/alpha");
@@ -1291,6 +1483,119 @@ test("a row link is a real route that keeps the context and focuses its row", as
     harness.activeElement()?.className.includes("entity-focus"),
     true,
   );
+});
+
+test("ErrorRow references are entity links wherever the DTO publishes an id", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  // Two runs of the same session: an in-range parent and its child. L2 decides
+  // the parent verdicts; the fixture rows carry them already.
+  range.agents = [
+    {
+      id: "parent-run",
+      parentId: null,
+      agent: "orchestrator",
+      status: "succeeded",
+      confidence: "native",
+      artifacts: null,
+      observedAt: null,
+      evidenceToolId: null,
+      model: null,
+      thinking: null,
+      failure: null,
+      usage: null,
+      parent: "none",
+    },
+    {
+      id: "child-run",
+      parentId: "parent-run",
+      agent: "worker",
+      status: "failed",
+      confidence: "native",
+      artifacts: null,
+      observedAt: null,
+      evidenceToolId: null,
+      model: null,
+      thinking: null,
+      failure: null,
+      usage: null,
+      parent: "in-range",
+    },
+  ];
+  range.childUsage = {
+    runsTotal: 2,
+    runsWithUsage: 0,
+    totalTokens: null,
+    cost: null,
+    failedCost: null,
+    failedRunsWithUsage: 0,
+    byStatus: {
+      succeeded: 1,
+      failed: 1,
+      interrupted: 0,
+      running: 0,
+      unknown: 0,
+    },
+  };
+  const error = range.errors[0];
+  if (error === undefined) throw new Error("fixture must carry an error row");
+  range.errors = [
+    {
+      ...error,
+      toolName: "read",
+      toolSource: "builtin",
+      toolStatus: "succeeded",
+      relatedChildIds: ["child-run", "missing-run"],
+    },
+  ];
+
+  const errors = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/errors?scope=tree",
+  });
+  await errors.start();
+  const view = errors.element("view");
+  const tool = view
+    .querySelectorAll("a")
+    .find((link) => link.dataset.entity === "tool:read");
+  assert.notEqual(tool, undefined);
+  assert.equal(
+    (tool as StubElement).attributes.href,
+    "#/current/tools?scope=tree&entity=tool%3Aread",
+  );
+  assert.equal((tool as StubElement).textContent, "read · builtin");
+
+  const child = view
+    .querySelectorAll("a")
+    .find((link) => link.dataset.entity === "agent:child-run");
+  assert.notEqual(child, undefined);
+  assert.equal((child as StubElement).textContent, "worker");
+  assert.equal(
+    (child as StubElement).attributes.href,
+    "#/current/agents?scope=tree&entity=agent%3Achild-run",
+  );
+  // A candidate the payload does not carry is the catalog's Unavailable wording,
+  // never the raw run id.
+  const texts = errors.texts(view).join(" ");
+  assert.equal(texts.includes("missing-run"), false);
+  assert.equal(texts.includes("Unavailable"), true);
+
+  // The Agent row whose parent L2 calls in-range links to the parent's own row,
+  // and following it focuses that row.
+  const agents = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/agents?scope=tree",
+  });
+  await agents.start();
+  const parent = agents
+    .element("view")
+    .querySelectorAll("a")
+    .find((link) => link.dataset.entity === "agent:parent-run");
+  assert.notEqual(parent, undefined);
+  assert.equal((parent as StubElement).textContent, "orchestrator");
+  agents.click(parent as StubElement);
+  assert.equal(agents.activeElement()?.dataset.entity, "agent:parent-run");
 });
 
 test("the history aggregate renders coverage, membership, and its own rows", async () => {
@@ -1332,4 +1637,175 @@ test("the global aggregate renders the DTO's own totals and inventory", async ()
   assert.equal(texts.includes("Observed days"), true);
   assert.equal(texts.includes("Commands"), true);
   assert.equal(harness.element("tabs").querySelectorAll("a").length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// client.js: the chart and the table read the section's own daily rows
+// ---------------------------------------------------------------------------
+
+/** The chart metric select of the rendered view. */
+function chartSelect(harness: Harness): StubElement {
+  const select = harness
+    .element("view")
+    .querySelectorAll("select")
+    .find((node) => node.id === "chart-metric");
+  if (select === undefined) throw new Error("no chart metric select");
+  return select;
+}
+
+/** The chart data table's headers, in render order. */
+function chartDataHeaders(harness: Harness): (string | undefined)[] {
+  const details = harness.element("view").querySelectorAll("details")[0];
+  if (details === undefined) throw new Error("no chart data table");
+  return details.querySelectorAll("th").map((header) => header.textContent);
+}
+
+test("the global chart offers only the metrics its daily rows publish", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/global/overview",
+  });
+  await harness.start();
+  const select = chartSelect(harness);
+  assert.deepEqual(
+    select.querySelectorAll("option").map((option) => option.value),
+    ["sessions", "cost", "tokens"],
+  );
+  assert.deepEqual(
+    select.querySelectorAll("option").map((option) => option.textContent),
+    ["Sessions", "Cost", "Tokens"],
+  );
+  // One column per published field: a global daily row carries no generation or
+  // tool count, so the table has no cell to fill with a fabricated zero.
+  assert.deepEqual(chartDataHeaders(harness), [
+    "Date",
+    "Sessions",
+    "Tokens",
+    "Cost (USD)",
+  ]);
+  const rows = harness
+    .element("view")
+    .querySelectorAll("details")[0] as StubElement;
+  assert.deepEqual(
+    rows
+      .querySelectorAll("tr")[1]
+      ?.querySelectorAll("td")
+      .map((cell) => cell.textContent),
+    ["2026-02-01", "1", "400", "$0.08"],
+  );
+  const rendered = harness.texts(harness.element("view")).join(" ");
+  assert.equal(rendered.includes("NaN"), false);
+  assert.equal(rendered.includes("undefined"), false);
+});
+
+test("a session view still charts every metric its own daily rows publish", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/overview?scope=tree",
+  });
+  await harness.start();
+  assert.deepEqual(
+    chartSelect(harness)
+      .querySelectorAll("option")
+      .map((option) => option.value),
+    ["sessions", "cost", "tokens", "generations", "tools"],
+  );
+  assert.deepEqual(chartDataHeaders(harness), [
+    "Date",
+    "Sessions",
+    "Tokens",
+    "Cost (USD)",
+    "Generations",
+    "Tool calls",
+  ]);
+});
+
+test("a chart row without the selected metric is unavailable, never a zero", async () => {
+  const snapshot = uiSnapshot();
+  const day = snapshot.global.daily[0];
+  if (day === undefined) throw new Error("fixture must carry global days");
+  delete (day as { sessions?: number }).sessions;
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/global/overview",
+  });
+  await harness.start();
+  const view = harness.element("view");
+  // Nothing is plotted and no cell is written for a value the row never had.
+  assert.equal(view.querySelectorAll("polyline").length, 0);
+  assert.equal(view.querySelectorAll("details").length, 0);
+  assert.equal(harness.texts(view).join(" ").includes("NaN"), false);
+});
+
+// ---------------------------------------------------------------------------
+// client.js: the four copy lookups the renderer performs
+// ---------------------------------------------------------------------------
+
+test("the renderer's words are catalog words, including at its four lookups", async () => {
+  // The history Status column: L2's status verdict key is a catalog key.
+  const history = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/history/overview",
+  });
+  await history.start();
+  const member = history
+    .element("view")
+    .querySelectorAll("tr")
+    .find((row) => row.dataset.membership === "member");
+  assert.notEqual(member, undefined);
+  assert.equal(
+    history
+      .texts(member as StubElement)
+      .join(" ")
+      .includes("No error records"),
+    true,
+  );
+
+  // The Ledger's ID column header.
+  const ledger = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/ledger?scope=tree",
+  });
+  await ledger.start();
+  assert.equal(
+    ledger
+      .element("view")
+      .querySelectorAll("th")
+      .some((header) => header.textContent === "ID"),
+    true,
+  );
+
+  // The Global aggregate's tracked-sessions card.
+  const global = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/global/overview",
+  });
+  await global.start();
+  assert.equal(
+    global
+      .element("view")
+      .querySelectorAll(".metric")
+      .some((card) =>
+        global.texts(card).join(" ").includes("Tracked sessions"),
+      ),
+    true,
+  );
+
+  // The live region: an entity focus is announced with the catalog's wording.
+  const entity = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/models?scope=tree",
+  });
+  await entity.start();
+  const link = entity
+    .element("view")
+    .querySelectorAll("a")
+    .find((anchor) => anchor.dataset.entity === "model:acme/alpha");
+  assert.notEqual(link, undefined);
+  entity.click(link as StubElement);
+  assert.match(entity.element("announcement").textContent, /· Focused entity$/);
+  assert.equal(
+    entity.element("announcement").textContent.includes("undefined"),
+    false,
+  );
 });

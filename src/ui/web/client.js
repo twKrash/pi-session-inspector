@@ -55,6 +55,7 @@
     "range.restored": "Range could not be restored; showing the default range.",
     "range.truncated": "Older days beyond the retained window are not shown.",
     "nav.unavailable": "That view isn't available here.",
+    "nav.entityFocus": "Focused entity",
     "panel.allDates": "All report dates",
     "tab.overview": "Overview",
     "tab.models": "Models",
@@ -77,6 +78,7 @@
     "metric.generations": "Generations",
     "metric.tools": "Tool calls",
     "metric.days": "Observed days",
+    "metric.sessions": "Tracked sessions",
     "metric.native": "Persisted usage · USD",
     "metric.input": "Input",
     "metric.output": "Output",
@@ -187,6 +189,9 @@
     "errors.relatedTool": "Related tool",
     "errors.relatedChildren": "Related child run(s)",
     "errors.messageUnavailable": "Unavailable",
+    "status.errors": "Error records",
+    "status.interrupted": "Interrupted calls",
+    "status.clean": "No error records",
     "empty.ledger": "No persisted records to order.",
     "history.note": "Open a row to inspect its full-tree sections with the same tabs.",
     "history.sessions.note": "Tracked sessions in the selected range",
@@ -233,6 +238,7 @@
     "table.parent": "Parent",
     "table.integration": "Integration",
     "table.copyId": "Copy ID",
+    "table.id": "ID",
     "table.kind": "Kind",
     "table.timestamp": "Timestamp",
     "table.category": "Category",
@@ -857,23 +863,51 @@
   // Section rendering (each figure is a published DTO field)
   // -------------------------------------------------------------------------
 
-  const dailyCells = (row) => [
-    row.date,
-    number(row.sessions),
-    number(row.totalTokens),
-    money(row.cost),
-    number(row.generations),
-    number(row.tools),
-  ];
-
-  const dailyHeaders = () => [
-    COPY["table.date"],
-    COPY["table.sessions"],
-    COPY["table.tokens"],
-    COPY["table.cost"],
-    COPY["table.generations"],
-    COPY["table.tools"],
-  ];
+  /**
+   * The chart data table's columns: the four fields every daily row publishes,
+   * plus the two a session projection carries as well. `metrics` is the
+   * section's own chart vocabulary, so a column exists exactly when a
+   * selectable metric reads it and never for a field the rows do not publish.
+   */
+  const dailyColumns = (metrics) => {
+    const columns = [
+      {
+        header: COPY["table.date"],
+        cell: (row) => row.date,
+        cls: "status-cell",
+      },
+      {
+        header: COPY["table.sessions"],
+        cell: (row) => number(row.sessions),
+        cls: "num",
+      },
+      {
+        header: COPY["table.tokens"],
+        cell: (row) => number(row.totalTokens),
+        cls: "num",
+      },
+      {
+        header: COPY["table.cost"],
+        cell: (row) => money(row.cost),
+        cls: "num",
+      },
+    ];
+    if (metrics.indexOf("generations") >= 0) {
+      columns.push({
+        header: COPY["table.generations"],
+        cell: (row) => number(row.generations),
+        cls: "num",
+      });
+    }
+    if (metrics.indexOf("tools") >= 0) {
+      columns.push({
+        header: COPY["table.tools"],
+        cell: (row) => number(row.tools),
+        cls: "num",
+      });
+    }
+    return columns;
+  };
 
   const evidenceSection = (rows) => {
     if (rows === undefined || rows.length === 0) {
@@ -949,18 +983,27 @@
     name === "cost" ? money(value) : number(value);
   const chartLabel = (name) => COPY["chart." + name];
   const CHART_METRICS = ["sessions", "cost", "tokens", "generations", "tools"];
+  /**
+   * The global aggregate's daily rows publish their date, session count and
+   * usage — no generation or tool count — so its chart vocabulary is the subset
+   * its own rows carry. No metric outside that vocabulary is offered, and a
+   * value the selected row list does not publish is never charted as a zero.
+   */
+  const GLOBAL_CHART_METRICS = ["sessions", "cost", "tokens"];
 
   /**
    * One chart over the published daily rows. Points are spaced by row position,
    * so no calendar arithmetic happens here: the row order is L2's own.
    */
-  const chartSection = (rows) => {
+  const chartSection = (rows, metrics) => {
     const section = card(COPY["panel.daily"], rangeText());
     const select = document.createElement("select");
     select.id = "chart-metric";
     select.setAttribute("aria-label", COPY["chart.metric"]);
-    const metricName = activeSettings().metric || CHART_METRICS[0];
-    CHART_METRICS.forEach((name) => {
+    const remembered = activeSettings().metric;
+    const metricName =
+      metrics.indexOf(remembered) >= 0 ? remembered : metrics[0];
+    metrics.forEach((name) => {
       const option = el("option", "", chartLabel(name));
       option.value = name;
       option.selected = metricName === name;
@@ -971,7 +1014,13 @@
       section.append(el("div", "chart-note", COPY["chart.empty"]));
       return section;
     }
-    const values = rows.map((row) => Number(chartValue(row, metricName)) || 0);
+    // Every point is a published value: a row without this metric is a state the
+    // chart states as Unavailable rather than a zero it never read.
+    const values = rows.map((row) => chartValue(row, metricName));
+    if (values.some((value) => Number.isFinite(value) === false)) {
+      section.append(el("div", "chart-note", COPY["evidence.unavailable"]));
+      return section;
+    }
     const maximum = Math.max.apply(null, values.concat([1]));
     const points = values.map((value, index) => ({
       x: rows.length === 1 ? 400 : 8 + (index / (rows.length - 1)) * 784,
@@ -1046,11 +1095,12 @@
     );
     const details = document.createElement("details");
     details.append(el("summary", "", COPY["chart.data"]));
+    const columns = dailyColumns(metrics);
     simpleTable(
       details,
-      dailyHeaders(),
-      rows.map((row) => ({ cells: dailyCells(row) })),
-      ["status-cell", "num", "num", "num", "num", "num"],
+      columns.map((column) => column.header),
+      rows.map((row) => columns.map((column) => column.cell(row))),
+      columns.map((column) => column.cls),
     );
     section.append(details);
     return section;
@@ -1146,7 +1196,7 @@
     return [
       metrics(cards),
       compositionSection(meta === null ? null : meta.composition),
-      chartSection(meta === null ? [] : meta.daily),
+      chartSection(meta === null ? [] : meta.daily, CHART_METRICS),
       evidenceSection(target.evidence),
     ];
   };
@@ -1508,6 +1558,15 @@
     );
   };
 
+  /** The runs of one view, keyed by the id a run publishes. */
+  const runsById = (runs) => {
+    const byId = {};
+    runs.forEach((run) => {
+      byId[run.id] = run;
+    });
+    return byId;
+  };
+
   const agentsNodes = (target) => {
     const meta = target.range;
     if (meta === undefined || meta.childUsage.runsTotal === 0) {
@@ -1553,10 +1612,7 @@
         metric(COPY["agents.knownFailedCost"], money(child.failedCost), fraction),
       );
     }
-    const rendered = {};
-    meta.agents.forEach((run) => {
-      rendered[run.id] = run;
-    });
+    const rendered = runsById(meta.agents);
     return [
       metrics(cards),
       table(
@@ -1604,14 +1660,18 @@
 
   /**
    * The row's parent cell: the wording is chosen for L2's published verdict, and
-   * an in-range parent is printed with its own rendered role label.
+   * an in-range parent is a real entity link to the run that carries its id.
    */
   const parentCell = (run, rendered) => {
     if (run.parent === "none") return COPY["evidence.unavailable"];
     if (run.parent === "outside-range") return COPY["agents.parentOutsideScope"];
     if (run.parent === "unknown") return COPY["agents.parentUnknown"];
     const parent = rendered[run.parentId];
-    return orUnavailable(parent === undefined ? null : parent.agent);
+    return entityLink(
+      "agent",
+      run.parentId,
+      orUnavailable(parent === undefined ? null : parent.agent),
+    );
   };
 
   const integrationsNodes = (target) => {
@@ -1668,12 +1728,51 @@
     return span;
   };
 
+  /**
+   * The joined tool is the tool entity the payload publishes by name, so its
+   * cell is the one entity-link path: a real route when the id is published,
+   * the same bounded text when it is not.
+   */
+  const relatedToolCell = (row) => {
+    if (row.toolName === null) return COPY["evidence.unavailable"];
+    const label =
+      row.toolSource === null
+        ? row.toolName
+        : row.toolName + " · " + row.toolSource;
+    return entityLink("tool", row.toolName, label);
+  };
+
+  /**
+   * Every child run the publishing result observed, one entity link per run in
+   * run order and none of them named as a cause: a run whose role the payload
+   * does not carry is labelled with the catalog's Unavailable wording, never
+   * the raw run id.
+   */
+  const relatedChildrenCell = (ids, runs) => {
+    if (ids.length === 0) return COPY["evidence.unavailable"];
+    const list = el("span", "mono");
+    ids.forEach((id, index) => {
+      if (index > 0) list.append(el("span", "", " · "));
+      const run = runs[id];
+      list.append(
+        entityLink(
+          "agent",
+          id,
+          run && run.agent ? run.agent : COPY["evidence.unavailable"],
+          "mono",
+        ),
+      );
+    });
+    return list;
+  };
+
   const errorsNodes = (target) => {
     const meta = target.range;
     const rows = meta === undefined ? [] : meta.errors;
     if (rows.length === 0) {
       return [emptyCard(COPY["tab.errors"], COPY["errors.none"])];
     }
+    const runs = runsById(meta.agents);
     return [
       table(
         COPY["tab.errors"],
@@ -1684,6 +1783,7 @@
           COPY["table.timestamp"],
           COPY["errors.relatedTool"],
           COPY["table.status"],
+          COPY["errors.relatedChildren"],
           COPY["table.message"],
         ],
         rows.map((row) => ({
@@ -1691,16 +1791,14 @@
             { fullId: text(row.id), content: entitySpan("error", row.id, row.id) },
             row.kind,
             row.timestamp,
-            row.toolName === null
-              ? COPY["evidence.unavailable"]
-              : row.toolName +
-                (row.toolSource === null ? "" : " · " + row.toolSource),
+            relatedToolCell(row),
             row.toolStatus === null
               ? COPY["evidence.unavailable"]
               : badgeCell(
                   COPY["tools." + row.toolStatus],
                   row.toolStatus === "succeeded" ? "" : "warn",
                 ),
+            relatedChildrenCell(row.relatedChildIds, runs),
             row.message === undefined
               ? COPY["errors.messageUnavailable"]
               : row.message,
@@ -1712,6 +1810,7 @@
           "status-cell",
           "status-cell",
           "status-cell",
+          "wrap",
           "wrap",
         ],
       ),
@@ -1922,7 +2021,9 @@
         : historyMetrics(),
       coverageSection(snapshot.history.coverage, snapshot.history.usageLabels),
     ];
-    if (!empty) nodes.push(chartSection(meta === null ? [] : meta.daily));
+    if (!empty) {
+      nodes.push(chartSection(meta === null ? [] : meta.daily, CHART_METRICS));
+    }
     nodes.push(historyTable(), evidenceSection(snapshot.history.evidence));
     return nodes;
   };
@@ -1984,7 +2085,7 @@
     return [
       metrics(cards),
       coverageSection(global.coverage, labels),
-      chartSection(meta === null ? [] : meta.daily),
+      chartSection(meta === null ? [] : meta.daily, GLOBAL_CHART_METRICS),
       compositionSection(global.composition),
       inventory,
       evidenceSection(global.evidence),
@@ -2288,6 +2389,15 @@
   const render = (effects) => {
     if (snapshot === null) return;
     const flags = effects === undefined ? {} : effects;
+    // The view subtree is replaced on every render, so the search box a
+    // keystroke came from loses its focus and caret with it: hold both across
+    // the swap and give them back to the search box that had them.
+    const active = document.activeElement;
+    const held = active !== null && active.id === "search";
+    const caret =
+      held && typeof active.selectionStart === "number"
+        ? active.selectionStart
+        : null;
     rememberView();
     syncNavigation();
     syncTabs(flags);
@@ -2305,6 +2415,15 @@
     ) {
       const heading = q("title");
       if (heading !== null && typeof heading.focus === "function") heading.focus();
+    }
+    if (held) {
+      const search = q("search");
+      if (search !== null && typeof search.focus === "function") {
+        search.focus();
+        if (caret !== null && typeof search.setSelectionRange === "function") {
+          search.setSelectionRange(caret, caret);
+        }
+      }
     }
     const announcement = q("announcement");
     if (announcement !== null) {
