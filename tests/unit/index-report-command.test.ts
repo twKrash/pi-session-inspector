@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import {
   access,
+  link,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -646,6 +649,114 @@ test("snapshot refuses a destination that could overwrite Pi session authority",
         html,
       );
     }
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+/** Whether this filesystem cannot create the requested alias kind at all. */
+function isAliasUnsupported(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return (
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === "ENOTSUP" ||
+    code === "EOPNOTSUPP" ||
+    code === "EXDEV"
+  );
+}
+
+test("snapshot replaces a filesystem alias to the Pi session source instead of truncating it", async () => {
+  const harness = await createHarness();
+  try {
+    await writeSessionManifest(harness);
+    // A destination that is a second name for Pi's authoritative session file.
+    // The lexical refusal above cannot see this: only replacing the destination
+    // directory entry keeps the source inode (and its bytes) intact.
+    const aliasKinds: Array<[string, (destination: string) => Promise<void>]> =
+      [
+        ["hard-link", (destination) => link(harness.sessionFile, destination)],
+        ["symlink", (destination) => symlink(harness.sessionFile, destination)],
+      ];
+    let checked = 0;
+    for (const [kind, createAlias] of aliasKinds) {
+      const destination = join(harness.directory, `${kind}-alias.html`);
+      try {
+        await createAlias(destination);
+      } catch (error) {
+        // A filesystem without one alias kind still exercises the other.
+        assert.equal(
+          isAliasUnsupported(error),
+          true,
+          `${kind}: ${String(error)}`,
+        );
+        continue;
+      }
+      checked += 1;
+      assert.equal(
+        await readFile(harness.sessionFile, "utf8"),
+        SESSION_SOURCE,
+        kind,
+      );
+
+      harness.notices.length = 0;
+      await harness.handler()(
+        `snapshot current --no-open --output ${JSON.stringify(destination)}`,
+        harness.context({ mode: "interactive" }),
+      );
+
+      // Writing through the alias must never reach Pi's authoritative bytes.
+      assert.equal(
+        await readFile(harness.sessionFile, "utf8"),
+        SESSION_SOURCE,
+        kind,
+      );
+      // Bounded notice: the destination, no temporary path, no exception text.
+      const notice = harness.notices.at(-1) ?? "";
+      assert.equal(notice, `Inspector report written: ${destination}`, kind);
+      assert.equal(notice.includes(harness.sessionFile), false, kind);
+      // The alias is now one fresh static HTML document, not the shared inode.
+      const replaced = await lstat(destination);
+      assert.equal(replaced.isSymbolicLink(), false, kind);
+      const html = await readFile(destination, "utf8");
+      assert.equal(html.startsWith("<!doctype html>"), true, kind);
+      assert.equal(html.includes("<script"), false, kind);
+      assert.equal(
+        html.includes(ENGLISH_CATALOG["heading.current"]),
+        true,
+        kind,
+      );
+      if (kind === "hard-link")
+        assert.notEqual(
+          replaced.ino,
+          (await stat(harness.sessionFile)).ino,
+          kind,
+        );
+      assert.equal(await countFiles(harness.cache), 0, kind);
+    }
+    assert.ok(checked > 0, "no alias kind was creatable");
+    // A destination that cannot be replaced is one bounded refusal: no error
+    // text, no destination, and no temporary file left behind.
+    const occupied = join(harness.directory, "occupied.html");
+    await mkdir(occupied);
+    harness.notices.length = 0;
+    await harness.handler()(
+      `snapshot current --no-open --output ${JSON.stringify(occupied)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(
+      harness.notices.at(-1),
+      "Current session Inspector data is unavailable.",
+    );
+    assert.equal(harness.notices.join().includes(occupied), false);
+    assert.equal((await lstat(occupied)).isDirectory(), true);
+    assert.deepEqual(
+      (await readdir(harness.directory)).filter((name) =>
+        name.endsWith(".tmp"),
+      ),
+      [],
+      "no temporary output remains",
+    );
   } finally {
     await harness.cleanup();
   }

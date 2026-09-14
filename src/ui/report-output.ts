@@ -197,7 +197,7 @@ export async function writeReportOutput({
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
       if (explicit && isCacheFile)
         await rememberExplicitOutput(cacheDirectory, path);
-      await writeFile(path, content, { encoding: "utf8", mode: 0o600 });
+      await writeFileAtomically(path, content);
       if (!explicit) await cleanReportCache(cacheDirectory);
       return resolvedPath;
     };
@@ -206,6 +206,32 @@ export async function writeReportOutput({
     return await withCacheLock(cacheDirectory, write);
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Writes one report as a fresh sibling temporary file and renames it over the
+ * destination, so only the destination's directory entry is replaced. A plain
+ * `writeFile` follows an existing symlink or hard link that names Pi's session
+ * JSONL and would truncate the authoritative inode (AGENTS.md invariant 1);
+ * `rename` never opens the destination. `wx` keeps the temporary file itself
+ * fresh, and a failed write leaves no temporary behind.
+ */
+async function writeFileAtomically(
+  destination: string,
+  content: string,
+): Promise<void> {
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, content, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await rename(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
   }
 }
 
