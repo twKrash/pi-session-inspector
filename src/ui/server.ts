@@ -368,6 +368,8 @@ async function handleRequest(
   const search = queryAt === -1 ? "" : target.slice(queryAt + 1);
 
   // The network boundary is checked before any route, asset, or callback.
+  // A duplicate `Host` is not refused by Node: the parser accepts the request
+  // and keeps the first value, so this exact match is the only Host defence.
   if (req.headers.host !== expectedHost) {
     sendProblem(res, "forbidden", { head, reason: "host" });
     return;

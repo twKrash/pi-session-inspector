@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import net from "node:net";
 import { after, test } from "node:test";
 
 import type { SessionReport } from "../../src/core/reports.ts";
@@ -125,6 +126,26 @@ function call(
   });
 }
 
+/**
+ * One raw HTTP/1.1 exchange over `node:net`. `http.request` merges repeated
+ * headers before a raw socket sees them, so this is the only way to observe
+ * what Node's parser does with a duplicate `Host`.
+ */
+function rawExchange(
+  server: InspectorServer,
+  lines: readonly string[],
+): Promise<string> {
+  const { hostname, port } = new URL(server.origin);
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const socket = net.connect({ host: hostname, port: Number(port) });
+    socket.on("connect", () => socket.write(`${lines.join("\r\n")}\r\n\r\n`));
+    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+    socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    socket.on("error", reject);
+  });
+}
+
 const BOOTSTRAP_URL =
   /^http:\/\/127\.0\.0\.1:(\d+)\/#token=([A-Za-z0-9_-]{43})$/;
 
@@ -185,12 +206,18 @@ function assertProblem(
   assert.equal(typeof body.detail, "string");
   assert.equal(typeof body.retryable, "boolean");
   assert.match(String(body.correlationId), UUID);
+  const headerText = JSON.stringify(response.headers);
   for (const secret of forbidden) {
     if (secret === "") continue;
     assert.equal(
       response.body.includes(secret),
       false,
       `problem echoed ${secret}`,
+    );
+    assert.equal(
+      headerText.includes(secret),
+      false,
+      `problem header echoed ${secret}`,
     );
   }
   return body;
@@ -286,6 +313,11 @@ test("known assets are served byte-for-byte for GET and HEAD with fixed headers"
         assert.equal(response.body.includes("SNAPSHOT_DTO"), false, label);
         assert.equal(response.body.includes(SESSION_ID), false, label);
         assert.equal(response.body.includes(token), false, label);
+        assert.equal(
+          JSON.stringify(response.headers).includes(token),
+          false,
+          `${label} headers echoed the token`,
+        );
       }
     }
     assert.deepEqual(calls.ui, []);
@@ -491,20 +523,22 @@ test("the atomic session resource rejects scope and range queries", async () => 
   const { context, calls } = fixtureContext();
   const server = await getInspectorServer(context);
   try {
-    const rejected = [
-      "scope=tree",
-      "preset=7",
-      "from=2026-09-01&to=2026-09-12",
-      "to=2026-09-12",
-      "scope=active&preset=14",
+    const rejected: readonly [string, string][] = [
+      ["scope=tree", "range-not-supported"],
+      ["preset=7", "range-not-supported"],
+      ["from=2026-09-01&to=2026-09-12", "range-not-supported"],
+      ["to=2026-09-12", "range-not-supported"],
+      ["scope=active&preset=14", "range-not-supported"],
+      // Over the 512-character query bound: refused before the key scan.
+      [`x=${"a".repeat(600)}`, "invalid-range"],
     ];
-    for (const query of rejected) {
+    for (const [query, code] of rejected) {
       const response = await call(
         server,
         `/api/v1/reports/sessions/${SESSION_ID}?${query}`,
         { headers: bearer(server) },
       );
-      assertProblem(response, 400, "range-not-supported", [query]);
+      assertProblem(response, 400, code, [query]);
       assert.equal(calls.sessions.length, 0, query);
     }
     const unknownKey = await call(
@@ -630,6 +664,105 @@ test("the Host, peer, and Origin boundary admits only the exact loopback origin"
   }
 });
 
+test("a duplicate Host keeps its first value and is no parser-level refusal", async () => {
+  const { context } = fixtureContext();
+  const server = await getInspectorServer(context);
+  const expectedHost = `127.0.0.1:${server.port}`;
+  try {
+    // Observed Node behaviour with this parser configuration: a repeated Host
+    // is accepted and `req.headers.host` keeps the FIRST value. There is no
+    // body-less parser 400 and no second line of defence; this module's exact
+    // match is the only Host check.
+    const wrongFirst = await rawExchange(server, [
+      "GET / HTTP/1.1",
+      "Host: evil.example:1",
+      `Host: ${expectedHost}`,
+      "Connection: close",
+    ]);
+    assert.match(wrongFirst.split("\r\n")[0], /^HTTP\/1\.1 403 /);
+    assert.equal(wrongFirst.includes('"code":"forbidden"'), true);
+    assert.equal(wrongFirst.includes("evil.example"), false);
+
+    // The correct value first is the one Node trusts; the repeated second
+    // value is ignored entirely, and the exact match admits the request.
+    const correctFirst = await rawExchange(server, [
+      "GET / HTTP/1.1",
+      `Host: ${expectedHost}`,
+      "Host: evil.example:1",
+      "Connection: close",
+    ]);
+    assert.match(correctFirst.split("\r\n")[0], /^HTTP\/1\.1 200 /);
+    assert.equal(correctFirst.endsWith(WEB_ASSETS.shell), true);
+  } finally {
+    await closeInspectorServer();
+  }
+});
+
+/**
+ * Source-address bind refusals that mean the platform has no `127.0.0.2` on
+ * its loopback interface; the wire test skips rather than failing.
+ */
+const SOURCE_BIND_REFUSED = new Set([
+  "EADDRNOTAVAIL",
+  "EINVAL",
+  "EACCES",
+  "EPERM",
+  "EAFNOSUPPORT",
+]);
+
+test("a request from another loopback address is refused boundedly", async (t) => {
+  const { context, calls } = fixtureContext();
+  const server = await getInspectorServer(context);
+  const { hostname, port } = new URL(server.origin);
+  try {
+    // Source-bind to 127.0.0.2 so the listener sees a 127/8 peer that is not
+    // its own address: the only wire-level way to exercise the peer check.
+    const outcome = await new Promise<TestResponse | { bindError: string }>(
+      (resolve, reject) => {
+        const request = http.request(
+          {
+            hostname,
+            port,
+            path: "/api/v1/ui",
+            method: "GET",
+            headers: bearer(server),
+            agent: false,
+            localAddress: "127.0.0.2",
+          },
+          (response) => {
+            const chunks: Buffer[] = [];
+            response.on("data", (chunk: Buffer) => chunks.push(chunk));
+            response.on("end", () =>
+              resolve({
+                status: response.statusCode ?? 0,
+                headers: response.headers,
+                body: Buffer.concat(chunks).toString("utf8"),
+              }),
+            );
+          },
+        );
+        request.on("error", (error: Error) => {
+          const code = (error as NodeJS.ErrnoException).code ?? "";
+          if (SOURCE_BIND_REFUSED.has(code)) {
+            resolve({ bindError: code });
+            return;
+          }
+          reject(error);
+        });
+        request.end();
+      },
+    );
+    if ("bindError" in outcome) {
+      t.skip(`platform refused localAddress 127.0.0.2 (${outcome.bindError})`);
+      return;
+    }
+    assertProblem(outcome, 403, "forbidden");
+    assert.equal(calls.ui.length, 0);
+  } finally {
+    await closeInspectorServer();
+  }
+});
+
 test("only normalized IPv4 loopback peers are accepted", () => {
   assert.equal(isLoopbackPeer("127.0.0.1"), true);
   assert.equal(isLoopbackPeer("::ffff:127.0.0.1"), true);
@@ -721,6 +854,7 @@ test("a failing callback answers a bounded internal error and one redacted stder
     },
   });
   const lines: string[] = [];
+  const token = bootstrapToken(server);
   const original = process.stderr.write;
   process.stderr.write = ((chunk: string | Uint8Array) => {
     lines.push(String(chunk));
@@ -755,6 +889,9 @@ test("a failing callback answers a bounded internal error and one redacted stder
     assert.equal(typeof record.reason, "string");
     assert.equal(String(record.reason).includes("/home/"), false);
     assert.equal(String(record.reason).includes("[PATH]"), true);
+    // The failed request carried the token in its Authorization header; no
+    // diagnostic line may carry it back out.
+    assert.equal(lines.join("").includes(token), false);
   } finally {
     process.stderr.write = original;
     await closeInspectorServer();
