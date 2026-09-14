@@ -4,6 +4,12 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+### Added
+
+- Pre-M8.5 executable reconciliation and property gate covering canonical
+  usage, dated attribution, projections, privacy, availability, and bounded
+  `fast-check` checks.
+
 ### Fixed
 
 - `ui` now bootstraps its browser client on page load, so the authenticated

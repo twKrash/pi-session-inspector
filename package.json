@@ -39,6 +39,7 @@
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/**/*.test.ts",
+    "test:invariants": "node --import tsx --test tests/invariants/*.test.ts",
     "benchmark:smoke": "node --expose-gc --import tsx benchmark/run.ts --mode=smoke",
     "benchmark:release": "node --expose-gc --import tsx benchmark/run.ts --mode=release --out=benchmark/artifacts/release-latest.json",
     "knip": "knip",

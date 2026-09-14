@@ -3,9 +3,10 @@
 **Current release:** `0.10.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones, and
-Pre-M8.1–Pre-M8.4 are complete. M8 is not started.
+Pre-M8.1–Pre-M8.5 are complete. M8 is not started.
 
-**Next gate:** complete the Pre-M8 readiness sequence below before starting M8.
+**Next gate:** complete Pre-M8.6 and the remaining readiness sequence below
+before starting M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -466,7 +467,7 @@ stronger coverage, and keep the pinned provider limitation documented.
 
 ### Pre-M8.5 — executable reconciliation and property suite
 
-**Status:** Planned. **Depends on:** Pre-M8.4.
+**Status:** Complete. **Depends on:** Pre-M8.4.
 
 Turn the approved report contracts into an executable release gate. The suite
 proves that UI/JSON/TUI projections agree with canonical Pi-native evidence; it
@@ -563,7 +564,12 @@ enter committed fixtures or diagnostics.
 - The suite runs as one bounded command suitable for local use and CI, without
   requiring a live Pi account, network, or external service.
 
-**Release:** compatible test-only hardening may bump the next patch version.
+**Release:** This test-only hardening does not require a SemVer bump; the
+project remains on `0.10.0`.
+
+**Deferred follow-up:** `npm run knip` still reports existing `publint` and
+`esbuild` declarations. Retain them for future M8 dependency review; this
+slice adds no package usage and does not remove dependencies outside scope.
 
 ### Pre-M8.6 — code optimization and client-bundle evaluation
 
