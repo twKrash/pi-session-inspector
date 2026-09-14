@@ -409,6 +409,23 @@ export function projectHistoryReport(
 }
 
 /**
+ * The minimum one contributing window must carry for the aggregate's partiality
+ * verdict: a history session or the global report's own opt-in bounded session
+ * window (`GlobalReport.sessionWindows`). Both shapes are accepted so the one
+ * verdict is decided from the windows a caller actually has, never from
+ * reconstructed session DTOs.
+ */
+type PartialityWindow = {
+  availability: "available" | "unavailable";
+  usageByDate?: readonly {
+    date?: string;
+    totalTokens?: number;
+    cost?: number;
+  }[];
+  usageByDateTruncated?: boolean;
+};
+
+/**
  * The global aggregate: its own bounded date rows resolved against its own
  * latest date, plus the all-date composition an aggregate can only report as
  * unavailable. `historyWindows` are the bounded session windows of the same
@@ -418,7 +435,7 @@ export function projectHistoryReport(
 export function projectGlobalReport(
   report: GlobalReport,
   intent?: RangeIntent,
-  historyWindows?: readonly HistoricalSession[],
+  historyWindows?: readonly PartialityWindow[],
 ): UiGlobalProjection {
   const requested = intent ?? null;
   const rows: UiGlobalDailyRow[] = report.dates.map((row) => ({
@@ -659,7 +676,7 @@ function reachesBeforeRetained(
 
 /** Any contributing session whose retained window cannot represent `range`. */
 function partialContribution(
-  sessions: readonly HistoricalSession[],
+  sessions: readonly PartialityWindow[],
   range: RangeState,
 ): boolean {
   return sessions.some(

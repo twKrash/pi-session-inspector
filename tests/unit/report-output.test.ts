@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 import {
   cleanReportCache,
   generatedReportPath,
+  generatedSnapshotPath,
   writeReportOutput,
 } from "../../src/ui/report-output.ts";
 
@@ -432,6 +433,126 @@ test("never deletes explicit output, including output deliberately placed inside
     assert.equal(await readFile(explicit, "utf8"), "user");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("names each generated snapshot deterministically from its bounded identity", () => {
+  const cache = "/tmp/reports";
+  const identity = {
+    target: "current",
+    scope: "tree",
+    range: { kind: "preset", preset: 7 },
+    theme: "dark",
+  } as const;
+  const path = generatedSnapshotPath(cache, identity);
+  assert.equal(generatedSnapshotPath(cache, { ...identity }), path);
+  assert.match(path, /^\/tmp\/reports\/snapshot-[a-f0-9]{64}\.html$/);
+
+  // Every field of the identity shapes the name, so two commands that produce
+  // different documents never share one cache file.
+  const identities: Parameters<typeof generatedSnapshotPath>[1][] = [
+    {
+      target: "current",
+      scope: "tree",
+      range: { kind: "preset", preset: 7 },
+      theme: "dark",
+    },
+    {
+      target: "current",
+      scope: "tree",
+      range: { kind: "preset", preset: 7 },
+      theme: "light",
+    },
+    {
+      target: "current",
+      scope: "active",
+      range: { kind: "preset", preset: 7 },
+      theme: "dark",
+    },
+    {
+      target: "current",
+      scope: "tree",
+      range: { kind: "preset", preset: 14 },
+      theme: "dark",
+    },
+    {
+      target: "current",
+      scope: "tree",
+      range: { kind: "custom", from: "2026-02-01", to: "2026-02-02" },
+      theme: "dark",
+    },
+    { target: "current", scope: "tree", theme: "dark" },
+    { target: "current", theme: "dark" },
+    { target: "history", theme: "light" },
+    { target: "global", theme: "light" },
+    {
+      target: "session",
+      sessionId: "01a09c7b-0000-4000-8000-000000000000",
+      theme: "light",
+    },
+    {
+      target: "session",
+      sessionId: "01a09c7b-0000-4000-8000-000000000001",
+      theme: "light",
+    },
+  ];
+  const names = identities.map((value) => generatedSnapshotPath(cache, value));
+  assert.equal(new Set(names).size, identities.length);
+  assert.equal(
+    names.every((name) => name.startsWith(`${cache}/snapshot-`)),
+    true,
+  );
+});
+
+test("keeps a generated snapshot cache-owned while an explicit output stays protected", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-snapshot-output-"));
+  try {
+    const cache = join(root, "reports");
+    const generated = generatedSnapshotPath(cache, {
+      target: "global",
+      theme: "light",
+    });
+    assert.equal(
+      await writeReportOutput({
+        path: generated,
+        content: "<html>global</html>",
+        cacheDirectory: cache,
+        explicit: false,
+      }),
+      generated,
+    );
+    await assert.rejects(access(join(cache, ".explicit-outputs")));
+
+    const explicit = join(cache, "user.html");
+    await writeReportOutput({
+      path: explicit,
+      content: "user",
+      cacheDirectory: cache,
+      explicit: true,
+    });
+    assert.equal(
+      await writeReportOutput({
+        path: explicit,
+        content: "generated",
+        cacheDirectory: cache,
+        explicit: false,
+      }),
+      undefined,
+    );
+    assert.equal(await readFile(explicit, "utf8"), "user");
+
+    // The generated snapshot expires like any other cache artifact; the
+    // registered user-owned export beside it does not.
+    await utimes(
+      generated,
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:00:00Z"),
+    );
+    await cleanReportCache(cache, new Date("2026-01-16T00:00:00Z"));
+    await assert.rejects(access(generated));
+    assert.equal(await readFile(explicit, "utf8"), "user");
+  } finally {
+    await rm(root, { force: true, recursive: true });
   }
 });
 

@@ -3,13 +3,14 @@ import {
   access,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import type {
@@ -18,6 +19,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import registerSessionInspector, { registerTracking } from "../../src/index.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
+import { ENGLISH_CATALOG } from "../../src/ui/report-projection.ts";
+import { generatedSnapshotPath } from "../../src/ui/report-output.ts";
+import { closeInspectorServer } from "../../src/ui/server.ts";
 
 type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type CustomFactory = Parameters<ExtensionCommandContext["ui"]["custom"]>[0];
@@ -32,6 +36,7 @@ type Harness = {
   opens: Array<[string, string[]]>;
   rendered: string[][];
   setOpenerResult(code: number): void;
+  setLeafId(leafId: string | null): void;
   handler(alias?: string): Handler;
   context(
     overrides?: Partial<{
@@ -92,6 +97,9 @@ async function createHarness(inventory?: {
   const opens: Array<[string, string[]]> = [];
   const rendered: string[][] = [];
   let openerResult = 0;
+  // The live leaf the session manager reports until a test moves it: the UI
+  // server's callbacks must read it per request, not once per command.
+  let currentLeafId: string | null = "main";
   registerSessionInspector({
     on: () => {},
     registerCommand: (name: string, command: { handler: Handler }) =>
@@ -127,7 +135,8 @@ async function createHarness(inventory?: {
         getSessionId: () => "real-session",
         getSessionFile: () =>
           "sessionFile" in overrides ? overrides.sessionFile : sessionFile,
-        getLeafId: () => ("leafId" in overrides ? overrides.leafId : "main"),
+        getLeafId: () =>
+          "leafId" in overrides ? overrides.leafId : currentLeafId,
         getSessionDir: () => sessionDirectory,
       },
       ui: {
@@ -156,6 +165,9 @@ async function createHarness(inventory?: {
     setOpenerResult: (code) => {
       openerResult = code;
     },
+    setLeafId: (leafId) => {
+      currentLeafId = leafId;
+    },
     handler(alias = "session-ins") {
       const handler = handlers.get(alias);
       assert.ok(handler, `registered handler: ${alias}`);
@@ -163,6 +175,7 @@ async function createHarness(inventory?: {
     },
     context,
     async cleanup() {
+      await closeInspectorServer();
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
       await rm(directory, { recursive: true, force: true });
@@ -170,68 +183,300 @@ async function createHarness(inventory?: {
   };
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: decoding the report's embedded JSON in tests
-function embeddedBundle(html: string): Record<string, any> {
-  const match =
-    /<script type="application\/json" id="report-data">([\s\S]*?)<\/script>/.exec(
-      html,
-    );
-  assert.notEqual(match, null, "report-data payload present");
-  return JSON.parse(match?.[1] ?? "{}");
+/** Counts files in the reports cache; an absent cache holds none. */
+async function countFiles(directory: string): Promise<number> {
+  try {
+    return (await readdir(directory)).length;
+  } catch {
+    return 0;
+  }
 }
 
-test("ui writes one self-contained bundle, honours the theme, and opens unless --no-open", async () => {
+/** The origin and token the `ui` command notified, or `undefined`. */
+function bootstrapOf(
+  notice: string,
+): { origin: string; token: string } | undefined {
+  const match =
+    /^Inspector UI available at: (http:\/\/127\.0\.0\.1:\d+)\/#token=([A-Za-z0-9_-]{43})$/.exec(
+      notice,
+    );
+  return match === null
+    ? undefined
+    : { origin: match[1] as string, token: match[2] as string };
+}
+
+/** One authenticated API read against the running UI server. */
+async function apiGet(
+  origin: string,
+  path: string,
+  token: string,
+): Promise<{ status: number; body: unknown }> {
+  const response = await fetch(`${origin}${path}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+/** The one `/api/v1/ui` field set these command tests assert on. */
+type UiSnapshotBody = {
+  current: {
+    active: { range?: { totals: { totalTokens: number } } };
+    tree: { range?: { totals: { totalTokens: number } } };
+  };
+};
+
+/** The one tracked-session manifest the command fixtures declare. */
+async function writeSessionManifest(harness: Harness): Promise<void> {
+  const directory = join(harness.root, "sessions", "real-session");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "meta.json"),
+    JSON.stringify({
+      schemaVersion: 2,
+      sessionId: "real-session",
+      sourceFile: "session.jsonl",
+      state: "tracking",
+    }),
+  );
+}
+
+test("ui notifies one tokenized URL, writes no report, and serves current request-time state", async () => {
   const harness = await createHarness();
   try {
-    const output = join(harness.directory, "inspector.html");
     await harness.handler()(
-      `ui --theme dark --scope tree --output ${JSON.stringify(output)}`,
-      harness.context(),
+      "ui --theme dark --scope tree --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(await countFiles(harness.cache), 0);
+    const first = harness.notices.at(-1) ?? "";
+    const bootstrap = bootstrapOf(first);
+    assert.ok(bootstrap, first);
+    assert.equal(harness.opens.length, 0);
+
+    // `--output` is removed syntax for `ui`: the URL is its only output.
+    harness.notices.length = 0;
+    await harness.handler()(
+      `ui --output ${JSON.stringify(join(harness.directory, "ui.html"))}`,
+      harness.context({ mode: "interactive" }),
+    );
+    assert.match(harness.notices.at(-1) ?? "", /help/i);
+    assert.equal(await countFiles(harness.cache), 0);
+
+    // A repeated invocation reuses the one server and token; the request-time
+    // context is replaced, so the next request reads the current leaf.
+    harness.notices.length = 0;
+    await harness.handler()(
+      "ui --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(harness.notices.at(-1), first);
+    assert.deepEqual(bootstrapOf(harness.notices.at(-1) ?? ""), bootstrap);
+    await writeSessionManifest(harness);
+
+    // The one server reads the session manager's current values per request:
+    // moving the leaf between requests changes the served active view without
+    // any new command, and no request has replaced the context yet.
+    const beforeMove = await apiGet(
+      bootstrap.origin,
+      "/api/v1/ui",
+      bootstrap.token,
+    );
+    assert.equal(beforeMove.status, 200);
+    assert.equal(
+      (beforeMove.body as UiSnapshotBody).current.active.range?.totals
+        .totalTokens,
+      7,
+    );
+    harness.setLeafId("sibling");
+    const ui = await apiGet(bootstrap.origin, "/api/v1/ui", bootstrap.token);
+    assert.equal(ui.status, 200);
+    const snapshot = ui.body as UiSnapshotBody & { theme: string };
+    assert.equal(snapshot.current.active.range?.totals.totalTokens, 11);
+    assert.equal(snapshot.current.tree.range?.totals.totalTokens, 18);
+
+    // A later invocation replaces that request-time context: the theme is the
+    // new command's and the leaf is still the session manager's current one.
+    harness.notices.length = 0;
+    await harness.handler()(
+      "ui --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(harness.notices.at(-1), first);
+    const replaced = await apiGet(
+      bootstrap.origin,
+      "/api/v1/ui",
+      bootstrap.token,
+    );
+    const replacedBody = replaced.body as UiSnapshotBody & { theme: string };
+    assert.equal(replacedBody.theme, "light");
+    assert.equal(replacedBody.current.active.range?.totals.totalTokens, 11);
+    await writeSessionManifest(harness);
+
+    const session = await apiGet(
+      bootstrap.origin,
+      "/api/v1/reports/sessions/real-session",
+      bootstrap.token,
+    );
+    assert.equal(session.status, 200);
+    assert.equal(
+      (session.body as { sessionId: string }).sessionId,
+      "real-session",
+    );
+    assert.equal(
+      (session.body as { usage: { totalTokens: number } }).usage.totalTokens,
+      18,
     );
 
-    const html = await readFile(output, "utf8");
-    assert.match(html, /theme-dark/);
-    const data = embeddedBundle(html);
-    assert.equal(data.kind, "bundle");
-    assert.equal(data.current.active.report.sessionId, "real-session");
-    assert.equal(data.current.tree.report.sessionId, "real-session");
-    assert.equal(data.history.sessions.length, 0);
-    assert.equal(html.includes("PRIVATE_BODY"), false);
+    const global = await apiGet(
+      bootstrap.origin,
+      "/api/v1/reports/global",
+      bootstrap.token,
+    );
+    assert.equal(global.status, 200);
+    assert.deepEqual((global.body as { totals: unknown }).totals, {
+      totalTokens: 18,
+      cost: 0.2,
+      days: 1,
+    });
+
+    // An opener failure never hides the tokenized URL: it is notified first.
+    harness.setOpenerResult(1);
+    harness.notices.length = 0;
+    await harness.handler()("ui", harness.context({ mode: "interactive" }));
+    assert.deepEqual(bootstrapOf(harness.notices.at(-1) ?? ""), bootstrap);
+    assert.equal(harness.opens.length, 1);
     assert.equal(
-      harness.notices.some((notice) =>
-        notice.includes("Inspector report written"),
+      harness.opens[0]?.[1].at(-1),
+      `${bootstrap.origin}/#token=${bootstrap.token}`,
+    );
+    assert.equal(harness.notices.join().includes("PRIVATE_OPENER"), false);
+
+    assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("snapshot writes exactly its requested target as one static document and never serves", async () => {
+  const harness = await createHarness();
+  try {
+    await writeSessionManifest(harness);
+    // A snapshot must never start the loopback listener. The count is
+    // self-normalized against anything the test runner already holds, and the
+    // settle lets a listener a previous test closed finish unregistering.
+    await sleep(10);
+    const countListeners = (): number =>
+      process
+        .getActiveResourcesInfo()
+        .filter((name) => name === "TCPServerWrap").length;
+    const listenersBefore = countListeners();
+
+    await harness.handler()(
+      "snapshot current --scope tree --preset 7 --theme dark --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    const currentPath = generatedSnapshotPath(harness.cache, {
+      target: "current",
+      scope: "tree",
+      range: { kind: "preset", preset: 7 },
+      theme: "dark",
+    });
+    const currentHtml = await readFile(currentPath, "utf8");
+    assert.equal(currentHtml.includes("<script"), false);
+    assert.equal(currentHtml.includes("theme-dark"), true);
+    assert.equal(
+      currentHtml.includes(ENGLISH_CATALOG["heading.current"]),
+      true,
+    );
+    // The preset resolves against the session's own observed date.
+    assert.equal(currentHtml.includes("2026-01-26 → 2026-02-01"), true);
+    assert.equal(
+      harness.notices.at(-1),
+      `Inspector report written: ${currentPath}`,
+    );
+    assert.equal(harness.opens.length, 0);
+
+    await harness.handler()(
+      "snapshot history --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    const historyPath = generatedSnapshotPath(harness.cache, {
+      target: "history",
+      theme: "light",
+    });
+    assert.equal(
+      (await readFile(historyPath, "utf8")).includes(
+        ENGLISH_CATALOG["heading.history"],
       ),
       true,
     );
-    assert.equal(harness.opens.length, 1);
-    assert.equal(harness.opens[0]?.[1].at(-1), output);
-    assert.equal(
-      harness.opens[0]?.[0],
-      process.platform === "darwin"
-        ? "open"
-        : process.platform === "win32"
-          ? "rundll32"
-          : "xdg-open",
-    );
 
-    await harness.handler("session-inspector")(
-      `ui --output ${JSON.stringify(output)} --no-open`,
-      harness.context(),
-    );
-    assert.equal(harness.opens.length, 1);
-    const light = await readFile(output, "utf8");
-    assert.equal(light.includes('class="theme-dark"'), false);
-
-    harness.setOpenerResult(1);
     await harness.handler()(
-      `ui --output ${JSON.stringify(output)}`,
-      harness.context(),
+      "snapshot global --no-open",
+      harness.context({ mode: "interactive" }),
     );
+    const globalPath = generatedSnapshotPath(harness.cache, {
+      target: "global",
+      theme: "light",
+    });
     assert.equal(
-      harness.notices.at(-1),
-      `Inspector report available at: ${output}`,
+      (await readFile(globalPath, "utf8")).includes(
+        ENGLISH_CATALOG["heading.global"],
+      ),
+      true,
     );
-    assert.equal(harness.notices.join().includes("PRIVATE_OPENER"), false);
+
+    await harness.handler()(
+      "snapshot session real-session --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    const sessionPath = generatedSnapshotPath(harness.cache, {
+      target: "session",
+      sessionId: "real-session",
+      theme: "light",
+    });
+    const sessionHtml = await readFile(sessionPath, "utf8");
+    assert.equal(sessionHtml.includes("real-session"), true);
+    assert.equal(sessionHtml.includes(ENGLISH_CATALOG["nav.history"]), true);
+
+    // Exactly the four requested documents exist: no target wrote another
+    // target's file.
+    assert.deepEqual(
+      (await readdir(harness.cache)).sort(),
+      [currentPath, historyPath, globalPath, sessionPath]
+        .map((path) => basename(path))
+        .sort(),
+    );
+
+    // The atomic session target accepts no scope or range: the grammar refuses
+    // both before any load, and no fifth document is written.
+    for (const args of [
+      "snapshot session real-session --from 2026-02-01 --to 2026-02-02",
+      "snapshot session real-session --scope tree",
+      "snapshot session real-session --preset 7",
+    ]) {
+      await harness.handler()(args, harness.context({ mode: "interactive" }));
+      assert.match(harness.notices.at(-1) ?? "", /usage|invalid|help/i, args);
+    }
+    assert.equal((await readdir(harness.cache)).length, 4);
+
+    // A manifest no root declares is a bounded refusal, not a document.
+    await harness.handler()(
+      "snapshot session absent-session --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    assert.match(harness.notices.at(-1) ?? "", /unavailable/i);
+    assert.equal((await readdir(harness.cache)).length, 4);
+
+    assert.equal(
+      harness.notices.some((notice) =>
+        notice.startsWith("Inspector UI available at:"),
+      ),
+      false,
+    );
+    assert.equal(countListeners(), listenersBefore);
+    assert.equal(harness.opens.length, 0);
+    assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
   } finally {
     await harness.cleanup();
   }

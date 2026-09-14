@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
   type ExtensionAPI,
+  type ExtensionCommandContext,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { completeInspectorCommand } from "./commands/completions.ts";
-import { parseInspectorCommand } from "./commands/grammar.ts";
+import {
+  parseInspectorCommand,
+  type InspectorCommand,
+} from "./commands/grammar.ts";
 import { createInspectorHelpComponent } from "./commands/help.ts";
+import type { Scope } from "./core/events.ts";
 import {
   type FoldedAggregateEvidence,
   isBoundedIsoInstant,
@@ -48,18 +53,31 @@ import {
 import { scheduleMaintenance } from "./storage/maintenance.ts";
 import { recoverSession, type RecoveredWalRecord } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
-import { loadInspectorBundle } from "./ui/bundle.ts";
+import { loadInspectorBundle, loadCurrentView } from "./ui/bundle.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
-import { renderInspectorBundle } from "./ui/html.ts";
 import { renderJson } from "./ui/json.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
 import {
   loadGlobalReport,
   loadHistoryReports,
+  loadHistorySessionReport,
   type SessionEvidenceProvider,
 } from "./ui/load-history.ts";
 import type { SessionObservation } from "./ui/observation.ts";
-import { generatedReportPath, writeReportOutput } from "./ui/report-output.ts";
+import {
+  generatedReportPath,
+  generatedSnapshotPath,
+  writeReportOutput,
+} from "./ui/report-output.ts";
+import type { InspectorServerContext } from "./ui/server.ts";
+import type { SnapshotDto } from "./ui/snapshot.ts";
+import {
+  projectCurrentView,
+  projectGlobalReport,
+  projectHistoricalSession,
+  projectHistoryReport,
+  projectInspectorUi,
+} from "./ui/ui-projection.ts";
 
 type SessionStartTrackingApi = Parameters<
   typeof registerSessionStartTracking
@@ -74,6 +92,10 @@ type SessionWalSetup = (input: {
 }) => Promise<void>;
 
 const description = "Open Pi Session Inspector reports";
+
+/** Bounded refusal for a snapshot of a session no manifest declares. */
+const SESSION_SNAPSHOT_UNAVAILABLE =
+  "Inspector session snapshot is unavailable.";
 
 /**
  * Live observer state kept per tracked session so a repeated promotion cannot
@@ -730,6 +752,126 @@ export async function openReport(
     throw new Error("Report opener unavailable");
 }
 
+/**
+ * Runs the `ui` command: the one lazy loopback server, whose only output is the
+ * tokenized bootstrap URL. A repeated invocation reuses the running server and
+ * token while replacing its request-time context, and opening the browser is
+ * best effort so a failed opener never hides the URL.
+ */
+async function startInspectorUi(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  command: Extract<InspectorCommand, { kind: "report" }>,
+  root: string,
+): Promise<void> {
+  try {
+    // Loaded only for `ui`: the server module owns the browser assets, so no
+    // other command loads them.
+    const { getInspectorServer } = await import("./ui/server.ts");
+    const server = await getInspectorServer(
+      createUiServerContext({
+        api: pi,
+        sessionManager: ctx.sessionManager,
+        root,
+        theme: command.theme ?? "light",
+        initialScope: command.scope,
+      }),
+    );
+    const url = server.bootstrapUrl();
+    // Notified before opening: the URL is the output whether or not a browser
+    // is available to receive it.
+    notifyInfo(ctx, `Inspector UI available at: ${url}`);
+    if (command.noOpen) return;
+    try {
+      await openReport(pi, url);
+    } catch {
+      // The URL is already notified; opening is best effort.
+    }
+  } catch {
+    notifyInfo(ctx, "Inspector UI is unavailable.");
+  }
+}
+
+/**
+ * The loopback server's request-time composition. Every callback reads the
+ * *current* session-manager values and flushes live evidence before its read,
+ * so one long-lived server serves the session as it is now rather than as it
+ * was when `ui` ran. All L0 storage/provider reads stay here in the composition
+ * root, and the projections receive only their inputs. A callback failure
+ * carries no identifier outward: the loaders and the providers degrade
+ * internally, so the server's bounded diagnostics never see one.
+ */
+function createUiServerContext(input: {
+  api: ExtensionAPI;
+  sessionManager: ExtensionCommandContext["sessionManager"];
+  root: string;
+  theme: "light" | "dark";
+  initialScope: Scope;
+}): InspectorServerContext {
+  const { api, root, sessionManager } = input;
+  // Rebuilt per read so each history/global read gets its own maintenance seam.
+  const historyRead = () => ({
+    root,
+    sessionDirectory: () => sessionManager.getSessionDir(),
+    maintenance: productionMaintenance(),
+    sessionEvidence: readHistorySessionEvidence,
+  });
+  return {
+    async loadUi(intent) {
+      await flushLiveEvidence();
+      const evidence = await readSessionEvidence({
+        api,
+        root,
+        sessionId: readSessionId(sessionManager),
+      });
+      // One bundle load serves the whole request: both current views, history
+      // and global, each read from the values above.
+      const bundle = await loadInspectorBundle({
+        theme: input.theme,
+        initialScope: input.initialScope,
+        root,
+        sessionDirectory: () => sessionManager.getSessionDir(),
+        current: {
+          sessionFile: sessionManager.getSessionFile(),
+          leafId: sessionManager.getLeafId(),
+        },
+        subagentEvidence: readSubagentEvidenceWithArchives,
+        ...(evidence === undefined
+          ? {}
+          : {
+              observation: evidence.observation,
+              currentEvidence: {
+                evidence: evidence.evidence,
+                walRecords: evidence.walRecords,
+                liveOverflow: evidence.liveOverflow,
+              },
+            }),
+        historyEvidence: readHistorySessionEvidence,
+        maintenance: productionMaintenance(),
+      });
+      return projectInspectorUi({ bundle, intent });
+    },
+    async loadSession(sessionId) {
+      await flushLiveEvidence();
+      // Atomic: one requested session through the bounded discovery/replay
+      // path, with no caller scope or range to widen it.
+      const session = await loadHistorySessionReport(sessionId, historyRead());
+      return session?.availability === "available" ? session.report : undefined;
+    },
+    async loadGlobal(intent) {
+      await flushLiveEvidence();
+      // The range-projected aggregate needs this request's own bounded session
+      // windows to decide whether a contribution is partial.
+      const report = await loadGlobalReport({
+        ...historyRead(),
+        scope: "tree",
+        includeSessionWindows: true,
+      });
+      return projectGlobalReport(report, intent, report.sessionWindows);
+    },
+  };
+}
+
 export default function registerSessionInspector(pi: ExtensionAPI): void {
   registerTracking(pi as unknown as SessionStartTrackingApi, {
     agentDir: getAgentDir(),
@@ -798,14 +940,18 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           const sessionManager = ctx.sessionManager;
           const root = join(getAgentDir(), "session-inspector", "v1");
           const cacheDirectory = join(root, "reports");
+          if (command.mode === "ui") {
+            await startInspectorUi(ctx, pi, command, root);
+            return;
+          }
           // Flush live evidence before any report read so no observed event is
           // missing from the counters this command renders.
           await flushLiveEvidence();
           const sessionFile = sessionManager.getSessionFile();
           const leafId = sessionManager.getLeafId();
-          const target = command.mode === "ui" ? "current" : command.target;
+          const target = command.target;
           const evidenceRead =
-            command.mode === "ui" || target === "current" || target === "ledger"
+            target === "current" || target === "ledger"
               ? await readSessionEvidence({
                   api: pi,
                   root,
@@ -861,62 +1007,111 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             return;
           }
           const maintenance = productionMaintenance();
-          if (command.mode === "ui") {
-            const bundle = await loadInspectorBundle({
-              theme: command.theme ?? "light",
-              initialScope: command.scope,
-              root,
-              sessionDirectory: () => sessionManager.getSessionDir(),
-              current: { sessionFile, leafId },
-              subagentEvidence: readSubagentEvidenceWithArchives,
-              ...(evidenceRead === undefined
-                ? {}
-                : {
-                    observation: evidenceRead.observation,
-                    currentEvidence: {
-                      evidence: evidenceRead.evidence,
-                      walRecords: evidenceRead.walRecords,
-                      liveOverflow: evidenceRead.liveOverflow,
-                    },
-                  }),
-              // History/global sections get their own per-session evidence from
-              // the composition root; the loaders never read storage (R51).
-              historyEvidence: readHistorySessionEvidence,
-              maintenance,
-            });
-            const generated = generatedReportPath(
-              cacheDirectory,
-              "inspector",
-              "html",
-              "global",
-            );
-            const output = await writeReportOutput({
-              path: command.output ?? generated,
-              content: renderInspectorBundle(bundle),
-              cacheDirectory,
-              explicit: command.output !== undefined,
-            });
-            if (!output) return notifyCurrentUnavailable(ctx);
-            notifyInfo(ctx, `Inspector report written: ${output}`);
-            if (!command.noOpen) {
-              try {
-                await openReport(pi, output);
-              } catch {
-                notifyInfo(ctx, `Inspector report available at: ${output}`);
-              }
-            }
-            return;
-          }
-          // json: deterministic export, never opens a browser.
-          const common = {
+          const historyRead = {
             root,
             sessionDirectory: () => sessionManager.getSessionDir(),
-            scope: "tree" as const,
             maintenance,
             // L2 reads no storage: the composition root supplies each history
             // session's L0 evidence (R51).
             sessionEvidence: readHistorySessionEvidence,
           };
+          if (command.mode === "snapshot") {
+            // The renderer (and the ordinary browser assets it shares with the
+            // server) is loaded only for a snapshot command.
+            const { renderSnapshot } = await import("./ui/snapshot.ts");
+            const theme = command.theme ?? "light";
+            let dto: SnapshotDto;
+            if (target === "current") {
+              // One scope, loaded exactly for the target being rendered.
+              const view = await loadCurrentView(
+                (scope) =>
+                  loadCurrentSessionReport(sessionFile, scope, {
+                    leafId,
+                    ...currentSession,
+                    subagentEvidence: readSubagentEvidenceWithArchives,
+                  }),
+                command.scope,
+              );
+              dto = {
+                kind: "current",
+                schemaVersion: 1,
+                theme,
+                projection: projectCurrentView(
+                  view,
+                  command.scope,
+                  command.range,
+                ),
+              };
+            } else if (target === "history") {
+              dto = {
+                kind: "history",
+                schemaVersion: 1,
+                theme,
+                projection: projectHistoryReport(
+                  await loadHistoryReports({ ...historyRead, scope: "tree" }),
+                  command.range,
+                ),
+              };
+            } else if (target === "global") {
+              // The aggregate's partiality verdict needs this request's bounded
+              // session windows; ordinary JSON never asks for them.
+              const report = await loadGlobalReport({
+                ...historyRead,
+                scope: "tree",
+                includeSessionWindows: true,
+              });
+              dto = {
+                kind: "global",
+                schemaVersion: 1,
+                theme,
+                projection: projectGlobalReport(
+                  report,
+                  command.range,
+                  report.sessionWindows,
+                ),
+              };
+            } else {
+              // Atomic: one requested session, no caller scope or range.
+              const sessionId = command.sessionId;
+              if (sessionId === undefined)
+                return notifyInfo(ctx, SESSION_SNAPSHOT_UNAVAILABLE);
+              const session = await loadHistorySessionReport(
+                sessionId,
+                historyRead,
+              );
+              if (session === undefined)
+                return notifyInfo(ctx, SESSION_SNAPSHOT_UNAVAILABLE);
+              dto = {
+                kind: "session",
+                schemaVersion: 1,
+                theme,
+                projection: projectHistoricalSession(session, command.range),
+              };
+            }
+            const output = await writeReportOutput({
+              path:
+                command.output ??
+                generatedSnapshotPath(cacheDirectory, {
+                  target: dto.kind,
+                  ...(dto.kind === "session" && command.sessionId !== undefined
+                    ? { sessionId: command.sessionId }
+                    : {}),
+                  ...(dto.kind === "current" ? { scope: command.scope } : {}),
+                  ...(command.range === undefined
+                    ? {}
+                    : { range: command.range }),
+                  theme,
+                }),
+              content: renderSnapshot(dto),
+              cacheDirectory,
+              explicit: command.output !== undefined,
+            });
+            if (!output) return notifyCurrentUnavailable(ctx);
+            notifyInfo(ctx, `Inspector report written: ${output}`);
+            return;
+          }
+          // json: deterministic export, never opens a browser.
+          const common = { ...historyRead, scope: "tree" as const };
           let dto: unknown;
           let reportName: string;
           if (target === "history") {
@@ -943,7 +1138,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             cacheDirectory,
             reportName,
             "json",
-            target,
+            target === "history" || target === "global" ? target : "current",
           );
           const output = await writeReportOutput({
             path: command.output ?? generated,

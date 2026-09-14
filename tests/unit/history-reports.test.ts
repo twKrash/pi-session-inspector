@@ -12,11 +12,13 @@ import type { CoverageReason } from "../../src/storage/history.ts";
 import {
   loadGlobalReport,
   loadHistoryReports,
+  loadHistorySessionReport,
   type HistorySessionEvidence,
   type SessionEvidenceProvider,
 } from "../../src/ui/load-history.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { renderJson } from "../../src/ui/json.ts";
+import { projectGlobalReport } from "../../src/ui/ui-projection.ts";
 
 const maintenance = {
   writerId: "maintainer-1",
@@ -1367,5 +1369,204 @@ test("the global rows publish each session's dated-window partiality", async () 
     ]);
   } finally {
     await rm(completeOptions.root, { force: true, recursive: true });
+  }
+});
+
+test("loads exactly one requested session through the same bounded discovery path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-atomic-"));
+  const sessionDirectory = join(root, "public-sessions");
+  await mkdir(sessionDirectory);
+  const writeTrackedSession = async (
+    sessionId: string,
+    body: readonly string[],
+  ): Promise<void> => {
+    await writeFile(
+      join(sessionDirectory, `${sessionId}.jsonl`),
+      `${[headerFor(sessionId), trackingMarkerLine(), ...body].join("\n")}\n`,
+    );
+    const directory = join(root, "sessions", sessionId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "meta.json"),
+      `${JSON.stringify({ schemaVersion: 2, sessionId, sourceFile: `${sessionId}.jsonl`, state: "tracking" })}\n`,
+    );
+  };
+  try {
+    await writeTrackedSession(COVERAGE_SESSION_ID, [
+      usageGenerationLine({
+        id: "g1",
+        parentId: "marker",
+        timestamp: "2026-02-02T10:00:00.000Z",
+      }),
+    ]);
+    await writeTrackedSession("second-session", [
+      usageGenerationLine({
+        id: "g2",
+        parentId: "marker",
+        timestamp: "2026-02-03T10:00:00.000Z",
+      }),
+    ]);
+    const options = {
+      root,
+      sessionDirectory: () => sessionDirectory,
+      maintenance,
+    };
+    const history = await loadHistoryReports({ ...options, scope: "tree" });
+    assert.equal(history.sessions.length, 2);
+
+    const requested = await loadHistorySessionReport(
+      COVERAGE_SESSION_ID,
+      options,
+    );
+    if (requested?.availability !== "available") {
+      throw new Error("fixture session must replay");
+    }
+    // The atomic read is the same bounded replay history performs, limited to
+    // the one requested session.
+    assert.deepEqual(
+      requested,
+      history.sessions.find(
+        (session) => session.sessionId === COVERAGE_SESSION_ID,
+      ),
+    );
+    assert.equal(requested.report.sessionId, COVERAGE_SESSION_ID);
+    assert.equal(requested.report.usage?.totalTokens, 2);
+    assert.deepEqual(
+      requested.usageByDate.map((row) => row.date),
+      ["2026-02-02"],
+    );
+
+    // An id no manifest names has no row at all.
+    assert.equal(
+      await loadHistorySessionReport("no-such-session", options),
+      undefined,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("one requested session's failures stay bounded and fabricate no report", async () => {
+  const unmarked = await optionsWithSource(validSource(), { marker: false });
+  try {
+    assert.deepEqual(
+      await loadHistorySessionReport(COVERAGE_SESSION_ID, {
+        root: unmarked.root,
+        sessionDirectory: unmarked.sessionDirectory,
+        maintenance,
+      }),
+      {
+        availability: "unavailable",
+        sessionId: COVERAGE_SESSION_ID,
+        reason: "marker-unavailable",
+      },
+    );
+  } finally {
+    await rm(unmarked.root, { force: true, recursive: true });
+  }
+
+  const tracked = await optionsWithSource(validSource());
+  try {
+    assert.deepEqual(
+      await loadHistorySessionReport(COVERAGE_SESSION_ID, {
+        root: tracked.root,
+        sessionDirectory: tracked.sessionDirectory,
+        maintenance,
+        sessionEvidence: async () => undefined,
+      }),
+      {
+        availability: "unavailable",
+        sessionId: COVERAGE_SESSION_ID,
+        reason: "replay-failed",
+      },
+    );
+  } finally {
+    await rm(tracked.root, { force: true, recursive: true });
+  }
+});
+
+test("global session windows are opt-in and carry only the bounded contribution fields", async () => {
+  const options = await datedWindowOptions(400);
+  try {
+    const history = await loadHistoryReports(options);
+    const session = history.sessions[0];
+    if (session?.availability !== "available") {
+      throw new Error("fixture session must replay");
+    }
+
+    // Ordinary JSON keeps its existing representation: no windows at all.
+    const plain = await loadGlobalReport(options);
+    assert.equal("sessionWindows" in plain, false);
+    assert.equal(renderJson(plain).includes("sessionWindows"), false);
+
+    const windowed = await loadGlobalReport({
+      ...options,
+      includeSessionWindows: true,
+    });
+    assert.deepEqual(windowed.sessionWindows, [
+      {
+        availability: "available",
+        sessionId: COVERAGE_SESSION_ID,
+        usageByDate: session.usageByDate,
+        usageByDateTruncated: true,
+      },
+    ]);
+    assert.deepEqual(Object.keys(windowed.sessionWindows?.[0] ?? {}).sort(), [
+      "availability",
+      "sessionId",
+      "usageByDate",
+      "usageByDateTruncated",
+    ]);
+
+    // The bounded windows are the aggregate's partiality input: the projection
+    // reaches the same verdict from the loader's own windows as from the
+    // history sessions, and neither input is reconstructed on the way.
+    const intent = { kind: "preset", preset: 7 } as const;
+    assert.deepEqual(
+      projectGlobalReport(windowed, intent, windowed.sessionWindows),
+      projectGlobalReport(windowed, intent, history.sessions),
+    );
+
+    // A coarse `GlobalReport` cannot carry that partiality on its own rows; the
+    // loader's window for the truncated session is what turns it partial.
+    const coarse = {
+      ...windowed,
+      sessions: windowed.sessions.map((row) => ({
+        availability: "available" as const,
+        sessionId: row.sessionId,
+        usageByDateTruncated: false,
+      })),
+    };
+    const reaching = {
+      kind: "custom",
+      from: "2026-01-01",
+      to: "2030-01-01",
+    } as const;
+    assert.equal(projectGlobalReport(coarse, reaching).truncated, false);
+    assert.equal(
+      projectGlobalReport(coarse, reaching, windowed.sessionWindows).truncated,
+      true,
+    );
+  } finally {
+    await rm(options.root, { force: true, recursive: true });
+  }
+});
+
+test("an unavailable session's opt-in window carries no usage", async () => {
+  const options = await optionsWithSource(validSource(), { marker: false });
+  try {
+    const global = await loadGlobalReport({
+      ...options,
+      includeSessionWindows: true,
+    });
+    assert.deepEqual(global.sessionWindows, [
+      { availability: "unavailable", sessionId: COVERAGE_SESSION_ID },
+    ]);
+    assert.deepEqual(Object.keys(global.sessionWindows?.[0] ?? {}).sort(), [
+      "availability",
+      "sessionId",
+    ]);
+  } finally {
+    await rm(options.root, { force: true, recursive: true });
   }
 });

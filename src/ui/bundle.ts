@@ -166,8 +166,8 @@ export async function loadInspectorBundle(
   // Both views are always attempted; initialScope never changes what is
   // precomputed, only which view the renderer displays first.
   const [active, tree] = await Promise.all([
-    currentView(loadCurrent, "active"),
-    currentView(loadCurrent, "tree"),
+    loadCurrentView(loadCurrent, "active"),
+    loadCurrentView(loadCurrent, "tree"),
   ]);
   const [history, global] = await Promise.all([
     historySection(loadHistory),
@@ -188,7 +188,14 @@ export async function loadInspectorBundle(
   };
 }
 
-async function currentView(
+/**
+ * One scope's precomputed current view, from a composition-root loader: the
+ * view's own dated projection folds into its daily rows, and a missing or
+ * throwing loader is one bounded `current-unavailable` verdict. Exported so a
+ * single-target reader (a current snapshot) reads exactly the one scope it
+ * renders instead of building every section of the bundle.
+ */
+export async function loadCurrentView(
   loadCurrent: CurrentSessionLoader,
   scope: Scope,
 ): Promise<CurrentView> {

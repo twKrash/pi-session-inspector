@@ -11,6 +11,9 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
+import type { Scope } from "../core/events.ts";
+import { serializeRangeQuery, type RangeIntent } from "./range.ts";
+
 const MAX_CACHE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_CACHE_BYTES = 100 * 1024 * 1024;
 const EXPLICIT_OUTPUTS_FILE = ".explicit-outputs";
@@ -86,6 +89,47 @@ export function generatedReportPath(
     return join(cacheDirectory, `${reportIdentity}.${extension}`);
   const digest = createHash("sha256").update(reportIdentity).digest("hex");
   return join(cacheDirectory, `session-${digest}.${extension}`);
+}
+
+/**
+ * One generated snapshot's identity: the target plus everything that shapes the
+ * document it renders. `sessionId`/`scope`/`range` are present only for the
+ * targets and modes that accept them.
+ */
+export type SnapshotIdentity = {
+  target: "current" | "history" | "global" | "session";
+  sessionId?: string;
+  scope?: Scope;
+  range?: RangeIntent;
+  theme: "light" | "dark";
+};
+
+/**
+ * The deterministic cache path of one generated snapshot. The name hashes a
+ * fixed-order identity (target, session, scope, the intent's own serialized
+ * query pairs, theme) so equal identities always resolve to the same bounded
+ * `snapshot-<sha256>.html` file and different documents never share one. Only
+ * generated cache files are named here; an explicit output path is the
+ * caller's and stays user-owned.
+ */
+export function generatedSnapshotPath(
+  cacheDirectory: string,
+  identity: SnapshotIdentity,
+): string {
+  const digest = createHash("sha256")
+    .update(
+      JSON.stringify([
+        identity.target,
+        identity.sessionId ?? null,
+        identity.scope ?? null,
+        identity.range === undefined
+          ? null
+          : serializeRangeQuery(identity.range),
+        identity.theme,
+      ]),
+    )
+    .digest("hex");
+  return join(cacheDirectory, `snapshot-${digest}.html`);
 }
 
 /** Writes a generated cache or explicit user-owned export and returns its path. */
