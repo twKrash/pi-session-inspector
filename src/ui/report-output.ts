@@ -9,7 +9,15 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 import type { Scope } from "../core/events.ts";
 import { serializeRangeQuery, type RangeIntent } from "./range.ts";
@@ -130,6 +138,27 @@ export function generatedSnapshotPath(
     )
     .digest("hex");
   return join(cacheDirectory, `snapshot-${digest}.html`);
+}
+
+/**
+ * Whether one explicit snapshot destination may be written: a user-owned
+ * `.html` export outside Pi's live session directory, where the authoritative
+ * session JSONL lives (AGENTS.md invariant 1). Generated cache paths never
+ * take this guard, and an accepted path keeps its user-owned cleanup
+ * registration. Lexical resolution only: nothing here reads, creates, or
+ * writes, so a refusal can never touch the destination.
+ */
+export function isExplicitSnapshotOutput(
+  output: string,
+  sessionDirectory: string,
+): boolean {
+  const resolved = resolve(output);
+  if (!resolved.toLowerCase().endsWith(".html")) return false;
+  const inside = relative(resolve(sessionDirectory), resolved);
+  if (inside === "") return false;
+  const outsideSessionDirectory =
+    inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside);
+  return outsideSessionDirectory;
 }
 
 /** Writes a generated cache or explicit user-owned export and returns its path. */

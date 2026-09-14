@@ -67,6 +67,7 @@ import type { SessionObservation } from "./ui/observation.ts";
 import {
   generatedReportPath,
   generatedSnapshotPath,
+  isExplicitSnapshotOutput,
   writeReportOutput,
 } from "./ui/report-output.ts";
 import type { InspectorServerContext } from "./ui/server.ts";
@@ -96,6 +97,14 @@ const description = "Open Pi Session Inspector reports";
 /** Bounded refusal for a snapshot of a session no manifest declares. */
 const SESSION_SNAPSHOT_UNAVAILABLE =
   "Inspector session snapshot is unavailable.";
+
+/**
+ * Bounded refusal for an explicit snapshot destination that is not a
+ * user-owned HTML export outside Pi's session directory. It names the
+ * constraint, never the rejected path.
+ */
+const SNAPSHOT_OUTPUT_REFUSED =
+  "Inspector snapshot output must be a user-owned .html file outside the Pi session directory.";
 
 /**
  * Live observer state kept per tracked session so a repeated promotion cannot
@@ -819,21 +828,25 @@ function createUiServerContext(input: {
   return {
     async loadUi(intent) {
       await flushLiveEvidence();
-      const evidence = await readSessionEvidence({
-        api,
-        root,
-        sessionId: readSessionId(sessionManager),
-      });
+      // One synchronous observation of the live session, taken as soon as the
+      // required evidence flush resolves: the whole request then reads this one
+      // session id, directory, file and leaf, even if Pi replaces the session
+      // while the evidence below is being read. No response mixes two.
+      const sessionId = readSessionId(sessionManager);
+      const sessionDirectory = sessionManager.getSessionDir();
+      const sessionFile = sessionManager.getSessionFile();
+      const leafId = sessionManager.getLeafId();
+      const evidence = await readSessionEvidence({ api, root, sessionId });
       // One bundle load serves the whole request: both current views, history
-      // and global, each read from the values above.
+      // and global, each read from the values captured above.
       const bundle = await loadInspectorBundle({
         theme: input.theme,
         initialScope: input.initialScope,
         root,
-        sessionDirectory: () => sessionManager.getSessionDir(),
+        sessionDirectory: () => sessionDirectory,
         current: {
-          sessionFile: sessionManager.getSessionFile(),
-          leafId: sessionManager.getLeafId(),
+          sessionFile,
+          leafId,
         },
         subagentEvidence: readSubagentEvidenceWithArchives,
         ...(evidence === undefined
@@ -1016,6 +1029,18 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             sessionEvidence: readHistorySessionEvidence,
           };
           if (command.mode === "snapshot") {
+            // An explicit destination is the user's own HTML export: refusing
+            // anything else before any read keeps a snapshot command unable to
+            // truncate Pi's session JSONL (AGENTS.md invariant 1). Generated
+            // cache paths never take this guard.
+            if (
+              command.output !== undefined &&
+              !isExplicitSnapshotOutput(
+                command.output,
+                sessionManager.getSessionDir(),
+              )
+            )
+              return notifyWarning(ctx, SNAPSHOT_OUTPUT_REFUSED);
             // The renderer (and the ordinary browser assets it shares with the
             // server) is loaded only for a snapshot command.
             const { renderSnapshot } = await import("./ui/snapshot.ts");

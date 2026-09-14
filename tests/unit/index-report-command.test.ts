@@ -37,6 +37,11 @@ type Harness = {
   rendered: string[][];
   setOpenerResult(code: number): void;
   setLeafId(leafId: string | null): void;
+  replaceSession(session: {
+    sessionId: string;
+    sessionFile: string;
+    leafId: string | null;
+  }): void;
   handler(alias?: string): Handler;
   context(
     overrides?: Partial<{
@@ -78,6 +83,33 @@ const SESSION_SOURCE = `${[
   .map((row) => JSON.stringify(row))
   .join("\n")}\n`;
 
+const REPLACEMENT_SESSION_SOURCE = `${[
+  { type: "session", version: 3, id: "replacement-session" },
+  {
+    type: "custom",
+    id: "marker",
+    parentId: null,
+    customType: "session-inspector:tracking-start",
+    data: { schemaVersion: 1 },
+    timestamp: "2026-02-02T00:00:00Z",
+  },
+  {
+    type: "message",
+    id: "fresh",
+    parentId: "marker",
+    timestamp: "2026-02-02T01:00:00Z",
+    message: {
+      role: "assistant",
+      provider: "acme",
+      model: "alpha",
+      content: [{ type: "text", text: "PRIVATE_BODY" }],
+      usage: { totalTokens: 5, cost: { total: 0.05 } },
+    },
+  },
+]
+  .map((row) => JSON.stringify(row))
+  .join("\n")}\n`;
+
 async function createHarness(inventory?: {
   getCommands(): readonly unknown[];
   getAllTools(): readonly unknown[];
@@ -97,9 +129,14 @@ async function createHarness(inventory?: {
   const opens: Array<[string, string[]]> = [];
   const rendered: string[][] = [];
   let openerResult = 0;
-  // The live leaf the session manager reports until a test moves it: the UI
-  // server's callbacks must read it per request, not once per command.
-  let currentLeafId: string | null = "main";
+  // The live session the session manager reports until a test moves or
+  // replaces it: the UI server's callbacks must read it per request, not once
+  // per command.
+  let liveSession = {
+    sessionId: "real-session",
+    sessionFile,
+    leafId: "main" as string | null,
+  };
   registerSessionInspector({
     on: () => {},
     registerCommand: (name: string, command: { handler: Handler }) =>
@@ -132,11 +169,13 @@ async function createHarness(inventory?: {
     ({
       mode: overrides.mode ?? "tui",
       sessionManager: {
-        getSessionId: () => "real-session",
+        getSessionId: () => liveSession.sessionId,
         getSessionFile: () =>
-          "sessionFile" in overrides ? overrides.sessionFile : sessionFile,
+          "sessionFile" in overrides
+            ? overrides.sessionFile
+            : liveSession.sessionFile,
         getLeafId: () =>
-          "leafId" in overrides ? overrides.leafId : currentLeafId,
+          "leafId" in overrides ? overrides.leafId : liveSession.leafId,
         getSessionDir: () => sessionDirectory,
       },
       ui: {
@@ -166,7 +205,10 @@ async function createHarness(inventory?: {
       openerResult = code;
     },
     setLeafId: (leafId) => {
-      currentLeafId = leafId;
+      liveSession.leafId = leafId;
+    },
+    replaceSession: (session) => {
+      liveSession = { ...session };
     },
     handler(alias = "session-ins") {
       const handler = handlers.get(alias);
@@ -221,7 +263,10 @@ async function apiGet(
 type UiSnapshotBody = {
   current: {
     active: { range?: { totals: { totalTokens: number } } };
-    tree: { range?: { totals: { totalTokens: number } } };
+    tree: {
+      range?: { totals: { totalTokens: number } };
+      report?: { sessionId: string };
+    };
   };
 };
 
@@ -477,6 +522,130 @@ test("snapshot writes exactly its requested target as one static document and ne
     assert.equal(countListeners(), listenersBefore);
     assert.equal(harness.opens.length, 0);
     assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("one /api/v1/ui request serves one observed session even if Pi replaces it mid-read", async () => {
+  // Pi replaces the live session while this request's evidence is being read:
+  // the request must serve the session it started with, never A's evidence
+  // attached to B's JSONL or leaf.
+  let replaceDuringEvidence: (() => void) | undefined;
+  const harness = await createHarness({
+    getCommands: () => {
+      const replace = replaceDuringEvidence;
+      replaceDuringEvidence = undefined;
+      replace?.();
+      return [];
+    },
+    getAllTools: () => [],
+  });
+  try {
+    await writeSessionManifest(harness);
+    await harness.handler()(
+      "ui --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    const bootstrap = bootstrapOf(harness.notices.at(-1) ?? "");
+    assert.ok(bootstrap, harness.notices.at(-1));
+
+    const before = await apiGet(
+      bootstrap.origin,
+      "/api/v1/ui",
+      bootstrap.token,
+    );
+    const beforeBody = before.body as UiSnapshotBody;
+    assert.equal(beforeBody.current.tree.report?.sessionId, "real-session");
+    assert.equal(beforeBody.current.active.range?.totals.totalTokens, 7);
+
+    const replacementFile = join(harness.sessionDirectory, "replacement.jsonl");
+    await writeFile(replacementFile, REPLACEMENT_SESSION_SOURCE);
+    replaceDuringEvidence = () =>
+      harness.replaceSession({
+        sessionId: "replacement-session",
+        sessionFile: replacementFile,
+        leafId: null,
+      });
+
+    const mixed = await apiGet(bootstrap.origin, "/api/v1/ui", bootstrap.token);
+    assert.equal(mixed.status, 200);
+    const mixedBody = mixed.body as UiSnapshotBody;
+    assert.equal(mixedBody.current.tree.report?.sessionId, "real-session");
+    assert.equal(mixedBody.current.active.range?.totals.totalTokens, 7);
+    assert.equal(mixedBody.current.tree.range?.totals.totalTokens, 18);
+
+    // The replacement is real: the next request reads the new session.
+    const replaced = await apiGet(
+      bootstrap.origin,
+      "/api/v1/ui",
+      bootstrap.token,
+    );
+    const replacedBody = replaced.body as UiSnapshotBody;
+    assert.equal(
+      replacedBody.current.tree.report?.sessionId,
+      "replacement-session",
+    );
+    assert.equal(replacedBody.current.tree.range?.totals.totalTokens, 5);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("snapshot refuses a destination that could overwrite Pi session authority", async () => {
+  const harness = await createHarness();
+  try {
+    await writeSessionManifest(harness);
+    // The Pi session source itself, and anything inside the directory Pi keeps
+    // its session sources in, are never writable snapshot destinations.
+    for (const destination of [
+      harness.sessionFile,
+      join(harness.sessionDirectory, "report.html"),
+      join(harness.sessionDirectory, "nested", "report.html"),
+    ]) {
+      harness.notices.length = 0;
+      await harness.handler()(
+        `snapshot current --no-open --output ${JSON.stringify(destination)}`,
+        harness.context({ mode: "interactive" }),
+      );
+      const notice = harness.notices.at(-1) ?? "";
+      assert.match(notice, /snapshot output/i, destination);
+      // Bounded refusal: neither the destination nor exception text leaks.
+      assert.equal(notice.includes(destination), false, destination);
+      assert.equal(await countFiles(harness.cache), 0, destination);
+      if (destination !== harness.sessionFile)
+        await assert.rejects(access(destination), destination);
+      assert.equal(
+        await readFile(harness.sessionFile, "utf8"),
+        SESSION_SOURCE,
+        destination,
+      );
+    }
+
+    // A user-owned HTML destination outside Pi's session directory still
+    // writes, including one whose directory merely shares the session
+    // directory's name prefix.
+    for (const html of [
+      join(harness.directory, "snapshot.html"),
+      join(`${harness.sessionDirectory}-exports`, "snapshot.html"),
+    ]) {
+      harness.notices.length = 0;
+      await harness.handler()(
+        `snapshot current --no-open --output ${JSON.stringify(html)}`,
+        harness.context({ mode: "interactive" }),
+      );
+      assert.equal(harness.notices.at(-1), `Inspector report written: ${html}`);
+      assert.equal(
+        (await readFile(html, "utf8")).includes("<script"),
+        false,
+        html,
+      );
+      assert.equal(
+        await readFile(harness.sessionFile, "utf8"),
+        SESSION_SOURCE,
+        html,
+      );
+    }
   } finally {
     await harness.cleanup();
   }
