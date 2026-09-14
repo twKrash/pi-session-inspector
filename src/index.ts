@@ -1132,7 +1132,15 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
               explicit: command.output !== undefined,
             });
             if (!output) return notifyCurrentUnavailable(ctx);
+            // The artifact path is the output and is notified before opening,
+            // so a failed opener can never hide where the document was written.
             notifyInfo(ctx, `Inspector report written: ${output}`);
+            if (command.noOpen) return;
+            try {
+              await openReport(pi, output);
+            } catch {
+              // Opening is best effort; the artifact is already written.
+            }
             return;
           }
           // json: deterministic export, never opens a browser.

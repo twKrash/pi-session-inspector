@@ -22,8 +22,9 @@ The four modes are separate surfaces: `ui` is the interactive localhost
 application, `snapshot` is the only immutable HTML artifact command, `tui`
 renders the current session inside Pi, and `json` is the deterministic export.
 Only `ui` starts a server; `ui` displays its tokenized URL and opens it unless
-`--no-open` is given, while `snapshot` writes its artifact and reports the path
-without starting a server or opening a browser.
+`--no-open` is given, while `snapshot` writes its artifact, reports the path,
+and opens that exact document unless `--no-open` is given, without ever
+starting a server.
 
 ```text
 /session-ins ui

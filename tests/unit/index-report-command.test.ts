@@ -37,6 +37,8 @@ type Harness = {
   cache: string;
   notices: string[];
   opens: Array<[string, string[]]>;
+  /** Interleaved `notify:`/`open:` trace proving the notification precedes the opener. */
+  sequence: string[];
   rendered: string[][];
   setOpenerResult(code: number): void;
   setLeafId(leafId: string | null): void;
@@ -130,6 +132,7 @@ async function createHarness(inventory?: {
   const handlers = new Map<string, Handler>();
   const notices: string[] = [];
   const opens: Array<[string, string[]]> = [];
+  const sequence: string[] = [];
   const rendered: string[][] = [];
   let openerResult = 0;
   // The live session the session manager reports until a test moves or
@@ -152,6 +155,7 @@ async function createHarness(inventory?: {
         }),
     exec: async (command: string, args: string[]) => {
       opens.push([command, args]);
+      sequence.push(`open:${args.at(-1) ?? ""}`);
       if (openerResult === -1) throw new Error("PRIVATE_OPENER");
       return {
         code: openerResult,
@@ -182,7 +186,10 @@ async function createHarness(inventory?: {
         getSessionDir: () => sessionDirectory,
       },
       ui: {
-        notify: (text: string) => notices.push(text),
+        notify: (text: string) => {
+          notices.push(text);
+          sequence.push(`notify:${text}`);
+        },
         custom: async (factory: CustomFactory) => {
           const component = await factory(
             { requestRender: () => {} } as never,
@@ -203,6 +210,7 @@ async function createHarness(inventory?: {
     cache,
     notices,
     opens,
+    sequence,
     rendered,
     setOpenerResult: (code) => {
       openerResult = code;
@@ -524,6 +532,89 @@ test("snapshot writes exactly its requested target as one static document and ne
     );
     assert.equal(countListeners(), listenersBefore);
     assert.equal(harness.opens.length, 0);
+    assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("a successful snapshot opens its written artifact unless --no-open is given", async () => {
+  const harness = await createHarness();
+  try {
+    const output = join(harness.directory, "opened.html");
+    await harness.handler()(
+      `snapshot current --output ${JSON.stringify(output)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    // The path is notified first, then that exact document is handed to the
+    // platform opener: the opener never receives a path the user was not told.
+    assert.equal(harness.notices.at(-1), `Inspector report written: ${output}`);
+    assert.equal((await readFile(output, "utf8")).includes("<script"), false);
+    assert.equal(harness.opens.length, 1);
+    assert.equal(
+      harness.opens[0]?.[0],
+      process.platform === "darwin"
+        ? "open"
+        : process.platform === "win32"
+          ? "rundll32"
+          : "xdg-open",
+    );
+    assert.equal(harness.opens[0]?.[1].at(-1), output);
+    // The opener receives the artifact path, never a server URL: no snapshot
+    // target starts the localhost server, opened or not.
+    assert.equal(
+      harness.notices.some((notice) =>
+        notice.startsWith("Inspector UI available at:"),
+      ),
+      false,
+    );
+    const written = `notify:Inspector report written: ${output}`;
+    assert.ok(
+      harness.sequence.indexOf(written) !== -1 &&
+        harness.sequence.indexOf(written) <
+          harness.sequence.indexOf(`open:${output}`),
+    );
+
+    // A failed opener is swallowed: the bounded path stays the last notice and
+    // no exception text reaches the user.
+    harness.setOpenerResult(1);
+    harness.notices.length = 0;
+    const failedOutput = join(harness.directory, "opener-failed.html");
+    await harness.handler()(
+      `snapshot current --output ${JSON.stringify(failedOutput)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(
+      harness.notices.at(-1),
+      `Inspector report written: ${failedOutput}`,
+    );
+    assert.equal(harness.notices.join().includes("PRIVATE_OPENER"), false);
+    assert.equal(harness.opens.at(-1)?.[1].at(-1), failedOutput);
+    assert.equal(
+      (await readFile(failedOutput, "utf8")).includes("<script"),
+      false,
+    );
+
+    // `--no-open` suppresses only the opener: the document is still written
+    // and the server is still never started.
+    const opensBefore = harness.opens.length;
+    harness.notices.length = 0;
+    const quietOutput = join(harness.directory, "quiet.html");
+    await harness.handler()(
+      `snapshot current --no-open --output ${JSON.stringify(quietOutput)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(
+      harness.notices.at(-1),
+      `Inspector report written: ${quietOutput}`,
+    );
+    assert.equal(harness.opens.length, opensBefore);
+    assert.equal(
+      harness.notices.some((notice) =>
+        notice.startsWith("Inspector UI available at:"),
+      ),
+      false,
+    );
     assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
   } finally {
     await harness.cleanup();
