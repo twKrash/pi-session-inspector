@@ -550,8 +550,8 @@ export type HistoryEntryView = {
   usageByDateTruncated?: boolean;
   /**
    * The same session's per-date model rows, so its detail filters the Models
-   * tab exactly like the current section. Absent for a payload that carries no
-   * dated projection (the legacy adapter), which labels the aggregate table.
+   * tab exactly like the current section. Absent when the payload carries no
+   * dated projection, which labels the aggregate table.
    */
   datedModels?: readonly DatedModelRow[];
   modelsTruncated?: boolean;
@@ -1020,9 +1020,8 @@ function agentRows(report: SessionReport): AgentRow[] {
  * The headline an error row renders (design §7.5-1): the joined tool's name when
  * the record carries one, else the bounded classification label for its kind
  * family. The template and the fill value are returned separately so the
- * browser fills the one catalog entry the tests read; the raw `tool:call_…` id
- * is never a headline. Exported and inlined by `html.ts`, so the browser and
- * the tests run the same rule (see `INLINED_FUNCTIONS` there).
+ * snapshot renderer fills the one catalog entry the tests read; the raw
+ * `tool:call_…` id is never a headline.
  */
 export function errorHeadline(row: {
   kind: string;
@@ -1042,7 +1041,7 @@ export function errorHeadline(row: {
  * The bounded redacted message a row may render, or `null` for `Unavailable`.
  * Reduction owns extraction and redaction; this projection only renders the
  * validated DTO field. No text is taken from tool arguments or child output.
- * Exported and inlined, so the browser and the tests run the same rule.
+ * Exported so the snapshot renderer and the tests read the same rule.
  */
 export function errorMessage(row: {
   kind: string;

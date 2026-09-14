@@ -104,13 +104,6 @@ export type SnapshotDto =
     };
 
 /**
- * The snapshot stylesheet, byte-identical to the legacy document CSS in
- * `html.ts` and owned here only until Task 5 relocates it to the ordinary asset
- * `src/ui/web/style.css`; the renderer then imports those exact bytes and this
- * constant disappears. The CSP hash below is computed from these bytes, so the
- * relocation must preserve them exactly.
- */
-/**
  * The snapshot's one stylesheet: the ordinary browser asset the server
  * serves (`src/ui/web/style.css`), read by the known-asset loader. The
  * snapshot inlines exactly those bytes and derives its CSP hash from them,

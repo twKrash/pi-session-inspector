@@ -620,17 +620,14 @@ start, end, or duration:
 - The attribution is computed **once**, by the canonical builder
   (`CanonicalUsageLine.attributedAt`/`domain`/`bucket`), and is only projected:
   one dated projection (`sessionDatedUsage`) feeds every range-aware widget, and
-  nothing re-walks report timestamps to build a second dated view. Two documented
-  exceptions: the legacy single-section `renderHtml(HtmlReport)` adapter has no
-  canonical session, so its current-view daily rows keep the pre-attribution
-  `buildDailyActivityRows` bucketing; it has no production caller and removing it
-  is deferred (§13.6). And the production `sessionView` path's
-  `sessionSpanMs`/`reportDates` (`src/ui/html.ts`) walks native record timestamps
-  to produce one **span/duration label** (the Overview Duration card and the
-  history entry's first/last dates), never a per-date usage figure — every dated
-  number still comes from `sessionDatedUsage`. Tools, agents, and errors are
-  filtered from their own canonical rows (one row per call/run/error); date-indexed
-  duplicates for them do not exist.
+  nothing re-walks report timestamps to build a second dated view. The one
+  documented exception is the `sessionView` path's
+  `sessionSpanMs`/`reportDates` in `src/ui/report-projection.ts`, which walk
+  native record timestamps to produce one **span/duration label** (the Overview
+  Duration card and the history entry's first/last dates), never a per-date
+  usage figure — every dated number still comes from `sessionDatedUsage`.
+  Tools, agents, and errors are filtered from their own canonical rows (one row
+  per call/run/error); date-indexed duplicates for them do not exist.
 - Boundaries are inclusive UTC dates (`from <= date <= to`); presets are anchored
   on the view's **latest observed date**, never the machine clock, so exports stay
   byte-identical.
@@ -763,4 +760,3 @@ nothing about it is fabricated in the meantime.
 | Integration version when the producer publishes none | Unsupported | Rendered `Unavailable`, never `0` |
 | Exact aggregate-row/detail reconciliation for ranges older than a session's retained dated window | Unsupported (bounded projection) | The window holds 366 dates; the omitted portion is reported as partial/`Known` with a truncation diagnostic, never reconstructed |
 | Child usage completeness when some runs report none | Known-only | Shown as `Known … (n of m runs)`; never extrapolated |
-| Removing the legacy `renderHtml(HtmlReport)` adapter | Deferred (out of scope) | No production caller, but deleting a module with its own test suite is its own change |

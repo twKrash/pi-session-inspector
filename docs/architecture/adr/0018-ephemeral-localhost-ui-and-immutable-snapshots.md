@@ -33,9 +33,10 @@ observer-only/local-only (ADR 0001, ADR 0011); child usage remains a breakdown
 /session-inspector ui
 ```
 
-It starts or reuses one lazy server for the current Pi process, opens a
-capability-token URL, and obtains report data through the protected API.
-`ui --output` is invalid usage and is not normalized to another command.
+It starts or reuses one lazy server for the current Pi process, opens its
+capability URL in the platform browser by default, and obtains report data
+through the protected API. `ui --output` is invalid usage and is not
+normalized to another command.
 
 `snapshot` is the only static HTML artifact command:
 
@@ -55,11 +56,12 @@ targets accept `--theme`, `--output`, and `--no-open`.
 When `--output` is omitted, a snapshot is written to the existing generated
 report cache under Pi's `session-inspector/v1/reports/` location using a safe
 or opaque report identity and the `.html` extension. Explicit output files are
-user-owned and retain existing cache-cleanup protection. `--no-open` suppresses
-only the platform browser opener: it does not suppress snapshot generation,
-server startup, or the user-visible path/URL notification. For `ui`, it starts
-the server and displays the tokenized URL without opening it. For `snapshot`,
-it writes the artifact without opening it.
+user-owned and retain existing cache-cleanup protection. By default, `ui` opens
+its capability URL and `snapshot` opens the artifact it just wrote through the
+platform browser opener. `--no-open` suppresses only those platform opener
+calls: `ui` still starts or reuses the server and reports the tokenized URL, and
+`snapshot` still writes its artifact and reports its path. `snapshot` never
+starts the localhost server.
 
 `json` remains the deterministic machine-readable export and `tui` remains the
 terminal interaction surface. `--output` is valid for `snapshot` and `json`,

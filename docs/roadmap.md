@@ -55,9 +55,9 @@ by the explicitly named post-M8 cleanup tail.
 - Once accepted, a later ADR, durable spec amendment, or roadmap decision
   supersedes conflicting portions of the original v1 implementation plan. The
   plan remains an execution/history guide only where it has not been superseded.
-- Pre-M8.4's durable ADR/spec and mirrored public documentation now adopt the
-  localhost transport and immutable snapshot split. Implementation remains
-  blocked until the written records receive final user approval.
+- Pre-M8.4's durable ADR/spec and mirrored public documentation adopted the
+  localhost transport and immutable snapshot split, the adoption gate was
+  accepted, and the implementation shipped in `0.10.0`.
 - Transport changes preserve existing semantic contracts: canonical report
   loading, navigation/routing, ranges, active/tree scope, projections,
   evidence/coverage, privacy, determinism, and unsupported/unavailable
@@ -776,8 +776,6 @@ explicitly documented.
    Relevant paths:
 
    - `src/core/reports.ts:toSessionReport`
-   - `src/ui/html.ts:renderHtml`
-   - `src/ui/html.ts:buildDailyActivityRows`
    - legacy `ReducedSession` projection paths
 
    Risk:
