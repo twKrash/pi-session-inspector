@@ -1500,13 +1500,15 @@ test("publishes the retained counter total when the checkpoint folded nothing", 
   );
 });
 
-test("keeps retained skill detail while integration totals stay unavailable without a boundary", async () => {
-  const sessionId = "no-boundary";
+test("creates the fold boundary from durable WAL evidence when the read finds none", async () => {
+  const sessionId = "boundary-created";
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const sessionFile = join(directory, "session.jsonl");
   await writeFile(sessionFile, trackedSessionSource(sessionId));
-  // No checkpoint boundary at all: pruning cannot be ruled out, so L1 must
-  // publish no counter total — but the retained skill detail still survives.
+  // No checkpoint exists: the durable WAL is the only evidence, and R50
+  // publishes no counter total without a fold boundary. The read folds that
+  // evidence once — the pass the session-start trigger schedules — and then
+  // publishes the bounded total instead of withholding it forever.
   await writeShard(directory, sessionId, "writer-a", [
     telemetryRecord("writer-a", 1, skillInvocation("council-mode")),
     telemetryRecord("writer-a", 2, permissionDecision("deny", "user_denied")),
@@ -1525,10 +1527,14 @@ test("keeps retained skill detail while integration totals stay unavailable with
       ?.explicitInvocations,
     1,
   );
-  // A WAL-observed permission counter is *not* a trustworthy total here, and
-  // the DTO must not present one.
-  assert.equal(integrationRow(report, "permission")?.counters, undefined);
-  assert.equal(integrationRow(report, "permission")?.state, "unavailable");
+  // The boundary makes the WAL-observed decision a trustworthy total. Without
+  // it the same row reports no counter at all (never a zero), which the
+  // presence-durability fixture pins for the pre-fold read.
+  assert.deepEqual(integrationRow(report, "permission")?.counters, {
+    decisions: 1,
+    denied: 1,
+  });
+  assert.equal(integrationRow(report, "permission")?.state, "supported");
   assert.equal(
     report.evidenceHealth.aggregates.skillInvocations.retainedInvocations,
     1,
@@ -1583,11 +1589,33 @@ test("reports a fully paired live boundary as supported and an unpaired start as
   assert.equal(walSource(paired)?.factsAccepted, 1);
   assert.equal(walSource(paired)?.recordsSeen, 2);
 
-  await writeShard(directory, sessionId, "writer-live", [start]);
+  // The unpaired read gets its own clean session: the first read folded a
+  // checkpoint boundary for the session it read, and re-writing that shard
+  // backwards afterwards is a different (and unavailable) scenario.
+  const unpairedDirectory = await mkdtemp(
+    join(tmpdir(), "pi-session-inspector-"),
+  );
+  const unpairedSessionId = "unpaired-boundary";
+  const unpairedFile = join(unpairedDirectory, "session.jsonl");
+  await writeFile(unpairedFile, trackedSessionSource(unpairedSessionId));
+  await writeShard(unpairedDirectory, unpairedSessionId, "writer-live", [
+    {
+      ...start,
+      eventId: "unpaired-start",
+      timing: {
+        ...start.timing,
+        subjectId: `live-tool-${canonicalOpaqueDigest(
+          "live-tool",
+          unpairedSessionId,
+          "call-1",
+        )}`,
+      },
+    },
+  ]);
   const unpaired = await exportCurrentReport({
-    directory,
-    sessionFile,
-    sessionId,
+    directory: unpairedDirectory,
+    sessionFile: unpairedFile,
+    sessionId: unpairedSessionId,
   });
   // A start without a complete partner stays incomplete live evidence.
   assert.equal(walSource(unpaired)?.state, "partial");

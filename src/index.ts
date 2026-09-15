@@ -46,7 +46,7 @@ import {
   type SubagentEvidence,
 } from "./integrations/subagents.ts";
 import { readCanonicalContributions } from "./integrations/contributions.ts";
-import { presenceFromCheckpointV1, presenceKeys } from "./core/presence.ts";
+import { presenceKeys } from "./core/presence.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
 import {
   type LiveWalRegistration,
@@ -66,7 +66,7 @@ import {
   readInventorySnapshot,
   refreshInventorySnapshot,
 } from "./storage/inventory-snapshot.ts";
-import { scheduleMaintenance } from "./storage/maintenance.ts";
+import { maintainSession, scheduleMaintenance } from "./storage/maintenance.ts";
 import { type RecoveredWalRecord, recoverSession } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
 import { loadCurrentView, loadInspectorBundle } from "./ui/bundle.ts";
@@ -490,6 +490,45 @@ function setupProductionSessionWal(input: {
   });
 }
 
+/**
+ * Sessions this process already gave a fold-boundary attempt. Bounded: a
+ * process observes a handful of sessions, and a session that cannot be folded
+ * (untracked, or a maintenance failure) must not be retried on every read.
+ */
+const foldBoundaryAttempts = new Set<string>();
+const MAX_FOLD_BOUNDARY_ATTEMPTS = 64;
+
+/**
+ * Creates the durable fold boundary for a tracked session that has none yet.
+ * The pass is the same maintenance the session-start trigger schedules, run to
+ * completion here so the read that found no boundary can publish the bounded
+ * counters that boundary is required for (R50) instead of withholding them.
+ * Observer-only: it writes Inspector's own derived state, never Pi's session,
+ * and every failure leaves the read untouched.
+ */
+async function ensureFoldBoundary(input: {
+  root: string;
+  sessionId: string;
+  sessionFile: string | undefined;
+}): Promise<void> {
+  const { root, sessionFile, sessionId } = input;
+  if (sessionFile === undefined) return;
+  if (foldBoundaryAttempts.has(sessionId)) return;
+  if (foldBoundaryAttempts.size < MAX_FOLD_BOUNDARY_ATTEMPTS) {
+    foldBoundaryAttempts.add(sessionId);
+  }
+  try {
+    await maintainSession({
+      root,
+      sessionId,
+      sessionFile,
+      writerId: randomUUID(),
+    });
+  } catch {
+    // Inspector maintenance is observer-only.
+  }
+}
+
 function readSessionId(sessionManager: unknown): string | undefined {
   try {
     const id = (
@@ -556,6 +595,8 @@ async function readSessionEvidence(input: {
   api: ReportInventoryApi;
   root: string;
   sessionId: string | undefined;
+  /** The Pi session file this read belongs to; `undefined` skips the boundary pass. */
+  sessionFile?: string | undefined;
 }): Promise<SessionEvidenceRead | undefined> {
   if (input.sessionId === undefined) return undefined;
   try {
@@ -565,7 +606,20 @@ async function readSessionEvidence(input: {
       sessionId: input.sessionId,
     });
     const directory = join(input.root, "sessions", input.sessionId);
-    const checkpoint = await readCheckpoint({ directory });
+    let checkpoint = await readCheckpoint({ directory });
+    if (checkpoint === undefined) {
+      // R50 withholds every counter total without a fold boundary, so a tracked
+      // session whose evidence has never been folded reports `unavailable` even
+      // though its durable WAL holds the observations. One bounded pass creates
+      // that boundary from the same durable inputs the session-start trigger
+      // uses; a failure leaves the read exactly as it was.
+      await ensureFoldBoundary({
+        root: input.root,
+        sessionId: input.sessionId,
+        sessionFile: input.sessionFile,
+      });
+      checkpoint = await readCheckpoint({ directory });
+    }
     const recovered = await recoverSession({
       directory,
       // Only the WAL-derived delta is consumed below; the checkpoint is its own
@@ -794,6 +848,15 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
       directory,
       piCursor: checkpoint?.cursors.pi ?? NO_PI_SOURCE_CURSOR,
     });
+    // Durable presence and folded counters come from the same two sources the
+    // current-session read uses: the checkpoint fold plus the retained WAL
+    // suffix after its cursor. A history read has no process-local sighting to
+    // fall back on, so reading only the checkpoint would report `unknown` for a
+    // session whose own WAL recorded the sighting (`docs/specs` §6).
+    const counters = mergeFoldedCounters(
+      foldedFromCheckpointAggregates(checkpoint?.aggregates),
+      recovered.deltaCounters,
+    );
     return {
       evidence: {
         atomic: [
@@ -820,13 +883,13 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
                   .map((row) => row.name),
           tools:
             inventory === undefined ? [] : Object.keys(inventory.toolSources),
-          // Durable presence: the checkpoint may have folded a previously
-          // observed sighting; absence is `unknown`, not `absent`.
-          observed: presenceKeys(
-            presenceFromCheckpointV1(checkpoint?.aggregates.presence),
-          ),
+          // Durable presence: a previously recorded sighting survives, whether
+          // the fold already carries it or only the WAL does; absence is
+          // `unknown`, never `absent`.
+          observed: presenceKeys(counters.presence),
           inventoryAvailable: inventory !== undefined,
         }).presence,
+        counters,
         ...(inventory === undefined ? {} : { inventory }),
       },
     };
@@ -1015,7 +1078,12 @@ function createUiServerContext(input: {
       const sessionDirectory = sessionManager.getSessionDir();
       const sessionFile = sessionManager.getSessionFile();
       const leafId = sessionManager.getLeafId();
-      const evidence = await readSessionEvidence({ api, root, sessionId });
+      const evidence = await readSessionEvidence({
+        api,
+        root,
+        sessionId,
+        sessionFile,
+      });
       // One bundle load serves the whole request: both current views, history
       // and global, each read from the values captured above.
       const bundle = await loadInspectorBundle({
@@ -1159,6 +1227,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                   api: pi,
                   root,
                   sessionId: readSessionId(sessionManager),
+                  sessionFile,
                 })
               : undefined;
           // One read serves both the L0 evidence bundle and the existing
