@@ -44,23 +44,21 @@
     "benchmark:release": "node --expose-gc --import tsx benchmark/run.ts --mode=release --out=benchmark/artifacts/release-latest.json",
     "knip": "knip",
     "prepare": "node scripts/install-hooks.mjs",
-    "depcruise": "depcruise --config .dependency-cruiser.cjs --output-type err src"
+    "depcruise": "depcruise --config .dependency-cruiser.cjs --output-type err src",
+    "publint": "publint --strict"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
     "@types/node": "^22.19.7",
     "dependency-cruiser": "^18.2.0",
-    "esbuild": "^0.28.2",
     "fast-check": "^4.10.0",
     "knip": "^6.35.1",
+    "publint": "0.3.24",
     "tsx": "4.21.0",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "^0.85.1"
-  },
-  "dependencies": {
-    "publint": "^0.3.24"
   }
 }
