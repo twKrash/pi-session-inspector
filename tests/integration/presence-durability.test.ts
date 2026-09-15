@@ -39,7 +39,18 @@ type IntegrationRow = {
   counters?: Record<string, number>;
 };
 
-type ReportLike = { integrations?: readonly IntegrationRow[] };
+type SourceRow = {
+  sourceLabel: string;
+  commands: number;
+  skills: number;
+  prompts: number;
+  tools: number;
+};
+
+type ReportLike = {
+  integrations?: readonly IntegrationRow[];
+  resources?: { items: readonly SourceRow[] };
+};
 
 /** One validated permission bus envelope, as the live adapter emits it. */
 function envelope(input: {
@@ -64,8 +75,56 @@ function envelope(input: {
   return result.envelope as unknown as Record<string, unknown>;
 }
 
-/** The tracked Pi source: header, tracking marker, one generation and one tool. */
+/**
+ * The tracked Pi source: the sanitized shape of one UAT smoke session, with the
+ * producer surfaces each integration adapter reads — `ctx_*` and Lens tool
+ * calls, a persisted RTK compaction, the two mode extensions' custom entries,
+ * and one subagent run whose native usage lands on only one of its calls.
+ */
 function sessionSource(): string {
+  const assistant = (
+    id: string,
+    parentId: string | null,
+    timestamp: string,
+    calls: { id: string; name: string }[],
+  ) => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp,
+    message: {
+      role: "assistant",
+      provider: "example",
+      model: "example-model",
+      usage: { totalTokens: 100, cost: { total: 0.01 } },
+      content: calls.map((call) => ({
+        type: "toolCall",
+        id: call.id,
+        name: call.name,
+      })),
+    },
+  });
+  const toolResult = (
+    id: string,
+    parentId: string,
+    timestamp: string,
+    callId: string,
+    toolName: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp,
+    message: {
+      role: "toolResult",
+      toolCallId: callId,
+      toolName,
+      isError: false,
+      usage: { totalTokens: 10, cost: { total: 0.001 } },
+      ...extra,
+    },
+  });
   const records = [
     {
       type: "session",
@@ -82,34 +141,158 @@ function sessionSource(): string {
       data: { schemaVersion: 1 },
     },
     {
-      type: "message",
-      id: "gen-1",
+      type: "custom",
+      id: "ponytail-1",
       parentId: "marker",
-      timestamp: "2026-09-15T10:00:02.000Z",
-      message: {
-        role: "assistant",
-        provider: "example",
-        model: "example-model",
-        usage: { totalTokens: 100, cost: { total: 0.01 } },
-        content: [{ type: "toolCall", id: "call-1", name: "bash" }],
-      },
+      timestamp: "2026-09-15T10:00:01.000Z",
+      customType: "ponytail-mode",
+      data: { mode: "full" },
     },
     {
-      type: "message",
-      id: "res-1",
-      parentId: "gen-1",
-      timestamp: "2026-09-15T10:00:03.000Z",
-      message: {
-        role: "toolResult",
-        toolCallId: "call-1",
-        toolName: "bash",
-        isError: true,
-        usage: { totalTokens: 10, cost: { total: 0.001 } },
-      },
+      type: "custom",
+      id: "caveman-1",
+      parentId: "ponytail-1",
+      timestamp: "2026-09-15T10:00:01.500Z",
+      customType: "caveman-level",
+      data: { level: "full" },
     },
+    assistant("gen-1", "caveman-1", "2026-09-15T10:00:02.000Z", [
+      { id: "call-ctx-1", name: "ctx_search" },
+      { id: "call-ctx-2", name: "ctx_batch_execute" },
+      { id: "call-lens-1", name: "lens_diagnostics" },
+      { id: "call-lens-2", name: "pi_lens_activate_tools" },
+    ]),
+    toolResult(
+      "res-ctx-1",
+      "gen-1",
+      "2026-09-15T10:00:03.000Z",
+      "call-ctx-1",
+      "ctx_search",
+    ),
+    // The RTK compaction the optimizer recorded on its own tool result.
+    toolResult(
+      "res-ctx-2",
+      "gen-1",
+      "2026-09-15T10:00:03.500Z",
+      "call-ctx-2",
+      "ctx_batch_execute",
+      {
+        details: {
+          rtkCompaction: {
+            schemaVersion: 1,
+            sourceChars: 51288,
+            compactedChars: 12000,
+            sourceLines: 713,
+            compactedLines: 167,
+            truncated: true,
+          },
+        },
+      },
+    ),
+    toolResult(
+      "res-lens-1",
+      "gen-1",
+      "2026-09-15T10:00:04.000Z",
+      "call-lens-1",
+      "lens_diagnostics",
+    ),
+    toolResult(
+      "res-lens-2",
+      "gen-1",
+      "2026-09-15T10:00:04.500Z",
+      "call-lens-2",
+      "pi_lens_activate_tools",
+    ),
+    assistant("gen-2", "res-lens-2", "2026-09-15T10:00:05.000Z", [
+      { id: "call-sub-1", name: "subagent" },
+    ]),
+    // One `subagent` call of three carried native usage: the grouped Tools row
+    // must publish 34477 over 1 of 3 calls, never as the complete figure.
+    toolResult(
+      "res-sub-1",
+      "gen-2",
+      "2026-09-15T10:00:06.000Z",
+      "call-sub-1",
+      "subagent",
+      {
+        details: {
+          results: [
+            {
+              index: 0,
+              runId: "run-1",
+              agent: "worker",
+              usage: {
+                input: 30000,
+                output: 4477,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 0.004893924,
+              },
+            },
+          ],
+        },
+      },
+    ),
   ];
   return `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
 }
+
+/** The sanitized inventory the UAT environment exposed. */
+const COMMANDS = [
+  {
+    name: "ponytail",
+    source: "extension",
+    description: "mode",
+    sourceInfo: { source: "npm:pi-ponytail", scope: "user", origin: "package" },
+  },
+  {
+    name: "caveman",
+    source: "extension",
+    description: "mode",
+    sourceInfo: { source: "npm:pi-caveman", scope: "user", origin: "package" },
+  },
+  {
+    name: "skill:graphify",
+    source: "skill",
+    sourceInfo: { source: "npm:pi-graphify", scope: "user", origin: "package" },
+  },
+  {
+    name: "review",
+    source: "prompt",
+    sourceInfo: { source: "builtin", scope: "user", origin: "top-level" },
+  },
+] as const;
+
+const TOOLS = [
+  {
+    name: "bash",
+    description: "",
+    parameters: {},
+    sourceInfo: { source: "builtin", scope: "user", origin: "top-level" },
+  },
+  {
+    name: "ctx_search",
+    description: "",
+    parameters: {},
+    sourceInfo: { source: "npm:pi-context", scope: "user", origin: "package" },
+  },
+  {
+    name: "lens_diagnostics",
+    description: "",
+    parameters: {},
+    sourceInfo: { source: "npm:pi-lens", scope: "user", origin: "package" },
+  },
+  {
+    name: "subagent",
+    description: "",
+    parameters: {},
+    sourceInfo: {
+      source: "npm:pi-subagents",
+      scope: "user",
+      origin: "package",
+    },
+  },
+] as const;
 
 type Fixture = {
   agentDir: string;
@@ -160,8 +343,8 @@ async function buildFixture(): Promise<Fixture> {
   const handlerRef: { current?: CommandHandler } = {};
   registerSessionInspector({
     on: () => {},
-    getCommands: () => [],
-    getAllTools: () => [],
+    getCommands: () => [...COMMANDS],
+    getAllTools: () => [...TOOLS],
     registerCommand: (name: string, command: { handler: CommandHandler }) => {
       if (name === "session-inspector") handlerRef.current = command.handler;
     },
@@ -177,7 +360,7 @@ async function buildFixture(): Promise<Fixture> {
       mode: "interactive",
       sessionManager: {
         getSessionId: () => SESSION_ID,
-        getLeafId: () => "res-1",
+        getLeafId: () => "res-sub-1",
         getSessionFile: () => sessionFile,
         getSessionDir: () => sessionDirectory,
       },
@@ -285,22 +468,92 @@ test("a durable permission sighting survives the session becoming history", asyn
   }
 });
 
-test("an integration with no evidence reports no counter, never zero", async () => {
+test("one sanitized UAT session projects its whole integration matrix", async () => {
+  const fixture = await buildFixture();
+  try {
+    // The full session tree: the smoke session's tool results are siblings of
+    // the active path's own chain, and their evidence is tree evidence.
+    const report = await fixture.report(
+      `json current --scope tree --output "${fixture.reportPath}"`,
+      fixture.reportPath,
+    );
+    const rowOf = (key: string): IntegrationRow | undefined =>
+      report.integrations?.find((row) => row.integration === key);
+
+    // 1-6: every integration the smoke session exercised is supported by its
+    // own producer evidence, and each counter is the producer's own figure.
+    assert.deepEqual(rowOf("context")?.counters, { calls: 2 });
+    assert.deepEqual(rowOf("rtk")?.counters, {
+      compactions: 1,
+      sourceChars: 51288,
+      compactedChars: 12000,
+      sourceLines: 713,
+      compactedLines: 167,
+      truncated: true,
+    });
+    assert.deepEqual(rowOf("ponytail")?.counters, { changes: 1 });
+    assert.deepEqual(rowOf("caveman")?.counters, { changes: 1 });
+    assert.deepEqual(rowOf("lens")?.counters, { calls: 2 });
+    const subagents = rowOf("subagents");
+    assert.equal(subagents?.state, "supported");
+    // The rich subagent evidence is a run, never a flattened counter.
+    assert.equal(subagents?.counters, undefined);
+
+    // 7: a durable permission sighting in the same immutable session.
+    assert.equal(rowOf("permission")?.presence, "present");
+
+    // 10: the Sources counts are the inventory that was supplied, per source.
+    const sources = report.resources?.items ?? [];
+    assert.deepEqual(
+      sources.map((row) => [
+        row.sourceLabel,
+        row.commands,
+        row.skills,
+        row.prompts,
+        row.tools,
+      ]),
+      [
+        ["builtin", 0, 0, 1, 1],
+        ["npm:pi-caveman", 1, 0, 0, 0],
+        ["npm:pi-context", 0, 0, 0, 1],
+        ["npm:pi-graphify", 0, 1, 0, 0],
+        ["npm:pi-lens", 0, 0, 0, 1],
+        ["npm:pi-ponytail", 1, 0, 0, 0],
+        ["npm:pi-subagents", 0, 0, 0, 1],
+      ],
+    );
+
+    // 12: filtering is a view concern — the DTO still publishes every declared
+    // row, so a hidden row keeps its evidence and no missing figure becomes 0.
+    assert.equal(report.integrations?.length, 7);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a present integration with no evidence reports no counter, never zero", async () => {
   const fixture = await buildFixture();
   try {
     const report = await fixture.report(
-      `json current --output "${fixture.reportPath}"`,
+      `json current --scope tree --output "${fixture.reportPath}"`,
       fixture.reportPath,
     );
-    // The inventory is readable and empty, so the extension-backed integration
-    // has a definite `absent` signal — and still no counters at all: absence is
-    // never published as a zero bucket.
-    const absent = report.integrations?.find(
-      (row) => row.integration === "caveman",
-    );
-    assert.equal(absent?.presence, "absent");
-    assert.equal(absent?.state, "unavailable");
-    assert.equal(absent?.counters, undefined);
+    // A row whose producer leaves no counter publishes none — never a zero
+    // bucket: `subagents` is evidence-supported from its runs, and a counter
+    // schema that declares none contributes no counter column at all.
+    const rows = report.integrations ?? [];
+    const subagentsRow = rows.find((row) => row.integration === "subagents");
+    assert.equal(subagentsRow?.state, "supported");
+    assert.equal(subagentsRow?.counters, undefined);
+    for (const row of rows) {
+      for (const count of Object.values(row.counters ?? {})) {
+        assert.notEqual(
+          count,
+          0,
+          `${row.integration} published a zero counter`,
+        );
+      }
+    }
   } finally {
     await fixture.close();
   }
