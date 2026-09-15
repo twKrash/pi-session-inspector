@@ -4,17 +4,17 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { reduceEntries } from "../../src/core/reduce.ts";
-import { toSessionReport, type SessionReport } from "../../src/core/reports.ts";
+import { type SessionReport, toSessionReport } from "../../src/core/reports.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { CAPABILITIES, type CurrentView } from "../../src/ui/bundle.ts";
 import { buildDailyRows } from "../../src/ui/daily.ts";
-import type { DateUsageRow, DatedModelRow } from "../../src/ui/dated-usage.ts";
+import type { DatedModelRow, DateUsageRow } from "../../src/ui/dated-usage.ts";
+import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import type {
   GlobalReport,
   HistoricalSession,
   HistoryReport,
 } from "../../src/ui/load-history.ts";
-import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import {
   escapeSnapshotAttribute,
   escapeSnapshotText,
@@ -28,6 +28,7 @@ import {
   projectGlobalReport,
   projectHistoricalSession,
   projectHistoryReport,
+  type UiAgentRow,
 } from "../../src/ui/ui-projection.ts";
 import { FORBIDDEN_PRODUCER_KEYS } from "../helpers/bundle-scenarios.ts";
 
@@ -1317,15 +1318,17 @@ test("prints the known-but-unmaterialized parent as the orchestration run", () =
       html.match(new RegExp(CATALOG["agents.parentOrchestrationRun"], "g")) ??
       []
     ).length,
-    1,
+    // The hierarchy row and the flat table cell each print the verdict L2
+    // published for that row: twice, and never once for another row.
+    2,
   );
   assert.equal(
     (html.match(new RegExp(CATALOG["agents.parentNone"], "g")) ?? []).length,
-    1,
+    2,
   );
   assert.equal(
     (html.match(new RegExp(CATALOG["agents.parentUnknown"], "g")) ?? []).length,
-    1,
+    2,
   );
 });
 
@@ -1402,19 +1405,21 @@ test("prints L2's parent verdict instead of looking a parent up in its rows", ()
     },
   });
 
-  // Each verdict is printed for exactly its own row.
+  // Each verdict is printed for exactly its own row, once by the hierarchy and
+  // once by the flat table.
   assert.equal(
     (html.match(new RegExp(CATALOG["agents.parentOutsideScope"], "g")) ?? [])
       .length,
-    1,
+    2,
   );
   assert.equal(
     (html.match(new RegExp(CATALOG["agents.parentUnknown"], "g")) ?? []).length,
-    1,
+    2,
   );
   // The in-range parent's own rendered label is printed for its child too, but
-  // never for the row the DTO puts outside the range: twice, not three times.
-  assert.equal((html.match(/parent-role/g) ?? []).length, 2);
+  // never for the row the DTO puts outside the range: three times (the parent's
+  // hierarchy row and table row, and the child's table parent cell), not four.
+  assert.equal((html.match(/parent-role/g) ?? []).length, 3);
 });
 
 test("renders a child whose parent exists only outside the selected range", () => {
@@ -1532,4 +1537,229 @@ test("prints Unavailable, never a zero, for a row with no published usage", () =
   // Duration is live-correlated evidence only: without it the cell is
   // Unavailable, never an estimated `0 ms`.
   assert.equal(html.includes("0 ms"), false);
+});
+
+// ---------------------------------------------------------------------------
+// The static execution hierarchy (ADR 0018: no JavaScript, so no disclosure)
+// ---------------------------------------------------------------------------
+
+/**
+ * The markup of one card, so a count is scoped to it: from the card's own title
+ * to the next card's title, because a card holds nested `section` elements (its
+ * metrics) and a `</section>` slice would stop inside one of them.
+ */
+function cardOf(html: string, title: string): string {
+  const start = html.indexOf(`<h2>${title}</h2>`);
+  if (start < 0) throw new Error(`no card titled ${title}`);
+  const end = html.indexOf("<h2>", start + 1);
+  return html.slice(start, end < 0 ? html.length : end);
+}
+
+/** One agent run row of the snapshot, with the fields a test varies. */
+function runRow(input: {
+  id: string;
+  parentId?: string | null;
+  parent?: UiAgentRow["parent"];
+  agent?: string;
+  status?: UiAgentRow["status"];
+  model?: string | null;
+  thinking?: string | null;
+  artifacts?: UiAgentRow["artifacts"];
+  tokens?: number | null;
+  cost?: number | null;
+}): UiAgentRow {
+  const tokens = input.tokens === undefined ? null : input.tokens;
+  const cost = input.cost === undefined ? null : input.cost;
+  return {
+    id: input.id,
+    parentId: input.parentId ?? null,
+    agent: input.agent ?? "worker",
+    status: input.status ?? "succeeded",
+    confidence: "cooperative",
+    artifacts: input.artifacts ?? null,
+    observedAt: null,
+    evidenceToolId: null,
+    model: input.model === undefined ? null : input.model,
+    thinking: input.thinking === undefined ? null : input.thinking,
+    failure: null,
+    usage:
+      tokens === null && cost === null
+        ? null
+        : { totalTokens: tokens ?? 0, cost: cost ?? 0 },
+    parent: input.parent ?? "none",
+  };
+}
+
+/** The current-session DTO whose agent rows are exactly these runs. */
+function agentsDto(rows: readonly UiAgentRow[]): SnapshotDto {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const range = base.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const byStatus = {
+    succeeded: 0,
+    failed: 0,
+    interrupted: 0,
+    running: 0,
+    unknown: 0,
+  };
+  let withUsage = 0;
+  for (const row of rows) {
+    byStatus[row.status] += 1;
+    if (row.usage !== null) withUsage += 1;
+  }
+  return {
+    ...base,
+    projection: {
+      ...base.projection,
+      range: {
+        ...range,
+        agents: [...rows],
+        childUsage: {
+          runsTotal: rows.length,
+          runsWithUsage: withUsage,
+          totalTokens: null,
+          cost: null,
+          failedCost: null,
+          failedRunsWithUsage: 0,
+          byStatus,
+        },
+      },
+    },
+  };
+}
+
+test("renders the execution hierarchy expanded, with no control to imitate disclosure", () => {
+  const parentId = `subagent-${"1".repeat(64)}`;
+  const childId = `subagent-${"2".repeat(64)}`;
+  const html = renderSnapshot(
+    agentsDto([
+      runRow({ id: parentId, agent: "reviewer", model: "alpha" }),
+      runRow({
+        id: childId,
+        agent: "scout",
+        parentId,
+        parent: "in-range",
+        model: "alpha",
+        thinking: "high",
+        tokens: 34_477,
+        cost: 0.004893924,
+      }),
+    ]),
+  );
+  const card = cardOf(html, CATALOG["tab.agents"]);
+  // The session root, its own figures, and the one model the range published.
+  assert.equal(card.includes(CATALOG["agents.tree.session"]), true);
+  assert.equal(card.includes("alpha · 1 generations"), true);
+  assert.equal(card.includes("$0.02"), true);
+  // The child is nested inside its parent's own list, and both stay expanded:
+  // a static document offers no button, no aria-expanded, and no collapse.
+  const outer = card.indexOf(`>reviewer<`);
+  const nested = card.indexOf(`>scout<`);
+  assert.equal(outer >= 0 && nested > outer, true);
+  assert.equal(card.includes("tree-children"), true);
+  assert.equal(card.includes("aria-expanded"), false);
+  assert.equal(card.includes("<button"), false);
+  // A child states its own model evidence and honest small cost.
+  assert.equal(card.includes("alpha · high · 34,477 tokens · $0.0049"), true);
+  assert.equal(/\$0\.00(?!\d)/.test(card), false);
+});
+
+test("groups one container's children and never words the container as an agent", () => {
+  const containerId = `subagent-${"3".repeat(64)}`;
+  const html = renderSnapshot(
+    agentsDto([
+      runRow({
+        id: `subagent-${"4".repeat(64)}`,
+        agent: "reviewer",
+        parentId: containerId,
+        parent: "orchestration-run",
+      }),
+      runRow({
+        id: `subagent-${"5".repeat(64)}`,
+        agent: "worker",
+        parentId: containerId,
+        parent: "orchestration-run",
+        status: "failed",
+      }),
+      runRow({
+        id: `subagent-${"6".repeat(64)}`,
+        agent: "scout",
+        parentId: containerId,
+        parent: "orchestration-run",
+      }),
+    ]),
+  );
+  const card = cardOf(html, CATALOG["tab.agents"]);
+  assert.equal(card.includes(CATALOG["agents.tree.container"]), true);
+  assert.equal(card.includes(CATALOG["agents.tree.container.note"]), true);
+  assert.equal(card.includes("3 children · 1 failed"), true);
+  // The container is a group: it carries no agent identity, no status, and the
+  // producer's own container identity is never printed.
+  assert.equal(
+    card.includes(
+      `<span class="tree-group">${CATALOG["agents.tree.container"]}</span>`,
+    ),
+    true,
+  );
+  assert.equal(
+    (card.match(new RegExp(CATALOG["agents.tree.container"], "g")) ?? [])
+      .length,
+    1,
+  );
+  assert.equal(card.includes(containerId), false);
+  assert.equal(
+    (
+      card.match(new RegExp(CATALOG["agents.parentOrchestrationRun"], "g")) ??
+      []
+    ).length,
+    3,
+  );
+});
+
+test("flattens a container around a single child and keeps its verdict wording", () => {
+  const containerId = `subagent-${"7".repeat(64)}`;
+  const html = renderSnapshot(
+    agentsDto([
+      runRow({
+        id: `subagent-${"8".repeat(64)}`,
+        agent: "worker",
+        parentId: containerId,
+        parent: "orchestration-run",
+      }),
+    ]),
+  );
+  const card = cardOf(html, CATALOG["tab.agents"]);
+  assert.equal(card.includes(CATALOG["agents.tree.container"]), false);
+  assert.equal(card.includes(CATALOG["agents.parentOrchestrationRun"]), true);
+  assert.equal(card.includes(containerId), false);
+});
+
+test("keeps partial child usage and an unavailable model stated in the hierarchy", () => {
+  const html = renderSnapshot(
+    agentsDto([
+      runRow({ id: `subagent-${"9".repeat(64)}`, agent: "reviewer" }),
+      runRow({
+        id: `subagent-${"a".repeat(64)}`,
+        agent: "scout",
+        tokens: 5,
+        cost: 0.01,
+        artifacts: "missing",
+      }),
+    ]),
+  );
+  const card = cardOf(html, CATALOG["tab.agents"]);
+  assert.equal(card.includes(CATALOG["agents.tree.usageUnavailable"]), true);
+  assert.equal(card.includes(CATALOG["evidence.unavailable"]), true);
+  assert.equal(card.includes(`${CATALOG["table.artifacts"]}: missing`), true);
+  // The coverage fraction is L2's own figure, and a known run's own figures are
+  // printed without being added to anything.
+  assert.equal(
+    card.includes(
+      CATALOG["agents.usageFraction"]
+        .replace("{withUsage}", "1")
+        .replace("{total}", "2"),
+    ),
+    true,
+  );
 });

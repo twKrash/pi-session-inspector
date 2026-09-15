@@ -1,24 +1,27 @@
 import { createHash } from "node:crypto";
-
-import { WEB_ASSETS } from "./web-assets.ts";
-
 import type { EvidenceState } from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
+import {
+  buildAgentForest,
+  filterAgentForest,
+  type UiAgentTreeFilteredEntry,
+  type UiAgentTreeFilteredRun,
+} from "./agent-tree.ts";
 import type { DailyRow } from "./daily.ts";
 import { formatCost } from "./format.ts";
-import { createTranslator } from "./i18n.ts";
 import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
+import { createTranslator } from "./i18n.ts";
 import {
-  errorHeadline,
-  errorMessage,
-  toolDuration,
   type CompositionView,
   type CoverageProjection,
   type ErrorRow,
   type EvidenceRow,
+  errorHeadline,
+  errorMessage,
   type IntegrationRow,
   type SessionReportView,
   type ToolRow,
+  toolDuration,
 } from "./report-projection.ts";
 import type {
   UiAgentRow,
@@ -31,6 +34,7 @@ import type {
   UiSessionProjection,
   UiToolSummaryRow,
 } from "./ui-projection.ts";
+import { WEB_ASSETS } from "./web-assets.ts";
 
 const t = createTranslator();
 
@@ -1029,6 +1033,8 @@ function agentsSections(
             catalog["tab.agents"],
             catalog["agents.note"],
             childUsageSummary(childUsage) +
+              agentHierarchy(range, runs) +
+              `<p class="tree-detail-label">${text(catalog["agents.tree.flat"])}</p>` +
               elapsedTable(
                 [
                   catalog["table.role"],
@@ -1098,6 +1104,228 @@ function agentsSections(
         )
       : "";
   return childSection + activitySection;
+}
+
+/**
+ * The execution hierarchy of one selection, as static markup: the same forest
+ * projection the browser renders, expanded in full.
+ *
+ * A snapshot has no JavaScript, so it has no disclosure to offer: the document
+ * prints every level and imitates no control (ADR 0018). The distinction the
+ * browser expresses with a toggle — what a collapsed node hides — is stated as
+ * the child count instead, and a run container stays a group rather than being
+ * worded or shaped like an agent run.
+ */
+function agentHierarchy(
+  range: SnapshotRange | undefined,
+  runs: readonly UiAgentRow[],
+): string {
+  if (range === undefined || runs.length === 0) return "";
+  const catalog = ENGLISH_CATALOG;
+  const view = filterAgentForest(buildAgentForest(runs), () => true);
+  const meta = range;
+  const datable = meta.resolved !== null && Number(meta.totals.days) > 0;
+  return (
+    `<ul class="tree" role="list">` +
+    `<li class="tree-node is-session"><div class="tree-row">` +
+    staticToggle(false) +
+    `<div class="tree-main"><div class="tree-title">` +
+    `<span class="tree-session">${text(catalog["agents.tree.session"])}</span>` +
+    `</div><div class="tree-meta mono">${text(sessionFigures(range))}</div>` +
+    sessionModels(range, datable) +
+    `</div></div>` +
+    entriesMarkup(view.entries, false, runs) +
+    `</li></ul>`
+  );
+}
+
+/** One static disclosure glyph: a marker, never a control. */
+function staticToggle(leaf: boolean): string {
+  const classes = leaf ? "tree-toggle is-leaf" : "tree-toggle is-static";
+  return (
+    `<span class="${classes}" aria-hidden="true">` +
+    `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">` +
+    `<path d="M6 9l6 6 6-6"></path></svg></span>`
+  );
+}
+
+/** The child list of a static node: every level is printed. */
+function entriesMarkup(
+  entries: readonly UiAgentTreeFilteredEntry[],
+  nested: boolean,
+  runs: readonly UiAgentRow[],
+): string {
+  if (entries.length === 0) return "";
+  const items = entries
+    .map((entry) =>
+      entry.kind === "container"
+        ? treeContainerItem(entry, runs)
+        : treeRunItem(entry, nested, runs),
+    )
+    .join("");
+  return `<ul class="tree-children" role="list">${items}</ul>`;
+}
+
+/**
+ * What a node states about what it holds. A static document has no collapsed
+ * state, so the count that matters is the children it prints below it, plus any
+ * failure those children contain.
+ */
+function treeCounts(node: {
+  children: readonly unknown[];
+  failed: number;
+  interrupted: number;
+  withoutUsage: number;
+}): string {
+  const parts: string[] = [];
+  if (node.children.length > 0) {
+    parts.push(
+      t("agents.tree.children", { count: count(node.children.length) }),
+    );
+  }
+  if (node.failed > 0) {
+    parts.push(t("agents.tree.failed", { count: count(node.failed) }));
+  }
+  if (node.interrupted > 0) {
+    parts.push(
+      t("agents.tree.interrupted", { count: count(node.interrupted) }),
+    );
+  }
+  if (node.withoutUsage > 0) {
+    parts.push(
+      t("agents.tree.withoutUsage", { count: count(node.withoutUsage) }),
+    );
+  }
+  return parts.join(" · ");
+}
+
+/** One run of the hierarchy: its label, its verdict, and its own figures. */
+function treeRunItem(
+  node: UiAgentTreeFilteredRun,
+  nested: boolean,
+  runs: readonly UiAgentRow[],
+): string {
+  const catalog = ENGLISH_CATALOG;
+  const run = node.run;
+  const tone =
+    run.status === "failed" || run.status === "interrupted"
+      ? "warn"
+      : "neutral";
+  const title =
+    `<span class="mono">${text(orUnavailable(run.agent))}</span>` +
+    badge(catalogEntry(`agents.${run.status}`), tone) +
+    (node.state === "context"
+      ? badge(catalog["agents.tree.context"], "neutral")
+      : "") +
+    countSpan(treeCounts(node));
+  const parts = [orUnavailable(run.model)];
+  if (run.thinking !== null && run.thinking !== undefined) {
+    parts.push(run.thinking);
+  }
+  parts.push(
+    run.usage === null
+      ? catalog["agents.tree.usageUnavailable"]
+      : `${t("agents.tree.tokens", { count: count(run.usage.totalTokens) })} · ${money(run.usage.cost)}`,
+  );
+  if (run.artifacts !== null) {
+    parts.push(`${catalog["table.artifacts"]}: ${run.artifacts}`);
+  }
+  // A row the hierarchy does not nest states the verdict L2 published for it.
+  const parent = nested
+    ? ""
+    : `<div class="tree-parent">${text(parentLabel(run, runs))}</div>`;
+  return (
+    `<li class="tree-node"><div class="tree-row">` +
+    staticToggle(node.children.length === 0) +
+    `<div class="tree-main"><div class="tree-title">${title}</div>` +
+    `<div class="tree-meta mono">${text(parts.join(" · "))}</div>` +
+    parent +
+    `</div></div>` +
+    entriesMarkup(node.children, true, runs) +
+    `</li>`
+  );
+}
+
+/** One run container: a group, worded as a group and never as an agent. */
+function treeContainerItem(
+  node: UiAgentTreeFilteredEntry,
+  runs: readonly UiAgentRow[],
+): string {
+  if (node.kind !== "container") return "";
+  const catalog = ENGLISH_CATALOG;
+  return (
+    `<li class="tree-node is-container"><div class="tree-row">` +
+    staticToggle(node.children.length === 0) +
+    `<div class="tree-main"><div class="tree-title">` +
+    `<span class="tree-group">${text(catalog["agents.tree.container"])}</span>` +
+    countSpan(treeCounts(node)) +
+    `</div><div class="tree-meta">${text(catalog["agents.tree.container.note"])}</div>` +
+    `</div></div>` +
+    entriesMarkup(node.children, true, runs) +
+    `</li>`
+  );
+}
+
+function countSpan(value: string): string {
+  return value === "" ? "" : `<span class="tree-count">${text(value)}</span>`;
+}
+
+/**
+ * The session root's own figures, under the same rules the browser applies: a
+ * range that resolves no day publishes no figure rather than a zero, and more
+ * than one model is never reduced to one "primary" model.
+ */
+function sessionFigures(range: SnapshotRange): string {
+  const catalog = ENGLISH_CATALOG;
+  if (range.resolved === null || Number(range.totals.days) === 0) {
+    return catalog["evidence.unavailable"];
+  }
+  const models = range.models;
+  const parts: string[] = [];
+  const single = range.modelsTruncated !== true && models.length === 1;
+  if (single) {
+    parts.push(
+      `${models[0]?.model ?? ""} · ${t("agents.tree.generations", { count: count(models[0]?.generations ?? 0) })}`,
+    );
+  } else {
+    parts.push(
+      t("agents.tree.generations", {
+        count: count(range.totals.generations),
+      }),
+    );
+    parts.push(
+      models.length === 0
+        ? catalog["evidence.unavailable"]
+        : t("agents.tree.modelsUsed", { count: count(models.length) }),
+    );
+  }
+  parts.push(
+    t("agents.tree.tokens", { count: count(range.totals.totalTokens) }),
+  );
+  parts.push(money(range.totals.cost));
+  return parts.join(" · ");
+}
+
+/** The Models detail, printed rather than disclosed: a static document shows it. */
+function sessionModels(range: SnapshotRange, datable: boolean): string {
+  if (!datable || range.models.length === 0) return "";
+  const catalog = ENGLISH_CATALOG;
+  const rows = range.models
+    .map(
+      (model) =>
+        `<li class="tree-model">${text(
+          `${model.model} · ${t("agents.tree.generations", { count: count(model.generations) })}`,
+        )}</li>`,
+    )
+    .join("");
+  const truncated =
+    range.modelsTruncated === true
+      ? `<li class="tree-model muted">${text(catalog["models.truncated"])}</li>`
+      : "";
+  return (
+    `<p class="tree-detail-label">${text(catalog["agents.tree.models"])}</p>` +
+    `<ul class="tree-models" role="list">${rows}${truncated}</ul>`
+  );
 }
 
 /**

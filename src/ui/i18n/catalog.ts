@@ -205,6 +205,9 @@ export const ENGLISH_CATALOG = {
   "agents.tree.generations": "{count} generations",
   "agents.tree.modelsUsed": "{count} models used",
   "agents.tree.models": "Models",
+  // The snapshot prints the hierarchy and the flat breakdown of the same rows;
+  // this label is what says the rows below are the flat reading.
+  "agents.tree.flat": "Flat breakdown",
   "agents.tree.tokens": "{count} tokens",
   "agents.tree.usageUnavailable": "usage Unavailable",
   "agents.tree.children": "{count} children",
