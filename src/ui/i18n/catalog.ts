@@ -202,19 +202,28 @@ export const ENGLISH_CATALOG = {
   "agents.tree.container": "Run container",
   "agents.tree.container.note":
     "A grouping of the runs this container published. The container is not an agent run, so it has no status, model, or usage of its own.",
-  "agents.tree.generations": "{count} generations",
-  "agents.tree.modelsUsed": "{count} models used",
+  "agents.tree.generations": "{count, number} generations",
+  // The singular form of every counted label is written out, so a session with
+  // one generation, child, descendant, or model never reads as "1 generations".
+  "agents.tree.generations_one": "{count, number} generation",
+  "agents.tree.modelsUsed": "{count, number} models used",
+  "agents.tree.modelsUsed_one": "{count, number} model used",
+  // A capped model list states what it lists, never how many models ran.
+  "agents.tree.modelsListed": "{count, number} models listed",
+  "agents.tree.modelsListed_one": "{count, number} model listed",
   "agents.tree.models": "Models",
   // The snapshot prints the hierarchy and the flat breakdown of the same rows;
   // this label is what says the rows below are the flat reading.
   "agents.tree.flat": "Flat breakdown",
-  "agents.tree.tokens": "{count} tokens",
+  "agents.tree.tokens": "{count, number} tokens",
   "agents.tree.usageUnavailable": "usage Unavailable",
-  "agents.tree.children": "{count} children",
-  "agents.tree.descendants": "{count} descendants",
-  "agents.tree.failed": "{count} failed",
-  "agents.tree.interrupted": "{count} interrupted",
-  "agents.tree.withoutUsage": "{count} without usage",
+  "agents.tree.children": "{count, number} children",
+  "agents.tree.children_one": "{count, number} child",
+  "agents.tree.descendants": "{count, number} descendants",
+  "agents.tree.descendants_one": "{count, number} descendant",
+  "agents.tree.failed": "{count, number} failed",
+  "agents.tree.interrupted": "{count, number} interrupted",
+  "agents.tree.withoutUsage": "{count, number} without usage",
   "agents.tree.context": "context",
   "agents.tree.filterAll": "All",
   "agents.tree.filtered":

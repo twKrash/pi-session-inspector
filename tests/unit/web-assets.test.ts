@@ -2711,18 +2711,27 @@ function viewButton(harness: Harness, mode: string): StubElement {
   return found;
 }
 
-/** One tree row's toggle, by the identity the row renders. */
-function treeToggle(harness: Harness, label: string): StubElement {
+/**
+ * One tree row's toggle, by the name the row's own words produce. A run's name
+ * carries its status and a container's its child count, because the role alone
+ * is not unique across rows.
+ */
+function treeToggle(harness: Harness, name: string): StubElement {
   const found = harness
     .element("view")
     .querySelectorAll("button")
     .find(
       (button) =>
-        button.attributes["aria-label"] === `Collapse ${label}` ||
-        button.attributes["aria-label"] === `Expand ${label}`,
+        button.attributes["aria-label"] === `Collapse ${name}` ||
+        button.attributes["aria-label"] === `Expand ${name}`,
     );
-  if (found === undefined) throw new Error(`no toggle for ${label}`);
+  if (found === undefined) throw new Error(`no toggle for ${name}`);
   return found;
+}
+
+/** The name a run row's toggle carries: its role and its own status. */
+function runToggleName(agent: string, status = "Succeeded"): string {
+  return `${agent} · ${status}`;
 }
 
 /** The rendered tree rows, as their identity text. */
@@ -2805,21 +2814,21 @@ test("a collapsed branch hides its children and states what it hides", async () 
     hash: "#/current/llm?scope=tree&preset=7",
   });
   await harness.start();
-  const toggle = treeToggle(harness, "reviewer");
+  const toggle = treeToggle(harness, runToggleName("reviewer"));
   assert.equal(toggle.attributes["aria-expanded"], "true");
   assert.equal(viewText(harness).includes("scout"), true);
 
   harness.click(toggle);
-  const collapsed = treeToggle(harness, "reviewer");
+  const collapsed = treeToggle(harness, runToggleName("reviewer"));
   assert.equal(collapsed.attributes["aria-expanded"], "false");
   // A hidden failure is never silently hidden: the summary states it.
   assert.equal(viewText(harness).includes("scout"), false);
   assert.equal(viewText(harness).includes("2 descendants"), true);
   assert.equal(viewText(harness).includes("1 failed"), true);
 
-  harness.click(treeToggle(harness, "reviewer"));
+  harness.click(treeToggle(harness, runToggleName("reviewer")));
   assert.equal(
-    treeToggle(harness, "reviewer").attributes["aria-expanded"],
+    treeToggle(harness, runToggleName("reviewer")).attributes["aria-expanded"],
     "true",
   );
   assert.equal(viewText(harness).includes("scout"), true);
@@ -3133,7 +3142,9 @@ test("a nested agent is revealed by its route, even in a collapsed forest", asyn
     1,
   );
   const rendered = treeRows(harness).filter((row) => row !== "").length;
-  assert.equal(rendered <= 130, true, `rendered ${rendered} rows`);
+  // Exactly the disclosed set: the 61 top-level rows, plus the two ancestors the
+  // route opens to reveal its target. A collapsed forest renders no more.
+  assert.equal(rendered, 63);
   assert.equal(elapsedMs < 5000, true, `${elapsedMs}ms`);
 });
 
@@ -3226,7 +3237,7 @@ test("a filter keeps the tree open, so a disclosure control never stands dead", 
     hash: "#/current/llm?scope=tree&preset=7",
   });
   await harness.start();
-  assert.notEqual(treeToggle(harness, "reviewer"), undefined);
+  assert.notEqual(treeToggle(harness, runToggleName("reviewer")), undefined);
   const search = harness.element("search");
   search.value = "scout";
   harness.input(search);
@@ -3274,6 +3285,112 @@ test("a collapsed session root states how many runs it holds", async () => {
   // The hidden runs are gone from the page, and the session's own figures stay.
   assert.equal(text.includes("scout"), false);
   assert.equal(text.includes("alpha · 2 generations"), true);
+});
+
+test("a truncated range qualifies the session root's own figures", async () => {
+  const snapshot = treeSnapshot([
+    agentRow({ id: `subagent-${"8a".repeat(32)}`, agent: "worker" }),
+  ]);
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  range.truncated = true;
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const text = viewText(harness);
+  // L2 decided the range is partial, so the figures the range cannot complete
+  // are named as known exactly as the Overview cards name them.
+  assert.equal(text.includes("Known tokens: 1,200"), true);
+  assert.equal(text.includes("Known native cost: $0.24"), true);
+  assert.equal(text.includes("1,200 tokens"), false);
+});
+
+test("a capped model list states that it lists rather than how many ran", async () => {
+  const snapshot = treeSnapshot([
+    agentRow({ id: `subagent-${"8b".repeat(32)}`, agent: "worker" }),
+  ]);
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  range.models = [
+    {
+      provider: "acme",
+      model: "alpha",
+      generations: 287,
+      totalTokens: 1000,
+      cost: 0.2,
+    },
+    {
+      provider: "acme",
+      model: "luna",
+      generations: 15,
+      totalTokens: 200,
+      cost: 0.04,
+    },
+  ];
+  range.modelsTruncated = true;
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const text = viewText(harness);
+  assert.equal(text.includes("2 models listed"), true);
+  assert.equal(text.includes("models used"), false);
+  // The caveat is stated on the root row, not only inside the Models detail.
+  assert.equal(text.includes(createTranslator("en")("models.truncated")), true);
+});
+
+test("an unresolved range states Unavailable at the root instead of a zero", async () => {
+  const snapshot = treeSnapshot([
+    agentRow({ id: `subagent-${"8c".repeat(32)}`, agent: "worker" }),
+  ]);
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  range.resolved = null;
+  range.totals = {
+    totalTokens: 0,
+    cost: 0,
+    generations: 0,
+    tools: 0,
+    days: 0,
+  };
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const text = viewText(harness);
+  assert.equal(text.includes("Primary session"), true);
+  assert.equal(text.includes("$0.00"), false);
+  assert.equal(text.includes("0 generations"), false);
+});
+
+test("the table keeps ordinary rows: a tree-only filter never hides them", async () => {
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: `subagent-${"9a".repeat(32)}`, agent: "scout" }),
+        agentRow({
+          id: `subagent-${"9b".repeat(32)}`,
+          agent: "worker",
+          status: "failed",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const status = harness.element("agent-status");
+  status.value = "failed";
+  harness.change(status);
+  assert.equal(viewText(harness).includes("scout"), false);
+  // The status and model selects live in the tree toolbar, so the table -- which
+  // offers no such control -- renders the rows the DTO published.
+  harness.click(viewButton(harness, "table"));
+  assert.equal(viewText(harness).includes("scout"), true);
+  assert.equal(viewText(harness).includes("worker"), true);
 });
 
 test("the entry scope note explains a scope switch that changes nothing", async () => {

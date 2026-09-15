@@ -34,4 +34,5 @@ test("a cost at or above one cent keeps the ordinary two decimals", () => {
 test("a sign the report should never publish still formats honestly", () => {
   assert.equal(formatCost(-0.0049), "-$0.0049");
   assert.equal(formatCost(-1.5), "-$1.50");
+  assert.equal(formatCost(-0.00004), "-< $0.0001");
 });

@@ -1132,6 +1132,7 @@ function agentHierarchy(
     `<div class="tree-main"><div class="tree-title">` +
     `<span class="tree-session">${text(catalog["agents.tree.session"])}</span>` +
     `</div><div class="tree-meta mono">${text(sessionFigures(range))}</div>` +
+    sessionModelCaveat(range) +
     sessionModels(range, datable) +
     `</div></div>` +
     entriesMarkup(view.entries, false, runs) +
@@ -1179,22 +1180,16 @@ function treeCounts(node: {
 }): string {
   const parts: string[] = [];
   if (node.children.length > 0) {
-    parts.push(
-      t("agents.tree.children", { count: count(node.children.length) }),
-    );
+    parts.push(t("agents.tree.children", { count: node.children.length }));
   }
   if (node.failed > 0) {
-    parts.push(t("agents.tree.failed", { count: count(node.failed) }));
+    parts.push(t("agents.tree.failed", { count: node.failed }));
   }
   if (node.interrupted > 0) {
-    parts.push(
-      t("agents.tree.interrupted", { count: count(node.interrupted) }),
-    );
+    parts.push(t("agents.tree.interrupted", { count: node.interrupted }));
   }
   if (node.withoutUsage > 0) {
-    parts.push(
-      t("agents.tree.withoutUsage", { count: count(node.withoutUsage) }),
-    );
+    parts.push(t("agents.tree.withoutUsage", { count: node.withoutUsage }));
   }
   return parts.join(" · ");
 }
@@ -1225,7 +1220,7 @@ function treeRunItem(
   parts.push(
     run.usage === null
       ? catalog["agents.tree.usageUnavailable"]
-      : `${t("agents.tree.tokens", { count: count(run.usage.totalTokens) })} · ${money(run.usage.cost)}`,
+      : `${t("agents.tree.tokens", { count: run.usage.totalTokens })} · ${money(run.usage.cost)}`,
   );
   if (run.artifacts !== null) {
     parts.push(`${catalog["table.artifacts"]}: ${run.artifacts}`);
@@ -1272,8 +1267,10 @@ function countSpan(value: string): string {
 
 /**
  * The session root's own figures, under the same rules the browser applies: a
- * range that resolves no day publishes no figure rather than a zero, and more
- * than one model is never reduced to one "primary" model.
+ * range that resolves no day publishes no figure rather than a zero, a
+ * truncated range qualifies the two figures it cannot complete exactly as the
+ * Overview cards do, and more than one model is never reduced to one "primary"
+ * model.
  */
 function sessionFigures(range: SnapshotRange): string {
   const catalog = ENGLISH_CATALOG;
@@ -1281,29 +1278,46 @@ function sessionFigures(range: SnapshotRange): string {
     return catalog["evidence.unavailable"];
   }
   const models = range.models;
+  const partial = range.truncated === true;
   const parts: string[] = [];
   const single = range.modelsTruncated !== true && models.length === 1;
   if (single) {
     parts.push(
-      `${models[0]?.model ?? ""} · ${t("agents.tree.generations", { count: count(models[0]?.generations ?? 0) })}`,
+      `${models[0]?.model ?? ""} · ${t("agents.tree.generations", { count: models[0]?.generations ?? 0 })}`,
     );
   } else {
     parts.push(
       t("agents.tree.generations", {
-        count: count(range.totals.generations),
+        count: range.totals.generations,
       }),
     );
+    const listed = range.modelsTruncated === true;
     parts.push(
       models.length === 0
         ? catalog["evidence.unavailable"]
-        : t("agents.tree.modelsUsed", { count: count(models.length) }),
+        : t(listed ? "agents.tree.modelsListed" : "agents.tree.modelsUsed", {
+            count: models.length,
+          }),
     );
   }
+  const cost = money(range.totals.cost);
   parts.push(
-    t("agents.tree.tokens", { count: count(range.totals.totalTokens) }),
+    partial
+      ? `${catalog["metric.knownTokens"]}: ${count(range.totals.totalTokens)}`
+      : t("agents.tree.tokens", { count: range.totals.totalTokens }),
   );
-  parts.push(money(range.totals.cost));
+  parts.push(partial ? `${catalog["metric.knownCost"]}: ${cost}` : cost);
   return parts.join(" · ");
+}
+
+/**
+ * The statement a session row owes when its model list is not the whole
+ * picture: the count above it is a count of listed models, and the caveat is
+ * printed even though the model rows are always shown in a static artifact.
+ */
+function sessionModelCaveat(range: SnapshotRange): string {
+  if (range.modelsTruncated !== true || range.models.length === 0) return "";
+  return `<p class="tree-count">${text(ENGLISH_CATALOG["models.truncated"])}</p>`;
 }
 
 /** The Models detail, printed rather than disclosed: a static document shows it. */
@@ -1314,7 +1328,7 @@ function sessionModels(range: SnapshotRange, datable: boolean): string {
     .map(
       (model) =>
         `<li class="tree-model">${text(
-          `${model.model} · ${t("agents.tree.generations", { count: count(model.generations) })}`,
+          `${model.model} · ${t("agents.tree.generations", { count: model.generations })}`,
         )}</li>`,
     )
     .join("");

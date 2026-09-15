@@ -1,6 +1,6 @@
 /**
- * The one cost rule every surface renders through: the browser bundle (through
- * the prelude's `web.format` adapter), the offline snapshot, and the TUI.
+ * The one cost rule the two rendered surfaces share: the offline snapshot, and
+ * the browser bundle (through the prelude's `web.format` adapter).
  *
  * `toFixed(2)` alone is not honest for this report. Native costs are persisted
  * at far more precision than cents, so a known non-zero cost such as
@@ -22,5 +22,5 @@ export function formatCost(value: number): string {
   if (magnitude === 0) return "$0.00";
   if (magnitude >= 0.01) return `${sign}$${magnitude.toFixed(2)}`;
   if (magnitude >= 0.0001) return `${sign}$${magnitude.toFixed(4)}`;
-  return `< $0.0001`;
+  return `${sign}< $0.0001`;
 }

@@ -1624,6 +1624,18 @@
   };
 
   /**
+   * A run row's toggle name: a role alone is not a unique accessible name when
+   * two runs share it, so the run's own published status disambiguates the
+   * control without printing an id.
+   */
+  const runToggle = (run, open) =>
+    treeToggle(
+      orUnavailable(run.agent) + " · " + COPY["agents." + run.status],
+      open,
+      run.id,
+    );
+
+  /**
    * The disclosure glyph: one inline SVG in the shipped icon style. It is
    * decorative (the button carries the name and the state), and it rotates
    * through a transform the stylesheet drops under reduced motion.
@@ -1656,12 +1668,12 @@
     if (open) {
       if (node.children.length > 0) {
         parts.push(
-          tr("agents.tree.children", { count: number(node.children.length) }),
+          tr("agents.tree.children", { count: node.children.length }),
         );
       }
     } else if (node.descendants > 0) {
       parts.push(
-        tr("agents.tree.descendants", { count: number(node.descendants) }),
+        tr("agents.tree.descendants", { count: node.descendants }),
       );
     }
     return parts.concat(treeStateCounts(node)).join(" · ");
@@ -1671,18 +1683,16 @@
   const treeStateCounts = (counts) => {
     const parts = [];
     if (counts.failed > 0) {
-      parts.push(tr("agents.tree.failed", { count: number(counts.failed) }));
+      parts.push(tr("agents.tree.failed", { count: counts.failed }));
     }
     if (counts.interrupted > 0) {
       parts.push(
-        tr("agents.tree.interrupted", { count: number(counts.interrupted) }),
+        tr("agents.tree.interrupted", { count: counts.interrupted }),
       );
     }
     if (counts.withoutUsage > 0) {
       parts.push(
-        tr("agents.tree.withoutUsage", {
-          count: number(counts.withoutUsage),
-        }),
+        tr("agents.tree.withoutUsage", { count: counts.withoutUsage }),
       );
     }
     return parts;
@@ -1726,7 +1736,7 @@
     parts.push(
       run.usage === null
         ? COPY["agents.tree.usageUnavailable"]
-        : tr("agents.tree.tokens", { count: number(run.usage.totalTokens) }) +
+        : tr("agents.tree.tokens", { count: run.usage.totalTokens }) +
             " · " +
             money(run.usage.cost),
     );
@@ -1739,41 +1749,58 @@
   /**
    * The session root's summary: the session's own native figures for the
    * selected range, and how many models produced them. A range that resolves no
-   * day has no figures at all, so nothing is rendered as a zero, and more than
-   * one model is never reduced to one "primary" model.
+   * day has no figures at all, so nothing is rendered as a zero; a truncated
+   * range qualifies its figures exactly as the Overview cards do, because a
+   * partial total must never read as the whole one; and more than one model is
+   * never reduced to one "primary" model.
    */
   const sessionSummary = (meta) => {
     const datable = meta.resolved !== null && Number(meta.totals.days) > 0;
     const models = meta.models;
     if (!datable) return COPY["evidence.unavailable"];
+    // The retained window is not the whole range, so the two figures the range
+    // cannot complete are named as known rather than stated flatly.
+    const partial = meta.truncated === true;
     const parts = [];
     const single = meta.modelsTruncated !== true && models.length === 1;
     if (single) {
       parts.push(
         models[0].model +
           " · " +
-          tr("agents.tree.generations", {
-            count: number(models[0].generations),
-          }),
+          tr("agents.tree.generations", { count: models[0].generations }),
       );
     } else {
       parts.push(
-        tr("agents.tree.generations", {
-          count: number(meta.totals.generations),
-        }),
+        tr("agents.tree.generations", { count: meta.totals.generations }),
       );
+      const listed = meta.modelsTruncated === true;
       parts.push(
         models.length === 0
           ? COPY["evidence.unavailable"]
-          : tr("agents.tree.modelsUsed", { count: number(models.length) }),
+          : tr(listed ? "agents.tree.modelsListed" : "agents.tree.modelsUsed", {
+              count: models.length,
+            }),
       );
     }
+    const cost = money(meta.totals.cost);
     parts.push(
-      tr("agents.tree.tokens", { count: number(meta.totals.totalTokens) }),
+      // The label form carries its own grouped figure; the catalog form is
+      // handed the number so its own format (and plural) rules apply.
+      partial
+        ? COPY["metric.knownTokens"] + ": " + number(meta.totals.totalTokens)
+        : tr("agents.tree.tokens", { count: meta.totals.totalTokens }),
     );
-    parts.push(money(meta.totals.cost));
+    parts.push(partial ? COPY["metric.knownCost"] + ": " + cost : cost);
     return parts.join(" · ");
   };
+
+  /**
+   * The statement a session row owes when its model list is not the whole
+   * picture: it is one figure the range cannot complete, so it is stated even
+   * while the Models detail stays closed.
+   */
+  const sessionModelCaveat = (meta) =>
+    meta.modelsTruncated === true ? COPY["models.truncated"] : "";
 
   /**
    * The Models detail of the session root: one row per model the range published
@@ -1790,7 +1817,7 @@
           "tree-model",
           model.model +
             " · " +
-            tr("agents.tree.generations", { count: number(model.generations) }),
+            tr("agents.tree.generations", { count: model.generations }),
         ),
       );
     });
@@ -1809,7 +1836,7 @@
     // act, so the row renders its leaf spacer instead of a dead button.
     row.append(
       node.children.length > 0 && context.filtering !== true
-        ? treeToggle(label, open, run.id)
+        ? runToggle(run, open)
         : treeSpacer(),
     );
     const main = el("div", "tree-main");
@@ -1846,10 +1873,18 @@
   /** The one tree row of a run container: a group, and worded as one. */
   const treeContainerRow = (node, open, context) => {
     const row = el("div", "tree-row");
+    // Every container carries the same name, so its child count is what tells
+    // two of them apart for a reader who cannot see the list.
     row.append(
       context.filtering === true
         ? treeSpacer()
-        : treeToggle(COPY["agents.tree.container"], open, node.key),
+        : treeToggle(
+            COPY["agents.tree.container"] +
+              " · " +
+              tr("agents.tree.children", { count: node.children.length }),
+            open,
+            node.key,
+          ),
     );
     const main = el("div", "tree-main");
     const title = el("div", "tree-title");
@@ -1910,7 +1945,7 @@
           "tree-count",
           [
             tr("agents.tree.descendants", {
-              count: number(context.counts.descendants),
+              count: context.counts.descendants,
             }),
           ]
             .concat(treeStateCounts(context.counts))
@@ -1920,6 +1955,8 @@
     }
     main.append(title);
     main.append(el("div", "tree-meta mono", sessionSummary(meta)));
+    const caveat = sessionModelCaveat(meta);
+    if (caveat !== "") main.append(el("div", "tree-count", caveat));
     if (meta.models.length > 0) {
       const modelsOpen = activeSettings().agentModels === true;
       const detail = el("button", "tree-detail", COPY["agents.tree.models"]);
@@ -2128,9 +2165,7 @@
           COPY["table.artifacts"],
           COPY["table.parent"],
         ],
-        meta.agents
-          .filter(agentSelectionFilter())
-          .map((run) => ({
+        meta.agents.map((run) => ({
           cells: [
             entitySpan("agent", run.id, orUnavailable(run.agent)),
             badgeCell(

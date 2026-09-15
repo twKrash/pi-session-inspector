@@ -1650,7 +1650,7 @@ test("renders the execution hierarchy expanded, with no control to imitate discl
   const card = cardOf(html, CATALOG["tab.agents"]);
   // The session root, its own figures, and the one model the range published.
   assert.equal(card.includes(CATALOG["agents.tree.session"]), true);
-  assert.equal(card.includes("alpha · 1 generations"), true);
+  assert.equal(card.includes("alpha · 1 generation"), true);
   assert.equal(card.includes("$0.02"), true);
   // The child is nested inside its parent's own list, and both stay expanded:
   // a static document offers no button, no aria-expanded, and no collapse.
@@ -1761,5 +1761,58 @@ test("keeps partial child usage and an unavailable model stated in the hierarchy
         .replace("{total}", "2"),
     ),
     true,
+  );
+});
+
+test("a partial or capped session root states what it cannot complete", () => {
+  const truncated = agentsDto([
+    runRow({ id: `subagent-${"b".repeat(64)}`, agent: "worker" }),
+  ]);
+  if (truncated.kind !== "current") throw new Error("the fixture is current");
+  const range = truncated.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const partialHtml = renderSnapshot({
+    ...truncated,
+    projection: {
+      ...truncated.projection,
+      range: { ...range, truncated: true, modelsTruncated: true },
+    },
+  });
+  const partial = cardOf(partialHtml, CATALOG["tab.agents"]);
+  // A partial range's figures are named as known, exactly as the Overview
+  // cards name them, and a capped model list claims no model count.
+  assert.equal(partial.includes(`${CATALOG["metric.knownTokens"]}: 120`), true);
+  assert.equal(partial.includes(`${CATALOG["metric.knownCost"]}: $0.02`), true);
+  // One model was listed and the list is capped, so no count of models that ran
+  // is claimed, and the singular reads correctly.
+  assert.equal(partial.includes("1 model used"), false);
+  assert.equal(partial.includes("1 models listed"), false);
+  assert.equal(partial.includes("1 model listed"), true);
+  assert.equal(partial.includes("1 generations"), false);
+  assert.equal(partial.includes("1 generation ·"), true);
+  assert.equal(
+    partial.includes(escapeSnapshotText(CATALOG["models.truncated"])),
+    true,
+  );
+
+  // An unresolved range has no figures at all: no figure is a fabricated zero.
+  const unresolved = renderSnapshot({
+    ...truncated,
+    projection: {
+      ...truncated.projection,
+      range: {
+        ...range,
+        resolved: null,
+        totals: { totalTokens: 0, cost: 0, generations: 0, tools: 0, days: 0 },
+      },
+    },
+  });
+  const root = cardOf(unresolved, CATALOG["tab.agents"]);
+  assert.equal(root.includes(CATALOG["agents.tree.session"]), true);
+  assert.equal(/\$0\.00(?!\d)/.test(root), false);
+  assert.equal(root.includes("0 generations"), false);
+  assert.equal(
+    root.includes(`alpha · ${CATALOG["evidence.unavailable"]}`),
+    false,
   );
 });
