@@ -4,12 +4,54 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
-**Browser UI plus one additive command target (`json session <sessionId>`).
-One tab vocabulary change (`models`/`agents` deep links coerce to the section
-default); no report, DTO, or persisted-schema change.**
+**Browser UI plus one additive command target (`json session <sessionId>`), a
+post-UAT correctness and diagnostics pass, and one tab vocabulary change
+(`models`/`agents` deep links coerce to the section default, and Skills is a
+tab of its own); no report, DTO, or persisted-schema change.**
+
+### Added
+
+- A grouped Tools row now carries duration and usage **with their coverage**: a
+  name whose calls correlated to live durations publishes the total and the
+  mean plus `{withDuration} of {calls}`, and a name whose calls persisted native
+  usage publishes the sum plus `{withUsage} of {calls}`. A figure that is
+  incomplete never reads as complete, and a name with no correlated duration or
+  no persisted usage shows Unavailable rather than `0`.
+
+### Fixed
+
+- A durable presence sighting survives a session becoming history. The history
+  read derived presence from the checkpoint alone, so a session whose own WAL
+  recorded `permissions:ready` reported `present` to a live reader and `unknown`
+  once replayed; both projections now read the checkpoint fold plus the retained
+  WAL suffix and agree.
+- A read that finds no fold boundary folds the retained WAL once (the pass the
+  session-start trigger schedules, bounded to one attempt per session and root)
+  before it publishes counters. Previously a live session with WAL evidence but
+  no checkpoint reported every counter as unavailable and left a policy-denied
+  command uncounted, even though the producer published `permissions:decision`
+  and the WAL retained it.
+- The debug log reports a healthy replay and a healthy duration correlation once
+  per operation (`replay-summary`, `correlation-summary`) instead of one line
+  per record and per correlated call. A malformed/unavailable replay and an
+  uncorrelated call keep their own bounded anomaly events.
 
 ### Changed
 
+- The browser's top-level navigation is Overview, **LLM**, Tools, **Skills**,
+  Integrations, **Environment**, Errors, Ledger. Skills is a tab of its own,
+  Environment keeps Commands and **Sources** (the user-facing name for the
+  capability providers the DTO still calls `resources`), and the Sources table's
+  last column reads "Tools" because the figure is the tools that source
+  supplies.
+- Models, tools, skills, integrations, sources, commands, and errors render as
+  real links to their own view when the payload publishes the id: navigation
+  always has an href, a local action is a button, and anything else is text.
+- Integrations, Skills, and History carry a default-on availability filter
+  stated in each view's own terms — telemetry evidence, an observed invocation
+  ("Invoked only"), and a replayed session — with the shown/hidden counts always
+  visible and a control that reveals the hidden rows. Tools and Models are
+  unchanged: they already represent observed activity.
 - The browser's Models and Agents tabs are one **LLM** tab: the scope's model
   table, and below it the child-run breakdown of the same scope. The route id is
   `llm`, so an old `#/current/models` or `#/current/agents` link coerces to the
