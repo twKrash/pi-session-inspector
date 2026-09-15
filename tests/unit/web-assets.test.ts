@@ -3209,6 +3209,73 @@ test("a zero cost is the only cost that renders as zero", async () => {
   assert.equal(viewText(harness).includes("$0.0049"), true);
 });
 
+test("a filter keeps the tree open, so a disclosure control never stands dead", async () => {
+  const parentId = `subagent-${"6a".repeat(32)}`;
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: parentId, agent: "reviewer" }),
+        agentRow({
+          id: `subagent-${"6b".repeat(32)}`,
+          agent: "scout",
+          parentId,
+          parent: "in-range",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  assert.notEqual(treeToggle(harness, "reviewer"), undefined);
+  const search = harness.element("search");
+  search.value = "scout";
+  harness.input(search);
+  // Every level a filter matches is held open, so no row offers a toggle whose
+  // state the reader could not change; the counts still state what is shown.
+  assert.equal(
+    harness
+      .element("view")
+      .querySelectorAll("button")
+      .filter((button) => button.dataset.treeToggle !== undefined).length,
+    0,
+  );
+  assert.equal(viewText(harness).includes("reviewer"), true);
+  assert.equal(viewText(harness).includes("context"), true);
+});
+
+test("a collapsed session root states how many runs it holds", async () => {
+  const parentId = `subagent-${"7a".repeat(32)}`;
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: parentId, agent: "reviewer" }),
+        agentRow({
+          id: `subagent-${"7b".repeat(32)}`,
+          agent: "scout",
+          parentId,
+          parent: "in-range",
+          status: "failed",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const root = treeToggle(harness, "Primary session");
+  assert.equal(root.attributes["aria-expanded"], "true");
+  harness.click(root);
+  const text = viewText(harness);
+  assert.equal(
+    treeToggle(harness, "Primary session").attributes["aria-expanded"],
+    "false",
+  );
+  assert.equal(text.includes("2 descendants"), true);
+  assert.equal(text.includes("1 failed"), true);
+  // The hidden runs are gone from the page, and the session's own figures stay.
+  assert.equal(text.includes("scout"), false);
+  assert.equal(text.includes("alpha · 2 generations"), true);
+});
+
 test("the entry scope note explains a scope switch that changes nothing", async () => {
   const snapshot = treeSnapshot([
     agentRow({ id: `subagent-${"4a".repeat(32)}`, agent: "worker" }),

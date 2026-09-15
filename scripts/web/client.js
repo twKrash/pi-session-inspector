@@ -1653,30 +1653,39 @@
    */
   const treeCounts = (node, open) => {
     const parts = [];
-    const hidden = node.descendants;
     if (open) {
       if (node.children.length > 0) {
         parts.push(
           tr("agents.tree.children", { count: number(node.children.length) }),
         );
       }
-    } else if (hidden > 0) {
-      parts.push(tr("agents.tree.descendants", { count: number(hidden) }));
-    }
-    if (node.failed > 0) {
-      parts.push(tr("agents.tree.failed", { count: number(node.failed) }));
-    }
-    if (node.interrupted > 0) {
+    } else if (node.descendants > 0) {
       parts.push(
-        tr("agents.tree.interrupted", { count: number(node.interrupted) }),
+        tr("agents.tree.descendants", { count: number(node.descendants) }),
       );
     }
-    if (node.withoutUsage > 0) {
+    return parts.concat(treeStateCounts(node)).join(" · ");
+  };
+
+  /** What a set of runs contains that must never be hidden by a summary. */
+  const treeStateCounts = (counts) => {
+    const parts = [];
+    if (counts.failed > 0) {
+      parts.push(tr("agents.tree.failed", { count: number(counts.failed) }));
+    }
+    if (counts.interrupted > 0) {
       parts.push(
-        tr("agents.tree.withoutUsage", { count: number(node.withoutUsage) }),
+        tr("agents.tree.interrupted", { count: number(counts.interrupted) }),
       );
     }
-    return parts.join(" · ");
+    if (counts.withoutUsage > 0) {
+      parts.push(
+        tr("agents.tree.withoutUsage", {
+          count: number(counts.withoutUsage),
+        }),
+      );
+    }
+    return parts;
   };
 
   /**
@@ -1792,12 +1801,14 @@
   };
 
   /** The one tree row of a materialized run. */
-  const treeRunRow = (node, open, nested, rendered) => {
+  const treeRunRow = (node, open, nested, rendered, context) => {
     const run = node.run;
     const row = el("div", "tree-row");
     const label = orUnavailable(run.agent);
+    // While a filter holds the tree open, a row's disclosure control could not
+    // act, so the row renders its leaf spacer instead of a dead button.
     row.append(
-      node.children.length > 0
+      node.children.length > 0 && context.filtering !== true
         ? treeToggle(label, open, run.id)
         : treeSpacer(),
     );
@@ -1833,9 +1844,13 @@
   };
 
   /** The one tree row of a run container: a group, and worded as one. */
-  const treeContainerRow = (node, open) => {
+  const treeContainerRow = (node, open, context) => {
     const row = el("div", "tree-row");
-    row.append(treeToggle(COPY["agents.tree.container"], open, node.key));
+    row.append(
+      context.filtering === true
+        ? treeSpacer()
+        : treeToggle(COPY["agents.tree.container"], open, node.key),
+    );
     const main = el("div", "tree-main");
     const title = el("div", "tree-title");
     title.append(el("span", "tree-group", COPY["agents.tree.container"]));
@@ -1857,10 +1872,10 @@
     );
     const nested = node.kind === "container" ? false : context.nested;
     if (node.kind === "container") {
-      item.append(treeContainerRow(node, open));
+      item.append(treeContainerRow(node, open, context));
     } else {
       item.dataset.treeRow = node.run.id;
-      item.append(treeRunRow(node, open, nested, context.rendered));
+      item.append(treeRunRow(node, open, nested, context.rendered, context));
     }
     if (open && node.children.length > 0) {
       const children = el("ul", "tree-children");
@@ -1878,14 +1893,31 @@
     const open = context.open(SESSION_ROOT_KEY, context.hasRuns);
     const item = el("li", "tree-node is-session");
     const row = el("div", "tree-row");
+    // A filter expands every level it matches, so a disclosure control would
+    // state a state the reader cannot change: it is rendered only when it acts.
     row.append(
-      context.hasRuns
+      context.hasRuns && context.filtering !== true
         ? treeToggle(COPY["agents.tree.session"], open, SESSION_ROOT_KEY)
         : treeSpacer(),
     );
     const main = el("div", "tree-main");
     const title = el("div", "tree-title");
     title.append(el("span", "tree-session", COPY["agents.tree.session"]));
+    if (!open && context.counts.descendants > 0) {
+      title.append(
+        el(
+          "span",
+          "tree-count",
+          [
+            tr("agents.tree.descendants", {
+              count: number(context.counts.descendants),
+            }),
+          ]
+            .concat(treeStateCounts(context.counts))
+            .join(" · "),
+        ),
+      );
+    }
     main.append(title);
     main.append(el("div", "tree-meta mono", sessionSummary(meta)));
     if (meta.models.length > 0) {
@@ -2010,7 +2042,9 @@
     tree.append(
       treeSessionItem(meta, {
         open: open,
+        filtering: filtering,
         hasRuns: view.entries.length > 0,
+        counts: view.counts,
         children: view.entries,
         rendered: runsById(runs),
         nested: false,

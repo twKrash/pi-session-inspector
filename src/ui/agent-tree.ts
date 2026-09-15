@@ -56,6 +56,8 @@ export type UiAgentTreeEntry = UiAgentTreeNode | UiAgentTreeContainer;
 
 export type UiAgentForest = {
   entries: readonly UiAgentTreeEntry[];
+  /** Totals over every run the forest holds, for the session root's own summary. */
+  counts: Counts;
 };
 
 /**
@@ -86,6 +88,8 @@ export type UiAgentForestView = {
   total: number;
   /** Shown runs that are ancestors of a match rather than matches. */
   context: number;
+  /** Totals over the shown runs, under the same rule as a node's own counts. */
+  counts: Counts;
 };
 
 const EMPTY: Counts = {
@@ -105,6 +109,25 @@ function summarize(children: readonly UiAgentTreeNode[]): Counts {
       child.interrupted + (child.run.status === "interrupted" ? 1 : 0);
     counts.withoutUsage +=
       child.withoutUsage + (child.run.usage === null ? 1 : 0);
+  }
+  return counts;
+}
+
+/** The same totals over a whole entry list: what the session root holds. */
+function totalOf(entries: readonly UiAgentTreeEntry[]): Counts {
+  const counts = { ...EMPTY };
+  for (const entry of entries) {
+    if (entry.kind === "container") {
+      counts.descendants += entry.descendants;
+    } else {
+      counts.descendants += 1 + entry.descendants;
+      if (entry.run.status === "failed") counts.failed += 1;
+      if (entry.run.status === "interrupted") counts.interrupted += 1;
+      if (entry.run.usage === null) counts.withoutUsage += 1;
+    }
+    counts.failed += entry.failed;
+    counts.interrupted += entry.interrupted;
+    counts.withoutUsage += entry.withoutUsage;
   }
   return counts;
 }
@@ -210,7 +233,7 @@ export function buildAgentForest(runs: readonly UiAgentRow[]): UiAgentForest {
       ...summarize(children),
     });
   }
-  return { entries };
+  return { entries, counts: totalOf(entries) };
 }
 
 /**
@@ -273,5 +296,12 @@ export function filterAgentForest(
     }
   };
   count(forest.entries);
-  return { entries, matched, shown, total, context: shown - matched };
+  return {
+    entries,
+    matched,
+    shown,
+    total,
+    context: shown - matched,
+    counts: totalOf(entries),
+  };
 }
