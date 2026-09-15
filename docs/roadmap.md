@@ -1,6 +1,6 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `0.12.0`
+**Current release:** `0.12.1`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.6, and the integration-architecture/configuration/debug
