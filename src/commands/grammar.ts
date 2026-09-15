@@ -22,6 +22,8 @@ export type InspectorCommand =
       target: InspectorTarget;
       scope: Scope;
       theme?: "dark" | "light";
+      /** `--debug` enables local debug logging for this invocation. */
+      debug?: boolean;
       output?: string;
       noOpen: boolean;
       range?: RangeIntent;
@@ -58,18 +60,19 @@ export const INSPECTOR_TARGETS: Readonly<
 export const INSPECTOR_OPTIONS: Readonly<
   Record<InspectorMode, readonly string[]>
 > = {
-  ui: ["--scope", "--theme", "--no-open"],
+  ui: ["--scope", "--theme", "--debug", "--no-open"],
   snapshot: [
     "--scope",
     "--preset",
     "--from",
     "--to",
     "--theme",
+    "--debug",
     "--output",
     "--no-open",
   ],
-  tui: ["--scope"],
-  json: ["--scope", "--output"],
+  tui: ["--scope", "--debug"],
+  json: ["--scope", "--debug", "--output"],
 };
 /**
  * Whether each option consumes the following token (`value`) or stands alone
@@ -84,6 +87,7 @@ export const INSPECTOR_OPTION_ARITY: Readonly<
   "--from": "value",
   "--to": "value",
   "--theme": "value",
+  "--debug": "flag",
   "--output": "value",
   "--no-open": "flag",
 };
@@ -245,6 +249,7 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
 
   let scope: Scope | undefined;
   let theme: "dark" | "light" | undefined;
+  let debug: boolean | undefined;
   let output: string | undefined;
   let noOpen = false;
   const range: { preset?: string; from?: string; to?: string } = {};
@@ -278,6 +283,8 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
       if (!INSPECTOR_THEME_VALUES.includes(value as "dark" | "light"))
         return reject();
       theme = value as "dark" | "light";
+    } else if (option === "--debug") {
+      debug = true;
     } else if (option === "--output") {
       output = value;
     } else if (option === "--no-open") {
@@ -304,6 +311,7 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
       ...(parsedRange.intent ? { range: parsedRange.intent } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(theme ? { theme } : {}),
+      ...(debug === undefined ? {} : { debug }),
       ...(output !== undefined ? { output } : {}),
       noOpen,
     },

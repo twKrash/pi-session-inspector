@@ -71,6 +71,7 @@ test("an option already present is not offered again through the real provider",
   const line = "/session-ins ui --theme dark --";
   assert.deepEqual(await suggestionLabelsFor(line, line.length), [
     "--scope",
+    "--debug",
     "--no-open",
   ]);
 });

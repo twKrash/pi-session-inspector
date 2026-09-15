@@ -30,6 +30,21 @@ import {
 } from "./integrations/live-counters.ts";
 import { readPresence } from "./integrations/presence.ts";
 import { readSkillInvocations } from "./integrations/skill-invocations.ts";
+import { reportIntegrations } from "./integrations/catalog.ts";
+import { integrations } from "./integrations/index.ts";
+import {
+  configureDebugLog,
+  debugLog,
+  debugLogEnabled,
+} from "./debug/log.ts";
+import { createDebugFileSink } from "./debug/file.ts";
+import {
+  readSettings,
+  readSettingsSync,
+  resolveConfig,
+  type InspectorSettings,
+  type ResolvedConfig,
+} from "./config/settings.ts";
 import {
   readSubagentEvidenceWithArchives,
   type SubagentEvidence,
@@ -196,6 +211,121 @@ export async function flushLiveEvidence(): Promise<void> {
 
 const NO_PI_SOURCE_CURSOR = { lineCount: 0, revision: "0".repeat(64) };
 
+/** The Inspector-owned settings file inside the Pi agent directory. */
+function settingsPath(agentDir: string): string {
+  return join(agentDir, "session-inspector", "settings.json");
+}
+
+/** A bounded file-name token for a debug log; never a path or producer text. */
+function debugFileName(sessionId: string | undefined): string {
+  return sessionId !== undefined && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(sessionId)
+    ? sessionId
+    : "session-unknown";
+}
+
+/**
+ * Reads settings and installs the debug sink for one resolved configuration.
+ * Debug logging is off unless settings or an explicit CLI option enabled it,
+ * and every failure mode degrades to "no debug output" rather than breaking
+ * the command (ADR 0019).
+ */
+async function configureDebug(input: {
+  agentDir: string;
+  root: string;
+  sessionId: string | undefined;
+  cli: { theme?: "dark" | "light"; debug?: boolean };
+}): Promise<ResolvedConfig> {
+  let settings: InspectorSettings = {};
+  let read: Awaited<ReturnType<typeof readSettings>> = {
+    settings: {},
+    diagnostics: [],
+  };
+  try {
+    read = await readSettings(settingsPath(input.agentDir));
+    settings = read.settings;
+  } catch {
+    // An unreadable settings file is simply no settings.
+  }
+  const config = resolveConfig({ settings, cli: input.cli });
+  try {
+    installDebugSink({
+      root: input.root,
+      sessionId: input.sessionId,
+      config,
+    });
+  } catch {
+    // A sink that cannot be installed leaves debug logging off.
+  }
+  logResolvedConfig(read.diagnostics, config);
+  return config;
+}
+
+/**
+ * Installs the session-scoped debug sink from settings at session start, before
+ * any live observation can emit an event. The read is synchronous and bounded
+ * on purpose: the session-start callback must not reorder Pi's lifecycle.
+ */
+function startSessionDebugLogging(input: {
+  agentDir: string;
+  sessionId: string;
+}): void {
+  try {
+    const read = readSettingsSync(settingsPath(input.agentDir));
+    const config = resolveConfig({ settings: read.settings, cli: {} });
+    installDebugSink({
+      root: join(input.agentDir, "session-inspector", "v1"),
+      sessionId: input.sessionId,
+      config,
+    });
+    logResolvedConfig(read.diagnostics, config);
+  } catch {
+    // Debug configuration is diagnostic and never blocks session tracking.
+  }
+}
+
+/** Installs (or clears) the debug sink for one resolved configuration. */
+function installDebugSink(input: {
+  root: string;
+  sessionId: string | undefined;
+  config: ResolvedConfig;
+}): void {
+  configureDebugLog({
+    enabled: input.config.debug,
+    ...(input.config.debug
+      ? {
+          sink: createDebugFileSink(
+            join(
+              input.root,
+              "debug",
+              `${debugFileName(input.sessionId)}.jsonl`,
+            ),
+          ),
+        }
+      : {}),
+  });
+}
+
+/** Emits the bounded startup events when debug logging is on. */
+function logResolvedConfig(
+  diagnostics: readonly string[],
+  config: ResolvedConfig,
+): void {
+  if (!debugLogEnabled()) return;
+  debugLog("settings", "loaded", {
+    found: diagnostics.length === 0,
+    code: diagnostics[0] ?? "ok",
+  });
+  debugLog("settings", "resolved", {
+    source: config.themeSource,
+    presence: config.debug ? "on" : "off",
+    reason: config.debugSource,
+  });
+  debugLog("registry", "initialized", {
+    counters: reportIntegrations(integrations).length,
+  });
+}
+
+
 /** Wires Pi session-start observation to the Inspector tracking root. */
 export function registerTracking(
   api: SessionStartTrackingApi,
@@ -222,6 +352,10 @@ export function registerTracking(
     async (input) => {
       const tracked = await track(input);
       if (tracked) {
+        // Debug configuration is resolved (and its sink installed) as soon as
+        // this session is tracked, so live observation is loggable too. It
+        // stays off unless settings or a CLI flag asked for it.
+        startSessionDebugLogging({ agentDir, sessionId: input.sessionId });
         // Build synchronously so the counter allowlist is ready before WAL
         // setup; persistence is detached and observer-only. An unreadable
         // inventory stays absent so no fabricated zero counts are reported.
@@ -817,6 +951,7 @@ async function startInspectorUi(
   pi: ExtensionAPI,
   command: Extract<InspectorCommand, { kind: "report" }>,
   root: string,
+  config: ResolvedConfig,
 ): Promise<void> {
   try {
     // Loaded only for `ui`: the server module owns the browser assets, so no
@@ -827,7 +962,9 @@ async function startInspectorUi(
         api: pi,
         sessionManager: ctx.sessionManager,
         root,
-        theme: command.theme ?? "light",
+        // The initial theme is resolved configuration, never browser-local
+        // state: an in-page toggle stays ephemeral (ADR 0019).
+        theme: config.theme,
         initialScope: command.scope,
       }),
     );
@@ -998,8 +1135,19 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           const sessionManager = ctx.sessionManager;
           const root = join(getAgentDir(), "session-inspector", "v1");
           const cacheDirectory = join(root, "reports");
+          // One resolved configuration per invocation: CLI option > settings.json
+          // > product default (ADR 0019).
+          const config = await configureDebug({
+            agentDir: getAgentDir(),
+            root,
+            sessionId: readSessionId(sessionManager),
+            cli: {
+              ...(command.theme === undefined ? {} : { theme: command.theme }),
+              ...(command.debug === undefined ? {} : { debug: command.debug }),
+            },
+          });
           if (command.mode === "ui") {
-            await startInspectorUi(ctx, pi, command, root);
+            await startInspectorUi(ctx, pi, command, root, config);
             return;
           }
           // Flush live evidence before any report read so no observed event is
@@ -1090,7 +1238,8 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             // The renderer (and the ordinary browser assets it shares with the
             // server) is loaded only for a snapshot command.
             const { renderSnapshot } = await import("./ui/snapshot.ts");
-            const theme = command.theme ?? "light";
+            // The snapshot theme is resolved configuration, not a bare default.
+            const theme = config.theme;
             let dto: SnapshotDto;
             if (target === "current") {
               // One scope, loaded exactly for the target being rendered.

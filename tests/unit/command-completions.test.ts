@@ -16,7 +16,7 @@ test("offers only valid completions for the current token", () => {
   ]);
   assert.deepEqual(labels("tui "), ["current", "ledger"]);
   assert.deepEqual(labels("json "), ["current", "history", "global"]);
-  assert.deepEqual(labels("ui -"), ["--scope", "--theme", "--no-open"]);
+  assert.deepEqual(labels("ui -"), ["--scope", "--theme", "--debug", "--no-open"]);
   assert.equal(completeInspectorCommand("snapshot --"), null);
   assert.equal(completeInspectorCommand("snapshot --preset "), null);
   assert.equal(completeInspectorCommand("snapshot --scope "), null);
@@ -27,14 +27,16 @@ test("offers only valid completions for the current token", () => {
     "--from",
     "--to",
     "--theme",
+    "--debug",
     "--output",
     "--no-open",
   ]);
-  assert.deepEqual(labels("json -"), ["--scope", "--output"]);
+  assert.deepEqual(labels("json -"), ["--scope", "--debug", "--output"]);
   assert.deepEqual(labels("snapshot current --preset "), ["7", "14", "30"]);
   assert.deepEqual(labels("snapshot current --preset 7 --"), [
     "--scope",
     "--theme",
+    "--debug",
     "--output",
     "--no-open",
   ]);
@@ -42,6 +44,7 @@ test("offers only valid completions for the current token", () => {
     "--scope",
     "--to",
     "--theme",
+    "--debug",
     "--output",
     "--no-open",
   ]);
@@ -49,6 +52,7 @@ test("offers only valid completions for the current token", () => {
     "--scope",
     "--from",
     "--theme",
+    "--debug",
     "--output",
     "--no-open",
   ]);
@@ -66,6 +70,7 @@ test("offers only valid completions for the current token", () => {
   assert.equal(completeInspectorCommand("snapshot session "), null);
   assert.deepEqual(labels("snapshot session session-a "), [
     "--theme",
+    "--debug",
     "--output",
     "--no-open",
   ]);
@@ -76,9 +81,9 @@ test("keeps completing after a settled target without offering options too early
     (completeInspectorCommand(prefix) ?? []).map((item) => item.label);
 
   assert.deepEqual(labels("tui c"), ["current"]);
-  assert.deepEqual(labels("tui current "), ["--scope"]);
-  assert.deepEqual(labels("json history "), ["--output"]);
-  assert.deepEqual(labels("ui "), ["--scope", "--theme", "--no-open"]);
+  assert.deepEqual(labels("tui current "), ["--scope", "--debug"]);
+  assert.deepEqual(labels("json history "), ["--debug", "--output"]);
+  assert.deepEqual(labels("ui "), ["--scope", "--theme", "--debug", "--no-open"]);
   assert.deepEqual(labels("tui xyz"), []);
 });
 
@@ -109,6 +114,7 @@ test("a trailing space keeps the quotes and offers the next token", () => {
       'snapshot history --output "/tmp/a b.html" --from',
       'snapshot history --output "/tmp/a b.html" --to',
       'snapshot history --output "/tmp/a b.html" --theme',
+      'snapshot history --output "/tmp/a b.html" --debug',
       'snapshot history --output "/tmp/a b.html" --no-open',
     ],
   );

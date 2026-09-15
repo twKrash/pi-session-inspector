@@ -71,16 +71,19 @@ shared snapshot options
   --preset 7|14|30
   --from YYYY-MM-DD --to YYYY-MM-DD
   --theme dark|light
+  --debug
   --output PATH
   --no-open
 
 ui options
   --scope active|tree    default active; selects initial current view
   --theme dark|light
+  --debug
   --no-open
 
 json options
   --scope active|tree    current only; history/global stay full tree
+  --debug
   --output PATH
 
 help | --help | -h        usage panel (esc/q closes)
@@ -107,6 +110,12 @@ help | --help | -h        usage panel (esc/q closes)
   token-aware: first token → modes plus `help`; after a mode → that mode's
   targets; after `-`/`--` → options valid for that mode; after a value option
   → its values; `null` when nothing matches.
+- Configuration resolves as `explicit CLI option > settings.json > product
+  default` (ADR 0019). `--theme light` overrides `"theme": "dark"`, and
+  `--debug` enables local debug logging for that invocation even when settings
+  disable it; `"debug": true` enables it by default. Malformed, unreadable, or
+  oversized settings degrade to the product defaults with a bounded diagnostic
+  and never prevent Inspector from starting.
 - `--format`, `current|history|global|ledger` as a first token, unknown
   modes/targets/options, missing or empty values, `ui --output`, snapshot scope
   or range options in `snapshot session`, scope in `snapshot history|global`,

@@ -12,6 +12,7 @@ import type {
   IntegrationEvidenceReason,
   PersistedEvidenceContext,
 } from "./contract.ts";
+import { debugLog } from "../debug/log.ts";
 import { integrations } from "./index.ts";
 
 export type IntegrationPersistedResult = {
@@ -52,10 +53,27 @@ export function readPersistedEvidence(
       // No persisted evidence is a reason, not a silence: the diagnostic
       // surface must be able to tell "no evidence" from "not read".
       reasons[key] = "no-persisted-evidence";
+      debugLog("integration", "persisted-evidence", {
+        integration: key,
+        reason: "no-persisted-evidence",
+      });
       continue;
     }
     const row = toObservationRow(list, key, result, reasons);
-    if (row !== undefined) rows.push(row);
+    if (row === undefined) {
+      debugLog("integration", "evidence-rejected", {
+        integration: key,
+        reason: reasons[key] ?? "malformed-evidence",
+      });
+      continue;
+    }
+    debugLog("integration", "persisted-evidence", {
+      integration: key,
+      status: row.state,
+      reason: reasons[key] ?? "evidence-supported",
+      ...(row.version === undefined ? {} : { version: row.version }),
+    });
+    rows.push(row);
   }
 
   return { rows, reasons };

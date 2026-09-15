@@ -1,3 +1,4 @@
+import { debugLog } from "../debug/log.ts";
 import { reportIntegrations } from "./catalog.ts";
 import type { Integration, PresenceContext } from "./contract.ts";
 import { integrations } from "./index.ts";
@@ -56,6 +57,14 @@ export function readPresence(
       presence[key] = "unknown";
       reasons[key] = "presence-failed";
     }
+  }
+
+  for (const key of Object.keys(presence)) {
+    debugLog("integration", "presence-evaluated", {
+      integration: key,
+      presence: presence[key],
+      reason: reasons[key],
+    });
   }
 
   return { presence, reasons };
