@@ -1,5 +1,7 @@
-import type { IntegrationKey, IntegrationPresence } from "../core/events.ts";
+import type { IntegrationPresence } from "../core/events.ts";
 import type { FoldedCounters } from "../core/live-counter-fold.ts";
+import type { IntegrationKey } from "../integrations/index.ts";
+import { integrations } from "../integrations/index.ts";
 import type { InventorySnapshot } from "../integrations/inventory.ts";
 
 /**
@@ -14,23 +16,17 @@ import type { InventorySnapshot } from "../integrations/inventory.ts";
  */
 export type SessionObservation = {
   inventory?: InventorySnapshot;
-  presence: Readonly<Record<IntegrationKey, IntegrationPresence>>;
+  presence: Readonly<Record<string, IntegrationPresence>>;
   counters?: FoldedCounters;
 };
 
-const INTEGRATION_KEYS: readonly IntegrationKey[] = [
-  "context",
-  "rtk",
-  "ponytail",
-  "caveman",
-  "permission",
-  "subagents",
-  "lens",
-];
+const INTEGRATION_KEYS: readonly IntegrationKey[] = integrations.map(
+  (integration) => integration.key,
+);
 
 /** No observation yet: every key is explicitly unknown, never absent. */
 export function emptyObservation(): SessionObservation {
-  const presence = {} as Record<IntegrationKey, IntegrationPresence>;
+  const presence: Record<string, IntegrationPresence> = {};
   for (const key of INTEGRATION_KEYS) presence[key] = "unknown";
   return { presence };
 }

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { registerLiveCounters } from "../../src/integrations/live-counters.ts";
 import { foldTelemetryCounters } from "../../src/core/live-counter-fold.ts";
+import { registerLiveCounters } from "../../src/integrations/live-counters.ts";
 
 function attributionOf(
   envelope: Record<string, unknown> | undefined,
@@ -32,7 +32,10 @@ test("translates public permission bus events into bounded envelopes only", asyn
           return () => {};
         },
       },
-      on: (_event, handler) => inputHandlers.push(handler),
+      on: (_event, handler) => {
+        inputHandlers.push(handler);
+        return () => {};
+      },
     },
     {
       appendTelemetry: (envelope) => envelopes.push(envelope),
@@ -269,6 +272,7 @@ test("repeated registration for one session keeps exactly one listener set", () 
     },
     on: (_event: "input", handler: (event: { text: string }) => void) => {
       inputHandlers.push(handler);
+      return () => {};
     },
   };
   const firstEnvelopes: unknown[] = [];

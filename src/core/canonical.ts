@@ -1,7 +1,35 @@
-import { readPiEntryEvidence } from "../integrations/pi-entries.ts";
+import type { IntegrationKey } from "../integrations/index.ts";
+import { integrations } from "../integrations/index.ts";
+import { readPersistedEvidence } from "../integrations/persisted.ts";
 import type { SubagentEvidence } from "../integrations/subagents.ts";
 import type { ParsedSession } from "../pi/adapter.ts";
 import { resolveScope } from "../pi/scope.ts";
+import type {
+  AgentRun,
+  Compaction,
+  ErrorRecord,
+  EvidenceState,
+  Generation,
+  IntegrationObservationInput,
+  IntegrationPresence,
+  IntegrationRowKey,
+  Scope,
+  SessionEntry,
+  Tool,
+  Usage,
+  UsageComposition,
+} from "./events.ts";
+import {
+  type AtomicEvidence,
+  boundedProducerLabel,
+  type EvidenceSource,
+  type FactProvenance,
+  type FoldedAggregateEvidence,
+  type L0Evidence,
+  type LiveTimingObservation,
+  type SkillInvocationObservation,
+  type TimeEvidence,
+} from "./evidence.ts";
 import {
   buildEvidenceHealth,
   defaultDiagnosticSeverity,
@@ -13,47 +41,21 @@ import {
   type SourceEvidenceHealth,
 } from "./evidence-health.ts";
 import {
-  boundedProducerLabel,
-  type AtomicEvidence,
-  type EvidenceSource,
-  type FoldedAggregateEvidence,
-  type FactProvenance,
-  type L0Evidence,
-  type LiveTimingObservation,
-  type SkillInvocationObservation,
-  type TimeEvidence,
-} from "./evidence.ts";
-import type {
-  AgentRun,
-  Compaction,
-  ErrorRecord,
-  EvidenceState,
-  Generation,
-  IntegrationKey,
-  IntegrationObservationInput,
-  IntegrationPresence,
-  Scope,
-  SessionEntry,
-  Tool,
-  Usage,
-  UsageComposition,
-} from "./events.ts";
-import {
+  type CheckpointCounterAggregates,
   counterDeltaAfterCursors,
+  type FoldedCounters,
   foldedFromCheckpointAggregates,
   MAX_FOLDED_COUNT,
   MAX_SKILL_KEYS,
   mergeFoldedCounters,
-  type CheckpointCounterAggregates,
-  type FoldedCounters,
 } from "./live-counter-fold.ts";
 import { canonicalOpaqueDigest } from "./opaque-id.ts";
-import { readUsage, reduceEntries } from "./reduce.ts";
 import { boundedDescription, secretLikeValue } from "./redact.ts";
+import { readUsage, reduceEntries } from "./reduce.ts";
 import {
   buildRetainedAggregates,
-  isIntegrationKey,
   type CanonicalRetainedAggregates,
+  isIntegrationKey,
   type RetainedAggregateCheckpoint,
 } from "./retained-aggregates.ts";
 
@@ -136,7 +138,7 @@ export type CanonicalStateTransition = {
 
 export type CanonicalIntegrationEvent = {
   id: string;
-  integration: IntegrationKey | "mode";
+  integration: IntegrationRowKey;
   presence: IntegrationPresence;
   state: EvidenceState;
   version?: number;
@@ -767,7 +769,7 @@ function readStateTransitions(
 function readIntegrationEvents(
   entries: readonly SessionEntry[],
 ): CanonicalIntegrationEvent[] {
-  return readPiEntryEvidence(entries).map(
+  return readPersistedEvidence({ entries }, integrations).rows.map(
     (row: IntegrationObservationInput) => {
       const presence =
         row.presence ?? (row.state === "supported" ? "present" : "unknown");
@@ -1330,7 +1332,8 @@ function effectiveCounters(
 
 /** Canonical, bounded values only: a non-canonical key or an empty map is dropped. */
 function publishedCounters(input: {
-  integration: Record<string, Record<string, number>>;
+  // A partial map: an absent key is "never observed", never a zero bucket.
+  integration: Readonly<Record<string, Record<string, number> | undefined>>;
   skillInvocations: Record<string, number>;
   overflow: number;
   permission: boolean;

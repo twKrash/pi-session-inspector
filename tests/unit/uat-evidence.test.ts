@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-
 import type { IntegrationObservation } from "../../src/core/events.ts";
 import type { FoldedAggregateEvidence } from "../../src/core/evidence.ts";
 import type { SessionReport } from "../../src/core/reports.ts";
+import type { PresenceContext } from "../../src/integrations/contract.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
-import { readIntegrationPresence } from "../../src/integrations/presence.ts";
-import { loadInspectorBundle, loadCurrentView } from "../../src/ui/bundle.ts";
+import { readPresence } from "../../src/integrations/presence.ts";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
+import { loadCurrentView, loadInspectorBundle } from "../../src/ui/bundle.ts";
 import { renderJson } from "../../src/ui/json.ts";
-import type { GlobalReport, HistoryReport } from "../../src/ui/load-history.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
+import type { GlobalReport, HistoryReport } from "../../src/ui/load-history.ts";
 import {
   emptyObservation,
   type SessionObservation,
@@ -24,6 +24,10 @@ import {
   projectCurrentView,
   projectInspectorUi,
 } from "../../src/ui/ui-projection.ts";
+
+/** The registry's presence model, keyed by every registered integration. */
+const readIntegrationPresence = (signals: PresenceContext) =>
+  readPresence(signals).presence;
 
 const UAT_FILE = fileURLToPath(
   new URL("../fixtures/pi/0.85.1/uat-session.jsonl", import.meta.url),
@@ -124,7 +128,7 @@ function uatObservation(): SessionObservation {
         .filter((row) => row.source === "extension")
         .map((row) => row.name),
       tools: Object.keys(inventory.toolSources),
-      permissionsReady: false,
+      observed: [],
       inventoryAvailable: true,
     }),
     inventory,

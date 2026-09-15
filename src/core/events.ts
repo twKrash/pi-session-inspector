@@ -10,19 +10,15 @@ export type Confidence =
   | "unavailable"
   | "unsupported";
 
-export type IntegrationKey =
-  | "context"
-  | "rtk"
-  | "ponytail"
-  | "caveman"
-  | "permission"
-  | "subagents"
-  | "lens";
-
 export type IntegrationPresence = "present" | "absent" | "unknown";
 
-/** Integration keys accepted by the report projection, including legacy `mode`. */
-export type IntegrationRowKey = IntegrationKey | "mode";
+/**
+ * Integration row identity. The trusted key set is the declared integration
+ * catalog (`src/integrations/index.ts`), not a union duplicated here: producer
+ * values are untrusted, so every boundary re-validates a key against that
+ * declaration instead of trusting a type annotation.
+ */
+export type IntegrationRowKey = string;
 
 /** Adapter/report-input row; presence is resolved during report projection. */
 export type IntegrationObservationInput = {

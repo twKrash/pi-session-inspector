@@ -2,20 +2,25 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
-import { readPiEntryEvidence } from "../../src/integrations/pi-entries.ts";
-import { readSubagentEvidence as readSubagentEvidenceWithSession } from "../../src/integrations/subagents.ts";
-import { MAX_COUNTER_KEYS } from "../../src/core/live-counter-fold.ts";
-import { isAllowedIntegrationCounter } from "../../src/core/integration-counter-allowlists.ts";
-import {
-  MAX_HEALTH_DIAGNOSTICS,
-  toSessionReport,
-} from "../../src/core/reports.ts";
 import {
   buildEvidenceHealth,
   MAX_EVIDENCE_COUNT,
 } from "../../src/core/evidence-health.ts";
+import { MAX_COUNTER_KEYS } from "../../src/core/live-counter-fold.ts";
+import {
+  MAX_HEALTH_DIAGNOSTICS,
+  toSessionReport,
+} from "../../src/core/reports.ts";
 import type { CanonicalRetainedAggregates } from "../../src/core/retained-aggregates.ts";
+import { isAllowedIntegrationCounter } from "../../src/integrations/catalog.ts";
+import { integrations } from "../../src/integrations/index.ts";
+import { readPersistedEvidence } from "../../src/integrations/persisted.ts";
+import { readSubagentEvidence as readSubagentEvidenceWithSession } from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+
+/** The registry's persisted-evidence read, in report order (ADR 0019). */
+const readPiEntryEvidence = (entries: readonly SessionEntry[]) =>
+  readPersistedEvidence({ entries }).rows;
 
 const SESSION_ID = "session-reports-test";
 const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
@@ -474,18 +479,34 @@ test("carries exactly the spec 4.6 permission v1 counter allowlist", () => {
     "gateErrors",
   ] as const;
   for (const key of allowed) {
-    assert.equal(isAllowedIntegrationCounter("permission", 1, key), true, key);
+    assert.equal(
+      isAllowedIntegrationCounter(integrations, "permission", 1, key),
+      true,
+      key,
+    );
   }
   for (const key of ["events", "granted", "arbitraryName", "gateWarning"]) {
-    assert.equal(isAllowedIntegrationCounter("permission", 1, key), false, key);
+    assert.equal(
+      isAllowedIntegrationCounter(integrations, "permission", 1, key),
+      false,
+      key,
+    );
   }
   assert.deepEqual(
-    allowed.filter((key) => !isAllowedIntegrationCounter("permission", 1, key)),
+    allowed.filter(
+      (key) => !isAllowedIntegrationCounter(integrations, "permission", 1, key),
+    ),
     [],
   );
   // Subagents has no v1 folded counter vocabulary; rows come from agentActivity.
-  assert.equal(isAllowedIntegrationCounter("subagents", 1, "foo"), false);
-  assert.equal(isAllowedIntegrationCounter("subagents", 1, "runs"), false);
+  assert.equal(
+    isAllowedIntegrationCounter(integrations, "subagents", 1, "foo"),
+    false,
+  );
+  assert.equal(
+    isAllowedIntegrationCounter(integrations, "subagents", 1, "runs"),
+    false,
+  );
 });
 
 test("reports present for an evidence-only row with no inventory signal", () => {

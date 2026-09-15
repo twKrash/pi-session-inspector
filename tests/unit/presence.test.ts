@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readIntegrationPresence } from "../../src/integrations/presence.ts";
+import type { PresenceContext } from "../../src/integrations/contract.ts";
+import { readPresence } from "../../src/integrations/presence.ts";
+
+/** The registry's presence model, keyed by every registered integration. */
+const readIntegrationPresence = (signals: PresenceContext) =>
+  readPresence(signals).presence;
 
 test("maps native inventory signals to presence without guessing", () => {
   const rows = readIntegrationPresence({
@@ -12,7 +17,7 @@ test("maps native inventory signals to presence without guessing", () => {
       "lens_diagnostics",
       "read",
     ],
-    permissionsReady: false,
+    observed: [],
     inventoryAvailable: true,
   });
 
@@ -31,7 +36,7 @@ test("reports absence only with an available inventory, and presence from a read
   const rows = readIntegrationPresence({
     extensionCommands: [],
     tools: ["read", "bash"],
-    permissionsReady: true,
+    observed: ["permission"],
     inventoryAvailable: true,
   });
 
@@ -45,7 +50,7 @@ test("reports absence only with an available inventory, and presence from a read
   const unknown = readIntegrationPresence({
     extensionCommands: [],
     tools: [],
-    permissionsReady: false,
+    observed: [],
     inventoryAvailable: false,
   });
   assert.deepEqual(unknown, {
@@ -65,7 +70,7 @@ test("never reports an extension present from a same-named skill or prompt comma
   const skillOnly = readIntegrationPresence({
     extensionCommands: [],
     tools: [],
-    permissionsReady: false,
+    observed: [],
     inventoryAvailable: true,
   });
   assert.equal(skillOnly.ponytail, "absent");
@@ -74,7 +79,7 @@ test("never reports an extension present from a same-named skill or prompt comma
   const unavailable = readIntegrationPresence({
     extensionCommands: [],
     tools: [],
-    permissionsReady: false,
+    observed: [],
     inventoryAvailable: false,
   });
   assert.equal(unavailable.ponytail, "unknown");
@@ -83,7 +88,7 @@ test("never reports an extension present from a same-named skill or prompt comma
   const extension = readIntegrationPresence({
     extensionCommands: ["ponytail"],
     tools: [],
-    permissionsReady: false,
+    observed: [],
     inventoryAvailable: true,
   });
   assert.equal(extension.ponytail, "present");

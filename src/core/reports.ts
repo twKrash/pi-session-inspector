@@ -1,26 +1,29 @@
-import type {
-  CanonicalInventoryObservation,
-  CanonicalSession,
-} from "./canonical.ts";
 import {
+  rowKeys as declaredRowKeys,
+  findIntegration,
   isAllowedIntegrationCounter,
   isKnownIntegrationVersion,
-} from "./integration-counter-allowlists.ts";
+  reportIntegrations,
+} from "../integrations/catalog.ts";
+import type { Integration } from "../integrations/contract.ts";
+import type { IntegrationKey } from "../integrations/index.ts";
+import { integrations } from "../integrations/index.ts";
 import {
-  MAX_COUNTER_KEYS,
-  MAX_FOLDED_COUNT,
-  MAX_SKILL_KEYS,
-  SKILL_NAME_PATTERN,
-  type FoldedCounters,
-} from "./live-counter-fold.ts";
-import {
-  sanitizeSourceLabel,
   type CommandRow,
   type InventorySnapshot,
   type ResourceSourceRow,
   type SkillRow,
+  sanitizeSourceLabel,
 } from "../integrations/inventory.ts";
-import { boundedDescription } from "./redact.ts";
+import {
+  type AgentToolActivity,
+  isAgentLabel,
+  isProcessSignal,
+} from "../integrations/subagents.ts";
+import type {
+  CanonicalInventoryObservation,
+  CanonicalSession,
+} from "./canonical.ts";
 import {
   boundedProducerLabel,
   type EvidenceAuthority,
@@ -31,34 +34,37 @@ import {
   buildEvidenceHealth,
   defaultDiagnosticSeverity,
   EVIDENCE_SOURCE_ORDER,
-  MAX_EVIDENCE_COUNT,
   type EvidenceDiagnostic,
   type EvidenceDiagnosticCode,
   type EvidenceDiagnosticSeverity,
   type EvidenceHealthState,
+  MAX_EVIDENCE_COUNT,
   type SessionEvidenceHealth,
   type SourceEvidenceHealth,
 } from "./evidence-health.ts";
 import {
-  isIntegrationKey as isCanonicalIntegrationKey,
+  type FoldedCounters,
+  MAX_COUNTER_KEYS,
+  MAX_FOLDED_COUNT,
+  MAX_SKILL_KEYS,
+  SKILL_NAME_PATTERN,
+} from "./live-counter-fold.ts";
+import { boundedDescription } from "./redact.ts";
+import {
   type AggregateValue,
   type CanonicalRetainedAggregates,
+  isIntegrationKey as isCanonicalIntegrationKey,
 } from "./retained-aggregates.ts";
-import {
-  isAgentLabel,
-  isProcessSignal,
-  type AgentToolActivity,
-} from "../integrations/subagents.ts";
 
 // The report-facing activity projection reuses the reader's shape so the
 // native subagent evidence has exactly one DTO definition (never re-declared).
 export type { AgentToolActivity };
+
 import type {
   AgentFailure,
   AgentRun,
   Compaction,
   EvidenceState,
-  IntegrationKey,
   IntegrationObservation,
   IntegrationObservationInput,
   IntegrationPresence,
@@ -68,8 +74,13 @@ import type {
 } from "./events.ts";
 
 const MAX_AGENT_ROWS = 256;
-/** Seven known keys plus the legacy `mode` compatibility row. */
-const MAX_INTEGRATION_ROWS = 8;
+/**
+ * Hostile-input safety cap for adapter-supplied integration rows. It is
+ * deliberately independent of the registry: the *expected* row count is
+ * `registry.rowKeys.length`, so adding a registered adapter can never push an
+ * earlier row (or the legacy `mode` compatibility row) out of the report.
+ */
+const MAX_INTEGRATION_ROWS = 64;
 const MAX_INVENTORY_DESCRIPTION_BYTES = 120;
 const MAX_INVENTORY_COMMANDS = 256;
 const MAX_INVENTORY_SKILLS = 128;
@@ -118,30 +129,11 @@ const EVIDENCE_STATES = new Set<EvidenceState>([
 // the same bounded token grammar (extended to `_`) is re-validated here.
 const ACTIVITY_TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_ACTIVITY_TOOLS = 64;
-const INTEGRATION_KEYS = new Set<IntegrationKey | "mode">([
-  "context",
-  "rtk",
-  "ponytail",
-  "caveman",
-  "mode",
-  "permission",
-  "subagents",
-  "lens",
-]);
 const INTEGRATION_PRESENCES = new Set<IntegrationPresence>([
   "present",
   "absent",
   "unknown",
 ]);
-const INTEGRATION_ORDER: readonly IntegrationKey[] = [
-  "context",
-  "rtk",
-  "ponytail",
-  "caveman",
-  "permission",
-  "subagents",
-  "lens",
-];
 
 // Canonical health is a bounded, closed-enum DTO. The report projection
 // re-validates every member rather than trusting the builder, so forged health
@@ -257,8 +249,12 @@ export type SessionReportEvidence = {
   /** Native subagent tool activity; validated into the report DTO. */
   agentActivity?: AgentToolActivity;
   integrations?: readonly IntegrationObservationInput[];
-  /** Explicit per-key presence model from the process-local observation. */
-  presence?: Readonly<Record<IntegrationKey, IntegrationPresence>>;
+  /**
+   * Explicit per-key presence model from the process-local observation. Keys
+   * are validated against the projection's list, so this is deliberately a
+   * string-keyed input rather than the default registry's key union.
+   */
+  presence?: Readonly<Record<string, IntegrationPresence>>;
   /** Effective folded counters (`merge(checkpoint, delta)`), never a delta alone. */
   counters?: FoldedCounters;
   /** Sanitized inventory snapshot read at session start or on reload. */
@@ -370,7 +366,9 @@ export function cacheHitPercent(usage: Usage | undefined): number | undefined {
 export function toSessionReport(
   source: ReducedSession | CanonicalSession,
   evidence: SessionReportEvidence = {},
+  options: SessionReportOptions = {},
 ): SessionReport {
+  const list = options.integrations ?? integrations;
   const canonical = isCanonicalSession(source) ? source : undefined;
   const generations = source.generations;
   const sourceTools = source.tools;
@@ -398,6 +396,7 @@ export function toSessionReport(
     canonical === undefined
       ? evidence
       : canonicalReportEvidence(canonical, evidence),
+    list,
   );
   const inventory = projectedEvidence.inventory;
   const models = new Map<string, ModelSummary>();
@@ -481,6 +480,15 @@ function isCanonicalSession(
     "health" in source
   );
 }
+
+/**
+ * Report-projection seams. `integrations` defaults to the authoritative registry
+ * (ADR 0019) and exists so a test or future host can inject a different
+ * registry: no other module carries a hand-maintained integration list.
+ */
+export type SessionReportOptions = {
+  integrations?: readonly Integration[];
+};
 
 function canonicalReportEvidence(
   session: CanonicalSession,
@@ -600,7 +608,10 @@ type ProjectedEvidence = {
   retainedAggregates: CanonicalRetainedAggregates | undefined;
 };
 
-function projectEvidence(evidence: unknown): ProjectedEvidence {
+function projectEvidence(
+  evidence: unknown,
+  list: readonly Integration[],
+): ProjectedEvidence {
   try {
     const input = snapshotRecord(evidence);
     if (input === undefined) return unavailableEvidence();
@@ -618,6 +629,7 @@ function projectEvidence(evidence: unknown): ProjectedEvidence {
         input.presence,
         input.counters,
         counters?.permissionPresent ?? false,
+        list,
       ),
       duration: projectDuration(input.duration),
       inventory: projectInventory(input.inventory),
@@ -882,10 +894,11 @@ function projectIntegrations(
   presenceValue: unknown,
   countersValue: unknown,
   permissionPresent: boolean,
+  list: readonly Integration[],
 ): IntegrationObservation[] {
-  const adapterRows = projectAdapterRows(value);
-  const presence = projectPresence(presenceValue);
-  const counters = projectFoldedCounters(countersValue);
+  const adapterRows = projectAdapterRows(value, list);
+  const presence = projectPresence(presenceValue, list);
+  const counters = projectFoldedCounters(countersValue, list);
   // Without an observation the projection keeps its adapter-only shape; with one
   // it emits exactly one row per known key so absence is explicit. A persisted
   // `presence.permission` is itself an observation, so it also promotes the
@@ -893,11 +906,21 @@ function projectIntegrations(
   if (presence === undefined && counters === undefined && !permissionPresent)
     return adapterRows;
 
-  const adapterByKey = new Map<IntegrationKey, IntegrationObservation>();
-  let legacyMode: IntegrationObservation | undefined;
+  const adapterByKey = new Map<string, IntegrationObservation>();
+  const legacyRows = new Map<string, IntegrationObservation>();
   for (const row of adapterRows) {
-    if (row.integration === "mode") {
-      legacyMode = legacyMode ?? row;
+    if (
+      !reportIntegrations(list).some((entry) => entry.key === row.integration)
+    ) {
+      // A registered legacy-only row (or an unregistered one, which the
+      // projection already dropped) is kept once per key and appended after
+      // the report keys, in registry order.
+      if (
+        findIntegration(list, row.integration) !== undefined &&
+        !legacyRows.has(row.integration)
+      ) {
+        legacyRows.set(row.integration, row);
+      }
       continue;
     }
     if (!adapterByKey.has(row.integration)) {
@@ -905,29 +928,40 @@ function projectIntegrations(
     }
   }
 
-  const integrations = INTEGRATION_ORDER.map((integration) =>
+  const integrations = reportIntegrations(list).map((entry) =>
     mergeIntegrationRow(
-      integration,
-      adapterByKey.get(integration),
-      integration === "permission" && permissionPresent
+      entry.key,
+      adapterByKey.get(entry.key),
+      entry.key === "permission" && permissionPresent
         ? "present"
-        : presence?.[integration],
-      counters?.[integration],
+        : (presence as Record<string, IntegrationPresence | undefined>)?.[
+            entry.key
+          ],
+      (counters as Record<string, unknown> | undefined)?.[entry.key],
+      list,
     ),
   );
-  if (legacyMode !== undefined && integrations.length < MAX_INTEGRATION_ROWS) {
-    integrations.push(legacyMode);
+  // Trusted output is never capped: every declared key contributes its row, so
+  // a wide registry can never push a legacy compatibility row out of the report.
+  for (const key of declaredRowKeys(list)) {
+    const row = legacyRows.get(key);
+    if (row !== undefined) integrations.push(row);
   }
   return integrations;
 }
 
 function mergeIntegrationRow(
-  integration: IntegrationKey,
+  integration: string,
   adapter: IntegrationObservation | undefined,
   presenceSignal: IntegrationPresence | undefined,
   folded: unknown,
+  list: readonly Integration[],
 ): IntegrationObservation {
-  const counters = projectFoldedCountersForIntegration(integration, folded);
+  const counters = projectFoldedCountersForIntegration(
+    integration,
+    folded,
+    list,
+  );
   const state: EvidenceState =
     counters !== undefined ? "supported" : (adapter?.state ?? "unavailable");
   // `unknown` is the absence of a signal, so evidence still promotes the row to
@@ -960,8 +994,9 @@ function isDefinitePresence(
  * them; a bucket over the fold's key cap is rejected rather than truncated.
  */
 function projectFoldedCountersForIntegration(
-  integration: IntegrationKey,
+  integration: string,
   value: unknown,
+  list: readonly Integration[],
 ): Readonly<Record<string, number>> | undefined {
   const row = snapshotRecord(value);
   if (row === undefined) return undefined;
@@ -971,7 +1006,7 @@ function projectFoldedCountersForIntegration(
   for (const key of keys.sort()) {
     const count = row[key];
     if (
-      isAllowedIntegrationCounter(integration, 1, key) &&
+      isAllowedIntegrationCounter(list, integration, 1, key) &&
       typeof count === "number" &&
       isCounterValue(count)
     ) {
@@ -983,24 +1018,21 @@ function projectFoldedCountersForIntegration(
 
 function projectPresence(
   value: unknown,
-):
-  | Readonly<Record<IntegrationKey, IntegrationPresence | undefined>>
-  | undefined {
+  list: readonly Integration[],
+): Readonly<Record<string, IntegrationPresence | undefined>> | undefined {
   const input = snapshotRecord(value);
   if (input === undefined) return undefined;
-  const presence = {} as Record<
-    IntegrationKey,
-    IntegrationPresence | undefined
-  >;
-  for (const integration of INTEGRATION_ORDER) {
-    const signal = input[integration];
-    presence[integration] = isIntegrationPresence(signal) ? signal : undefined;
+  const presence: Record<string, IntegrationPresence | undefined> = {};
+  for (const entry of reportIntegrations(list)) {
+    const signal = input[entry.key];
+    presence[entry.key] = isIntegrationPresence(signal) ? signal : undefined;
   }
   return presence;
 }
 
 function projectFoldedCounters(
   value: unknown,
+  list: readonly Integration[],
 ):
   | Readonly<Partial<Record<IntegrationKey, Readonly<Record<string, number>>>>>
   | undefined {
@@ -1008,25 +1040,31 @@ function projectFoldedCounters(
   if (input === undefined) return undefined;
   const counters = snapshotRecord(input.counters);
   if (counters === undefined) return undefined;
-  const folded: Partial<
-    Record<IntegrationKey, Readonly<Record<string, number>>>
-  > = {};
-  // Only the seven known keys can carry folded counters; `mode` is legacy-only.
-  for (const integration of INTEGRATION_ORDER) {
+  const folded: Record<string, Readonly<Record<string, number>>> = {};
+  // Only declared report keys carry folded counters; `mode` is legacy-only.
+  for (const entry of reportIntegrations(list)) {
     const projected = projectFoldedCountersForIntegration(
-      integration,
-      counters[integration],
+      entry.key,
+      counters[entry.key],
+      list,
     );
-    if (projected !== undefined) folded[integration] = projected;
+    if (projected !== undefined) folded[entry.key] = projected;
   }
-  return Object.keys(folded).length === 0 ? undefined : folded;
+  return Object.keys(folded).length === 0
+    ? undefined
+    : (folded as Readonly<
+        Partial<Record<IntegrationKey, Readonly<Record<string, number>>>>
+      >);
 }
 
-function projectAdapterRows(value: unknown): IntegrationObservation[] {
+function projectAdapterRows(
+  value: unknown,
+  list: readonly Integration[],
+): IntegrationObservation[] {
   if (!Array.isArray(value)) return [];
   const integrations: IntegrationObservation[] = [];
   for (const row of value.slice(0, MAX_INTEGRATION_ROWS)) {
-    const projected = projectIntegration(row);
+    const projected = projectIntegration(row, list);
     if (projected !== undefined) integrations.push(projected);
   }
   return integrations;
@@ -1034,11 +1072,12 @@ function projectAdapterRows(value: unknown): IntegrationObservation[] {
 
 function projectIntegration(
   value: unknown,
+  list: readonly Integration[],
 ): IntegrationObservation | undefined {
   const row = snapshotRecord(value);
   if (
     row === undefined ||
-    !isIntegrationKey(row.integration) ||
+    !isIntegrationKey(row.integration, list) ||
     !isEvidenceState(row.state)
   ) {
     return undefined;
@@ -1057,13 +1096,13 @@ function projectIntegration(
   if (
     !isVersion(row.version) ||
     (row.state !== "unsupported" &&
-      !isKnownIntegrationVersion(row.integration, row.version))
+      !isKnownIntegrationVersion(list, row.integration, row.version))
   ) {
     return undefined;
   }
   const counters =
     row.state === "supported"
-      ? projectCounters(row.counters, row.integration, row.version)
+      ? projectCounters(row.counters, row.integration, row.version, list)
       : undefined;
   return {
     integration: row.integration,
@@ -1078,6 +1117,7 @@ function projectCounters(
   value: unknown,
   integration: IntegrationKey | "mode",
   version: number,
+  list: readonly Integration[],
 ): Readonly<Record<string, number | boolean>> | undefined {
   const counters = snapshotRecord(value);
   if (counters === undefined) return undefined;
@@ -1087,7 +1127,7 @@ function projectCounters(
   const projected: Record<string, number | boolean> = {};
   for (const [key, counter] of entries) {
     if (
-      isAllowedIntegrationCounter(integration, version, key) &&
+      isAllowedIntegrationCounter(list, integration, version, key) &&
       isCounterValue(counter)
     ) {
       projected[key] = counter;
@@ -1189,10 +1229,12 @@ function isIntegrationPresence(value: unknown): value is IntegrationPresence {
   );
 }
 
-function isIntegrationKey(value: unknown): value is IntegrationKey | "mode" {
+function isIntegrationKey(
+  value: unknown,
+  list: readonly Integration[],
+): value is IntegrationKey | "mode" {
   return (
-    typeof value === "string" &&
-    INTEGRATION_KEYS.has(value as IntegrationKey | "mode")
+    typeof value === "string" && findIntegration(list, value) !== undefined
   );
 }
 

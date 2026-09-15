@@ -4,15 +4,16 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
-import { toSessionReport } from "../../src/core/reports.ts";
-import { renderJson } from "../../src/ui/json.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
+import { toSessionReport } from "../../src/core/reports.ts";
+import type { PresenceContext } from "../../src/integrations/contract.ts";
 import { createEvidenceRegistry } from "../../src/integrations/evidence.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { registerLiveCounters } from "../../src/integrations/live-counters.ts";
-import { readIntegrationPresence } from "../../src/integrations/presence.ts";
-import { readPiEntryEvidence } from "../../src/integrations/pi-entries.ts";
+import { readPersistedEvidence } from "../../src/integrations/persisted.ts";
+import { readPresence } from "../../src/integrations/presence.ts";
 import { readSubagentEvidence as readSubagentEvidenceWithSession } from "../../src/integrations/subagents.ts";
+import { renderJson } from "../../src/ui/json.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { CURRENT_TABS, createCurrentTuiModel } from "../../src/ui/current.ts";
@@ -22,6 +23,14 @@ import { emptyObservation } from "../../src/ui/observation.ts";
 import { renderSnapshot } from "../../src/ui/snapshot.ts";
 import { projectInspectorUi } from "../../src/ui/ui-projection.ts";
 import { FORBIDDEN_PRODUCER_KEYS } from "../helpers/bundle-scenarios.ts";
+
+/** The registry's presence model, keyed by every registered integration. */
+const readIntegrationPresence = (signals: PresenceContext) =>
+  readPresence(signals).presence;
+
+/** The registry's persisted-evidence read, in report order (ADR 0019). */
+const readPiEntryEvidence = (entries: readonly SessionEntry[]) =>
+  readPersistedEvidence({ entries }).rows;
 
 const SUBAGENT_SESSION_ID = "session-privacy-test";
 const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
@@ -251,7 +260,10 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
           return () => {};
         },
       },
-      on: (_event, handler) => inputHandlers.push(handler),
+      on: (_event, handler) => {
+        inputHandlers.push(handler);
+        return () => {};
+      },
     },
     {
       appendTelemetry: (envelope) => envelopes.push(envelope),
@@ -322,7 +334,7 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
         .filter((row) => row.source === "extension")
         .map((row) => row.name),
       tools: Object.keys(inventory.toolSources),
-      permissionsReady: false,
+      observed: [],
       inventoryAvailable: true,
     }),
     inventory,

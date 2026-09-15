@@ -1,24 +1,28 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-
 import type { FoldedAggregateEvidence } from "../../src/core/evidence.ts";
 import type { SessionEvidenceHealth } from "../../src/core/evidence-health.ts";
 import type { CanonicalRetainedAggregates } from "../../src/core/retained-aggregates.ts";
-import { readIntegrationPresence } from "../../src/integrations/presence.ts";
+import type { PresenceContext } from "../../src/integrations/contract.ts";
+import { readPresence } from "../../src/integrations/presence.ts";
+import { readInventory } from "../../src/integrations/inventory.ts";
 import type { CoverageReason } from "../../src/storage/history.ts";
+import { renderJson } from "../../src/ui/json.ts";
 import {
+  type HistorySessionEvidence,
   loadGlobalReport,
   loadHistoryReports,
   loadHistorySessionReport,
-  type HistorySessionEvidence,
   type SessionEvidenceProvider,
 } from "../../src/ui/load-history.ts";
-import { readInventory } from "../../src/integrations/inventory.ts";
-import { renderJson } from "../../src/ui/json.ts";
 import { projectGlobalReport } from "../../src/ui/ui-projection.ts";
+
+/** The registry's presence model, keyed by every registered integration. */
+const readIntegrationPresence = (signals: PresenceContext) =>
+  readPresence(signals).presence;
 
 const maintenance = {
   writerId: "maintainer-1",
@@ -1116,7 +1120,7 @@ test("projects history inventory rows from the persisted snapshot", async () => 
                 .filter((row) => row.source === "extension")
                 .map((row) => row.name),
               tools: Object.keys(snapshot.toolSources),
-              permissionsReady: false,
+              observed: [],
               inventoryAvailable: true,
             }),
             inventory: snapshot,

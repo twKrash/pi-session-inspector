@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { SessionEntry } from "../../src/core/events.ts";
+import { readPersistedEvidence } from "../../src/integrations/persisted.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
-import { readPiEntryEvidence } from "../../src/integrations/pi-entries.ts";
+
+/** The registry's persisted-evidence read, in report order (ADR 0019). */
+const readPiEntryEvidence = (entries: readonly SessionEntry[]) =>
+  readPersistedEvidence({ entries }).rows;
 
 const fixturePath = new URL(
   "../fixtures/integrations/pi-entries.jsonl",

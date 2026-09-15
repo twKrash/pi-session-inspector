@@ -109,6 +109,7 @@ Reports may still reveal project metadata. Treat exports as sensitive.
 
 ## Canonical design documentation
 
+- [Integrations](docs/integrations.md) — supported integrations, how to add one, and integration vs skill vs tool
 - [Pi ecosystem research](docs/research/pi-ecosystem.md)
 - [v1 specification](docs/specs/pi-session-inspector-v1.md)
 - [implementation plan](docs/plans/pi-session-inspector-v1-implementation.md)
