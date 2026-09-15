@@ -518,9 +518,14 @@ async function ensureFoldBoundary(input: {
   if (sessionFile === undefined) return;
   const attemptKey = `${root}\u0000${sessionId}`;
   if (foldBoundaryAttempts.has(attemptKey)) return;
-  if (foldBoundaryAttempts.size < MAX_FOLD_BOUNDARY_ATTEMPTS) {
-    foldBoundaryAttempts.add(attemptKey);
+  // Bounded memory that still attempts every session once: at the cap the
+  // oldest attempt is forgotten, so a long-lived process keeps folding new
+  // sessions instead of silently stopping at the bound.
+  if (foldBoundaryAttempts.size >= MAX_FOLD_BOUNDARY_ATTEMPTS) {
+    const oldest = foldBoundaryAttempts.values().next().value;
+    if (oldest !== undefined) foldBoundaryAttempts.delete(oldest);
   }
+  foldBoundaryAttempts.add(attemptKey);
   try {
     await maintainSession({
       root,
