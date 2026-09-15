@@ -1,9 +1,10 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `0.10.0`
+**Current release:** `0.11.0`
 
-**Current state:** M0–M7, the follow-up evidence/report milestones, and
-Pre-M8.1–Pre-M8.6 are complete. M8 is not started.
+**Current state:** M0–M7, the follow-up evidence/report milestones,
+Pre-M8.1–Pre-M8.6, and the integration-architecture/configuration/debug
+milestone (see below) are complete. M8 is not started.
 
 **Next gate:** complete Pre-M8.7 before starting M8.
 
@@ -708,6 +709,51 @@ enforced by dependency-cruiser (only `scripts/web/chart.ts` may import
 **Release:** the chart change is product-visible (rendering and asset size), but
 it is not published separately: the package stays on `0.10.0` and the RC/release
 step names the version that actually ships. See ADR 0018.
+
+### Integration architecture, configuration, and debug diagnostics
+
+**Status:** Complete (`0.11.0`). **Depends on:** Pre-M8.5 and the evidence
+foundation.
+
+Integration knowledge was spread across seven hand-synchronized sites, so one
+new integration required edits to core enums, presence detection, Pi-entry
+parsing, counter allowlists, report order/validation, retained aggregates,
+observation defaults, tests, and sometimes live subscriptions. There was also no
+settings surface and no way to explain a `Present / Unavailable` row or a
+persisted `durationMs: 0`.
+
+**Deliverables**
+
+1. Integrations are descriptors with optional typed hooks
+   (`presence`, `persisted`, `live`, `telemetry`, `canonical`); the supported set
+   and its report order are one explicit array in `src/integrations/index.ts`,
+   and `src/integrations/catalog.ts` owns validation and lookup only. Each
+   subsystem iterates the list and invokes the hook it owns, so adding an
+   integration is one definition file, one registration line, tests, and one
+   `docs/integrations.md` row (ADR 0019).
+2. One Inspector-owned `settings.json` (`theme`, `debug`) with
+   `CLI option > settings.json > product default` precedence and fail-safe
+   malformed handling.
+3. A local, bounded, `0o600` JSONL debug log (off by default) with an
+   allowlisted field vocabulary that never carries prompts, tool arguments or
+   results, environment values, or producer payloads, never reaches a report,
+   and fails closed when its private modes cannot be enforced.
+4. Real-session UAT on `01a0a14a-2bb3-75af-aa91-715c8f92d3e1` explaining every
+   integration row, fixing the lens and subagents evidence mismatches, and
+   localizing the persisted `durationMs: 0` to an honest millisecond-resolution
+   floor in the live producer.
+
+**Acceptance gates**
+
+- Adding a fixture integration flows through presence, persisted evidence,
+  telemetry, live registration, canonical contribution, and the report with no
+  core edit.
+- One failing integration cannot break another; duplicate keys, alias
+  collisions, and malformed schemas are rejected at definition time.
+- Existing privacy, determinism, and retention semantics are unchanged and the
+  suite stays green.
+- Debug logging is bounded, local, non-fatal, absent from every report surface,
+  and documented in `docs/integrations.md`.
 
 ### Pre-M8.7 — RC hardening and package audit
 

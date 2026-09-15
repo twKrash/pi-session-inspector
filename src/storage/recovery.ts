@@ -386,7 +386,9 @@ function recoverRunning(
       status: timing.status,
       recordId: record.eventId,
       found: timing.durationMs !== undefined,
-      ...(timing.durationMs === undefined ? {} : { durationMs: timing.durationMs }),
+      ...(timing.durationMs === undefined
+        ? {}
+        : { durationMs: timing.durationMs }),
     });
     if (
       timing.category !== "agent" &&

@@ -53,25 +53,24 @@ export const DEBUG_EVENTS: Readonly<Record<DebugComponent, readonly string[]>> =
  * The field allowlist, by name. A field outside this set is dropped: the
  * vocabulary is closed so no future caller can accidentally log a payload.
  */
-const DEBUG_FIELDS: Readonly<Record<string, "number" | "boolean" | "token">> =
-  {
-    adapter: "token",
-    code: "token",
-    counters: "number",
-    durationMs: "number",
-    endedAtMs: "number",
-    found: "boolean",
-    integration: "token",
-    match: "token",
-    presence: "token",
-    reason: "token",
-    recordId: "token",
-    source: "token",
-    startedAtMs: "number",
-    status: "token",
-    subject: "token",
-    version: "number",
-  };
+const DEBUG_FIELDS: Readonly<Record<string, "number" | "boolean" | "token">> = {
+  adapter: "token",
+  code: "token",
+  counters: "number",
+  durationMs: "number",
+  endedAtMs: "number",
+  found: "boolean",
+  integration: "token",
+  match: "token",
+  presence: "token",
+  reason: "token",
+  recordId: "token",
+  source: "token",
+  startedAtMs: "number",
+  status: "token",
+  subject: "token",
+  version: "number",
+};
 
 /** Bounded token: a plain name or one canonical `<domain>-<64hex>` digest. */
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;

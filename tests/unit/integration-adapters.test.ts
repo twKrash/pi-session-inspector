@@ -29,7 +29,7 @@ function presence(overrides: Partial<PresenceContext> = {}): PresenceContext {
 
 /** One persisted read for one entry set. */
 function persisted(entries: readonly SessionEntry[]): PersistedEvidenceContext {
-  return { entries };
+  return { entries, sessionId: "session-1" };
 }
 
 function custom(customType: string, data: unknown): SessionEntry {

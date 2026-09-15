@@ -30,20 +30,24 @@ test("malformed settings degrade to defaults with a bounded diagnostic", () => {
   const oversized = `{"theme":"dark","padding":"${"x".repeat(
     MAX_SETTINGS_BYTES,
   )}"}`;
-  assert.deepEqual(parseSettings(oversized).diagnostics, ["settings-oversized"]);
+  assert.deepEqual(parseSettings(oversized).diagnostics, [
+    "settings-oversized",
+  ]);
 
   // The bound is UTF-8 bytes: a multi-byte document that fits in code units
   // still does not fit the file bound.
   const multiByte = `{"theme":"${"é".repeat(MAX_SETTINGS_BYTES / 2)}"}`;
   assert.equal(multiByte.length < MAX_SETTINGS_BYTES, true);
-  assert.deepEqual(parseSettings(multiByte).diagnostics, ["settings-oversized"]);
+  assert.deepEqual(parseSettings(multiByte).diagnostics, [
+    "settings-oversized",
+  ]);
 });
 
 test("an unknown key or a wrongly typed value is ignored, never guessed", () => {
-  assert.deepEqual(
-    parseSettings('{"theme":"blue","debug":"yes","other":1}'),
-    { settings: {}, diagnostics: [] },
-  );
+  assert.deepEqual(parseSettings('{"theme":"blue","debug":"yes","other":1}'), {
+    settings: {},
+    diagnostics: [],
+  });
   assert.deepEqual(parseSettings('{"theme":"dark","debug":true}').settings, {
     theme: "dark",
     debug: true,
@@ -119,7 +123,9 @@ test("a settings file that exists but cannot be read is reported as unreadable",
     assert.deepEqual(await readSettings(path), readSettingsSync(path));
 
     await writeFile(path, "{ not json", "utf8");
-    assert.deepEqual(readSettingsSync(path).diagnostics, ["settings-malformed"]);
+    assert.deepEqual(readSettingsSync(path).diagnostics, [
+      "settings-malformed",
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

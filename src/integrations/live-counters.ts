@@ -1,10 +1,7 @@
 import { SKILL_NAME_PATTERN } from "../core/live-counter-fold.ts";
 import { debugLog } from "../debug/log.ts";
 import { integrations } from "./index.ts";
-import type {
-  Integration,
-  LiveIntegrationContext,
-} from "./contract.ts";
+import type { Integration, LiveIntegrationContext } from "./contract.ts";
 
 const SKILL_PREFIX = "/skill:";
 

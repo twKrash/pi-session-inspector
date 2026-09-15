@@ -7,7 +7,7 @@ import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
 /** The registry's persisted-evidence read, in report order (ADR 0019). */
 const readPiEntryEvidence = (entries: readonly SessionEntry[]) =>
-  readPersistedEvidence({ entries }).rows;
+  readPersistedEvidence({ entries, sessionId: "session-1" }).rows;
 
 const fixturePath = new URL(
   "../fixtures/integrations/pi-entries.jsonl",

@@ -16,7 +16,12 @@ test("offers only valid completions for the current token", () => {
   ]);
   assert.deepEqual(labels("tui "), ["current", "ledger"]);
   assert.deepEqual(labels("json "), ["current", "history", "global"]);
-  assert.deepEqual(labels("ui -"), ["--scope", "--theme", "--debug", "--no-open"]);
+  assert.deepEqual(labels("ui -"), [
+    "--scope",
+    "--theme",
+    "--debug",
+    "--no-open",
+  ]);
   assert.equal(completeInspectorCommand("snapshot --"), null);
   assert.equal(completeInspectorCommand("snapshot --preset "), null);
   assert.equal(completeInspectorCommand("snapshot --scope "), null);
@@ -83,7 +88,12 @@ test("keeps completing after a settled target without offering options too early
   assert.deepEqual(labels("tui c"), ["current"]);
   assert.deepEqual(labels("tui current "), ["--scope", "--debug"]);
   assert.deepEqual(labels("json history "), ["--debug", "--output"]);
-  assert.deepEqual(labels("ui "), ["--scope", "--theme", "--debug", "--no-open"]);
+  assert.deepEqual(labels("ui "), [
+    "--scope",
+    "--theme",
+    "--debug",
+    "--no-open",
+  ]);
   assert.deepEqual(labels("tui xyz"), []);
 });
 

@@ -38,7 +38,9 @@ export function defineIntegration<const T extends Integration>(
     }
     const counters = integration.schemas[version]?.counters;
     if (!Array.isArray(counters)) {
-      throw new Error(`invalid counter list for ${integration.key} v${version}`);
+      throw new Error(
+        `invalid counter list for ${integration.key} v${version}`,
+      );
     }
     const seen = new Set<string>();
     for (const counter of counters) {
@@ -48,9 +50,7 @@ export function defineIntegration<const T extends Integration>(
         );
       }
       if (seen.has(counter)) {
-        throw new Error(
-          `duplicate counter: ${counter} for ${integration.key}`,
-        );
+        throw new Error(`duplicate counter: ${counter} for ${integration.key}`);
       }
       seen.add(counter);
     }
@@ -108,16 +108,16 @@ export function defineIntegrations<const T extends readonly Integration[]>(
 export function reportIntegrations(
   integrations: readonly Integration[],
 ): readonly Integration[] {
-  return integrations.filter(
-    (integration) => integration.legacyOnly !== true,
-  );
+  return integrations.filter((integration) => integration.legacyOnly !== true);
 }
 
 /**
  * Every key that may validate a row: report keys plus the legacy-only keys that
  * exist only to keep historical evidence readable.
  */
-export function rowKeys(integrations: readonly Integration[]): readonly string[] {
+export function rowKeys(
+  integrations: readonly Integration[],
+): readonly string[] {
   return integrations.map((integration) => integration.key);
 }
 

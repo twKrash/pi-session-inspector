@@ -66,6 +66,12 @@ export type PresenceContext = {
 
 export type PersistedEvidenceContext = {
   entries: readonly SessionEntry[];
+  /**
+   * The Inspector session identity. It is Inspector's own opaque id (never
+   * producer text) and it is what an integration needs to hash a producer id
+   * into a canonical subject before matching evidence.
+   */
+  sessionId: string;
 };
 
 /**
@@ -148,9 +154,7 @@ export type IntegrationHooks = {
     context: PersistedEvidenceContext,
   ): IntegrationEvidence | undefined;
 
-  live?(
-    context: LiveIntegrationContext,
-  ): IntegrationRegistration | undefined;
+  live?(context: LiveIntegrationContext): IntegrationRegistration | undefined;
 
   /** Translates one telemetry envelope into this integration's contributions. */
   telemetry?(envelope: unknown): IntegrationTelemetryFold | undefined;
