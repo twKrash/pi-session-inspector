@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   buildChartConfiguration,
   chartTheme,
+  recolorDatasets,
   type ChartInput,
 } from "../../scripts/web/chart.ts";
 
@@ -108,6 +109,24 @@ test("the adapter configures deterministic rendering and the caller's theme", ()
   assert.equal(config.options?.scales?.x?.ticks?.color, theme.text);
   assert.equal(config.options?.plugins?.legend?.labels?.color, theme.text);
   assert.equal(config.options?.plugins?.legend?.display, true);
+});
+
+test("theme colors are looked up by metric key, not by the series label", () => {
+  // Regression: the palette is keyed by metric ("cost"), while a series carries
+  // a human label ("Cost"). Recoloring must not fall back to the theme's text
+  // color because it looked the label up in the palette.
+  const theme = chartTheme(true);
+  const config = buildChartConfiguration({
+    ...input,
+    theme: chartTheme(false),
+  });
+
+  recolorDatasets(config, ["cost", "tokens"], theme);
+
+  assert.equal(config.data.datasets[0]?.borderColor, theme.line.cost);
+  assert.equal(config.data.datasets[1]?.borderColor, theme.line.tokens);
+  assert.notEqual(config.data.datasets[0]?.borderColor, theme.text);
+  assert.equal(config.data.datasets[0]?.label, "Cost");
 });
 
 test("both themes provide a concrete color for every charted metric", () => {

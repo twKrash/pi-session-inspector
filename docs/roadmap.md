@@ -592,13 +592,13 @@ it must not re-decide whether the accepted localhost server exists.
 
 | Metric | Pre-M8.4 normal client | Adopted bundled client | Delta | Evidence |
 | --- | ---: | ---: | ---: | --- |
-| Client source LOC | 3,224 | 3,383 | +159 | `git show`/`wc -l` vs `wc -l scripts/web/*` (includes the 265-line chart adapter) |
-| Client asset raw / gzip bytes | 113,563 / 26,786 | 264,568 / 88,392 | +151,005 / +61,606 | `benchmark:browser:release`, gzip level 9 |
+| Client source LOC | 3,224 | 3,415 | +191 | `git show`/`wc -l` vs `wc -l scripts/web/*` (includes the 297-line chart adapter) |
+| Client asset raw / gzip bytes | 113,563 / 26,786 | 264,631 / 88,429 | +151,068 / +61,643 | `benchmark:browser:release`, gzip level 9 |
 | Generated shell bytes | 4,125 | 4,057 | −68 | same fixture |
-| Bundle evaluation median / p95 ms | 0.82 / 1.39 | 1.49 / 2.86 | +0.67 / +1.47 | maintained harness, 40 samples after 5 warmups |
-| Startup median / p95 ms | 2.13 / 4.71 | 8.98 / 10.81 | +6.85 / +6.10 | same harness and fixture |
-| Chart create / update median ms | — | 1.07 / 0.75 | — | same harness and fixture |
-| Tarball / unpacked / files | 230,983 / 908,323 / 72 | 295,462 / 1,065,675 / 73 | +64,479 / +157,352 / +1 | `npm pack --dry-run --json` |
+| Bundle evaluation median / p95 ms | 0.82 / 1.39 | 1.51 / 2.17 | +0.69 / +0.78 | maintained harness, 40 samples after 5 warmups |
+| Startup median / p95 ms | 2.13 / 4.71 | 8.61 / 11.05 | +6.48 / +6.34 | same harness and fixture |
+| Chart create / update median ms | — | 1.10 / 0.77 | — | same harness and fixture |
+| Tarball / unpacked / files | 230,983 / 908,323 / 72 | 295,498 / 1,065,738 / 73 | +64,515 / +157,415 / +1 | `npm pack --dry-run --json` |
 
 The asset is deliberately larger: bundle size is not the winning metric. Chart.js
 is adopted for the generic chart representation Inspector would otherwise keep

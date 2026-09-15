@@ -97,7 +97,10 @@ const THEMES: Record<"dark" | "light", ChartPalette> = {
 };
 
 /** What a live chart was built from, so a theme switch can recolor it. */
-const built = new WeakMap<Chart, LineConfiguration>();
+const built = new WeakMap<
+  Chart,
+  { configuration: LineConfiguration; keys: string[] }
+>();
 
 let registered = false;
 
@@ -232,31 +235,51 @@ export const createDailyChart = (
     canvas as unknown as HTMLCanvasElement,
     configuration,
   );
-  built.set(chart, configuration);
+  built.set(chart, {
+    configuration,
+    keys: input.series.map((series) => series.key),
+  });
   canvas.setAttribute("aria-label", input.ariaLabel);
   canvas.setAttribute("role", "img");
   return chart;
 };
 
-/** Recolors a live chart for the other theme and redraws it. */
-export const applyChartTheme = (chart: Chart, theme: ChartPalette): void => {
-  const configuration = built.get(chart);
-  if (configuration === undefined) return;
-  // SAFETY: Chart.js types scale options as a union of per-scale shapes, so the
-  // two fields this adapter recolors are read through one concrete shape.
-  const scales = chart.options.scales as
-    | Record<string, { grid?: { color?: string }; ticks?: { color?: string } }>
-    | undefined;
-  const keys = configuration.data.datasets.map(
-    (dataset) => dataset.label ?? "",
-  );
+/**
+ * The color a series takes in a theme, by its semantic metric key — `cost`
+ * reads `palette.line.cost`. A key the palette does not carry reads the theme's
+ * text color; a human label (`"Cost"`) is never a key.
+ */
+const seriesColor = (theme: ChartPalette, key: string): string =>
+  theme.line[key] ?? theme.text;
+
+/**
+ * Applies `theme` to the datasets of a built configuration. Pure, so the
+ * Inspector-owned recoloring rule is testable without starting the library.
+ */
+export const recolorDatasets = (
+  configuration: LineConfiguration,
+  keys: string[],
+  theme: ChartPalette,
+): void => {
   configuration.data.datasets.forEach((dataset, index) => {
-    const color = theme.line[keys[index] ?? ""] ?? theme.text;
+    const color = seriesColor(theme, keys[index] ?? "");
     dataset.borderColor = color;
     dataset.backgroundColor = color;
     dataset.pointBackgroundColor = color;
     dataset.pointBorderColor = theme.surface;
   });
+};
+
+/** Recolors a live chart for the other theme and redraws it. */
+export const applyChartTheme = (chart: Chart, theme: ChartPalette): void => {
+  const entry = built.get(chart);
+  if (entry === undefined) return;
+  recolorDatasets(entry.configuration, entry.keys, theme);
+  // SAFETY: Chart.js types scale options as a union of per-scale shapes, so the
+  // two fields this adapter recolors are read through one concrete shape.
+  const scales = chart.options.scales as
+    | Record<string, { grid?: { color?: string }; ticks?: { color?: string } }>
+    | undefined;
   const plugins = chart.options.plugins;
   if (plugins?.legend?.labels !== undefined) {
     plugins.legend.labels.color = theme.text;

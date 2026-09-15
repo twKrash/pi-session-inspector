@@ -51,8 +51,8 @@ type Metric =
   | "chartCreateMs"
   | "chartUpdateMs";
 
-type Measurement = {
-  metrics: Record<Metric, Samples>;
+/** What one run of the shipped surface produced, before the timings are pooled. */
+type Run = {
   assetBytes: number;
   assetGzipBytes: number;
   assetSha256: string;
@@ -66,6 +66,12 @@ type Measurement = {
     initialRenders: number;
     renderedCanvas: boolean;
   };
+  timings: Record<Metric, number>;
+};
+
+/** A run with its timings pooled across samples. */
+type Measurement = Omit<Run, "timings"> & {
+  metrics: Record<Metric, Samples>;
 };
 
 type BaselineFile = {
@@ -113,9 +119,7 @@ function chartInput() {
   };
 }
 
-async function sample(): Promise<
-  Measurement & { timings: Record<Metric, number> }
-> {
+async function sample(): Promise<Run> {
   const snapshot = fixture();
   // The shipped asset, exactly the bytes the server serves.
   const asset = WEB_ASSETS.client;
@@ -161,13 +165,6 @@ async function sample(): Promise<
       tokenLeakedToUrl: fetches.some(({ url }) => url.includes(TOKEN)),
     },
     chartPoints: chart.data.datasets[0]?.data.length ?? 0,
-    metrics: {
-      chartCreateMs: summarize([]),
-      chartUpdateMs: summarize([]),
-      evaluateMs: summarize([]),
-      refreshMs: summarize([]),
-      startupMs: summarize([]),
-    },
     timings: {
       chartCreateMs: chartCreated - chartStart,
       chartUpdateMs: chartUpdated - chartCreated,
@@ -198,20 +195,14 @@ async function measure(mode: "release" | "smoke"): Promise<Measurement> {
     }
   }
   if (last === undefined) throw new Error("no browser sample was taken");
+  const { timings: _pooled, ...rest } = last;
   const metrics = Object.fromEntries(
     (Object.keys(durations) as Metric[]).map((metric) => [
       metric,
       summarize(durations[metric]),
     ]),
   ) as Record<Metric, Samples>;
-  return {
-    assetBytes: last.assetBytes,
-    assetGzipBytes: last.assetGzipBytes,
-    assetSha256: last.assetSha256,
-    behavior: last.behavior,
-    chartPoints: last.chartPoints,
-    metrics,
-  };
+  return { ...rest, metrics };
 }
 
 function assertBehavior(measurement: Measurement): void {

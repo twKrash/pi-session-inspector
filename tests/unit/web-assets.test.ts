@@ -304,27 +304,27 @@ test("Inspector's own browser sources do no calendar arithmetic", () => {
   }
 });
 
-test("the shipped client renders without reading the wall clock", async () => {
-  // The real contract behind "no date arithmetic": rendering a view must not
-  // consult the clock at all. The realm's `Date` is poisoned, so any read — by
-  // Inspector code or by the chart library it bundles — fails the render.
-  class PoisonedDate extends Date {
-    constructor() {
-      super();
-      throw new Error("wall clock read: new Date");
+test("the shipped client renders without reading the current wall clock", async () => {
+  // The runtime contract is narrower than "no Date at all": an uncontrolled
+  // read of the *current* time is what must not happen. `new Date()` with no
+  // argument and `Date.now()` are those reads; deterministic conversions such
+  // as `Date.parse(explicitValue)` and `Date.UTC(...)` stay allowed, and the
+  // separate calendarFree() rule keeps Inspector's own browser sources free of
+  // calendar arithmetic.
+  class ClockProbe extends Date {
+    constructor(...args: unknown[]) {
+      if (args.length === 0) throw new Error("wall clock read: new Date()");
+      // SAFETY: the probe only needs the inherited Date behaviour for explicit
+      // values, which this suite never constructs.
+      super(...(args as [number]));
     }
-    static now(): number {
-      throw new Error("wall clock read: Date.now");
-    }
-    static parse(): number {
-      throw new Error("wall clock read: Date.parse");
-    }
-    static UTC(): number {
-      throw new Error("wall clock read: Date.UTC");
+
+    static override now(): number {
+      throw new Error("wall clock read: Date.now()");
     }
   }
   const harness = createWebClient({
-    globals: { Date: PoisonedDate },
+    globals: { Date: ClockProbe },
     hash: "#/current/overview?scope=tree",
     responses: [uiSnapshot()],
   });
