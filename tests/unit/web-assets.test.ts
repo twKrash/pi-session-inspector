@@ -3565,6 +3565,30 @@ test("a command deep link opens Commands and focuses the command row", async () 
   assert.equal(harness.location.hash.includes("panel="), false);
 });
 
+test("a command or source link hrefs the subview its own row lives in", async () => {
+  const harness = await environment("#/current/environment?scope=tree");
+  // A command is shown by the default subview, so its href names no panel.
+  const command = harness
+    .element("view")
+    .querySelectorAll("a")
+    .find((link) => link.dataset.entity === "command:review");
+  assert.equal(
+    (command as StubElement).attributes.href,
+    "#/current/environment?scope=tree&entity=command%3Areview",
+  );
+  // A source is not, so its href names the one that shows it: opening that link
+  // in a new tab must land where the row is visible, not where the reader is now.
+  harness.click(envButton(harness, "sources"));
+  const source = harness
+    .element("view")
+    .querySelectorAll("a")
+    .find((link) => link.dataset.entity === "source:local");
+  assert.equal(
+    (source as StubElement).attributes.href,
+    "#/current/environment?scope=tree&panel=sources&entity=source%3Alocal",
+  );
+});
+
 test("a source deep link opens Sources and focuses the source row", async () => {
   const harness = await environment(
     "#/current/environment?scope=tree&entity=source%3Alocal",

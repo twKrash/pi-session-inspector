@@ -432,17 +432,13 @@
   const entityLink = (kind, id, label, cls) => {
     const link = el("a", cls || "", label);
     if (!entityMark(link, kind, id)) return el("span", cls || "", label);
+    const patch = { tab: tabFor(kind), entity: { kind: kind, id: id } };
+    // A command or a source link also names the subview its row lives in, so the
+    // destination it hrefs is the destination a click on it builds. Every other
+    // kind leaves the subview alone, exactly as the click handler does.
     const panel = panelFor(kind);
-    link.setAttribute(
-      "href",
-      route.serialize(
-        routeFor({
-          tab: tabFor(kind),
-          entity: { kind: kind, id: id },
-          panel: panel === null ? null : panel,
-        }),
-      ),
-    );
+    if (panel !== null) patch.panel = panel;
+    link.setAttribute("href", route.serialize(routeFor(patch)));
     return link;
   };
 

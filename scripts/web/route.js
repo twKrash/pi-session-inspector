@@ -104,6 +104,7 @@
       pairs.push("view=" + source.view);
     }
     if (
+      section !== "global" &&
       ENV_PANELS.indexOf(source.panel) >= 0 &&
       source.panel !== DEFAULT_ENV_PANEL
     ) {

@@ -713,21 +713,31 @@ the same `SessionReport`.
 The hash (`#/…`) is the single authority for browser navigation state. API query
 parameters are transport inputs only and never become route state; the server
 never parses or owns browser navigation. One canonical parameter order —
-`scope, preset, from, to, session, entity, q, sort` — means one route has exactly
-one string. The bootstrap `#token=…` fragment is the one bounded exception: it
-is consumed before route parsing and replaced with the canonical default route.
+`scope, view, panel, preset, from, to, session, entity, q, sort` — means one
+route has exactly one string. `scope` chooses the entry set, `view` the Agents
+presentation (Tree or Table) and `panel` the Environment subview (Commands or
+Sources); each is a closed vocabulary whose non-default member is the only one
+serialized, so a default choice adds no parameter. The bootstrap `#token=…`
+fragment is the one bounded exception: it is consumed before route parsing and
+replaced with the canonical default route.
 
 - `render()` derives **all** state from the route: content, the active sidebar item
-  and the active tab (`aria-current="page"`), the scope button and the range preset
-  (both `aria-pressed`), the search/sort control values, and the focus target.
-  Click handlers only mutate the route. (The environment sub-tab and the theme
-  toggle also use `aria-pressed`, but they are ephemeral client state outside the
-  route.)
-- A **discrete** route change (section, tab, scope, session, entity, range preset,
-  custom range, sort) **pushes** a history entry so Back restores the previous
-  state; only in-progress search typing **replaces** the current entry. The Tools
-  summary → calls tool filter is per-view-identity ephemeral client state, not
-  route state, and pushes nothing.
+  and the active tab (`aria-current="page"`), the scope button, the range preset,
+  the Agents presentation and the Environment subview (all `aria-pressed`), the
+  search/sort control values, and the focus target. Click handlers only mutate the
+  route. (The theme toggle also uses `aria-pressed`, but it is ephemeral client
+  state outside the route: it describes the reader's screen, not what they are
+  reading.)
+- A **discrete** route change (section, tab, scope, view, panel, session, entity,
+  range preset, custom range, sort) **pushes** a history entry so Back restores the
+  previous state; only in-progress search typing **replaces** the current entry. The
+  Tools summary → calls tool filter, and a tree node's collapsed state, are
+  per-view-identity ephemeral client state, not route state, and push nothing.
+- A route may name a focus **and** the view that can show it. When the two
+  disagree — a `command:` entity under `panel=sources`, a `source:` entity under
+  `panel=commands` — the derived route drops the entity rather than the panel: the
+  reader's chosen subview is theirs, and a focus that the subview cannot show is
+  not silently reinterpreted as a request to change panels.
 - Parsing is total and never throws: any unknown section/tab/option/date degrades
   to the section default with a bounded one-line notice. A custom range serializes
   only as a validated `from`/`to` pair; a preset serializes alone; mixed
