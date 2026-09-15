@@ -36,7 +36,6 @@ import {
 } from "../../src/ui/ui-projection.ts";
 import {
   aggregateUsageLabels,
-  ENGLISH_CATALOG,
   errorHeadline,
   errorMessage,
   historyEntry,
@@ -45,6 +44,7 @@ import {
   toolDuration,
   toolSummary,
 } from "../../src/ui/report-projection.ts";
+import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import {
   bundleInput,
   currentModelWithOutOfOrderToolCalls,

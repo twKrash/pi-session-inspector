@@ -31,7 +31,8 @@
     "src",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "format": "biome format --write .",
@@ -64,5 +65,8 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "^0.85.1"
+  },
+  "dependencies": {
+    "i18next": "26.4.2"
   }
 }

@@ -22,7 +22,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import registerSessionInspector, { registerTracking } from "../../src/index.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
-import { ENGLISH_CATALOG } from "../../src/ui/report-projection.ts";
+import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import { generatedSnapshotPath } from "../../src/ui/report-output.ts";
 import { closeInspectorServer } from "../../src/ui/server.ts";
 
