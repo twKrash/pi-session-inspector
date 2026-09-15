@@ -525,7 +525,7 @@ test("one sanitized UAT session projects its whole integration matrix", async ()
 
     // 12: filtering is a view concern — the DTO still publishes every declared
     // row, so a hidden row keeps its evidence and no missing figure becomes 0.
-    assert.equal(report.integrations?.length, 7);
+    assert.equal(report.integrations?.length, 8);
   } finally {
     await fixture.close();
   }

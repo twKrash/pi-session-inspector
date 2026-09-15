@@ -3,6 +3,7 @@ import {
   contextIntegration,
   legacyModeIntegration,
   lensIntegration,
+  mcpIntegration,
   permissionIntegration,
   ponytailIntegration,
   rtkIntegration,
@@ -26,6 +27,7 @@ export const integrations = defineIntegrations([
   permissionIntegration,
   subagentsIntegration,
   lensIntegration,
+  mcpIntegration,
   legacyModeIntegration,
 ]);
 

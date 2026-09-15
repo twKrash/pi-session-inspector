@@ -302,7 +302,7 @@ test("repeated registration for one session keeps exactly one listener set", () 
     options,
   );
   assert.equal(second, first);
-  assert.equal(busSubscriptions, 3);
+  assert.equal(busSubscriptions, 4);
   assert.equal(inputHandlers.length, 1);
 
   inputHandlers[0]?.({ text: "/skill:council-mode" });

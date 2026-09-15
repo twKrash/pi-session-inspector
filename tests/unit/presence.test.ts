@@ -29,6 +29,7 @@ test("maps native inventory signals to presence without guessing", () => {
     permission: "unknown",
     subagents: "present",
     lens: "present",
+    mcp: "absent",
   });
 });
 
@@ -44,6 +45,7 @@ test("reports absence only with an available inventory, and presence from a read
   assert.equal(rows.caveman, "absent");
   assert.equal(rows.context, "absent");
   assert.equal(rows.subagents, "absent");
+  assert.equal(rows.mcp, "absent");
   assert.equal(rows.rtk, "unknown");
   assert.equal(rows.permission, "present");
 
@@ -61,6 +63,7 @@ test("reports absence only with an available inventory, and presence from a read
     permission: "unknown",
     subagents: "unknown",
     lens: "unknown",
+    mcp: "unknown",
   });
 });
 

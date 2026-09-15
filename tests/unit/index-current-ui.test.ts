@@ -1674,7 +1674,7 @@ test("current report projects L1 retained aggregates and presence from supplied 
     walRecords,
   });
 
-  assert.equal(model?.report.integrations.length, 7);
+  assert.equal(model?.report.integrations.length, 8);
   const permission = model?.report.integrations.find(
     (row) => row.integration === "permission",
   );
@@ -1786,7 +1786,7 @@ test("production command folds checkpoint and WAL counters with durable permissi
     allowed: 1,
     denied: 1,
   });
-  assert.equal(exported.integrations.length, 7);
+  assert.equal(exported.integrations.length, 8);
   assert.equal(await readFile(checkpointFile, "utf8"), checkpointBytes);
 });
 

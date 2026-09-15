@@ -296,6 +296,7 @@ const observedPresence = {
   permission: "present",
   subagents: "present",
   lens: "unknown",
+  mcp: "unknown",
 } as const;
 
 const foldedPermissionCounters = {
@@ -329,6 +330,7 @@ test("emits one row per known integration with observation presence and counters
       "permission",
       "subagents",
       "lens",
+      "mcp",
     ],
   );
   assert.deepEqual(report.integrations[0], {
@@ -373,8 +375,8 @@ test("keeps the legacy mode row beside the known keys without dropping it", () =
     ],
   });
 
-  assert.equal(report.integrations.length, 8);
-  assert.deepEqual(report.integrations[7], {
+  assert.equal(report.integrations.length, 9);
+  assert.deepEqual(report.integrations[8], {
     integration: "mode",
     presence: "unknown",
     version: 1,

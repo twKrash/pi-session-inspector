@@ -6,6 +6,7 @@ import {
   contextIntegration,
   legacyModeIntegration,
   lensIntegration,
+  mcpIntegration,
   permissionIntegration,
   ponytailIntegration,
   rtkIntegration,
@@ -15,6 +16,11 @@ import type {
   PersistedEvidenceContext,
   PresenceContext,
 } from "../../src/integrations/contract.ts";
+import {
+  applyIntegrationTelemetry,
+  emptyFoldedCounters,
+} from "../../src/core/live-counter-fold.ts";
+import { registerLiveCounters } from "../../src/integrations/live-counters.ts";
 
 /** The one presence input shape the integrations read; overridden per test. */
 function presence(overrides: Partial<PresenceContext> = {}): PresenceContext {
@@ -285,6 +291,163 @@ test("permission declares no presence or persisted hook of its own", () => {
     "promptSkillRead",
     "gateErrors",
   ]);
+});
+
+const TOOL_APPROVAL = {
+  version: 1,
+  kind: "tool",
+  decision: "allow_for_session",
+  serverName: "github",
+  originalToolName: "create_issue",
+  definitionHash: "a".repeat(64),
+  argsHash: "b".repeat(64),
+};
+
+const IFRAME_ALLOW = {
+  version: 1,
+  kind: "iframe",
+  decision: "allow",
+  serverName: "demo",
+};
+
+const IFRAME_DENY = {
+  version: 1,
+  kind: "iframe",
+  decision: "deny",
+  serverName: "demo",
+};
+
+test("mcp presence is the adapter's own tool vocabulary", () => {
+  for (const tool of ["mcp", "mcpScript", "mcp__github"]) {
+    assert.equal(
+      mcpIntegration.hooks?.presence?.(presence({ tools: [tool] })),
+      "present",
+      tool,
+    );
+  }
+  // A single underscore is not the adapter's namespace.
+  assert.equal(
+    mcpIntegration.hooks?.presence?.(presence({ tools: ["mcp_tools"] })),
+    "absent",
+  );
+});
+
+test("mcp counts only its own versioned approval entries", () => {
+  assert.deepEqual(
+    mcpIntegration.hooks?.persisted?.(
+      persisted([
+        custom("mcp-approval-v1", TOOL_APPROVAL),
+        custom("mcp-approval-v1", IFRAME_ALLOW),
+        custom("mcp-approval-v1", IFRAME_DENY),
+        // Another producer's entry and its own unversioned look-alike.
+        custom("mcp-oauth-status", { serverName: "github" }),
+        custom("mcp-approval", TOOL_APPROVAL),
+      ]),
+    ),
+    {
+      integration: "mcp",
+      state: "supported",
+      version: 1,
+      counters: { toolApprovals: 1, iframeApprovals: 1, iframeDenials: 1 },
+      reason: "evidence-supported",
+    },
+  );
+
+  // A present-but-unusable record is reported, never counted.
+  assert.deepEqual(
+    mcpIntegration.hooks?.persisted?.(
+      persisted([
+        custom("mcp-approval-v1", { ...TOOL_APPROVAL, argsHash: "not-a-hash" }),
+        custom("mcp-approval-v1", {
+          ...IFRAME_ALLOW,
+          decision: "allow_for_session",
+        }),
+        custom("mcp-approval-v1", { ...TOOL_APPROVAL, serverName: "" }),
+      ]),
+    ),
+    {
+      integration: "mcp",
+      state: "unsupported",
+      version: 1,
+      reason: "malformed-evidence",
+    },
+  );
+
+  // No MCP approval entry at all is no evidence, not a zero count.
+  assert.equal(
+    mcpIntegration.hooks?.persisted?.(persisted([toolCalls(["read"])])),
+    undefined,
+  );
+});
+
+test("mcp folds a live status snapshot into presence, never a counter", () => {
+  const snapshot = {
+    version: 1,
+    servers: [{ name: "github", status: "connected", disabled: false }],
+    totalTools: 1,
+    totalResources: 0,
+    connectedCount: 1,
+    disabledCount: 0,
+  };
+  const handlers = new Map<string, (data: unknown) => void>();
+  const envelopes: unknown[] = [];
+  const observed: string[] = [];
+
+  registerLiveCounters(
+    {
+      events: {
+        on: (channel, handler) => {
+          handlers.set(channel, handler);
+          return () => {};
+        },
+      },
+      on: () => () => {},
+    },
+    {
+      appendTelemetry: (envelope) => envelopes.push(envelope),
+      flush: async () => {},
+    },
+    {
+      sessionId: "mcp-live-session",
+      inventoryNames: () => new Set<string>(),
+      now: () => new Date("2026-09-15T10:00:00Z"),
+      markPresence: (integration) => observed.push(integration),
+    },
+  );
+
+  const status = handlers.get("pi-mcp-adapter/status/v1");
+  assert.equal(typeof status, "function");
+  status?.(snapshot);
+  status?.({ version: 2, servers: [] });
+  status?.({ nonsense: true });
+
+  assert.deepEqual(observed, ["mcp"]);
+  const serialized = JSON.stringify(envelopes);
+  // Names and tool counts are producer detail; only a presence sighting survives.
+  assert.equal(serialized.includes("github"), false);
+  assert.deepEqual(envelopes, [
+    {
+      schemaVersion: 1,
+      source: "pi-mcp-adapter",
+      metric: "mcp.status",
+      kind: "counter",
+      value: 1,
+      timestamp: Date.parse("2026-09-15T10:00:00Z"),
+    },
+  ]);
+
+  const folded = emptyFoldedCounters();
+  assert.equal(applyIntegrationTelemetry(folded, envelopes[0]), true);
+  assert.deepEqual(folded.counters.mcp, undefined);
+  assert.equal(folded.presence.mcp, true);
+  assert.equal(
+    mcpIntegration.hooks?.telemetry?.({
+      kind: "counter",
+      value: 1,
+      metric: "other",
+    }),
+    undefined,
+  );
 });
 
 test("the legacy mode integration validates keys without hooks", () => {
