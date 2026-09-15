@@ -10,7 +10,7 @@ Pi Session Inspector is currently a design baseline. Do not add production code 
 
 From a repository checkout, `npm install` configures `.githooks/` through the
 `prepare` script. Run `npm run prepare` after a fresh clone when needed. The
-pre-commit hook runs `npm run knip`.
+pre-commit hook runs `npm run build:web:check` and `npm run knip`.
 
 ## Rules
 
@@ -28,6 +28,7 @@ npm run format:check
 npm run lint
 npm run typecheck
 npm test
+npm run build:web:check
 npm pack --dry-run
 ```
 

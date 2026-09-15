@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
@@ -17,27 +19,29 @@ import {
 
 /**
  * The ordinary browser assets (`src/ui/web/`) are the interactive application:
- * route, range intent, navigation, HTTP bootstrap and DOM rendering. These tests
- * execute the shipped bytes in a `vm` context with a stub DOM, so what they pin
- * is what a browser runs. Report semantics stay pinned in `ui-projection.test.ts`
- * and `snapshot.test.ts`; nothing here recomputes them.
+ * route, range intent, navigation, HTTP bootstrap and DOM rendering. The
+ * authored sources live in `scripts/web/` and are bundled at build time, so
+ * these tests execute the shipped bytes in a `vm` context with a stub DOM: what
+ * they pin is what a browser runs. Report semantics stay pinned in
+ * `ui-projection.test.ts` and `snapshot.test.ts`; nothing here recomputes them.
  */
 
 const ASSET_PATHS = {
   shell: "src/ui/web/shell.html",
   style: "src/ui/web/style.css",
-  route: "src/ui/web/route.js",
-  range: "src/ui/web/range.js",
-  client: "src/ui/web/client.js",
+  client: "src/ui/web/client.bundle.js",
 } as const;
 
-const SCRIPTS: readonly (keyof typeof ASSET_PATHS)[] = [
-  "route",
-  "range",
-  "client",
-];
+const SCRIPTS: readonly (keyof typeof ASSET_PATHS)[] = ["client"];
+
+/** The authored client source, before the build seam minifies it. */
+const CLIENT_SOURCE = readFileSync(
+  new URL("../../scripts/web/client.js", import.meta.url),
+  "utf8",
+);
 
 const PROJECT_ROOT = new URL("../../", import.meta.url);
+const PROJECT_ROOT_PATH = fileURLToPath(PROJECT_ROOT);
 
 /**
  * A value that crossed the `vm` realm, as its plain test-realm structure: the
@@ -78,11 +82,16 @@ const ALL_TABS = [
 // The asset boundary
 // ---------------------------------------------------------------------------
 
-test("the loader reads exactly the five known files and serves their bytes", () => {
+test("the generated client asset is fresh", () => {
+  execFileSync(process.execPath, ["scripts/build-web.mjs", "--check"], {
+    cwd: PROJECT_ROOT_PATH,
+    stdio: "pipe",
+  });
+});
+
+test("the loader reads exactly the three known files and serves their bytes", () => {
   assert.deepEqual(Object.keys(WEB_ASSETS).sort(), [
     "client",
-    "range",
-    "route",
     "shell",
     "style",
   ]);
@@ -94,7 +103,7 @@ test("the loader reads exactly the five known files and serves their bytes", () 
   // The record is data: no path lookup, no function, no locator surface.
   assert.deepEqual(
     Object.values(WEB_ASSETS).map((value) => typeof value),
-    ["string", "string", "string", "string", "string"],
+    ["string", "string", "string"],
   );
 });
 
@@ -110,7 +119,7 @@ test("the stylesheet is the one source for the asset and the snapshot", () => {
   assert.equal(WEB_ASSETS.style.includes("<"), false);
 });
 
-test("the shell is report-free and loads the known assets in explicit order", () => {
+test("the shell is report-free and loads the generated client asset", () => {
   const shell = WEB_ASSETS.shell;
   // No report payload, no catalog blob, no attribute a report could arrive in.
   for (const forbidden of [
@@ -124,12 +133,9 @@ test("the shell is report-free and loads the known assets in explicit order", ()
   ]) {
     assert.equal(shell.includes(forbidden), false, forbidden);
   }
-  // Classic scripts only: every script tag names a file, and nothing is inline.
+  // One classic script only: the bundled asset, and nothing inline.
   const scriptTags = shell.match(/<script[^>]*>/g) ?? [];
-  assert.equal(scriptTags.length, 3);
-  for (const tag of scriptTags) {
-    assert.match(tag, /^<script src="\/[a-z]+\.js">$/);
-  }
+  assert.deepEqual(scriptTags, ['<script src="/client.js">']);
   assert.equal(
     shell.indexOf('<script src="/client.js">') >
       shell.indexOf('id="announcement"'),
@@ -137,7 +143,7 @@ test("the shell is report-free and loads the known assets in explicit order", ()
   );
   assert.deepEqual(
     [...shell.matchAll(/(?:href|src)="(\/[^"]+)"/g)].map((match) => match[1]),
-    ["/style.css", "/route.js", "/range.js", "/client.js"],
+    ["/style.css", "/client.js"],
   );
   // The fixed landmarks the client renders into.
   for (const landmark of [
@@ -254,7 +260,7 @@ test("the browser copy is the server catalog, not a second set of strings", () =
   // Scope: every string this table carries is the catalog's own text for the
   // same key. That the table carries every key the renderer looks up — the
   // other half of "no second catalog" — is pinned by the next test.
-  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(WEB_ASSETS.client);
+  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(CLIENT_SOURCE);
   assert.notEqual(literal, null, "client.js must declare its copy literal");
   const copy = JSON.parse(literal?.[1] as string) as Record<string, string>;
   assert.equal(Object.keys(copy).length > 40, true);
@@ -265,7 +271,7 @@ test("the browser copy is the server catalog, not a second set of strings", () =
 });
 
 test("every copy key the renderer names resolves in the catalog", () => {
-  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(WEB_ASSETS.client);
+  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(CLIENT_SOURCE);
   assert.notEqual(literal, null, "client.js must declare its copy literal");
   const declared = literal as RegExpExecArray;
   const copy = JSON.parse(declared[1] as string) as Record<string, string>;
@@ -273,8 +279,8 @@ test("every copy key the renderer names resolves in the catalog", () => {
   // The renderer only: a key named outside the table is a lookup this test has
   // to see, and a key named inside it would otherwise pass by construction.
   const renderer =
-    WEB_ASSETS.client.slice(0, declared.index) +
-    WEB_ASSETS.client.slice(declared.index + declared[0].length);
+    CLIENT_SOURCE.slice(0, declared.index) +
+    CLIENT_SOURCE.slice(declared.index + declared[0].length);
 
   const named = new Set<string>();
   // A dotted key written literally is a copy lookup; a prefix with a trailing

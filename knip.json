@@ -4,7 +4,8 @@
     "-lintignore"
   ],
   "ignoreFiles": [
-    "preview/check.mjs"
+    "preview/check.mjs",
+    "scripts/web/*.js"
   ],
   "ignoreBinaries": [
     "mkfifo"

@@ -48,20 +48,12 @@ export type InspectorServer = {
 const SERVER_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-/** The five known assets; a path not in this table is never a resource. */
+/** The three known assets; a path not in this table is never a resource. */
 const ASSETS = new Map<string, { body: string; contentType: string }>([
   ["/", { body: WEB_ASSETS.shell, contentType: "text/html; charset=utf-8" }],
   [
     "/style.css",
     { body: WEB_ASSETS.style, contentType: "text/css; charset=utf-8" },
-  ],
-  [
-    "/route.js",
-    { body: WEB_ASSETS.route, contentType: "text/javascript; charset=utf-8" },
-  ],
-  [
-    "/range.js",
-    { body: WEB_ASSETS.range, contentType: "text/javascript; charset=utf-8" },
   ],
   [
     "/client.js",

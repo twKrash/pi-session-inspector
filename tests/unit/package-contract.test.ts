@@ -6,14 +6,11 @@ import { test } from "node:test";
 /** The released version this branch ships (SemVer, ADR 0018). */
 const RELEASE_VERSION = "0.10.0";
 
-/** The five ordinary browser assets the server, the snapshot and the package share. */
-const BROWSER_ASSETS = [
-  "shell.html",
-  "style.css",
-  "route.js",
-  "range.js",
-  "client.js",
-] as const;
+/**
+ * The three browser assets the server and package share. `client.bundle.js` is
+ * generated from the authored sources in `scripts/web/`, which never ship.
+ */
+const BROWSER_ASSETS = ["shell.html", "style.css", "client.bundle.js"] as const;
 
 /** The producer trees that never ship and must never be required at runtime. */
 const DEVELOPMENT_TREES = ["tests/", "benchmark/", "docs/", ".superpowers/"];
@@ -81,7 +78,7 @@ test("both manifests report the released version", () => {
   assert.deepEqual(lock.packages[""].dependencies, pkg.dependencies);
 });
 
-test("the five browser assets ship inside the published tree", () => {
+test("the three browser assets ship inside the published tree", () => {
   const pkg = packageManifest();
   assert.ok(pkg.files.includes("src"));
 
@@ -90,7 +87,7 @@ test("the five browser assets ship inside the published tree", () => {
     assert.ok(existsSync(path), `missing shipped asset ${path}`);
     assert.equal(statSync(path).isFile(), true, path);
   }
-  // The one loader reads exactly those five files, by relative URL only.
+  // The one loader reads exactly those three files, by relative URL only.
   const loader = readFileSync("src/ui/web-assets.ts", "utf8");
   const specifiers = [
     ...loader.matchAll(/new URL\("([^"]+)",\s*import\.meta\.url\)/g),
@@ -98,9 +95,7 @@ test("the five browser assets ship inside the published tree", () => {
     .map((match) => match[1])
     .sort();
   assert.deepEqual(specifiers, [
-    "./web/client.js",
-    "./web/range.js",
-    "./web/route.js",
+    "./web/client.bundle.js",
     "./web/shell.html",
     "./web/style.css",
   ]);

@@ -170,6 +170,11 @@ npm run typecheck    # tsc --noEmit
 npm test             # node --import tsx --test
 npm run benchmark:smoke
 npm run benchmark:release
+npm run build:web:check # deterministic generated client freshness
 ```
 
-Do not add a test framework, bundler, database, server, or installer abstraction unless a measured blocker proves Node/Pi standard facilities insufficient.
+Do not add a test framework, database, server, or installer abstraction
+unless a measured blocker proves Node/Pi standard facilities insufficient.
+Pre-M8.6 is the explicit bundler exception: esbuild is build-time-only and
+emits the generated browser asset under the bundle freshness gate; the
+measurement and adoption decision are recorded in `docs/roadmap.md`.
