@@ -369,6 +369,10 @@
     // clears it back to the default rather than carrying it.
     const agentsView = patch.view !== undefined ? patch.view : state.view;
     if (agentsView !== undefined && agentsView !== null) next.view = agentsView;
+    // The Environment subview is the same kind of choice: one route member the
+    // reader sets, never a decision an entity makes on their behalf.
+    const envPanel = patch.panel !== undefined ? patch.panel : state.panel;
+    if (envPanel !== undefined && envPanel !== null) next.panel = envPanel;
     const entity =
       patch.entity !== undefined
         ? patch.entity
@@ -396,6 +400,18 @@
     return "environment";
   };
 
+  /**
+   * The Environment subview one entity kind belongs to, or `null` for a kind
+   * that panel does not show. A link to a command or a source therefore lands on
+   * the subview that can display it, and the subview it names is what the reader
+   * can then change.
+   */
+  const panelFor = (kind) => {
+    if (kind === "command") return "commands";
+    if (kind === "source") return "sources";
+    return null;
+  };
+
   /** One element's entity identity, or false when the id is not published. */
   const entityMark = (target, kind, id) => {
     if (knownIds().indexOf(id) < 0) return false;
@@ -416,10 +432,15 @@
   const entityLink = (kind, id, label, cls) => {
     const link = el("a", cls || "", label);
     if (!entityMark(link, kind, id)) return el("span", cls || "", label);
+    const panel = panelFor(kind);
     link.setAttribute(
       "href",
       route.serialize(
-        routeFor({ tab: tabFor(kind), entity: { kind: kind, id: id } }),
+        routeFor({
+          tab: tabFor(kind),
+          entity: { kind: kind, id: id },
+          panel: panel === null ? null : panel,
+        }),
       ),
     );
     return link;
@@ -1119,11 +1140,30 @@
   };
 
   /**
-   * The one LLM tab: the scope's model table, and below it the child-run
-   * breakdown of the same scope. Both halves are the DTO's own rows; this is a
-   * composition of two existing panels, never a joined or recomputed figure.
+   * The Agent execution section: the child-run breakdown and the Agents panel of
+   * the same scope, under one heading. Model usage and agent execution are two
+   * different subjects, and a heading plus the surface's own border token says
+   * where one ends and the other begins without a decorative rule.
    */
-  const llmNodes = (target) => [...modelsNodes(target), ...agentsNodes(target)];
+  const agentExecutionSection = (target) => {
+    const section = el("section", "tab-section");
+    const title = el("h2", "section-title", COPY["section.agentExecution"]);
+    title.id = "agent-execution-title";
+    section.setAttribute("aria-labelledby", title.id);
+    section.append(title, ...agentsNodes(target));
+    return section;
+  };
+
+  /**
+   * The one LLM tab: the scope's model table, and below it the child-run
+   * breakdown of the same scope, under its own section heading. Both halves are
+   * the DTO's own rows; this is a composition of two existing panels, never a
+   * joined or recomputed figure.
+   */
+  const llmNodes = (target) => [
+    ...modelsNodes(target),
+    agentExecutionSection(target),
+  ];
 
   /** Known usage only: a partial row keeps its qualifier and its own fraction. */
   const toolUsageCell = (value, labelKey, row) => {
@@ -1320,24 +1360,21 @@
       ]),
     );
     const subnav = el("div", "segments");
+    subnav.setAttribute("role", "group");
     subnav.setAttribute("aria-label", COPY["tab.environment"]);
-    const entity = state.entity;
+    // The route decides the subview. An entity may name it only when the route
+    // names none, and the reader's next click supersedes that choice, so a
+    // deep-linked command or source can never pin the panel it arrived in.
     const named =
-      entity === undefined
-        ? undefined
-        : entity.kind === "command"
-          ? "commands"
-          : entity.kind === "source"
-            ? "sources"
-            : undefined;
-    const active = named || activeSettings().envTab || "commands";
-    [
-      ["commands", COPY["env.commands"]],
-      ["sources", COPY["env.resources"]],
-    ].forEach((item) => {
-      const button = el("button", "", item[1]);
-      button.dataset.envTab = item[0];
-      button.setAttribute("aria-pressed", String(active === item[0]));
+      state.entity === undefined ? null : panelFor(state.entity.kind);
+    const active =
+      state.panel !== undefined && state.panel !== null
+        ? state.panel
+        : (named ?? route.defaultEnvPanel);
+    route.envPanels.forEach((panel) => {
+      const button = el("button", "", COPY["env.panel." + panel]);
+      button.dataset.envTab = panel;
+      button.setAttribute("aria-pressed", String(active === panel));
       subnav.append(button);
     });
     const nodes = [summary, subnav];
@@ -3110,6 +3147,17 @@
       knownIds: knownIds(),
     });
     const next = assign({}, parsed.route);
+    // One Environment subview shows one entity kind, so a route naming the other
+    // kind is canonicalized here by dropping the entity: the focus can then
+    // never pin a panel it does not belong to, whatever wrote the route.
+    if (next.tab === "environment" && next.entity !== undefined) {
+      const named = panelFor(next.entity.kind);
+      const panel =
+        next.panel !== undefined && next.panel !== null
+          ? next.panel
+          : (named ?? route.defaultEnvPanel);
+      if (named !== null && named !== panel) delete next.entity;
+    }
     if (
       next.range === undefined &&
       viewIdentity(next) !== viewIdentity(previous) &&
@@ -3249,7 +3297,16 @@
       return;
     }
     if (data.envTab !== undefined) {
-      setSetting("envTab", data.envTab);
+      const current = state.entity === undefined ? null : panelFor(state.entity.kind);
+      navigate(
+        routeFor({
+          panel: data.envTab,
+          // A subview the focused entity does not belong to clears that focus;
+          // the same one keeps it.
+          entity:
+            current !== null && current !== data.envTab ? null : undefined,
+        }),
+      );
       return;
     }
     if (data.filter !== undefined) {

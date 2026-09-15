@@ -1823,3 +1823,28 @@ test("a partial or capped session root states what it cannot complete", () => {
     false,
   );
 });
+
+test("separates model usage from agent execution with one labelled section", () => {
+  const html = renderSnapshot(
+    agentsDto([runRow({ id: `subagent-${"c".repeat(64)}`, agent: "worker" })]),
+  );
+  const heading =
+    `<h2 class="section-title" id="agent-execution-title">` +
+    `${CATALOG["section.agentExecution"]}</h2>`;
+  assert.equal(html.includes(heading), true);
+  // The heading labels a real section, the boundary is drawn with the surface's
+  // own border token (no decorative rule), and the child-run summary and the
+  // Agents panel are the content it introduces.
+  const section =
+    `<section class="tab-section" aria-labelledby="agent-execution-title">` +
+    heading;
+  assert.equal(html.includes(section), true);
+  const start = html.indexOf(section);
+  const end = html.indexOf("</section>", html.indexOf("</table>", start));
+  const inside = html.slice(start, end < 0 ? html.length : end);
+  assert.equal(inside.includes(CATALOG["agents.childRuns"]), true);
+  assert.equal(inside.includes(CATALOG["tab.agents"]), true);
+  assert.equal(inside.includes(CATALOG["panel.models"]), false);
+  assert.equal(html.indexOf(CATALOG["panel.models"]) < start, true);
+  assert.equal(html.includes("<hr"), false);
+});

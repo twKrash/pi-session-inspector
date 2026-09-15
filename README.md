@@ -2,7 +2,7 @@
 
 Deterministic, local-only session analytics for [Pi](https://github.com/earendil-works/pi). Reconstructs Pi-native session data with confidence-aware live/cooperative metadata. No LLM analytics. No cloud. No daemon.
 
-> **Status: current, history, global, ledger, localhost UI, immutable snapshots, TUI, and JSON reports are available in `0.13.0`.**
+> **Status: current, history, global, ledger, localhost UI, immutable snapshots, TUI, and JSON reports are available in `0.13.1`.**
 
 ## Install
 

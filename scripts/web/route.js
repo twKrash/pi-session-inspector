@@ -3,9 +3,10 @@
  * serialized with the closed section, tab and entity vocabularies.
  *
  * Canonical parameter order — the order this serializer emits, so one route has
- * exactly one string: `scope, view, preset, from, to, session, entity, q, sort`.
- * `scope` is serialized for `current` routes only, `view` only when it names the
- * non-default Agents presentation, a preset serializes alone, and a custom range
+ * exactly one string: `scope, view, panel, preset, from, to, session, entity, q,
+ * sort`. `scope` is serialized for `current` routes only, `view` only when it
+ * names the non-default Agents presentation, `panel` only when it names the
+ * non-default Environment subview, a preset serializes alone, and a custom range
  * serializes only as a validated pair. Parsing is total: any hash, including a
  * malformed one, degrades to the section default and at most a bounded notice
  * code, and an id the payload does not already expose is dropped rather than
@@ -61,6 +62,14 @@
    */
   const AGENT_VIEWS = ["tree", "table"];
   const DEFAULT_AGENT_VIEW = "tree";
+  /**
+   * The closed vocabulary of an Environment subview: Commands or Sources. It is
+   * route state rather than a remembered setting because a focused entity must
+   * not choose it twice — a deep link may name the subview its entity belongs
+   * to, and the reader's next click has to supersede that choice.
+   */
+  const ENV_PANELS = ["commands", "sources"];
+  const DEFAULT_ENV_PANEL = "commands";
 
   /** The range grammar, looked up at call time so load order cannot matter. */
   const rangeModule = () =>
@@ -93,6 +102,12 @@
       source.view !== DEFAULT_AGENT_VIEW
     ) {
       pairs.push("view=" + source.view);
+    }
+    if (
+      ENV_PANELS.indexOf(source.panel) >= 0 &&
+      source.panel !== DEFAULT_ENV_PANEL
+    ) {
+      pairs.push("panel=" + source.panel);
     }
     const intent = source.range;
     if (intent !== undefined && intent !== null) {
@@ -274,6 +289,10 @@
       notice = "range-restored";
     }
 
+    const requestedPanel = params.get("panel");
+    if (requestedPanel !== undefined && ENV_PANELS.indexOf(requestedPanel) >= 0) {
+      route.panel = requestedPanel;
+    }
     const ids = Array.isArray(settings.knownIds) ? settings.knownIds : [];
     const requestedView = params.get("view");
     if (requestedView !== undefined && AGENT_VIEWS.indexOf(requestedView) >= 0) {
@@ -355,6 +374,8 @@
     entityKinds: ENTITY_KINDS,
     agentViews: AGENT_VIEWS,
     defaultAgentView: DEFAULT_AGENT_VIEW,
+    envPanels: ENV_PANELS,
+    defaultEnvPanel: DEFAULT_ENV_PANEL,
     serialize: serialize,
     key: key,
     rangeQuery: rangeQueryOf,

@@ -477,7 +477,7 @@ function sessionSections(
     modelsSection(rangeProjection),
     toolsSections(rangeProjection, report.durationEvidence),
     environmentSections(report, view.inventoryAvailability),
-    agentsSections(report, rangeProjection),
+    agentExecutionSection(agentsSections(report, rangeProjection)),
     integrationsSection(report),
     errorsSection(rangeProjection?.errors ?? []),
     ledgerSection(rangeProjection?.ledger ?? []),
@@ -1015,6 +1015,21 @@ function environmentSections(
           ),
         );
   return summary + commandRows + skillRows + resourceRows;
+}
+
+/**
+ * The boundary between model usage and agent execution, as static markup: one
+ * heading labelling one section, using the surface's own border token. A
+ * decorative rule would only say "space", and a screenshot cannot read it.
+ */
+function agentExecutionSection(content: string): string {
+  if (content === "") return "";
+  return (
+    `<section class="tab-section" aria-labelledby="agent-execution-title">` +
+    `<h2 class="section-title" id="agent-execution-title">${text(ENGLISH_CATALOG["section.agentExecution"])}</h2>` +
+    content +
+    `</section>`
+  );
 }
 
 function agentsSections(

@@ -64,6 +64,9 @@ export const ENGLISH_CATALOG = {
   // sub-navigation inside this one environment panel. Skills has its own tab
   // beside Overview/LLM/Tools/Integrations/Errors/Ledger.
   "tab.environment": "Environment",
+  // The LLM tab's two subjects: model usage, and the execution topology of the
+  // child runs those models produced. The heading is what separates them.
+  "section.agentExecution": "Agent execution",
   "tab.commands": "Commands",
   "tab.agents": "Agents",
   "tab.skills": "Skills",
@@ -267,6 +270,11 @@ export const ENGLISH_CATALOG = {
   "env.commands": "Commands",
   "env.skills": "Skills",
   "env.resources": "Sources",
+  // The Environment subview labels. The panel values are route grammar
+  // (`panel=commands`), so the copy is keyed by panel rather than reusing a
+  // metric label whose key names a different thing (`env.resources`).
+  "env.panel.commands": "Commands",
+  "env.panel.sources": "Sources",
   "env.available": "Available: {count}",
   "env.observed": "Observed invocations: {value}",
   "env.invocationsObserved": "Explicit invocations observed: {count}",

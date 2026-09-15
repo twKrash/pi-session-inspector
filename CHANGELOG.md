@@ -2,6 +2,26 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1]
+
+### Fixed
+
+- A deep link to a command or a source no longer pins the Environment subview.
+  The focused entity used to decide the subview on every render, so clicking
+  Commands or Sources after following such a link did nothing: the subview is
+  now route state (`panel=commands`, `panel=sources`), a link names the subview
+  its own entity belongs to, the reader's next click supersedes it, and a route
+  naming an incompatible pair (a source entity under `panel=commands`) is
+  canonicalized by dropping the entity. Back/Forward restores the panel and its
+  focus together, and no focus can pin a panel it does not belong to.
+
+### Changed
+
+- The LLM tab states its two subjects: model usage stays above a labelled
+  **Agent execution** section, and the child-run summary cards and the Agents
+  panel sit inside it. The boundary is a heading plus the surface's own border
+  token — no decorative rule — and it holds at narrow widths.
+
 ## [0.13.0]
 
 ### Added

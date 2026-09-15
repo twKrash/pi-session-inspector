@@ -465,8 +465,10 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
   assert.deepEqual(Object.keys(route).sort(), [
     "agentViews",
     "defaultAgentView",
+    "defaultEnvPanel",
     "derive",
     "entityKinds",
+    "envPanels",
     "key",
     "parse",
     "rangeQuery",
@@ -477,6 +479,9 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
   // The Agents presentation is a closed vocabulary whose default is the tree.
   assert.deepEqual(plain(route.agentViews), ["tree", "table"]);
   assert.equal(route.defaultAgentView, "tree");
+  // The Environment subview is a closed vocabulary whose default is Commands.
+  assert.deepEqual(plain(route.envPanels), ["commands", "sources"]);
+  assert.equal(route.defaultEnvPanel, "commands");
   assert.deepEqual(plain(route.sections), ["current", "history", "global"]);
   assert.deepEqual(plain(route.entityKinds), [
     "model",
@@ -605,6 +610,28 @@ test("the route round-trips the canonical parameter order", () => {
     ],
     [
       {
+        section: "current",
+        tab: "environment",
+        scope: "tree",
+        view: "table",
+        panel: "sources",
+        entity: { kind: "source", id: "builtin" },
+      },
+      "#/current/environment?scope=tree&view=table&panel=sources&entity=source%3Abuiltin",
+    ],
+    [
+      {
+        section: "current",
+        tab: "environment",
+        scope: "active",
+        // The default subview is not serialized: one subview still has one
+        // string, exactly as the default Agents presentation does.
+        panel: "commands",
+      },
+      "#/current/environment?scope=active",
+    ],
+    [
+      {
         section: "history",
         tab: "overview",
         scope: "tree",
@@ -630,7 +657,7 @@ test("the route round-trips the canonical parameter order", () => {
     const parsed = route.parse(expected, {
       scope: "active",
       capabilities: CAPABILITIES,
-      knownIds: ["session-a", "acme/alpha"],
+      knownIds: ["session-a", "acme/alpha", "builtin"],
     });
     assert.equal(parsed.notice, undefined, expected);
     assert.equal(route.serialize(parsed.route), expected, expected);
@@ -3483,4 +3510,229 @@ test("a run container and the session root are never rendered as agent rows", as
     rows.map((row) => `agent:${row.id}`),
   );
   assert.equal(snapshot.current.tree.range?.agents.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// The Environment subview: Commands | Sources as route state
+// ---------------------------------------------------------------------------
+
+/** The pressed Environment subview, or undefined when neither is pressed. */
+function envPanel(harness: Harness): string | undefined {
+  return harness
+    .element("view")
+    .querySelectorAll("button")
+    .find(
+      (button) =>
+        button.dataset.envTab !== undefined &&
+        button.attributes["aria-pressed"] === "true",
+    )?.dataset.envTab;
+}
+
+/** The Environment subview control for one panel. */
+function envButton(harness: Harness, panel: string): StubElement {
+  const found = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.envTab === panel);
+  if (found === undefined) throw new Error(`no ${panel} control`);
+  return found;
+}
+
+async function environment(hash: string): Promise<Harness> {
+  const harness = createWebClient({ responses: [uiSnapshot()], hash });
+  await harness.start();
+  return harness;
+}
+
+test("a command deep link opens Commands and focuses the command row", async () => {
+  const harness = await environment(
+    "#/current/environment?scope=tree&entity=command%3Areview",
+  );
+  // The two controls carry their own copy, never a missing-key placeholder.
+  const labels = harness
+    .element("view")
+    .querySelectorAll("button")
+    .filter((button) => button.dataset.envTab !== undefined)
+    .map((button) => button.textContent);
+  assert.deepEqual(labels, ["Commands", "Sources"]);
+  assert.equal(envPanel(harness), "commands");
+  assert.equal(harness.activeElement()?.dataset.entity, "command:review");
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    1,
+  );
+  // The entity chose the subview; the route does not have to state it.
+  assert.equal(harness.location.hash.includes("panel="), false);
+});
+
+test("a source deep link opens Sources and focuses the source row", async () => {
+  const harness = await environment(
+    "#/current/environment?scope=tree&entity=source%3Alocal",
+  );
+  assert.equal(envPanel(harness), "sources");
+  assert.equal(harness.activeElement()?.dataset.entity, "source:local");
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    1,
+  );
+});
+
+test("after a command deep link, Sources is one click away and drops the focus", async () => {
+  const harness = await environment(
+    "#/current/environment?scope=tree&entity=command%3Areview",
+  );
+  assert.equal(envPanel(harness), "commands");
+  harness.click(envButton(harness, "sources"));
+  // The manual switch supersedes the entity's choice, states itself in the
+  // route, and clears the entity the Sources panel cannot show.
+  assert.equal(envPanel(harness), "sources");
+  assert.equal(harness.location.hash.includes("entity="), false);
+  assert.equal(harness.location.hash.includes("panel=sources"), true);
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    0,
+  );
+
+  // And back again, with no panel pinned by the first choice.
+  harness.click(envButton(harness, "commands"));
+  assert.equal(envPanel(harness), "commands");
+  assert.equal(harness.location.hash, "#/current/environment?scope=tree");
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    0,
+  );
+});
+
+test("after a source deep link, Commands is one click away and drops the focus", async () => {
+  const harness = await environment(
+    "#/current/environment?scope=tree&entity=source%3Alocal",
+  );
+  assert.equal(envPanel(harness), "sources");
+  harness.click(envButton(harness, "commands"));
+  assert.equal(envPanel(harness), "commands");
+  assert.equal(harness.location.hash.includes("entity="), false);
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    0,
+  );
+  harness.click(envButton(harness, "sources"));
+  assert.equal(envPanel(harness), "sources");
+});
+
+test("a route naming an incompatible panel and entity is canonicalized", async () => {
+  const harness = await environment(
+    "#/current/environment?scope=tree&panel=sources&entity=command%3Areview",
+  );
+  assert.equal(envPanel(harness), "sources");
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    0,
+  );
+  // The entity the panel cannot show is dropped from the route itself, so a
+  // reload cannot bring back a focus the reader never asked for.
+  assert.equal(
+    harness.location.hash,
+    "#/current/environment?scope=tree&panel=sources",
+  );
+
+  const other = await environment(
+    "#/current/environment?scope=tree&panel=commands&entity=source%3Alocal",
+  );
+  assert.equal(envPanel(other), "commands");
+  assert.equal(other.location.hash, "#/current/environment?scope=tree");
+});
+
+test("Back and Forward restore the panel and its own focus", async () => {
+  const harness = await environment(
+    "#/current/environment?scope=tree&entity=source%3Alocal",
+  );
+  harness.click(envButton(harness, "commands"));
+  assert.equal(envPanel(harness), "commands");
+
+  // Back: the source route returns, and with it the Sources panel and its focus.
+  harness.location.hash =
+    "#/current/environment?scope=tree&entity=source%3Alocal";
+  harness.popstate();
+  assert.equal(envPanel(harness), "sources");
+  assert.equal(harness.activeElement()?.dataset.entity, "source:local");
+
+  // Forward: the panel the reader chose returns, with the focus it cleared.
+  harness.location.hash = "#/current/environment?scope=tree";
+  harness.hashchange();
+  assert.equal(envPanel(harness), "commands");
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    0,
+  );
+});
+
+test("the Environment subview is never pinned by a focused entity", async () => {
+  const harness = await environment(
+    "#/current/environment?scope=tree&entity=command%3Areview",
+  );
+  // Every manual switch is followed, whichever way it goes.
+  for (const panel of ["sources", "commands", "sources", "commands"]) {
+    harness.click(envButton(harness, panel));
+    assert.equal(envPanel(harness), panel);
+    assert.equal(
+      harness.element("view").querySelectorAll(".entity-focus").length,
+      0,
+    );
+  }
+  // The deep link still works after all of that.
+  harness.location.hash =
+    "#/current/environment?scope=tree&entity=command%3Areview";
+  harness.hashchange();
+  assert.equal(envPanel(harness), "commands");
+  assert.equal(harness.activeElement()?.dataset.entity, "command:review");
+});
+
+test("the chosen Environment subview survives a tab switch", async () => {
+  const harness = await environment("#/current/environment?scope=tree");
+  harness.click(envButton(harness, "sources"));
+  assert.equal(envPanel(harness), "sources");
+  // A subview choice travels with the route the way the Agents presentation
+  // does, so leaving and returning does not silently reset it.
+  harness.click(tabLink(harness, "tools"));
+  assert.equal(visibleTabs(harness).includes("tools"), true);
+  harness.click(tabLink(harness, "environment"));
+  assert.equal(envPanel(harness), "sources");
+});
+
+test("the LLM tab separates model usage from agent execution", async () => {
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: `subagent-${"d1".repeat(32)}`, agent: "reviewer" }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const view = harness.element("view");
+  const html = harness.texts(view).join(" ");
+  const heading = view
+    .querySelectorAll("h2")
+    .find((node) => node.textContent === "Agent execution");
+  if (heading === undefined) throw new Error("the section heading must exist");
+  // The heading labels a real section, and the child-run summary and the Agents
+  // panel live inside it: a border says the boundary, a rule would not.
+  const section = view
+    .querySelectorAll("section")
+    .find((node) => node.attributes["aria-labelledby"] === heading.id);
+  assert.notEqual(section, undefined);
+  const inside = harness.texts(section as StubElement).join(" ");
+  // The child-run summary and the Agents panel are inside the boundary; the
+  // model table above it is not.
+  assert.equal(inside.includes("Child runs"), true);
+  assert.equal(inside.includes("Agents"), true);
+  assert.equal(inside.includes("Model cost"), false);
+  assert.equal(inside.indexOf("Child runs") < inside.indexOf("Agents"), true);
+  // Model usage stays above the boundary.
+  assert.equal(
+    html.indexOf("Model cost") < html.indexOf("Agent execution"),
+    true,
+  );
+  assert.equal(view.querySelectorAll("hr").length, 0);
+  assert.equal(heading.id.length > 0, true);
 });
