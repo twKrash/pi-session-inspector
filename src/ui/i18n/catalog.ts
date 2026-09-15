@@ -60,9 +60,9 @@ export const ENGLISH_CATALOG = {
   // the child-run breakdown of the same rows.
   "tab.llm": "LLM",
   "tab.tools": "Tools",
-  // The browser's inventory grouping (design §9.3): Commands, Skills and
-  // Resources are sub-navigation inside this one environment panel, never
-  // primary tabs beside Overview/Tools/Errors.
+  // The browser's inventory grouping (design §9.3): Commands and Sources are
+  // sub-navigation inside this one environment panel. Skills has its own tab
+  // beside Overview/LLM/Tools/Integrations/Errors/Ledger.
   "tab.environment": "Environment",
   "tab.commands": "Commands",
   "tab.agents": "Agents",
@@ -207,21 +207,23 @@ export const ENGLISH_CATALOG = {
     "Loaded or available skills plus observed explicit invocations: inventory ≠ invocations.",
   "skills.empty": "No skills inventory or explicit invocations recorded.",
   "skills.otherInvocations": "+ {count} other invocations",
-  "panel.resources": "Resource sources",
+  // Sources are the capability providers an environment loads (`builtin`,
+  // `npm:pi-lens`, `npm:pi-subagents`). The label is user-facing; the DTO field
+  // it is read from stays the canonical `resources`.
+  "panel.resources": "Sources",
   "resources.note":
-    "Loaded or available resources by source. Counts are availability, never activity.",
-  "resources.unavailable": "No resource-source inventory recorded.",
+    "Loaded or available sources. Counts are availability, never activity.",
+  "resources.unavailable": "No source inventory recorded.",
   // The Environment summary (design §8.1): availability is inventory state and,
   // for skills only, the explicit folded counters are the invocation figure.
   // Commands have no counter evidence, so their observed side is Unavailable.
   "env.commands": "Commands",
   "env.skills": "Skills",
-  "env.resources": "Resources",
+  "env.resources": "Sources",
   "env.available": "Available: {count}",
   "env.observed": "Observed invocations: {value}",
   "env.invocationsObserved": "Explicit invocations observed: {count}",
   "env.invocationsUnavailable": "Explicit invocations observed: Unavailable",
-  "env.sources": "Sources: {count}",
   // Inventory is the current environment, not session activity, so the panel
   // carries this period label instead of any range label (§5.2).
   "env.note":
@@ -292,6 +294,14 @@ export const ENGLISH_CATALOG = {
     "Pi-native usage is billing authority. Child usage is never added.",
   search: "Search rows",
   "search.placeholder": "Filter this table…",
+  // The default-on availability filters. Each view states the predicate in its
+  // own terms, so no view inherits another's meaning of available, and the
+  // counts always say what is hidden and how many rows are shown.
+  "filter.withEvidence": "With evidence",
+  "filter.invokedOnly": "Invoked only",
+  "filter.availableOnly": "Available only",
+  "filter.count": "{shown} shown · {hidden} hidden",
+  "filter.countUnavailable": "{shown} shown · {hidden} hidden/unavailable",
   sort: "Sort order",
   "sort.default": "Source order",
   "sort.name": "Name A–Z",
@@ -340,6 +350,9 @@ export const ENGLISH_CATALOG = {
   "table.version": "Version",
   "table.counters": "Counters",
   "table.id": "ID",
+  // The Sources table's last column: the tools a source supplies, never the
+  // observed runtime calls the Tools view counts.
+  "table.sourceTools": "Tools",
   // The one label of an opaque id's copy control (§16); the control names the id
   // it copies, so one row's button is never confused with another's.
   "table.copyId": "Copy ID",

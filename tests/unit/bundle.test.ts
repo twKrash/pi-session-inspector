@@ -498,10 +498,9 @@ test("the capability table is data, not client prose", () => {
     [["overview"], ["overview"]],
   );
   assert.ok(CAPABILITIES.current.includes("environment"));
+  assert.ok(CAPABILITIES.current.includes("skills"));
   assert.deepEqual(
-    CAPABILITIES.current.filter(
-      (tab) => tab === "commands" || tab === "skills",
-    ),
+    CAPABILITIES.current.filter((tab) => tab === "commands"),
     [],
   );
 });

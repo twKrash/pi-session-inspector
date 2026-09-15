@@ -372,6 +372,7 @@
   const tabFor = (kind) => {
     if (kind === "model" || kind === "agent") return "llm";
     if (kind === "tool") return "tools";
+    if (kind === "skill") return "skills";
     if (kind === "error") return "errors";
     if (kind === "integration") return "integrations";
     return "environment";
@@ -616,11 +617,44 @@
   };
 
   /**
+   * One view's default-on availability filter, stated in that view's own terms:
+   * the caller marks each of its rows `reportable` by its own fact — telemetry
+   * evidence for integrations, an observed invocation for skills, a replayed
+   * session for history — so no view inherits another's meaning of available.
+   * The control and the counts are browser state of this view, never a report
+   * value and never a persisted setting, and a hidden row is always revealable.
+   */
+  const viewFilter = (rows,spec) => {
+    const only = activeSettings()[spec.name] !== false;
+    const reportable = rows.filter((row) => row.reportable === true);
+    const toggle = el("button", "filter", COPY[spec.labelKey]);
+    toggle.dataset.filter = spec.name;
+    toggle.setAttribute("aria-pressed", String(only));
+    const bar = el("span", "filter-bar");
+    bar.append(
+      toggle,
+      el(
+        "span",
+        "muted",
+        tr(spec.countKey, {
+          shown: number(only ? reportable.length : rows.length),
+          // A revealed row is not hidden: the count states the filter's current
+          // effect (0 while the filter is off), never what it would hide.
+          hidden: number(only ? rows.length - reportable.length : 0),
+        }),
+      ),
+    );
+    return { rows: only ? reportable : rows, control: bar };
+  };
+
+  /**
    * One searchable table. Search and sort are the table's own view state: they
    * hide or reorder the rows this call was handed and never add, drop by a report
-   * rule, or recompute a row.
+   * rule, or recompute a row. An optional view filter hides the rows that view
+   * itself calls unreportable, always with its control, its counts and a way
+   * back.
    */
-  const table = (title, note, headers, rows, classes) => {
+  const table = (title, note, headers, rows, classes, filter) => {
     const section = card(title, note);
     const toolbar = el("div", "toolbar");
     const searchLabel = el("label", "", COPY.search);
@@ -644,11 +678,13 @@
       sort.append(option);
     });
     sortLabel.append(sort);
+    const filtered = filter === undefined ? null : viewFilter(rows, filter);
+    if (filtered !== null) toolbar.append(filtered.control);
     toolbar.append(searchLabel, sortLabel);
     section.append(toolbar);
     const query = activeQuery().toLowerCase();
     const order = activeSort();
-    let shown = rows.filter((row) =>
+    let shown = (filtered === null ? rows : filtered.rows).filter((row) =>
       row.cells.map(cellText).join(" ").toLowerCase().includes(query),
     );
     if (order === "name") {
@@ -1242,13 +1278,6 @@
       return [emptyCard(COPY["tab.environment"], COPY["unavailable.usage"])];
     }
     const availability = target.inventoryAvailability;
-    const skills = report.skills;
-    const observed =
-      skills.invocationState === "supported" && skills.invocationCount !== null
-        ? tr("env.invocationsObserved", {
-            count: number(skills.invocationCount),
-          })
-        : COPY["env.invocationsUnavailable"];
     const summary = card(COPY["tab.environment"], COPY["env.note"]);
     summary.append(
       metrics([
@@ -1258,13 +1287,8 @@
           tr("env.observed", { value: COPY["evidence.unavailable"] }),
         ),
         metric(
-          COPY["env.skills"],
-          inventoryCount(availability.skills),
-          observed,
-        ),
-        metric(
           COPY["env.resources"],
-          tr("env.sources", { count: inventoryCount(availability.resources) }),
+          inventoryCount(availability.resources),
           COPY["resources.note"],
         ),
       ]),
@@ -1277,16 +1301,13 @@
         ? undefined
         : entity.kind === "command"
           ? "commands"
-          : entity.kind === "skill"
-            ? "skills"
-            : entity.kind === "resource"
-              ? "resources"
-              : undefined;
+          : entity.kind === "source"
+            ? "sources"
+            : undefined;
     const active = named || activeSettings().envTab || "commands";
     [
       ["commands", COPY["env.commands"]],
-      ["skills", COPY["env.skills"]],
-      ["resources", COPY["env.resources"]],
+      ["sources", COPY["env.resources"]],
     ].forEach((item) => {
       const button = el("button", "", item[1]);
       button.dataset.envTab = item[0];
@@ -1294,9 +1315,7 @@
       subnav.append(button);
     });
     const nodes = [summary, subnav];
-    if (active === "skills") {
-      nodes.push(skillsSection(skills));
-    } else if (active === "resources") {
+    if (active === "sources") {
       nodes.push(resourcesSection(report.resources, hasResources(target)));
     } else {
       nodes.push(commandsSection(report.commands));
@@ -1342,6 +1361,33 @@
     );
   };
 
+  /**
+   * The one Skills tab: the inventory the environment reports and the explicit
+   * invocations the folded counters observed, stated separately because
+   * inventory is availability, never activity. An installed skill nothing
+   * invoked stays a row the view's own filter can reveal, never an Unavailable
+   * claim about the skill.
+   */
+  const skillsNodes = (target) => {
+    const skills = target.report.skills;
+    const observed =
+      skills.invocationState === "supported" && skills.invocationCount !== null
+        ? tr("env.invocationsObserved", {
+            count: number(skills.invocationCount),
+          })
+        : COPY["env.invocationsUnavailable"];
+    return [
+      metrics([
+        metric(
+          COPY["env.skills"],
+          inventoryCount(target.inventoryAvailability.skills),
+          observed,
+        ),
+      ]),
+      skillsSection(skills),
+    ];
+  };
+
   const skillsSection = (skills) => {
     if (skills === undefined || skills.items.length === 0) {
       return emptyCard(COPY["env.skills"], COPY["skills.empty"]);
@@ -1357,6 +1403,12 @@
         COPY["table.invocations"],
       ],
       skills.items.map((row) => ({
+        // The view's own predicate: an observed explicit invocation, not
+        // availability. A skill the inventory lists and nothing invoked is
+        // hidden, never called unavailable.
+        reportable:
+          typeof row.explicitInvocations === "number" &&
+          row.explicitInvocations > 0,
         cells: [
           entityLink("skill", row.name, row.name),
           orUnavailable(row.sourceLabel),
@@ -1368,6 +1420,11 @@
         ],
       })),
       ["status-cell", "status-cell", "status-cell", "status-cell", "num"],
+      {
+        name: "invokedOnly",
+        labelKey: "filter.invokedOnly",
+        countKey: "filter.count",
+      },
     );
     if (
       skills.otherInvocations !== null &&
@@ -1401,11 +1458,11 @@
         COPY["table.commands"],
         COPY["table.skills"],
         COPY["table.prompts"],
-        COPY["table.tools"],
+        COPY["table.sourceTools"],
       ],
       resources.items.map((row) => ({
         cells: [
-          entityLink("resource", row.sourceLabel, row.sourceLabel),
+          entityLink("source", row.sourceLabel, row.sourceLabel),
           row.scope,
           row.origin,
           number(row.commands),
@@ -1565,6 +1622,8 @@
           COPY["integration.version"],
         ],
         rows.map((row) => ({
+          // The view's own predicate: observed telemetry, not detection.
+          reportable: row.state !== "unavailable",
           cells: [
             entityLink("integration", row.integration, row.integration),
             badgeCell(
@@ -1583,6 +1642,11 @@
           ],
         })),
         ["status-cell", "status-cell", "wrap", "wrap", "status-cell"],
+        {
+          name: "withEvidence",
+          labelKey: "filter.withEvidence",
+          countKey: "filter.countUnavailable",
+        },
       ),
     ];
   };
@@ -1849,6 +1913,8 @@
       ],
       entries.map((entry) => ({
         membership: entry.membership,
+        // The view's own predicate: a session this Inspector replayed.
+        reportable: entry.availability === "available",
         cells: [
           { fullId: text(entry.sessionId), content: sessionCell(entry) },
           orUnavailable(entry.durationLabel),
@@ -1876,6 +1942,11 @@
         "num",
         "status-cell",
       ],
+      {
+        name: "availableOnly",
+        labelKey: "filter.availableOnly",
+        countKey: "filter.countUnavailable",
+      },
     );
     section.append(
       el(
@@ -1954,7 +2025,7 @@
         global.coverage === null ? COPY[labels.sessions] : global.coverage.line,
       ),
     ];
-    const inventory = card(COPY["panel.resources"], COPY["resources.note"]);
+    const inventory = card(COPY["tab.environment"], COPY["env.note"]);
     inventory.append(
       metrics([
         metric(
@@ -2025,6 +2096,7 @@
     }
     if (view.activeTab === "llm") return llmNodes(target);
     if (view.activeTab === "tools") return toolsNodes(target);
+    if (view.activeTab === "skills") return skillsNodes(target);
     if (view.activeTab === "environment") return environmentNodes(target);
     if (view.activeTab === "integrations") return integrationsNodes(target);
     if (view.activeTab === "errors") return errorsNodes(target);
@@ -2542,6 +2614,12 @@
     }
     if (data.envTab !== undefined) {
       setSetting("envTab", data.envTab);
+      return;
+    }
+    if (data.filter !== undefined) {
+      // A view's availability filter is this document's own state: it is never a
+      // route, so it pushes nothing and writes no hash.
+      setSetting(data.filter, activeSettings()[data.filter] === false);
       return;
     }
     if (data.retry !== undefined) {

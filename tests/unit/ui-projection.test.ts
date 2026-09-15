@@ -1096,8 +1096,9 @@ test("history carries the coverage ladder, membership order and per-session view
     "overview",
     "llm",
     "tools",
-    "environment",
+    "skills",
     "integrations",
+    "environment",
     "errors",
     "ledger",
   ]);

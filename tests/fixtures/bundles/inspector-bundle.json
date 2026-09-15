@@ -26,8 +26,9 @@
         "overview",
         "llm",
         "tools",
-        "environment",
+        "skills",
         "integrations",
+        "environment",
         "errors",
         "ledger"
       ],
@@ -183,8 +184,9 @@
         "overview",
         "llm",
         "tools",
-        "environment",
+        "skills",
         "integrations",
+        "environment",
         "errors",
         "ledger"
       ],

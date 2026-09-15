@@ -20,18 +20,20 @@ import type { SessionObservation } from "./observation.ts";
 export type { DailyRow } from "./daily.ts";
 
 /**
- * The tabs each section can render (spec §15, design §9.3). `llm` carries the
- * model table and the child-run breakdown of one scope, and `environment`
- * replaces the separate commands/skills tabs; a multi-session aggregate exposes
- * overview only until its breakdowns are defined, while a selected history
- * session carries a full `SessionReport` and therefore offers every tab.
+ * The tabs each section can render (spec §15, design §9.3), in the order the
+ * strip renders them. `llm` carries the model table and the child-run breakdown
+ * of one scope; `skills` is a tab of its own and `environment` keeps the
+ * commands/sources sub-navigation; a multi-session aggregate exposes overview
+ * only until its breakdowns are defined, while a selected history session
+ * carries a full `SessionReport` and therefore offers every tab.
  */
 const ALL_TABS: readonly string[] = [
   "overview",
   "llm",
   "tools",
-  "environment",
+  "skills",
   "integrations",
+  "environment",
   "errors",
   "ledger",
 ];

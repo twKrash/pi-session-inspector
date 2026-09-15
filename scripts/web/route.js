@@ -21,17 +21,26 @@
 
   /** The three sections of the document. */
   const SECTIONS = ["current", "history", "global"];
-  /** The closed tab vocabulary; a view's capability list is bounded by it. */
+  /**
+   * The closed tab vocabulary, in the order the strip renders it; a view's
+   * capability list is bounded by it. `skills` is a tab of its own, and
+   * `environment` keeps the commands and sources sub-navigation.
+   */
   const TABS = [
     "overview",
     "llm",
     "tools",
-    "environment",
+    "skills",
     "integrations",
+    "environment",
     "errors",
     "ledger",
   ];
-  /** The closed entity vocabulary a drill-down may name. */
+  /**
+   * The closed entity vocabulary a drill-down may name. `source` is the
+   * user-facing name of one capability provider (`builtin`, `npm:pi-lens`); the
+   * DTO key it is read from stays the canonical `resources`.
+   */
   const ENTITY_KINDS = [
     "model",
     "tool",
@@ -40,7 +49,7 @@
     "integration",
     "command",
     "skill",
-    "resource",
+    "source",
   ];
   const DATE = /^\d{4}-\d{2}-\d{2}$/;
 

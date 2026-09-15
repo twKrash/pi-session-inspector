@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
-
+import { after, afterEach, test } from "node:test";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
@@ -17,6 +16,54 @@ import {
   createWebClient,
   type StubElement,
 } from "../helpers/client-harness.ts";
+
+
+function mib(value: number): string {
+  return (value / 1024 / 1024).toFixed(0);
+}
+
+afterEach((ctx) => {
+  const m = process.memoryUsage();
+
+  console.error(
+    `[MEM] ${ctx.name} ` +
+      `rss=${mib(m.rss)}M ` +
+      `heap=${mib(m.heapUsed)}/${mib(m.heapTotal)}M ` +
+      `ext=${mib(m.external)}M ` +
+      `ab=${mib(m.arrayBuffers)}M ` +
+      `resources=${process.getActiveResourcesInfo().join(",")}`,
+  );
+});
+
+after(() => {
+  const m = process.memoryUsage();
+
+  console.error(
+    `[FINAL] rss=${mib(m.rss)}M ` +
+      `heap=${mib(m.heapUsed)}/${mib(m.heapTotal)}M ` +
+      `ext=${mib(m.external)}M ` +
+      `ab=${mib(m.arrayBuffers)}M`,
+  );
+
+  console.error(
+    "[FINAL resources]",
+    process.getActiveResourcesInfo(),
+  );
+
+  console.error(
+    "[FINAL handles]",
+    (process as unknown as {
+      _getActiveHandles(): unknown[];
+    })
+      ._getActiveHandles()
+      .map((handle) => handle?.constructor?.name),
+  );
+
+  process.report.writeReport(
+    `/tmp/web-assets-${process.pid}.json`,
+  );
+});
+
 
 /**
  * The readable browser sources (`scripts/web/`) implement route, range intent,
@@ -65,8 +112,9 @@ const ALL_TABS = [
   "overview",
   "llm",
   "tools",
-  "environment",
+  "skills",
   "integrations",
+  "environment",
   "errors",
   "ledger",
 ];
@@ -468,7 +516,7 @@ test("the assets own one namespace with route, range, i18n, and start", async ()
     "integration",
     "command",
     "skill",
-    "resource",
+    "source",
   ]);
   // The range module owns the intent grammar and the bounded preset vocabulary.
   const range = namespace.range as Record<string, unknown>;
@@ -1645,6 +1693,13 @@ test("the history table carries an opaque id column with a copy control", async 
   });
   await harness.start();
   const view = harness.element("view");
+  // Unavailable sessions are hidden by default (the History view's own
+  // predicate), so the reveal control is what makes every row reachable.
+  const reveal = view
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.notEqual(reveal, undefined);
+  harness.click(reveal as StubElement);
   const headers = view
     .querySelectorAll("th")
     .filter((header) => header.className === "id-cell");
@@ -1969,6 +2024,14 @@ test("the history aggregate renders coverage, membership, and its own rows", asy
     hash: "#/history/overview",
   });
   await harness.start();
+  // The membership claims below include the session the view hides by default,
+  // so reveal it through the view's own control first.
+  const reveal = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.notEqual(reveal, undefined);
+  harness.click(reveal as StubElement);
   const texts = harness.texts(harness.element("view")).join(" ");
   assert.equal(texts.includes("Coverage"), true);
   assert.equal(harness.element("title").textContent, "Pick up the trail.");
@@ -2173,4 +2236,202 @@ test("the renderer's words are catalog words, including at its four lookups", as
     entity.element("announcement").textContent.includes("undefined"),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// client.js: the promoted IA, real navigation, and the availability filters
+// ---------------------------------------------------------------------------
+
+test("the route round-trips the Skills tab and the source entity kind", () => {
+  const { route } = namespaces();
+  assert.deepEqual(plain(route.tabs), ALL_TABS);
+  const expected = "#/current/skills?scope=tree&entity=source%3Anpm%3Api-lens";
+  assert.equal(
+    route.serialize({
+      section: "current",
+      tab: "skills",
+      scope: "tree",
+      entity: { kind: "source", id: "npm:pi-lens" },
+    }),
+    expected,
+  );
+  const parsed = route.parse(expected, {
+    scope: "tree",
+    capabilities: CAPABILITIES,
+    knownIds: ["npm:pi-lens", "build"],
+  });
+  assert.equal(parsed.notice, undefined);
+  assert.deepEqual(plain(parsed.route.entity), {
+    kind: "source",
+    id: "npm:pi-lens",
+  });
+  assert.equal(route.serialize(parsed.route), expected);
+  // A skill id round-trips the same way; an unknown kind is dropped, not echoed.
+  const skill = route.parse(
+    "#/current/skills?scope=tree&entity=skill%3Abuild",
+    {
+      scope: "tree",
+      capabilities: CAPABILITIES,
+      knownIds: ["build"],
+    },
+  );
+  assert.deepEqual(plain(skill.route.entity), { kind: "skill", id: "build" });
+  const unknown = route.parse(
+    "#/current/skills?scope=tree&entity=widget%3Abuild",
+    {
+      scope: "tree",
+      capabilities: CAPABILITIES,
+      knownIds: ["build"],
+    },
+  );
+  assert.equal("entity" in unknown.route, false);
+  assert.equal(unknown.notice, undefined);
+});
+
+test("the tab strip carries the promoted information architecture", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/overview?scope=tree",
+  });
+  await harness.start();
+  assert.deepEqual(visibleTabs(harness), ALL_TABS);
+  // Environment keeps Commands and Sources; Skills is a tab of its own.
+  harness.click(tabLink(harness, "environment"));
+  const subnav = harness
+    .element("view")
+    .querySelectorAll("button")
+    .filter((button) => button.dataset.envTab !== undefined)
+    .map((button) => button.dataset.envTab);
+  assert.deepEqual(subnav, ["commands", "sources"]);
+  harness.click(tabLink(harness, "skills"));
+  assert.equal(
+    harness.texts(harness.element("view")).join(" ").includes("build"),
+    true,
+  );
+});
+
+test("the Sources table labels the supplied tools, not observed calls", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/environment?scope=tree",
+  });
+  await harness.start();
+  const sources = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.envTab === "sources");
+  assert.notEqual(sources, undefined);
+  harness.click(sources as StubElement);
+  const view = harness.element("view");
+  const headers = view
+    .querySelectorAll("th")
+    .map((header) => header.textContent);
+  assert.equal(headers.includes("Tools"), true);
+  assert.equal(headers.includes("Tool calls"), false);
+  const texts = harness.texts(view).join(" ");
+  assert.equal(texts.includes("Sources"), true);
+  assert.equal(texts.includes("Resource sources"), false);
+});
+
+test("no rendered control promises a route it does not have", async () => {
+  const snapshot = uiSnapshot();
+  for (const hash of [
+    "#/current/overview?scope=tree",
+    "#/current/llm?scope=tree",
+    "#/current/tools?scope=tree",
+    "#/current/skills?scope=tree",
+    "#/current/integrations?scope=tree",
+    "#/current/environment?scope=tree",
+    "#/current/errors?scope=tree",
+    "#/current/ledger?scope=tree",
+    "#/history/overview",
+    "#/global/overview",
+  ]) {
+    const harness = createWebClient({ responses: [snapshot], hash });
+    await harness.start();
+    const anchors = ["navigation", "tabs", "view"].flatMap((id) =>
+      harness.element(id).querySelectorAll("a"),
+    );
+    assert.equal(anchors.length > 0, true, hash);
+    for (const anchor of anchors) {
+      const href = anchor.attributes.href ?? "";
+      assert.match(href, /^#\/(current|history|global)\//, `${hash} ${href}`);
+    }
+  }
+});
+
+test("the Integrations view hides rows without telemetry evidence by default", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/integrations?scope=tree",
+  });
+  await harness.start();
+  const view = (): StubElement => harness.element("view");
+  const texts = (): string => harness.texts(view()).join(" ");
+  // The header row plus the two producers whose telemetry was observed.
+  assert.equal(view().querySelectorAll("tr").length, 3);
+  assert.equal(texts().includes("rtk"), false);
+  assert.equal(texts().includes("2 shown · 1 hidden/unavailable"), true);
+  const toggle = view()
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "withEvidence");
+  assert.notEqual(toggle, undefined);
+  assert.equal((toggle as StubElement).attributes["aria-pressed"], "true");
+  harness.click(toggle as StubElement);
+  assert.equal(view().querySelectorAll("tr").length, 4);
+  assert.equal(texts().includes("rtk"), true);
+  // Revealing a hidden row is view state: no route changes.
+  assert.equal(harness.location.hash, "#/current/integrations?scope=tree");
+  assert.equal(harness.fetches().length, 1);
+});
+
+test("the Skills view filters to invoked skills and never calls the rest unavailable", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/skills?scope=tree",
+  });
+  await harness.start();
+  const view = (): StubElement => harness.element("view");
+  const texts = (): string => harness.texts(view()).join(" ");
+  assert.equal(texts().includes("build"), true);
+  assert.equal(texts().includes("deploy"), false);
+  assert.equal(texts().includes("1 shown · 1 hidden"), true);
+  // An installed skill nothing invoked is hidden by the invocation predicate,
+  // never reported as unavailable.
+  assert.equal(texts().includes("hidden/unavailable"), false);
+  assert.equal(texts().includes("Invoked only"), true);
+  const toggle = view()
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "invokedOnly");
+  assert.notEqual(toggle, undefined);
+  harness.click(toggle as StubElement);
+  assert.equal(texts().includes("deploy"), true);
+  assert.equal(texts().includes("2 shown · 0 hidden"), true);
+});
+
+test("the History table hides unavailable sessions by default and reveals them", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/history/overview",
+  });
+  await harness.start();
+  const view = (): StubElement => harness.element("view");
+  const membership = (): (string | undefined)[] =>
+    view()
+      .querySelectorAll("tr")
+      .filter((row) => row.dataset.membership !== undefined)
+      .map((row) => row.dataset.membership);
+  assert.deepEqual(membership(), ["member"]);
+  assert.equal(harness.texts(view()).join(" ").includes("session-b"), false);
+  assert.equal(
+    harness.texts(view()).join(" ").includes("1 shown · 1 hidden/unavailable"),
+    true,
+  );
+  const toggle = view()
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.notEqual(toggle, undefined);
+  harness.click(toggle as StubElement);
+  assert.deepEqual(membership(), ["member", "unknown"]);
+  assert.equal(harness.texts(view()).join(" ").includes("session-b"), true);
 });

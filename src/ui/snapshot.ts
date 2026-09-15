@@ -955,7 +955,7 @@ function environmentSections(
               catalog["table.commands"],
               catalog["table.skills"],
               catalog["table.prompts"],
-              catalog["table.tools"],
+              catalog["table.sourceTools"],
             ],
             resources.items.map((row) => [
               row.sourceLabel,
