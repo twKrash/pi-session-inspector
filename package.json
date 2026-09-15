@@ -45,11 +45,14 @@
     "benchmark:release": "node --expose-gc --import tsx benchmark/run.ts --mode=release --out=benchmark/artifacts/release-latest.json",
     "knip": "knip",
     "prepare": "node scripts/install-hooks.mjs",
-    "depcruise": "depcruise --config .dependency-cruiser.cjs --output-type err src",
+    "depcruise": "depcruise --config .dependency-cruiser.cjs --output-type err src scripts",
     "publint": "publint --strict",
     "build:web": "node scripts/build-web.mjs",
     "build:web:check": "node scripts/build-web.mjs --check",
-    "prepack": "node scripts/build-web.mjs --check"
+    "prepack": "node scripts/build-web.mjs --check",
+    "benchmark:browser": "node --import tsx benchmark/browser.ts --mode=smoke",
+    "benchmark:browser:release": "node --import tsx benchmark/browser.ts --mode=release --out=benchmark/artifacts/browser-latest.json",
+    "benchmark:browser:check": "node --import tsx benchmark/browser.ts --mode=smoke --check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
@@ -67,6 +70,7 @@
     "@earendil-works/pi-tui": "^0.85.1"
   },
   "dependencies": {
+    "chart.js": "4.5.1",
     "i18next": "26.4.2"
   }
 }

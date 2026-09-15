@@ -8,5 +8,10 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "benchmark/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "benchmark/**/*.ts",
+    "scripts/**/*.ts"
+  ]
 }

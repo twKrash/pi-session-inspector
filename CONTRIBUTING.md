@@ -29,7 +29,32 @@ npm run lint
 npm run typecheck
 npm test
 npm run build:web:check
+npm run depcruise
+npm run knip
+npm run publint
+npm run benchmark:browser:check   # shipped asset + chart, against the accepted baseline
 npm pack --dry-run
 ```
 
 PRs must state tests run, privacy impact, fixture provenance, supported Pi version, and any ADR/spec change. See `CHANGELOG.md` for release format.
+
+## Dependency admission
+
+A new package is admitted only through this sequence, in order; skipping a step
+is a rejection, and a heuristic that stands in for a capability is not a gate:
+
+1. **Provenance/license audit** — exact version, license, repository, release
+   history, install hooks, registry integrity, advisories.
+2. **Precise capability gates** — parse the shipped bytes for the capability to
+   forbid (module loading, host loaders, `import.meta`, dynamic code
+   evaluation); never assert a substring that merely correlates with it.
+3. **Hostile-runtime probes** — execute the shipped asset with the environment
+   poisoned (for example a `Date` that throws) and require it to still work.
+4. **Semantic invariants** — the existing executable suites must keep proving
+   that ranges, aggregates, evidence, and unavailable-versus-zero stay
+   Inspector-owned.
+5. **Measured footprint** — record asset size, gzip, and the browser benchmark
+   deltas before adopting.
+
+The adopted examples of this pattern are `i18next` and `chart.js` (ADR 0018,
+`docs/roadmap.md` Pre-M8.6).

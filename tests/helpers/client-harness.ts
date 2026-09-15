@@ -1,10 +1,10 @@
 /**
  * The ordinary-asset harness: it executes the one bundled browser script in a
- * `vm` context with a stub DOM built from the shipped `shell.html`, so the
- * browser tests exercise the exact bytes the server serves rather than a copy
- * of its logic.
+ * `vm` context with a stub DOM built from the shipped `shell.html`, so browser
+ * tests exercise the exact bytes the server serves rather than a copy of its
+ * logic.
  *
- * Everything the script can reach is stubbed here: the document (ids, tags,
+ * Everything the scripts can reach is stubbed here: the document (ids, tags,
  * classes, `[data-*]` attributes, focus, and an input's selection), the address
  * bar, `history.replaceState`, both storages, `fetch`, and the two event paths.
  * The harness also records what the client did and in which order — the route
@@ -17,6 +17,159 @@ import { createContext, runInContext } from "node:vm";
 
 import { WEB_ASSETS } from "../../src/ui/web-assets.ts";
 import type { InspectorUiSnapshot } from "../../src/ui/ui-projection.ts";
+/**
+ * The two observers a chart library binds on construction. They never fire: the
+ * harness asserts what the shipped bundle renders, not how a library schedules.
+ */
+class StubObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+  takeRecords(): unknown[] {
+    return [];
+  }
+}
+
+/** An empty computed style: nothing in the shell is styled by the harness. */
+function computedStyle(): Record<string, unknown> {
+  const style: Record<string, unknown> = { getPropertyValue: () => "" };
+  return new Proxy(style, {
+    get: (target, property) =>
+      property in target
+        ? (target as Record<string | symbol, unknown>)[property]
+        : "",
+    set: (target, property, value) => {
+      (target as Record<string | symbol, unknown>)[property] = value;
+      return true;
+    },
+  });
+}
+
+/**
+ * A 2D context that draws nothing: every method is a no-op and `measureText`
+ * returns a fixed width, so layout is stable across runs.
+ *
+ * Only three members exist, because only they are read back:
+ * - `canvas` — a chart refuses a context that does not point at its own canvas;
+ * - `measureText` — text layout reads `.width` (the only measurement we can
+ *   invent, and a fixed one keeps the number stable across runs);
+ * - `getLineDash` — read as a list, so it must not be a no-op's `undefined`.
+ *
+ * Everything else (drawing, transforms, clipping, images, gradients) is a no-op
+ * through the proxy. The harness deliberately does not model canvas behaviour:
+ * what it asserts is that the shipped bundle starts the chart and keeps
+ * rendering the rest of the view.
+ */
+function context2d(canvas: object): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    canvas,
+    getLineDash: () => [],
+    measureText: (text: unknown) => ({ width: String(text).length * 6 }),
+  };
+  return new Proxy(base, {
+    get: (target, property) =>
+      property in target
+        ? (target as Record<string | symbol, unknown>)[property]
+        : () => {},
+    set: (target, property, value) => {
+      (target as Record<string | symbol, unknown>)[property] = value;
+      return true;
+    },
+  });
+}
+
+/** The slice of a canvas a chart library needs before it will start. */
+export type ChartCanvasStub = {
+  getContext(type: string): object | null;
+  setAttribute(name: string, value: string): void;
+  [member: string]: unknown;
+};
+
+/**
+ * A canvas of a fixed size for the paths that need a chart to start (the browser
+ * integration test through the harness, and the benchmark). It carries the
+ * attributes a caller sets on it and hands back a no-op context; it models
+ * nothing about how a chart draws or lays out.
+ *
+ * A chart reads exactly these members before it will construct, which is why
+ * each is here:
+ * - `getContext("2d")` and `parentNode` (with a size) — acquiring a context and
+ *   measuring the box it draws into;
+ * - `getAttribute`/`setAttribute`/`removeAttribute` plus `style`, `width` and
+ *   `height` — the size/restore dance an acquisition performs;
+ * - `addEventListener`/`removeEventListener` — bound only when the canvas is
+ *   attached, which it is in the harness.
+ */
+export function createChartCanvasStub(
+  width = 800,
+  height = 180,
+): ChartCanvasStub {
+  const canvas: ChartCanvasStub = {
+    attributes: {} as Record<string, string>,
+    height: 0,
+    isConnected: true,
+    parentNode: null,
+    style: {} as Record<string, string>,
+    tagName: "CANVAS",
+    width: 0,
+    addEventListener() {},
+    getAttribute: (name: string) =>
+      (canvas.attributes as Record<string, string>)[name] ?? null,
+    getContext: (type: string) => (type === "2d" ? context2d(canvas) : null),
+    removeAttribute(name: string) {
+      delete (canvas.attributes as Record<string, string>)[name];
+    },
+    removeEventListener() {},
+    setAttribute(name: string, value: string) {
+      (canvas.attributes as Record<string, string>)[name] = String(value);
+    },
+  };
+  const parent = {
+    clientHeight: height,
+    clientWidth: width,
+    getBoundingClientRect: () => ({
+      bottom: height,
+      height,
+      left: 0,
+      right: width,
+      top: 0,
+      width,
+      x: 0,
+      y: 0,
+    }),
+    isConnected: true,
+    ownerDocument: globalThis.document,
+    style: {},
+  };
+  canvas.parentNode = parent;
+  canvas.ownerDocument = globalThis.document;
+  return canvas;
+}
+
+/**
+ * Installs the DOM globals a chart checks for in the current realm: the presence
+ * of `window`/`document` (which selects the DOM platform), the computed-style
+ * view the library reads through `ownerDocument`, the two observers it binds on
+ * an attached canvas, and a device pixel ratio. The browser tests get the same
+ * surface through the `vm` context; the benchmark runs the adapter directly and
+ * needs it here.
+ */
+export function installChartGlobals(): void {
+  const windowStub = {
+    // Read while the library initializes, to probe listener options.
+    addEventListener() {},
+    removeEventListener() {},
+    devicePixelRatio: 1,
+    getComputedStyle: () => computedStyle(),
+  };
+  const documentStub = { defaultView: windowStub };
+  const globals = globalThis as Record<string, unknown>;
+  globals.document = documentStub;
+  globals.window = windowStub;
+  globals.getComputedStyle = () => computedStyle();
+  globals.ResizeObserver = StubObserver;
+  globals.MutationObserver = StubObserver;
+}
 
 export type StubElement = HarnessNode & {
   id: string;
@@ -29,6 +182,8 @@ export type StubElement = HarnessNode & {
   value: string;
   placeholder: string;
   title: string;
+  width: number;
+  height: number;
   dataset: Record<string, string>;
   style: Record<string, string>;
   attributes: Record<string, string>;
@@ -39,6 +194,20 @@ export type StubElement = HarnessNode & {
   replaceChildren(...nodes: unknown[]): void;
   setAttribute(name: string, value: unknown): void;
   removeAttribute(name: string): void;
+  getAttribute(name: string): string | null;
+  getBoundingClientRect(): {
+    bottom: number;
+    height: number;
+    left: number;
+    right: number;
+    top: number;
+    width: number;
+    x: number;
+    y: number;
+  };
+  getContext(type: string): unknown;
+  isConnected: boolean;
+  ownerDocument: unknown;
   querySelector(selector: string): StubElement | null;
   querySelectorAll(selector: string): StubElement[];
   closest(selector: string): StubElement | null;
@@ -60,6 +229,10 @@ class HarnessNode {}
  * call names the active element, and detaching the active element (which
  * `replaceChildren` does) moves focus back to the body.
  */
+/** How the stub reports the two DOM facts focus handling depends on: a `focus()`
+ * call names the active element, and detaching the active element (which
+ * `replaceChildren` does) moves focus back to the body.
+ */
 type StubTracking = {
   focus(element: StubElement): void;
   detach(removed: readonly StubElement[]): void;
@@ -78,12 +251,20 @@ export type WebClientEvent =
  * response back so the in-flight loading state is observable; `fetchFailure`
  * makes the boundary fail the way a browser reports it.
  */
+/**
+ * The one harness input. `responses` is consumed one per request (the last one
+ * repeats), so a test can reload with a different DTO; `deferFetch` holds the
+ * response back so the in-flight loading state is observable; `fetchFailure`
+ * makes the boundary fail the way a browser reports it; `globals` adds
+ * environment values (e.g. a clock probe) to the recycled realm.
+ */
 export type WebClientInput = {
   responses?: readonly InspectorUiSnapshot[];
   hash?: string;
   deferFetch?: boolean;
   fetchFailure?: "network" | "http";
   replaceStateFails?: boolean;
+  globals?: Record<string, unknown>;
 };
 
 export type WebClientHarness = {
@@ -173,11 +354,39 @@ function stubElement(
   element.value = "";
   element.placeholder = "";
   element.title = "";
+  element.width = 0;
+  element.height = 0;
   element.dataset = {};
   element.style = {};
   element.attributes = {};
   element.children = [];
   element.parentNode = null;
+  element.ownerDocument = null;
+  element.isConnected = true;
+  element.getAttribute = (name) => element.attributes[name] ?? null;
+  // The chart host is the one element a layout measures; give it a size so the
+  // same numbers come out on every run.
+  element.getBoundingClientRect = () => {
+    const width = element.className.split(" ").includes("chart-canvas")
+      ? 800
+      : 0;
+    const height = width === 0 ? 0 : 180;
+    return {
+      bottom: height,
+      height,
+      left: 0,
+      right: width,
+      top: 0,
+      width,
+      x: 0,
+      y: 0,
+    };
+  };
+  // Only a canvas hands back a context; nothing else in the stub tree does.
+  element.getContext = (type) =>
+    String(type) === "2d" && element.tagName === "canvas"
+      ? context2d(element)
+      : null;
   element.listeners = {};
   element.append = (...nodes) => {
     for (const node of nodes) {
@@ -326,8 +535,8 @@ function markupTree(
 // ---------------------------------------------------------------------------
 
 /**
- * Runs the three shipped classic scripts against a stub DOM built from the
- * shipped shell. The scripts bootstrap on evaluation as they do in a browser;
+ * Runs the bundled browser script against a stub DOM built from the shipped
+ * shell. The bundle bootstraps on evaluation as it does in a browser;
  * `start()` remains awaitable so tests can wait for the initial request and
  * inspect its effects (the loading landmark, token disappearance, and render).
  */
@@ -362,29 +571,12 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
       swap(...children);
     };
   }
-  const documentStub = {
-    body,
-    activeElement: null as StubElement | null,
-    listeners: {} as Record<string, ((event: unknown) => void)[]>,
-    getElementById: (id: string): StubElement | null => store.get(id) ?? null,
-    createElement: (name: string): StubElement =>
-      stubElement(name, register, tracking),
-    createElementNS: (_namespace: string, name: string): StubElement =>
-      stubElement(name, register, tracking),
-    querySelector: (selector: string): StubElement | null =>
-      descendants(body, selector)[0] ?? null,
-    querySelectorAll: (selector: string): StubElement[] =>
-      descendants(body, selector),
-    addEventListener: (
-      type: string,
-      listener: (event: unknown) => void,
-    ): void => {
-      const listeners = documentStub.listeners[type] ?? [];
-      documentStub.listeners[type] = listeners;
-      listeners.push(listener);
-    },
-  };
   const windowStub = {
+    cancelAnimationFrame: () => {},
+    devicePixelRatio: 1,
+    getComputedStyle: () => computedStyle(),
+    requestAnimationFrame: (callback: (time: number) => void) =>
+      setTimeout(() => callback(0), 0),
     scrollX: 0,
     scrollY: 0,
     scrollTo: () => {},
@@ -395,6 +587,35 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     ): void => {
       const listeners = windowStub.listeners[type] ?? [];
       windowStub.listeners[type] = listeners;
+      listeners.push(listener);
+    },
+  };
+  const documentStub = {
+    body,
+    defaultView: windowStub,
+    activeElement: null as StubElement | null,
+    listeners: {} as Record<string, ((event: unknown) => void)[]>,
+    getElementById: (id: string): StubElement | null => store.get(id) ?? null,
+    createElement: (name: string): StubElement => {
+      const created = stubElement(name, register, tracking);
+      created.ownerDocument = documentStub;
+      return created;
+    },
+    createElementNS: (_namespace: string, name: string): StubElement => {
+      const created = stubElement(name, register, tracking);
+      created.ownerDocument = documentStub;
+      return created;
+    },
+    querySelector: (selector: string): StubElement | null =>
+      descendants(body, selector)[0] ?? null,
+    querySelectorAll: (selector: string): StubElement[] =>
+      descendants(body, selector),
+    addEventListener: (
+      type: string,
+      listener: (event: unknown) => void,
+    ): void => {
+      const listeners = documentStub.listeners[type] ?? [];
+      documentStub.listeners[type] = listeners;
       listeners.push(listener);
     },
   };
@@ -489,10 +710,13 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     navigator: navigatorStub,
     fetch: fetchStub,
     console,
+    ResizeObserver: StubObserver,
+    MutationObserver: StubObserver,
     setTimeout,
+    ...input.globals,
   };
+  for (const node of nodes) node.ownerDocument = documentStub;
   createContext(context);
-  // One classic bundle: route and range initialize before the client inside it.
   runInContext(WEB_ASSETS.client, context, { filename: "client.js" });
   // The client starts during evaluation; this recorder is installed before the
   // asynchronous response resolves, so it sees every request-driven parse.
