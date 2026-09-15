@@ -595,10 +595,10 @@ it must not re-decide whether the accepted localhost server exists.
 | Client source LOC | 3,224 | 3,415 | +191 | `git show`/`wc -l` vs `wc -l scripts/web/*` (includes the 297-line chart adapter) |
 | Client asset raw / gzip bytes | 113,563 / 26,786 | 264,631 / 88,429 | +151,068 / +61,643 | `benchmark:browser:release`, gzip level 9 |
 | Generated shell bytes | 4,125 | 4,057 | −68 | same fixture |
-| Bundle evaluation median / p95 ms | 0.82 / 1.39 | 1.56 / 2.34 | +0.74 / +0.95 | maintained harness, 40 samples after 5 warmups |
-| Startup median / p95 ms | 2.13 / 4.71 | 9.00 / 11.35 | +6.87 / +6.64 | same harness and fixture |
-| Route-change re-render median / p95 ms | — | 0.55 / 0.77 | — | same harness and fixture |
-| Chart create / update median ms | — | 1.06 / 0.78 | — | same harness and fixture |
+| Bundle evaluation median / p95 ms | 0.82 / 1.39 | 1.52 / 3.22 | +0.70 / +1.83 | maintained harness, 40 samples after 5 warmups |
+| Startup median / p95 ms | 2.13 / 4.71 | 8.71 / 12.36 | +6.58 / +7.65 | same harness and fixture |
+| Route-change re-render median / p95 ms | — | 0.54 / 0.82 | — | same harness and fixture |
+| Chart create / update median ms | — | 1.14 / 0.77 | — | same harness and fixture |
 | Tarball / unpacked / files | 230,983 / 908,323 / 72 | 295,498 / 1,065,738 / 73 | +64,515 / +157,415 / +1 | `npm pack --dry-run --json` |
 
 The asset is deliberately larger: bundle size is not the winning metric. Chart.js
@@ -614,9 +614,13 @@ storage writes, exactly one initial render, a rendered chart, and exactly one
 render caused by the route change, whose applied route is recorded and checked. The accepted
 baseline is `benchmark/baselines/browser.json`, identified by the shipped asset's
 SHA-256 and checked by `npm run benchmark:browser:check`; sizes must match
-exactly and a wall-time median may not exceed `2.5×` its recorded value. The
-numbers above are that baseline; the raw artifact is written to
-`benchmark/artifacts/` and is not committed. Server startup/refresh stays with
+exactly and a wall-time median may not exceed `2.5×` its recorded value. Each
+metric records median, p95, min, max, and sample standard deviation, so a figure
+is read against its variance rather than in isolation; for the adopted figures
+that spread is evaluation `0.56`, startup `1.44`, route-change re-render `0.26`,
+chart create `0.49`, and chart update `0.39` ms. The numbers above are that
+baseline; the raw artifact is written to `benchmark/artifacts/` and is not
+committed. Server startup/refresh stays with
 the Pre-M8.7 release job.
 
 Server startup/refresh belongs to the accepted Pre-M8.4 architecture and the
