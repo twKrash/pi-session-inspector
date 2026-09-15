@@ -11,3 +11,8 @@ report*.json
 .pi/
 .superpowers/
 docs/superpowers/
+dist/
+build/
+coverage/
+.tmp/
+.cache/

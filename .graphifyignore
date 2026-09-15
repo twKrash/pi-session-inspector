@@ -1,0 +1,11 @@
+# Generated browser bundle: contains bundled Chart.js/i18next internals
+src/ui/web/client.bundle.js
+
+# Graphify's own outputs should not become graph inputs
+graphify-out/
+
+# Local execution/review artifacts, not product architecture
+.superpowers/
+
+# Dependencies
+node_modules/
