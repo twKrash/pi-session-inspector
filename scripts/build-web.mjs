@@ -1,8 +1,8 @@
 /**
  * The build seam (ADR 0018): the authored sources in `scripts/web/`
- * (`route.js`, `range.js`, `client.js`) are concatenated in that order and
- * bundled into one deterministic classic asset,
- * `src/ui/web/client.bundle.js`.
+ * (`route.js`, `range.js`, `client.js`) are concatenated in that order, behind a
+ * prelude that installs the shared translator, and bundled into one deterministic
+ * classic asset, `src/ui/web/client.bundle.js`.
  *
  * The build does not transform behaviour: it joins the three files the browser
  * used to load separately, then minifies. `--check` rebuilds and compares bytes,
@@ -17,11 +17,17 @@ import { buildSync } from "esbuild";
 const sourceFiles = ["route.js", "range.js", "client.js"];
 const outputUrl = new URL("../src/ui/web/client.bundle.js", import.meta.url);
 const resolveDir = fileURLToPath(new URL("../", import.meta.url));
-const input = sourceFiles
-  .map((name) =>
+// The translation boundary is installed before the client runs, so the browser
+// resolves copy through the same catalog the TypeScript renderers use.
+const prelude = `import { createTranslator } from "./src/ui/i18n.ts";
+const web = (globalThis.SessionInspectorWeb = globalThis.SessionInspectorWeb || {});
+web.i18n = { t: createTranslator("en") };`;
+const input = [
+  prelude,
+  ...sourceFiles.map((name) =>
     readFileSync(new URL(`./web/${name}`, import.meta.url), "utf8"),
-  )
-  .join("\n");
+  ),
+].join("\n");
 
 const result = buildSync({
   stdin: {

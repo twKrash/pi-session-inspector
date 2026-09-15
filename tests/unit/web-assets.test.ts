@@ -5,12 +5,12 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
-import { ENGLISH_CATALOG } from "../../src/ui/report-projection.ts";
 import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
   projectInspectorUi,
   type InspectorUiSnapshot,
 } from "../../src/ui/ui-projection.ts";
+import { createTranslator } from "../../src/ui/i18n.ts";
 import { WEB_ASSETS } from "../../src/ui/web-assets.ts";
 import {
   createWebClient,
@@ -33,12 +33,6 @@ const ASSET_PATHS = {
 } as const;
 
 const SCRIPTS: readonly (keyof typeof ASSET_PATHS)[] = ["client"];
-
-/** The authored client source, before the build seam minifies it. */
-const CLIENT_SOURCE = readFileSync(
-  new URL("../../scripts/web/client.js", import.meta.url),
-  "utf8",
-);
 
 const PROJECT_ROOT = new URL("../../", import.meta.url);
 const PROJECT_ROOT_PATH = fileURLToPath(PROJECT_ROOT);
@@ -256,98 +250,41 @@ test("no raw producer field name or host path reaches a browser asset", () => {
   }
 });
 
-test("the browser copy is the server catalog, not a second set of strings", () => {
-  // Scope: every string this table carries is the catalog's own text for the
-  // same key. That the table carries every key the renderer looks up — the
-  // other half of "no second catalog" — is pinned by the next test.
-  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(CLIENT_SOURCE);
-  assert.notEqual(literal, null, "client.js must declare its copy literal");
-  const copy = JSON.parse(literal?.[1] as string) as Record<string, string>;
-  assert.equal(Object.keys(copy).length > 40, true);
-  const catalog: Readonly<Record<string, string>> = ENGLISH_CATALOG;
-  for (const [key, value] of Object.entries(copy)) {
-    assert.equal(catalog[key], value, key);
+test("the browser renders the shared catalog's copy", async () => {
+  // One plain key and one interpolation, read from the same catalog the
+  // TypeScript renderers use. The browser carries no table of its own to
+  // compare against; what it renders is the catalog's own text.
+  const catalog = createTranslator("en");
+  const first = uiSnapshot();
+  const second = uiSnapshot();
+  if (second.current.tree.range?.resolved === undefined) {
+    throw new Error("fixture must resolve a tree range");
   }
+  second.current.tree.range.resolved = {
+    preset: 7,
+    from: "2026-01-27",
+    to: "2026-02-02",
+  };
+  const harness = createWebClient({ responses: [first, second], hash: "" });
+  await harness.start();
+
+  assert.equal(
+    harness.element("title").textContent,
+    catalog("heading.current"),
+  );
+  assert.equal(
+    harness.element("range-name").textContent,
+    catalog("range.custom"),
+  );
+  harness.click(control(harness, "range", "days", "7"));
+  await settle();
+  assert.equal(
+    harness.element("range-name").textContent,
+    catalog("range.last", { days: 7 }),
+  );
 });
 
-test("every copy key the renderer names resolves in the catalog", () => {
-  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(CLIENT_SOURCE);
-  assert.notEqual(literal, null, "client.js must declare its copy literal");
-  const declared = literal as RegExpExecArray;
-  const copy = JSON.parse(declared[1] as string) as Record<string, string>;
-  const catalog: Readonly<Record<string, string>> = ENGLISH_CATALOG;
-  // The renderer only: a key named outside the table is a lookup this test has
-  // to see, and a key named inside it would otherwise pass by construction.
-  const renderer =
-    CLIENT_SOURCE.slice(0, declared.index) +
-    CLIENT_SOURCE.slice(declared.index + declared[0].length);
-
-  const named = new Set<string>();
-  // A dotted key written literally is a copy lookup; a prefix with a trailing
-  // dot is one half of a concatenation, covered by the families below.
-  for (const found of renderer.matchAll(
-    /"([a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+\.?)"/g,
-  )) {
-    if (!found[1].endsWith(".")) named.add(found[1]);
-  }
-  // The two single-word keys the renderer reads through a dotted access.
-  for (const found of renderer.matchAll(/COPY\.([A-Za-z][\w]*)/g)) {
-    named.add(found[1]);
-  }
-
-  // The families the renderer builds from a bounded vocabulary: each prefix and
-  // every value the DTO can carry under it.
-  const { route } = namespaces();
-  const sections = plain(route.sections) as string[];
-  const families: [string, readonly string[]][] = [
-    ["nav.", [...sections, "back", "unavailable", "entityFocus"]],
-    ["tab.", plain(route.tabs) as string[]],
-    ["kicker.", sections],
-    ["heading.", sections],
-    ["subtitle.", sections],
-    ["chart.", ["sessions", "cost", "tokens", "generations", "tools"]],
-    [
-      "metric.usage.",
-      ["generations", "toolResults", "compactions", "branchSummaries"],
-    ],
-    ["tools.", ["succeeded", "failed", "interrupted"]],
-    ["agents.", ["succeeded", "failed", "interrupted", "running", "unknown"]],
-    ["presence.", ["present", "absent", "unknown"]],
-    // An integration's evidence state, plus the confidence the ledger's own
-    // rows carry (the reducer records native rows only).
-    ["evidence.", ["native", "supported", "unavailable", "unsupported"]],
-    // The one status verdict L2 publishes per history row.
-    ["status.", ["errors", "interrupted", "clean"]],
-  ];
-  for (const [prefix, values] of families) {
-    for (const value of values) named.add(prefix + value);
-  }
-  // The label keys a projection publishes for its own usage ladder and the
-  // coverage wording it renders through `coverage.line`.
-  for (const key of [
-    "metric.cost",
-    "metric.knownCost",
-    "metric.tokens",
-    "metric.knownTokens",
-    "coverage.unknown",
-    "coverage.none",
-    "coverage.complete",
-    "coverage.sessions",
-    "coverage.sessionsLimited",
-    "coverage.unknownCompletenessCost",
-    "coverage.unknownCompletenessTokens",
-  ]) {
-    named.add(key);
-  }
-
-  assert.equal(named.size > 150, true);
-  for (const key of named) {
-    assert.equal(typeof copy[key], "string", key);
-    assert.equal(copy[key], catalog[key], key);
-  }
-});
-
-test("the assets own one namespace with route, range, and start", async () => {
+test("the assets own one namespace with route, range, i18n, and start", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()] });
   await harness.start();
   const injected = [
@@ -370,7 +307,12 @@ test("the assets own one namespace with route, range, and start", async () => {
     string,
     unknown
   >;
-  assert.deepEqual(Object.keys(namespace).sort(), ["range", "route", "start"]);
+  assert.deepEqual(Object.keys(namespace).sort(), [
+    "i18n",
+    "range",
+    "route",
+    "start",
+  ]);
   assert.equal(typeof namespace.start, "function");
   // The route module owns the closed vocabularies and the four route behaviors.
   const route = namespace.route as Record<string, unknown>;

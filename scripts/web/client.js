@@ -18,253 +18,23 @@
   "use strict";
   const web = globalThis.SessionInspectorWeb;
   if (web === undefined || web.route === undefined || web.range === undefined) {
-    throw new Error("route.js and range.js must load before client.js");
+    throw new Error("browser route and range modules must initialize first");
   }
   const route = web.route;
   const range = web.range;
 
   /**
-   * The report copy this rendering uses, taken verbatim from the server's English
-   * catalog (asserted in `tests/unit/web-assets.test.ts`), so the browser and the
-   * snapshot archive name the same things with the same words.
+   * The presentation translator uses the same local catalog as the snapshot;
+   * report semantics remain in the API DTO.
    */
-  const COPY = {
-    "nav.current": "Current session",
-    "nav.history": "Session history",
-    "nav.global": "Global report",
-    "nav.back": "Back to tracked sessions",
-    "heading.current": "A session, in focus.",
-    "heading.history": "Pick up the trail.",
-    "heading.global": "The bigger picture.",
-    "kicker.current": "SESSION REPORT",
-    "kicker.history": "TRACKED HISTORY",
-    "kicker.global": "WORKSPACE REPORT",
-    "subtitle.current": "Resource use, tool activity, and the evidence behind it.",
-    "subtitle.history": "Browse tracked sessions. No global Pi scan. No raw conversation content.",
-    "subtitle.global": "Native usage within the selected dates. Each session counted once.",
-    "theme.dark": "Dark theme",
-    "theme.light": "Light theme",
-    "scope.active": "Active path",
-    "scope.tree": "Full session tree",
-    "scope.active.note": "Selected entry and its parent ancestry",
-    "scope.tree.note": "All tracked branches in this session",
-    "scope.fixed": "History & Global use full tree.",
-    "range.label": "Date range",
-    "range.last": "Last {days} days",
-    "range.custom": "Custom range",
-    "range.restored": "Range could not be restored; showing the default range.",
-    "range.truncated": "Older days beyond the retained window are not shown.",
-    "nav.unavailable": "That view isn't available here.",
-    "nav.entityFocus": "Focused entity",
-    "panel.allDates": "All report dates",
-    "tab.overview": "Overview",
-    "tab.models": "Models",
-    "tab.tools": "Tools",
-    "tab.environment": "Environment",
-    "tab.commands": "Commands",
-    "tab.agents": "Agents",
-    "tab.skills": "Skills",
-    "tab.integrations": "Integrations",
-    "tab.errors": "Errors",
-    "tab.ledger": "Ledger",
-    "metric.cost": "Native cost",
-    "metric.knownCost": "Known native cost",
-    "metric.costUnavailable": "Unavailable",
-    "metric.tokens": "Total tokens",
-    "metric.knownTokens": "Known tokens",
-    "metric.cacheHit": "Cache hit",
-    "metric.compactions": "Compactions",
-    "metric.compactions.note": "Persisted native compaction events",
-    "metric.generations": "Generations",
-    "metric.tools": "Tool calls",
-    "metric.days": "Observed days",
-    "metric.sessions": "Tracked sessions",
-    "metric.native": "Persisted usage · USD",
-    "metric.input": "Input",
-    "metric.output": "Output",
-    "metric.cacheRead": "Cache read",
-    "metric.cacheWrite": "Cache write",
-    "metric.tokens.note": "Persisted split, summed by source",
-    "metric.generations.note": "Recorded model responses",
-    "metric.tools.note": "Observed native calls",
-    "metric.days.note": "UTC days with persisted records",
-    "metric.duration": "Duration",
-    "metric.duration.note": "First to last native record · native confidence",
-    "metric.child": "Child breakdown",
-    "metric.child.note": "breakdown only · never added",
-    "metric.usage.generations": "Generations",
-    "metric.usage.toolResults": "Tool results",
-    "metric.usage.compactions": "Compactions",
-    "metric.usage.branchSummaries": "Branch summaries",
-    "usage.title": "Usage composition",
-    "usage.note": "Generations, tool results, compactions, and branch summaries are persisted native usage, counted once.",
-    "usage.total": "Total",
-    "usage.reconciled": "Reconciles to total",
-    "usage.unreconciled": "Does not reconcile to total",
-    "panel.models": "Model cost",
-    "panel.evidence": "Evidence, not estimates.",
-    "panel.daily": "Daily activity",
-    "panel.history": "Tracked sessions",
-    "panel.integrations": "Integrations",
-    "panel.ledger": "Chronological ledger",
-    "panel.resources": "Resource sources",
-    "evidence.native": "Native",
-    "evidence.live": "Live",
-    "evidence.cooperative": "Cooperative",
-    "evidence.supported": "Supported",
-    "evidence.unavailable": "Unavailable",
-    "evidence.unsupported": "Unsupported",
-    "evidence.source": "Source-aware",
-    "evidence.note": "Every metric keeps its source. Missing observations stay missing.",
-    "models.note": "Native usage grouped by provider and model.",
-    "models.none": "No native generations recorded.",
-    "models.truncated": "Older dates' model rows beyond the retained window are not shown.",
-    "tools.note": "Tokens and cost appear only when a matching tool result persisted usage.",
-    "tools.none": "No native tool calls recorded.",
-    "tools.summary": "Tools summary",
-    "tools.calls": "Calls timeline",
-    "tools.lastUsed": "Last used",
-    "tools.usageFraction": "{withUsage} of {total} calls reported usage",
-    "tools.filteredBy": "Filtered by {tool}",
-    "tools.clearFilter": "Show all tools",
-    "tools.succeeded": "Succeeded",
-    "tools.failed": "Failed",
-    "tools.interrupted": "Interrupted",
-    "bars.empty": "No observations in the selected scope.",
-    "agents.note": "Child usage is a breakdown only. It is never added to native totals.",
-    "agents.childRuns": "Child runs",
-    "agents.succeeded": "Succeeded",
-    "agents.failed": "Failed",
-    "agents.interrupted": "Interrupted",
-    "agents.running": "Running",
-    "agents.unknown": "Unknown",
-    "agents.knownTokens": "Known child tokens",
-    "agents.knownCost": "Known child cost",
-    "agents.knownFailedCost": "Known failed-run cost",
-    "agents.usageFraction": "{withUsage} of {total} runs reported usage",
-    "agents.parentOutsideScope": "Parent: outside selected scope",
-    "agents.parentUnknown": "Parent: Unavailable",
-    "agents.outOfRange": "No child run falls inside the selected range.",
-    "commands.note": "Loaded or available commands: inventory ≠ invocations. Counts are availability, never activity.",
-    "commands.count": "No commands inventory on disk. {count} commands were recorded at session start.",
-    "skills.note": "Loaded or available skills plus observed explicit invocations: inventory ≠ invocations.",
-    "skills.empty": "No skills inventory or explicit invocations recorded.",
-    "skills.otherInvocations": "+ {count} other invocations",
-    "resources.note": "Loaded or available resources by source. Counts are availability, never activity.",
-    "resources.unavailable": "No resource-source inventory recorded.",
-    "env.commands": "Commands",
-    "env.skills": "Skills",
-    "env.resources": "Resources",
-    "env.available": "Available: {count}",
-    "env.observed": "Observed invocations: {value}",
-    "env.invocationsObserved": "Explicit invocations observed: {count}",
-    "env.invocationsUnavailable": "Explicit invocations observed: Unavailable",
-    "env.sources": "Sources: {count}",
-    "env.note": "Current environment · Inventory is availability, never activity, and is not filtered by the selected range.",
-    "table.error": "Error",
-    "table.name": "Name",
-    "table.invocations": "Invocations",
-    "table.scope": "Scope",
-    "table.origin": "Origin",
-    "table.description": "Description",
-    "table.commands": "Commands",
-    "table.skills": "Skills",
-    "table.prompts": "Prompts",
-    "table.calls": "Calls",
-    "table.message": "Message",
-    "presence.present": "Present",
-    "presence.absent": "Not observed",
-    "presence.unknown": "Unknown",
-    "integrations.note": "Evidence availability is not installation status.",
-    "integration.detected": "Detected",
-    "integration.telemetry": "Telemetry",
-    "integration.activity": "Activity",
-    "integration.version": "Version",
-    "integration.sessionTotal": "Session total",
-    "integration.reasonUnsupported": "no compatible telemetry evidence",
-    "integration.reasonMissing": "no telemetry observed in this session",
-    "integration.noteNotDetected": "producer not detected in current inventory",
-    "errors.note": "Bounded classifications from persisted stop and error state.",
-    "errors.none": "No persisted error records. An observed zero stays zero.",
-    "errors.relatedTool": "Related tool",
-    "errors.relatedChildren": "Related child run(s)",
-    "errors.messageUnavailable": "Unavailable",
-    "status.errors": "Error records",
-    "status.interrupted": "Interrupted calls",
-    "status.clean": "No error records",
-    "empty.ledger": "No persisted records to order.",
-    "history.note": "Open a row to inspect its full-tree sections with the same tabs.",
-    "history.sessions.note": "Tracked sessions in the selected range",
-    "history.groupUnknown": "Unavailable · dates unknown",
-    "history.dailyTruncated": "Older days beyond the retained window are not shown.",
-    "notice.sensitive": "Local does not mean safe to share.",
-    "footer.authority": "Pi-native usage is billing authority. Child usage is never added.",
-    "search": "Search rows",
-    "search.placeholder": "Filter this table…",
-    "sort": "Sort order",
-    "sort.default": "Source order",
-    "sort.name": "Name A–Z",
-    "sort.reverse": "Reverse source order",
-    "chart.metric": "Chart metric",
-    "chart.sessions": "Sessions",
-    "chart.cost": "Cost",
-    "chart.tokens": "Tokens",
-    "chart.generations": "Generations",
-    "chart.tools": "Tool calls",
-    "chart.empty": "No daily observations match the selected range.",
-    "chart.note": "{metric} per observed UTC day. Days without records are not counted as zero.",
-    "chart.aria": "Daily {metric} across {days} observed UTC days. Exact values are in the chart data table.",
-    "chart.data": "View chart data",
-    "table.source": "Source",
-    "table.observation": "Observation",
-    "table.confidence": "Confidence",
-    "table.date": "Date",
-    "table.session": "Session",
-    "table.sessions": "Sessions",
-    "table.tokens": "Tokens",
-    "table.generations": "Generations",
-    "table.tools": "Tool calls",
-    "table.cost": "Cost (USD)",
-    "table.duration": "Duration",
-    "table.agents": "Agents",
-    "table.status": "Status",
-    "table.inspect": "Inspect",
-    "table.open": "Open",
-    "table.provider": "Provider",
-    "table.model": "Model",
-    "table.tool": "Tool",
-    "table.role": "Role",
-    "table.artifacts": "Artifacts",
-    "table.parent": "Parent",
-    "table.integration": "Integration",
-    "table.copyId": "Copy ID",
-    "table.id": "ID",
-    "table.kind": "Kind",
-    "table.timestamp": "Timestamp",
-    "table.category": "Category",
-    "table.action": "Action",
-    "unavailable.title": "Unavailable, not zero.",
-    "unavailable.copy": "Inspector does not infer activity from prompts, outputs, or missing records.",
-    "unavailable.session": "Open a tracked session row to inspect this section.",
-    "unavailable.global": "Global reports carry daily aggregates only. The History report has per-session sections.",
-    "unavailable.commands": "Pi does not persist command invocation records. Inspector will not infer them from prompts, outputs, or tool names.",
-    "unavailable.skills": "Pi does not persist skill attribution records. Inspector will not infer them from prompts, outputs, or tool names.",
-    "unavailable.composition": "This report carries no per-source usage split.",
-    "unavailable.usage": "Usage unavailable. The native aggregate was rejected; no total is shown.",
-    "unavailable.current": "This current view could not be replayed offline.",
-    "unavailable.integrations": "No persisted integration observations.",
-    "ledger.materialized": "Shared projection rows, materialized only when this section opens.",
-    "coverage.title": "Coverage",
-    "coverage.reasons": "Reasons: {reasons}",
-    "coverage.sessions": "{available} / {inspected} sessions · {unavailable} unavailable",
-    "coverage.complete": "{available} / {inspected} sessions",
-    "coverage.sessionsLimited": "{inspected} sessions inspected · additional sessions not inspected",
-    "coverage.none": "No tracked sessions",
-    "coverage.unknown": "Sessions: Unavailable",
-    "coverage.unknownCompletenessCost": "Known native cost — completeness unknown",
-    "coverage.unknownCompletenessTokens": "Known tokens — completeness unknown"
-  };
-
+  const translator = web.i18n;
+  if (translator === undefined || typeof translator.t !== "function") {
+    throw new Error("browser translator must initialize first");
+  }
+  const t = (key, values) => translator.t(key, values);
+  const COPY = new Proxy(Object.create(null), {
+    get: (_target, key) => (typeof key === "string" ? t(key) : undefined),
+  });
   // -------------------------------------------------------------------------
   // Namespace and small DOM helpers
   // -------------------------------------------------------------------------
@@ -285,15 +55,7 @@
       maximumFractionDigits: 1,
     }).format(Number(value));
   const money = (value) => "$" + Number(value).toFixed(2);
-  /** One catalog sentence, with `{name}` slots filled from published values. */
-  const tr = (key, values) => {
-    const template = COPY[key];
-    if (values === undefined) return template === undefined ? key : template;
-    return String(template === undefined ? key : template).replace(
-      /\{(\w+)\}/g,
-      (match, name) => (values[name] === undefined ? match : text(values[name])),
-    );
-  };
+  const tr = (key, values) => t(key, values);
   const el = (name, cls, value) => {
     const node = document.createElement(name);
     if (cls) node.className = cls;
@@ -302,19 +64,23 @@
   };
   const isNode = (value) => typeof value === "object" && value !== null;
   const orUnavailable = (value) =>
-    value === null || value === undefined ? COPY["evidence.unavailable"] : text(value);
+    value === null || value === undefined
+      ? COPY["evidence.unavailable"]
+      : text(value);
   const numberOrUnavailable = (value) =>
     value === null || value === undefined
       ? COPY["evidence.unavailable"]
       : number(value);
-  const badge = (label, tone) => el("span", "badge " + (tone || "neutral"), label);
+  const badge = (label, tone) =>
+    el("span", "badge " + (tone || "neutral"), label);
   const assign = (base, extra) => {
     const result = {};
     Object.keys(base).forEach((key) => {
       result[key] = base[key];
     });
     Object.keys(extra).forEach((key) => {
-      if (extra[key] !== undefined && extra[key] !== null) result[key] = extra[key];
+      if (extra[key] !== undefined && extra[key] !== null)
+        result[key] = extra[key];
     });
     return result;
   };
@@ -393,7 +159,8 @@
   /** The session-shaped projection the applied route renders, when it has one. */
   const targetView = () => {
     if (snapshot === null) return null;
-    if (state.section === "current") return snapshot.current[state.scope] || null;
+    if (state.section === "current")
+      return snapshot.current[state.scope] || null;
     if (state.section === "global") return null;
     const entry = selectedSession();
     if (entry !== null && entry.view !== undefined) return entry.view;
@@ -436,7 +203,11 @@
     if (known !== null) return known;
     known = [];
     const add = (value) => {
-      if (typeof value === "string" && value !== "" && known.indexOf(value) < 0) {
+      if (
+        typeof value === "string" &&
+        value !== "" &&
+        known.indexOf(value) < 0
+      ) {
         known.push(value);
       }
     };
@@ -447,7 +218,9 @@
     views.forEach((target) => {
       const meta = target.range;
       if (meta !== undefined) {
-        (meta.models || []).forEach((row) => add(row.provider + "/" + row.model));
+        (meta.models || []).forEach((row) =>
+          add(row.provider + "/" + row.model),
+        );
         (meta.toolSummary || []).forEach((row) => add(row.name));
         (meta.toolCalls || []).forEach((row) => {
           add(row.id);
@@ -459,7 +232,8 @@
       const report = target.report;
       if (report === undefined) return;
       (report.integrations || []).forEach((row) => add(row.integration));
-      if (report.commands) report.commands.items.forEach((row) => add(row.name));
+      if (report.commands)
+        report.commands.items.forEach((row) => add(row.name));
       if (report.skills) report.skills.items.forEach((row) => add(row.name));
       if (report.resources) {
         report.resources.items.forEach((row) => add(row.sourceLabel));
@@ -476,9 +250,7 @@
    */
   const capabilitiesFor = (target) => {
     const bound = (list) =>
-      route.tabs.filter(
-        (tab) => Array.isArray(list) && list.indexOf(tab) >= 0,
-      );
+      route.tabs.filter((tab) => Array.isArray(list) && list.indexOf(tab) >= 0);
     const current =
       snapshot === null || target.section !== "current"
         ? undefined
@@ -488,7 +260,8 @@
       entry !== null && entry.view !== undefined ? entry.view.capabilities : [];
     return {
       current: bound(current === undefined ? [] : current.capabilities),
-      history: bound(sessionTabs).length > 0 ? bound(sessionTabs) : ["overview"],
+      history:
+        bound(sessionTabs).length > 0 ? bound(sessionTabs) : ["overview"],
       global: ["overview"],
     };
   };
@@ -516,8 +289,7 @@
    * An explicit null clears a field rather than carrying it.
    */
   const routeFor = (patch) => {
-    const section =
-      patch.section !== undefined ? patch.section : state.section;
+    const section = patch.section !== undefined ? patch.section : state.section;
     const rawSession =
       patch.session !== undefined
         ? patch.session
@@ -678,7 +450,8 @@
         return false;
       }
       const body = await response.json();
-      if (body === undefined || body === null || body.kind !== "ui") return false;
+      if (body === undefined || body === null || body.kind !== "ui")
+        return false;
       snapshot = body;
       loadedQuery = query;
       known = null;
@@ -754,10 +527,7 @@
   const copyControl = (fullId) => {
     const button = el("button", "copy-id", COPY["table.copyId"]);
     button.dataset.copyId = "true";
-    button.setAttribute(
-      "aria-label",
-      COPY["table.copyId"] + " " + fullId,
-    );
+    button.setAttribute("aria-label", COPY["table.copyId"] + " " + fullId);
     return button;
   };
 
@@ -778,9 +548,8 @@
       }
       const cells = row.cells === undefined ? row : row.cells;
       cells.forEach((value, index) => {
-        const className = cells.length === headers.length
-          ? columnClass(classes, index)
-          : "";
+        const className =
+          cells.length === headers.length ? columnClass(classes, index) : "";
         const cell = el("td", className);
         const opaque =
           className === "id-cell" &&
@@ -916,16 +685,28 @@
     }
     return simpleTable(
       card(COPY["panel.evidence"], COPY["evidence.note"]),
-      [COPY["table.source"], COPY["table.observation"], COPY["table.confidence"]],
+      [
+        COPY["table.source"],
+        COPY["table.observation"],
+        COPY["table.confidence"],
+      ],
       rows.map((row) => ({
-        cells: [row.source, row.observation, badgeCell(row.confidence, "neutral")],
+        cells: [
+          row.source,
+          row.observation,
+          badgeCell(row.confidence, "neutral"),
+        ],
       })),
       ["status-cell", "wrap", "status-cell"],
     );
   };
 
   const compositionSection = (composition) => {
-    if (composition === null || composition === undefined || !composition.available) {
+    if (
+      composition === null ||
+      composition === undefined ||
+      !composition.available
+    ) {
       return emptyCard(COPY["usage.title"], COPY["unavailable.composition"]);
     }
     const rows = composition.parts.map((part) => ({
@@ -946,10 +727,7 @@
         ],
       });
     }
-    const section = card(
-      COPY["usage.title"],
-      COPY["usage.note"],
-    );
+    const section = card(COPY["usage.title"], COPY["usage.note"]);
     section
       .querySelector(".panel-head")
       .append(
@@ -1116,7 +894,8 @@
         evidenceSection(target.evidence),
       ];
     }
-    const resolved = meta !== null && meta.resolved !== null ? meta.resolved : null;
+    const resolved =
+      meta !== null && meta.resolved !== null ? meta.resolved : null;
     if (resolved !== null && Number(meta.totals.days) === 0) {
       return [
         emptyCard(COPY["usage.title"], COPY["chart.empty"]),
@@ -1129,7 +908,9 @@
     const costValue =
       totals === null ? COPY["evidence.unavailable"] : money(totals.cost);
     const tokensValue =
-      totals === null ? COPY["evidence.unavailable"] : number(totals.totalTokens);
+      totals === null
+        ? COPY["evidence.unavailable"]
+        : number(totals.totalTokens);
     const childCount = numberOrUnavailable(report.agentCount);
     const cards = [
       metric(
@@ -1148,8 +929,14 @@
         [
           [COPY["metric.input"], compactOrUnavailable(usage.inputTokens)],
           [COPY["metric.output"], compactOrUnavailable(usage.outputTokens)],
-          [COPY["metric.cacheRead"], compactOrUnavailable(usage.cacheReadTokens)],
-          [COPY["metric.cacheWrite"], compactOrUnavailable(usage.cacheWriteTokens)],
+          [
+            COPY["metric.cacheRead"],
+            compactOrUnavailable(usage.cacheReadTokens),
+          ],
+          [
+            COPY["metric.cacheWrite"],
+            compactOrUnavailable(usage.cacheWriteTokens),
+          ],
           [
             COPY["metric.cacheHit"],
             typeof report.cacheHitPercent === "number"
@@ -1166,7 +953,9 @@
       ),
       metric(
         COPY["metric.generations"],
-        totals === null ? COPY["evidence.unavailable"] : number(totals.generations),
+        totals === null
+          ? COPY["evidence.unavailable"]
+          : number(totals.generations),
         COPY["metric.generations.note"],
       ),
       metric(
@@ -1226,7 +1015,12 @@
       rows.map((row) => ({
         cells: [
           row.provider,
-          entityLink("model", row.provider + "/" + row.model, row.model, "mono"),
+          entityLink(
+            "model",
+            row.provider + "/" + row.model,
+            row.model,
+            "mono",
+          ),
           number(row.generations),
           number(row.totalTokens),
           money(row.cost),
@@ -1388,9 +1182,10 @@
     const availability = target.inventoryAvailability;
     const skills = report.skills;
     const observed =
-      skills.invocationState === "supported" &&
-      skills.invocationCount !== null
-        ? tr("env.invocationsObserved", { count: number(skills.invocationCount) })
+      skills.invocationState === "supported" && skills.invocationCount !== null
+        ? tr("env.invocationsObserved", {
+            count: number(skills.invocationCount),
+          })
         : COPY["env.invocationsUnavailable"];
     const summary = card(COPY["tab.environment"], COPY["env.note"]);
     summary.append(
@@ -1400,7 +1195,11 @@
           inventoryCount(availability.commands),
           tr("env.observed", { value: COPY["evidence.unavailable"] }),
         ),
-        metric(COPY["env.skills"], inventoryCount(availability.skills), observed),
+        metric(
+          COPY["env.skills"],
+          inventoryCount(availability.skills),
+          observed,
+        ),
         metric(
           COPY["env.resources"],
           tr("env.sources", { count: inventoryCount(availability.resources) }),
@@ -1517,7 +1316,9 @@
         el(
           "div",
           "footnote",
-          tr("skills.otherInvocations", { count: number(skills.otherInvocations) }),
+          tr("skills.otherInvocations", {
+            count: number(skills.otherInvocations),
+          }),
         ),
       );
     }
@@ -1525,11 +1326,7 @@
   };
 
   const resourcesSection = (resources, available) => {
-    if (
-      !available ||
-      resources === undefined ||
-      resources.items.length === 0
-    ) {
+    if (!available || resources === undefined || resources.items.length === 0) {
       return emptyCard(COPY["panel.resources"], COPY["resources.unavailable"]);
     }
     return table(
@@ -1579,7 +1376,11 @@
       total: child.runsTotal,
     });
     const cards = [
-      metric(COPY["agents.childRuns"], number(child.runsTotal), COPY["metric.child.note"]),
+      metric(
+        COPY["agents.childRuns"],
+        number(child.runsTotal),
+        COPY["metric.child.note"],
+      ),
     ];
     ["succeeded", "failed", "interrupted", "running", "unknown"].forEach(
       (status) => {
@@ -1610,7 +1411,11 @@
     );
     if (child.failedCost !== null) {
       cards.push(
-        metric(COPY["agents.knownFailedCost"], money(child.failedCost), fraction),
+        metric(
+          COPY["agents.knownFailedCost"],
+          money(child.failedCost),
+          fraction,
+        ),
       );
     }
     const rendered = runsById(meta.agents);
@@ -1641,7 +1446,9 @@
             run.usage === null
               ? COPY["evidence.unavailable"]
               : number(run.usage.totalTokens),
-            run.usage === null ? COPY["evidence.unavailable"] : money(run.usage.cost),
+            run.usage === null
+              ? COPY["evidence.unavailable"]
+              : money(run.usage.cost),
             orUnavailable(run.artifacts),
             parentCell(run, rendered),
           ],
@@ -1665,7 +1472,8 @@
    */
   const parentCell = (run, rendered) => {
     if (run.parent === "none") return COPY["evidence.unavailable"];
-    if (run.parent === "outside-range") return COPY["agents.parentOutsideScope"];
+    if (run.parent === "outside-range")
+      return COPY["agents.parentOutsideScope"];
     if (run.parent === "unknown") return COPY["agents.parentUnknown"];
     const parent = rendered[run.parentId];
     return entityLink(
@@ -1679,7 +1487,9 @@
     const report = target.report;
     const rows = report === undefined ? [] : report.integrations;
     if (rows.length === 0) {
-      return [emptyCard(COPY["panel.integrations"], COPY["unavailable.integrations"])];
+      return [
+        emptyCard(COPY["panel.integrations"], COPY["unavailable.integrations"]),
+      ];
     }
     return [
       table(
@@ -1702,7 +1512,9 @@
             integrationTelemetry(row),
             row.counters.length === 0
               ? COPY["evidence.unavailable"]
-              : COPY["integration.sessionTotal"] + " · " + row.counters.join(" · "),
+              : COPY["integration.sessionTotal"] +
+                " · " +
+                row.counters.join(" · "),
             row.version === null
               ? COPY["evidence.unavailable"]
               : String(row.version),
@@ -1789,7 +1601,10 @@
         ],
         rows.map((row) => ({
           cells: [
-            { fullId: text(row.id), content: entitySpan("error", row.id, row.id) },
+            {
+              fullId: text(row.id),
+              content: entitySpan("error", row.id, row.id),
+            },
             row.kind,
             row.timestamp,
             relatedToolCell(row),
@@ -1860,7 +1675,9 @@
     const partial = meta !== null && meta.truncated === true;
     const datable = meta !== null && meta.resolved !== null;
     const costKey =
-      partial && labels.cost === "metric.cost" ? "metric.knownCost" : labels.cost;
+      partial && labels.cost === "metric.cost"
+        ? "metric.knownCost"
+        : labels.cost;
     const tokensKey =
       partial && labels.tokens === "metric.tokens"
         ? "metric.knownTokens"
@@ -1884,7 +1701,9 @@
       ]),
       metric(
         COPY["metric.generations"],
-        datable ? number(meta.totals.generations) : COPY["evidence.unavailable"],
+        datable
+          ? number(meta.totals.generations)
+          : COPY["evidence.unavailable"],
         COPY["metric.generations.note"],
         [[COPY["table.date"], rangeText()]],
       ),
@@ -1904,7 +1723,11 @@
         ? COPY[labels.sessions]
         : coverage.line;
     const section = card(COPY["coverage.title"], line);
-    if (coverage !== null && coverage !== undefined && coverage.reasons !== "") {
+    if (
+      coverage !== null &&
+      coverage !== undefined &&
+      coverage.reasons !== ""
+    ) {
       section.append(
         el(
           "div",
@@ -1926,9 +1749,9 @@
         entry.firstDate === null
           ? COPY["evidence.unavailable"]
           : entry.firstDate +
-            (entry.lastDate !== null && entry.lastDate !== entry.firstDate
-              ? " → " + entry.lastDate
-              : ""),
+              (entry.lastDate !== null && entry.lastDate !== entry.firstDate
+                ? " → " + entry.lastDate
+                : ""),
       ),
     );
     return cell;
@@ -2066,16 +1889,22 @@
         COPY["metric.sessions"],
         number(global.trackedSessions),
         // L2's own session line, or the label key the same projection published.
-        global.coverage === null
-          ? COPY[labels.sessions]
-          : global.coverage.line,
+        global.coverage === null ? COPY[labels.sessions] : global.coverage.line,
       ),
     ];
     const inventory = card(COPY["panel.resources"], COPY["resources.note"]);
     inventory.append(
       metrics([
-        metric(COPY["env.commands"], inventoryValue(global.inventory.commands), COPY["env.note"]),
-        metric(COPY["env.skills"], inventoryValue(global.inventory.skills), COPY["env.note"]),
+        metric(
+          COPY["env.commands"],
+          inventoryValue(global.inventory.commands),
+          COPY["env.note"],
+        ),
+        metric(
+          COPY["env.skills"],
+          inventoryValue(global.inventory.skills),
+          COPY["env.note"],
+        ),
         metric(
           COPY["env.resources"],
           inventoryValue(global.inventory.resources),
@@ -2186,7 +2015,8 @@
           routeFor({ section: section, tab: "overview", session: null }),
         ),
       );
-      if (section === view.activeSection) link.setAttribute("aria-current", "page");
+      if (section === view.activeSection)
+        link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     });
   };
@@ -2203,9 +2033,10 @@
     const tabs = q("tabs");
     if (tabs === null) return;
     const active = document.activeElement;
-    const held = active !== null && active.dataset !== undefined
-      ? active.dataset.tab
-      : undefined;
+    const held =
+      active !== null && active.dataset !== undefined
+        ? active.dataset.tab
+        : undefined;
     tabs.replaceChildren(
       ...view.visibleTabs.map((tab) => tabLink(tab, tab === view.activeTab)),
     );
@@ -2226,13 +2057,17 @@
     const group = q("scope");
     const scopes = group === null ? [] : group.querySelectorAll("button");
     scopes.forEach((button) => {
-      const target = current === null ? undefined : current[button.dataset.scope];
+      const target =
+        current === null ? undefined : current[button.dataset.scope];
       const unavailable =
         view.activeSection !== "current" ||
         target === undefined ||
         target.availability !== "available";
       button.disabled = unavailable;
-      button.setAttribute("aria-pressed", String(button.dataset.scope === state.scope));
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.scope === state.scope),
+      );
       if (target !== undefined && target.diagnostic !== undefined) {
         button.title = target.diagnostic;
       } else {
@@ -2245,7 +2080,9 @@
     if (note !== null) {
       note.textContent =
         view.activeSection === "current"
-          ? COPY[state.scope === "active" ? "scope.active.note" : "scope.tree.note"]
+          ? COPY[
+              state.scope === "active" ? "scope.active.note" : "scope.tree.note"
+            ]
           : COPY["scope.fixed"];
     }
   };
@@ -2265,13 +2102,14 @@
     const dates = q("range-dates");
     if (dates !== null) dates.textContent = rangeText();
     const section = q("range");
-    const buttons =
-      section === null ? [] : section.querySelectorAll("button");
+    const buttons = section === null ? [] : section.querySelectorAll("button");
     buttons.forEach((button) => {
       if (button.dataset.days === undefined) return;
       button.setAttribute(
         "aria-pressed",
-        String(resolved !== null && resolved.preset === Number(button.dataset.days)),
+        String(
+          resolved !== null && resolved.preset === Number(button.dataset.days),
+        ),
       );
     });
     const custom = q("custom-range");
@@ -2337,7 +2175,9 @@
         label.textContent = entry.sessionId;
       } else if (section === "global") {
         label.textContent =
-          snapshot === null ? COPY["evidence.unavailable"] : number(snapshot.global.trackedSessions);
+          snapshot === null
+            ? COPY["evidence.unavailable"]
+            : number(snapshot.global.trackedSessions);
       } else {
         label.textContent =
           snapshot.history.coverage === null
@@ -2351,7 +2191,9 @@
         section === "current"
           ? COPY[state.scope === "active" ? "scope.active" : "scope.tree"] +
             " · " +
-            COPY[state.scope === "active" ? "scope.active.note" : "scope.tree.note"]
+            COPY[
+              state.scope === "active" ? "scope.active.note" : "scope.tree.note"
+            ]
           : COPY["scope.tree.note"];
     }
     const expired = q("wal-detail");
@@ -2417,7 +2259,8 @@
       view.focusTarget === "section-heading"
     ) {
       const heading = q("title");
-      if (heading !== null && typeof heading.focus === "function") heading.focus();
+      if (heading !== null && typeof heading.focus === "function")
+        heading.focus();
     }
     if (held) {
       const search = q("search");
@@ -2503,7 +2346,11 @@
     const key = settingsKey(next);
     if (key !== settingsKey(previous)) {
       const remembered = viewSettings[key];
-      if (remembered !== undefined && next.table === undefined && remembered.table !== undefined) {
+      if (
+        remembered !== undefined &&
+        next.table === undefined &&
+        remembered.table !== undefined
+      ) {
         next.table = remembered.table;
       }
     }
@@ -2532,8 +2379,7 @@
       return;
     }
     lastAppliedKey = appliedKey;
-    stateNotice =
-      derived.notice !== undefined ? derived.notice : parsed.notice;
+    stateNotice = derived.notice !== undefined ? derived.notice : parsed.notice;
     state = applied;
     view = derived;
     if (stale) {
@@ -2634,7 +2480,9 @@
       return;
     }
     if (data.days !== undefined) {
-      navigate(routeFor({ range: { kind: "preset", preset: Number(data.days) } }));
+      navigate(
+        routeFor({ range: { kind: "preset", preset: Number(data.days) } }),
+      );
       return;
     }
     if (data.scope !== undefined) {
@@ -2654,10 +2502,16 @@
     // rebuilds exactly the destination its href names.
     if (typeof event.preventDefault === "function") event.preventDefault();
     if (data.back !== undefined) {
-      navigate(routeFor({ section: "history", tab: "overview", session: null }));
+      navigate(
+        routeFor({ section: "history", tab: "overview", session: null }),
+      );
     } else if (data.session !== undefined) {
       navigate(
-        routeFor({ section: "history", tab: "overview", session: data.session }),
+        routeFor({
+          section: "history",
+          tab: "overview",
+          session: data.session,
+        }),
       );
     } else if (data.section !== undefined) {
       navigate(
@@ -2679,7 +2533,8 @@
 
   const onDocumentInput = (event) => {
     const target = event.target;
-    if (target === undefined || target === null || target.id !== "search") return;
+    if (target === undefined || target === null || target.id !== "search")
+      return;
     navigate(withTable({ query: target.value }), false);
   };
 
@@ -2687,7 +2542,9 @@
     const target = event.target;
     if (target === undefined || target === null) return;
     if (target.id === "sort") {
-      navigate(withTable({ sort: target.value === "default" ? "" : target.value }));
+      navigate(
+        withTable({ sort: target.value === "default" ? "" : target.value }),
+      );
       return;
     }
     if (target.id === "chart-metric") setSetting("metric", target.value);
@@ -2727,7 +2584,8 @@
     if (cancel !== null) {
       cancel.addEventListener("click", () => {
         const dialog = q("date-dialog");
-        if (dialog !== null && typeof dialog.close === "function") dialog.close();
+        if (dialog !== null && typeof dialog.close === "function")
+          dialog.close();
       });
     }
     const form = q("date-form");
@@ -2746,7 +2604,8 @@
           return;
         }
         const dialog = q("date-dialog");
-        if (dialog !== null && typeof dialog.close === "function") dialog.close();
+        if (dialog !== null && typeof dialog.close === "function")
+          dialog.close();
         navigate(routeFor({ range: parsed.intent }));
       });
     }
