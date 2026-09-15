@@ -1848,3 +1848,28 @@ test("separates model usage from agent execution with one labelled section", () 
   assert.equal(html.indexOf(CATALOG["panel.models"]) < start, true);
   assert.equal(html.includes("<hr"), false);
 });
+
+test("separates the Tools summary from its calls timeline", () => {
+  const html = renderSnapshot(currentDto());
+  const boundary = `<section class="tab-section">`;
+  // The Tools cards and the Agent execution section are the two groups that
+  // carry a boundary; the Tools one adds no heading of its own.
+  const at = html.indexOf(
+    boundary +
+      `<section class="card"><div class="panel-head"><div><h2>` +
+      CATALOG["tools.calls"],
+  );
+  assert.equal(at >= 0, true);
+  const before = html.slice(0, at);
+  assert.equal(before.includes(CATALOG["tools.summary"]), true);
+  assert.equal(before.includes(CATALOG["tools.calls"]), false);
+  assert.equal(html.includes("<hr"), false);
+  // The boundary is the only heading-free group marker: the Agent execution
+  // section keeps the heading that names it.
+  assert.equal(
+    html.includes(
+      `<section class="tab-section" aria-labelledby="agent-execution-title">`,
+    ),
+    true,
+  );
+});

@@ -1136,19 +1136,38 @@
   };
 
   /**
-   * The Agent execution section: the child-run breakdown and the Agents panel of
-   * the same scope, under one heading. Model usage and agent execution are two
-   * different subjects, and a heading plus the surface's own border token says
-   * where one ends and the other begins without a decorative rule.
+   * One section boundary: a group of panels that share a subject, separated from
+   * the group above it by the surface's own border token and one restrained
+   * margin, never by a decorative rule.
+   *
+   * A heading is added only where the group has no name of its own. A group of
+   * cards that already carry headings keeps them, because a second heading would
+   * repeat what the card below it already says.
    */
-  const agentExecutionSection = (target) => {
+  const tabSection = (nodes, heading) => {
     const section = el("section", "tab-section");
-    const title = el("h2", "section-title", COPY["section.agentExecution"]);
-    title.id = "agent-execution-title";
+    if (heading === undefined) {
+      section.append(...nodes);
+      return section;
+    }
+    const title = el("h2", "section-title", heading.label);
+    title.id = heading.id;
     section.setAttribute("aria-labelledby", title.id);
-    section.append(title, ...agentsNodes(target));
+    section.append(title, ...nodes);
     return section;
   };
+
+  /**
+   * The Agent execution section: the child-run breakdown and the Agents panel of
+   * the same scope, under one heading, because those panels are cards without a
+   * group name of their own. Model usage and agent execution are two different
+   * subjects, and the boundary says where one ends and the other begins.
+   */
+  const agentExecutionSection = (target) =>
+    tabSection(agentsNodes(target), {
+      id: "agent-execution-title",
+      label: COPY["section.agentExecution"],
+    });
 
   /**
    * The one LLM tab: the scope's model table, and below it the child-run
@@ -1308,7 +1327,7 @@
               "num",
             ],
           );
-    if (filter === null) return [summarySection, callsCard];
+    if (filter === null) return [summarySection, tabSection([callsCard])];
     // The filter is ephemeral state of the view it was chosen in, never a route.
     const bar = el("div", "toolbar");
     const clear = el("button", "", COPY["tools.clearFilter"]);
@@ -1317,7 +1336,7 @@
       el("span", "muted", tr("tools.filteredBy", { tool: filter })),
       clear,
     );
-    return [bar, summarySection, callsCard];
+    return [bar, summarySection, tabSection([callsCard])];
   };
 
   /** A summary row's own tool name narrows the calls list; it is not a route. */

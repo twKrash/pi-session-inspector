@@ -812,7 +812,18 @@ function toolsSections(
             ],
           ),
         );
-  return summarySection + callsSection;
+  return summarySection + tabSection(callsSection);
+}
+
+/**
+ * One section boundary, as static markup: a group of cards whose own headings
+ * name them, separated from the group above it by the surface's own border
+ * token. No heading is added here — the card below it already states its
+ * subject — and the same class carries the spacing in both renderers.
+ */
+function tabSection(content: string): string {
+  if (content === "") return "";
+  return `<section class="tab-section">${content}</section>`;
 }
 
 /**

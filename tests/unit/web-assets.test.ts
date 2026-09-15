@@ -3760,3 +3760,44 @@ test("the LLM tab separates model usage from agent execution", async () => {
   assert.equal(view.querySelectorAll("hr").length, 0);
   assert.equal(heading.id.length > 0, true);
 });
+
+test("the Tools tab separates its summary from the calls timeline", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/tools?scope=tree&preset=7",
+  });
+  await harness.start();
+  const view = harness.element("view");
+  const heading = (node: StubElement): string => node.textContent;
+  // The two panels already name their own subjects, so the boundary adds none:
+  // an invented heading would say what the cards below it say.
+  assert.deepEqual(view.querySelectorAll("h2").map(heading), [
+    "Tools summary",
+    "Calls timeline",
+  ]);
+  const boundaries = view
+    .querySelectorAll("section")
+    .filter((node) => node.className.includes("tab-section"));
+  assert.equal(boundaries.length, 1);
+  // The boundary holds the calls timeline, and the summary stays above it.
+  const inside = harness.texts(boundaries[0] as StubElement).join(" ");
+  assert.equal(inside.includes("Calls timeline"), true);
+  assert.equal(inside.includes("Tools summary"), false);
+  const all = harness.texts(view).join(" ");
+  assert.equal(
+    all.indexOf("Tools summary") < all.indexOf("Calls timeline"),
+    true,
+  );
+  assert.equal(view.querySelectorAll("hr").length, 0);
+
+  // Nothing about the tab's behaviour moved: the summary row still narrows the
+  // calls list, and the clear control still restores it.
+  const filter = view
+    .querySelectorAll("button")
+    .find((button) => button.dataset.toolFilter !== undefined);
+  if (filter === undefined) throw new Error("the summary row must filter");
+  harness.click(filter);
+  assert.equal(harness.texts(view).join(" ").includes("Filtered by"), true);
+  harness.click(control(harness, "view", "clearFilter", "true"));
+  assert.equal(harness.texts(view).join(" ").includes("Filtered by"), false);
+});
