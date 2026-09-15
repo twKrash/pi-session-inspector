@@ -5,8 +5,9 @@ import { WEB_ASSETS } from "./web-assets.ts";
 import type { EvidenceState } from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
 import type { DailyRow } from "./daily.ts";
+import { createTranslator } from "./i18n.ts";
+import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
 import {
-  ENGLISH_CATALOG,
   errorHeadline,
   errorMessage,
   toolDuration,
@@ -29,6 +30,8 @@ import type {
   UiSessionProjection,
   UiToolSummaryRow,
 } from "./ui-projection.ts";
+
+const t = createTranslator();
 
 /**
  * The immutable snapshot renderer (ADR 0018): it turns exactly one
@@ -273,7 +276,7 @@ function footnote(content: string): string {
 /** The one empty/unavailable section: a bounded label, never a fabricated row. */
 function emptyCard(title: string, note: string): string {
   return (
-    `<section class="card empty"><p class="eyebrow">${text(ENGLISH_CATALOG["evidence.unavailable"])}</p>` +
+    `<section class="card empty"><p class="eyebrow">${text(t("evidence.unavailable"))}</p>` +
     `<h2>${text(title)}</h2><p>${text(note)}</p></section>`
   );
 }
@@ -330,28 +333,16 @@ function money(value: number): string {
 }
 
 function orUnavailable(value: string | null | undefined): string {
-  return value ?? ENGLISH_CATALOG["evidence.unavailable"];
+  return value ?? t("evidence.unavailable");
 }
 
 function numberOrUnavailable(value: number | null): string {
-  return value === null
-    ? ENGLISH_CATALOG["evidence.unavailable"]
-    : count(value);
-}
-
-function fill(
-  template: string,
-  values: Readonly<Record<string, string | number>>,
-): string {
-  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
-    String(values[key] ?? match),
-  );
+  return value === null ? t("evidence.unavailable") : count(value);
 }
 
 /** One catalog entry by a value computed at render time (a status, a label key). */
 function catalogEntry(key: string): string {
-  const catalog: Readonly<Record<string, string>> = ENGLISH_CATALOG;
-  return catalog[key] ?? key;
+  return t(key as Parameters<typeof t>[0]);
 }
 
 /** The shared confidence tone rule: known sources read plain, the rest state it. */
@@ -382,12 +373,12 @@ function rangeMetadata(range: SnapshotRange | undefined): RangeMetadata {
 
 function rangeDates(resolved: RangeMetadata["resolved"]): string {
   return resolved === null
-    ? ENGLISH_CATALOG["evidence.unavailable"]
+    ? t("evidence.unavailable")
     : `${resolved.from} → ${resolved.to}`;
 }
 
-const DAILY_NOTE = fill(ENGLISH_CATALOG["chart.note"], {
-  metric: ENGLISH_CATALOG["chart.tokens"],
+const DAILY_NOTE = t("chart.note", {
+  metric: t("chart.tokens"),
 });
 
 // ---------------------------------------------------------------------------
@@ -444,7 +435,7 @@ function sessionTarget(
 function walNotice(): string {
   return (
     `<div class="notice"><span aria-hidden="true">ⓘ</span><div><strong>` +
-    `${text(ENGLISH_CATALOG["walDetail.expired"])}</strong> ${text(ENGLISH_CATALOG["walDetail.copy"])}</div></div>`
+    `${text(t("walDetail.expired"))}</strong> ${text(t("walDetail.copy"))}</div></div>`
   );
 }
 
@@ -817,11 +808,11 @@ function toolUsageCell(
   labelKey: "metric.knownTokens" | "metric.knownCost",
   row: UiToolSummaryRow,
 ): Cell {
-  if (row.withUsage === 0) return ENGLISH_CATALOG["evidence.unavailable"];
+  if (row.withUsage === 0) return t("evidence.unavailable");
   if (row.partial) {
     return raw(
-      `${text(value)} ${badge(ENGLISH_CATALOG[labelKey], "warn")}` +
-        `<small>${text(fill(ENGLISH_CATALOG["tools.usageFraction"], { withUsage: row.withUsage, total: row.calls }))}</small>`,
+      `${text(value)} ${badge(t(labelKey), "warn")}` +
+        `<small>${text(t("tools.usageFraction", { withUsage: row.withUsage, total: row.calls }))}</small>`,
     );
   }
   return value;
@@ -831,8 +822,8 @@ function toolUsageCell(
 function durationCell(row: ToolRow, durationEvidence: EvidenceState): string {
   const label = toolDuration(row, durationEvidence);
   return label === null
-    ? ENGLISH_CATALOG["evidence.unavailable"]
-    : `${label} · ${ENGLISH_CATALOG["evidence.live"]}`;
+    ? t("evidence.unavailable")
+    : `${label} · ${t("evidence.live")}`;
 }
 
 function timestampCell(timestamp: string): Cell {
@@ -849,7 +840,7 @@ function environmentSections(
   const resources = report.resources;
   const observed =
     skills.invocationState === "supported" && skills.invocationCount !== null
-      ? fill(catalog["env.invocationsObserved"], {
+      ? t("env.invocationsObserved", {
           count: count(skills.invocationCount),
         })
       : catalog["env.invocationsUnavailable"];
@@ -862,8 +853,8 @@ function environmentSections(
         numberOrUnavailable(inventoryAvailability.commands),
         // Commands carry no counter evidence, so their observed side is
         // Unavailable: inventory availability is never activity.
-        fill(catalog["env.observed"], {
-          value: catalog["evidence.unavailable"],
+        t("env.observed", {
+          value: t("evidence.unavailable"),
         }),
       ),
       metric(
@@ -884,7 +875,7 @@ function environmentSections(
           catalog["env.commands"],
           commands.count === null
             ? catalog["unavailable.commands"]
-            : fill(catalog["commands.count"], { count: count(commands.count) }),
+            : t("commands.count", { count: count(commands.count) }),
         )
       : card(
           catalog["env.commands"],
@@ -945,7 +936,7 @@ function environmentSections(
                 skills.otherInvocations === undefined ||
                 skills.otherInvocations <= 0
                 ? ""
-                : fill(catalog["skills.otherInvocations"], {
+                : t("skills.otherInvocations", {
                     count: count(skills.otherInvocations),
                   }),
             ),
@@ -1082,7 +1073,7 @@ function agentsSections(
  */
 function childUsageSummary(childUsage: UiChildUsage): string {
   const catalog = ENGLISH_CATALOG;
-  const fraction = fill(catalog["agents.usageFraction"], {
+  const fraction = t("agents.usageFraction", {
     withUsage: childUsage.runsWithUsage,
     total: childUsage.runsTotal,
   });
@@ -1126,7 +1117,7 @@ function childUsageSummary(childUsage: UiChildUsage): string {
       metric(
         catalog["agents.knownFailedCost"],
         money(childUsage.failedCost),
-        fill(catalog["agents.usageFraction"], {
+        t("agents.usageFraction", {
           withUsage: childUsage.failedRunsWithUsage,
           total: childUsage.byStatus.failed,
         }),
@@ -1142,12 +1133,12 @@ function childUsageSummary(childUsage: UiChildUsage): string {
  * never re-derived from the rows here.
  */
 function parentLabel(run: UiAgentRow, runs: readonly UiAgentRow[]): string {
-  if (run.parent === "none") return ENGLISH_CATALOG["evidence.unavailable"];
+  if (run.parent === "none") return t("evidence.unavailable");
   if (run.parent === "outside-range") {
-    return ENGLISH_CATALOG["agents.parentOutsideScope"];
+    return t("agents.parentOutsideScope");
   }
   if (run.parent === "unknown") {
-    return ENGLISH_CATALOG["agents.parentUnknown"];
+    return t("agents.parentUnknown");
   }
   const parent = runs.find((candidate) => candidate.id === run.parentId);
   return orUnavailable(parent?.agent ?? null);
@@ -1244,10 +1235,10 @@ function errorsSection(errors: readonly ErrorRow[]): string {
   );
 }
 
-/** The row's headline is `report-projection`'s rule, filled here. */
+/** The row's headline is `report-projection`'s rule, translated here. */
 function errorHeadlineText(row: ErrorRow): string {
   const headline = errorHeadline(row);
-  return fill(ENGLISH_CATALOG[headline.key], headline.values ?? {});
+  return t(headline.key, headline.values ?? undefined);
 }
 
 function errorMessageText(row: ErrorRow): string {
@@ -1536,9 +1527,7 @@ function coverageSection(
   const reason =
     coverage === null || coverage.reasons === ""
       ? ""
-      : footnote(
-          fill(catalog["coverage.reasons"], { reasons: coverage.reasons }),
-        );
+      : footnote(t("coverage.reasons", { reasons: coverage.reasons }));
   return card(
     catalog["coverage.title"],
     coverage === null ? fallbackLine : coverage.line,
@@ -1623,7 +1612,9 @@ function historyRow(
     numberOrUnavailable(row.agentCount),
     row.status === null
       ? unknown
-      : raw(badge(catalog[row.status.key], row.status.tone)),
+      : raw(
+          badge(t(row.status.key as Parameters<typeof t>[0]), row.status.tone),
+        ),
     published
       ? knownCell(
           row.cost === null ? unknown : money(row.cost),
@@ -1639,9 +1630,7 @@ function knownCell(
   partial: boolean,
   labelKey: "metric.knownTokens" | "metric.knownCost",
 ): Cell {
-  return partial
-    ? raw(`${text(value)} ${badge(ENGLISH_CATALOG[labelKey], "warn")}`)
-    : value;
+  return partial ? raw(`${text(value)} ${badge(t(labelKey), "warn")}`) : value;
 }
 
 /** One target's resolved range and its partial or truncated verdict. */
@@ -1650,10 +1639,10 @@ function rangePanel(range: RangeMetadata, partialLabel: string): string {
   const resolved = range.resolved;
   const name =
     resolved === null
-      ? catalog["evidence.unavailable"]
+      ? t("evidence.unavailable")
       : resolved.preset === null
         ? catalog["range.custom"]
-        : fill(catalog["range.last"], { days: resolved.preset });
+        : t("range.last", { days: resolved.preset });
   return (
     `<section class="time-range" aria-label="${attr(catalog["range.label"])}"><div>` +
     `<p class="eyebrow">${text(catalog["range.label"])}</p><strong>${text(name)}</strong>` +

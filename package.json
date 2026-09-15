@@ -31,11 +31,15 @@
     "src",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "build:web": "node scripts/build-web.mjs",
+    "build:web:check": "node scripts/build-web.mjs --check",
+    "prepack": "node scripts/build-web.mjs --check",
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/**/*.test.ts",
@@ -44,7 +48,8 @@
     "benchmark:release": "node --expose-gc --import tsx benchmark/run.ts --mode=release --out=benchmark/artifacts/release-latest.json",
     "knip": "knip",
     "prepare": "node scripts/install-hooks.mjs",
-    "depcruise": "depcruise --config .dependency-cruiser.cjs --output-type err src"
+    "depcruise": "depcruise --config .dependency-cruiser.cjs --output-type err src",
+    "publint": "publint --strict"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
@@ -53,6 +58,7 @@
     "esbuild": "^0.28.2",
     "fast-check": "^4.10.0",
     "knip": "^6.35.1",
+    "publint": "0.3.24",
     "tsx": "4.21.0",
     "typescript": "^5.9.3"
   },
@@ -61,6 +67,6 @@
     "@earendil-works/pi-tui": "^0.85.1"
   },
   "dependencies": {
-    "publint": "^0.3.24"
+    "i18next": "26.4.2"
   }
 }

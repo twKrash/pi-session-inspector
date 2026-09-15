@@ -1,8 +1,30 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.3.15/schema.json",
   "files": {
-    "includes": ["src/**/*.ts", "tests/**/*.ts", "benchmark/**/*.ts"]
+    "includes": [
+      "src/**/*.ts",
+      "tests/**/*.ts",
+      "benchmark/**/*.ts",
+      "scripts/**/*.js",
+      "scripts/**/*.mjs"
+    ]
   },
-  "formatter": { "indentStyle": "space" },
-  "linter": { "enabled": true }
+  "formatter": {
+    "indentStyle": "space"
+  },
+  "linter": {
+    "enabled": true
+  },
+  "overrides": [
+    {
+      "includes": [
+        "scripts/web/route.js",
+        "scripts/web/range.js",
+        "scripts/web/client.js"
+      ],
+      "linter": {
+        "enabled": false
+      }
+    }
+  ]
 }

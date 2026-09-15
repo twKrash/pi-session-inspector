@@ -242,16 +242,6 @@ const ASSETS: readonly {
     contentType: "text/css; charset=utf-8",
   },
   {
-    path: "/route.js",
-    body: WEB_ASSETS.route,
-    contentType: "text/javascript; charset=utf-8",
-  },
-  {
-    path: "/range.js",
-    body: WEB_ASSETS.range,
-    contentType: "text/javascript; charset=utf-8",
-  },
-  {
     path: "/client.js",
     body: WEB_ASSETS.client,
     contentType: "text/javascript; charset=utf-8",

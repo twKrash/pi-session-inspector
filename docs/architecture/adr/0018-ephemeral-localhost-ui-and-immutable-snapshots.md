@@ -166,22 +166,44 @@ server or network.
 
 ### Browser assets
 
-The interactive application uses ordinary package assets:
+The interactive application uses a readable source tree and generated package
+assets:
 
 ```text
-src/ui/web/
-  shell.html
-  style.css
+scripts/web/
   route.js
   range.js
   client.js
+src/ui/web/
+  shell.html
+  style.css
+  client.js          # deterministic esbuild output
 ```
 
-The server serves these assets unchanged. The static snapshot does not include
-`route.js`, `range.js`, or `client.js`; it may inline the known stylesheet.
-Classic scripts load in explicit deterministic order and use one bounded
-`globalThis.SessionInspectorWeb` namespace (or an equivalent single owned
-namespace).
+The build-time esbuild step bundles the source scripts and the local i18n
+catalog/runtime into one classic client asset.
+The server serves generated assets unchanged. The static snapshot does not
+include `client.js`; it may inline the known stylesheet. The generated client
+initializes one bounded `globalThis.SessionInspectorWeb` namespace (or an
+equivalent single owned namespace). Locale selection is explicit English with
+local fallback; no runtime CDN, module loader, detector, persistence, or network
+resource is used.
+
+Biome format checks the readable browser sources, while its generic linter is
+explicitly disabled for the classic-script files: automatic IIFE/strict-mode
+rewrites would alter script semantics. The generated bundle freshness, privacy,
+HTML-sink, capability, wall-clock, and catalog-key tests remain mandatory gates.
+
+Shipped-asset gates assert capabilities, not substrings. Parsing the bundle
+proves there is no static or dynamic module loading, no host loader, no
+`import.meta`, and no runtime code evaluation; scanning for the substring
+`import` was only a proxy for that rule and rejected inert text such as a
+vendor's diagnostic string. In the same way, the calendar rule is scoped to the
+sources Inspector writes, and the shipped bundle is proved to render without a
+wall-clock read by poisoning `Date` in the executing realm. The security
+substring gates that remain (`innerHTML`, `outerHTML`, `insertAdjacentHTML`,
+`document.write`, storage, socket/XHR, `eval(`, `new Function`) each name a real
+boundary and stay strict.
 
 Browser assets own only interaction/presentation behavior: route
 parsing/serialization, hash navigation, Back/Forward state, tab/sidebar state,
@@ -193,9 +215,10 @@ forbidden.
 Browser assets do not own canonical reconciliation, scope semantics, evidence
 or coverage interpretation, usage accounting, date attribution, report
 aggregation, truncation, partial history, or unavailable-versus-zero rules.
-No bundler or runtime TypeScript transformation is introduced before Pre-M8.6.
-Pre-M8.6 may compare this unbundled client with an optional bundled candidate
-without revisiting server adoption.
+Pre-M8.6 adopted build-time esbuild bundling after comparing the unbundled
+client against isolated and final candidates. It changes asset assembly only,
+not server adoption or browser semantic ownership. No runtime TypeScript
+transformation, module loader, CDN, or network resource is introduced.
 
 ### Localhost server and API
 

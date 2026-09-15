@@ -1,10 +1,10 @@
 /**
- * The ordinary-asset harness: it executes the three shipped classic scripts
- * (`route.js`, `range.js`, `client.js`) in a `vm` context with a stub DOM built
- * from the shipped `shell.html`, so the browser tests exercise the exact bytes
- * the server serves rather than a copy of their logic.
+ * The ordinary-asset harness: it executes the one bundled browser script in a
+ * `vm` context with a stub DOM built from the shipped `shell.html`, so the
+ * browser tests exercise the exact bytes the server serves rather than a copy
+ * of its logic.
  *
- * Everything the scripts can reach is stubbed here: the document (ids, tags,
+ * Everything the script can reach is stubbed here: the document (ids, tags,
  * classes, `[data-*]` attributes, focus, and an input's selection), the address
  * bar, `history.replaceState`, both storages, `fetch`, and the two event paths.
  * The harness also records what the client did and in which order — the route
@@ -492,13 +492,8 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     setTimeout,
   };
   createContext(context);
-  for (const [name, source] of [
-    ["route.js", WEB_ASSETS.route],
-    ["range.js", WEB_ASSETS.range],
-    ["client.js", WEB_ASSETS.client],
-  ] as const) {
-    runInContext(source, context, { filename: name });
-  }
+  // One classic bundle: route and range initialize before the client inside it.
+  runInContext(WEB_ASSETS.client, context, { filename: "client.js" });
   // The client starts during evaluation; this recorder is installed before the
   // asynchronous response resolves, so it sees every request-driven parse.
   const namespace = context.SessionInspectorWeb as

@@ -77,11 +77,12 @@ carry that token as `Authorization: Bearer`. The boundary is exact:
 - A request whose peer address is not loopback is refused boundedly. That
   includes a port-forwarding setup that presents a non-loopback peer: the
   refusal is the contract, not a case for a broader allowlist.
-- Static assets are the five known files (`/`, `/style.css`, `/route.js`,
-  `/range.js`, `/client.js`), served by a fixed table with `GET`/`HEAD` only.
-  The exact `/favicon.ico` compatibility probe returns empty `204` for
-  `GET`/`HEAD` and is not an additional asset. API routes are `/api/v1/ui`,
-  `/api/v1/reports/global`, and
+- Static assets are the three known files (`/`, `/style.css`, `/client.js`),
+  served by a fixed table with `GET`/`HEAD` only. `client.js` is a deterministic
+  build-time bundle from readable sources under `scripts/web/`; route and range
+  logic are not runtime module assets. The exact `/favicon.ico` compatibility
+  probe returns empty `204` for `GET`/`HEAD` and is not an additional asset. API
+  routes are `/api/v1/ui`, `/api/v1/reports/global`, and
   `/api/v1/reports/sessions/<sessionId>` with `GET` only.
 - Every response is `no-store`, `nosniff`, and `no-referrer`; errors are bounded
   Problem Details that echo no input, and the diagnostics written to stderr

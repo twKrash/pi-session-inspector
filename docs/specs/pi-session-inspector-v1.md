@@ -151,10 +151,12 @@ or executable JavaScript. It uses native HTML/CSS and is self-contained for
 Snapshot HTML context-escapes every dynamic value. Report/session/model/tool/
 diagnostic values are data, never trusted markup.
 
-The interactive assets are ordinary classic files under `src/ui/web/`:
-`shell.html`, `style.css`, `route.js`, `range.js`, and `client.js`. The server
-serves them unchanged. The static snapshot does not include the route, range,
-or API client assets. Browsers may probe exact `/favicon.ico`; `GET` and `HEAD`
+The interactive surface has three known assets under `src/ui/web/`:
+`shell.html`, `style.css`, and generated `client.js`. `client.js` is a
+build-time deterministic classic bundle from the readable route, range, and
+client sources under `scripts/web/`; the server serves the generated asset
+without runtime module loading. The static snapshot does not include the
+interactive client. Browsers may probe exact `/favicon.ico`; `GET` and `HEAD`
 return an empty `204` response without report data or a diagnostic, and this
 compatibility route is not an additional browser asset.
 
@@ -416,8 +418,9 @@ keeps working from that state. `ui --output` and `--theme` on `tui`/`json` are
 rejected with usage; `snapshot` accepts `--theme`. Parsing, completions, and
 help are deterministic and table-driven.
 
-The interactive `ui` serves ordinary classic browser assets and obtains bounded
-report DTOs from its protected localhost API. Its charts and controls are
+The interactive `ui` serves three classic browser assets, including one
+build-time-generated client bundle, and obtains bounded report DTOs from its
+protected localhost API. Its charts and controls are
 presentation only; TypeScript L2 owns all report arithmetic. `snapshot` renders
 one already-resolved projection as self-contained HTML/CSS with no executable
 JavaScript, embedded DTO for later interpretation, network access, or offline

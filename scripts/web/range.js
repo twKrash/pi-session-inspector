@@ -1,5 +1,5 @@
 /**
- * The browser's range intent grammar (`/range.js`): exactly the two bounded
+ * The browser's range intent grammar (`scripts/web/range.js`): exactly the two bounded
  * forms the API accepts, parsed into an intent and serialized back into
  * canonical query pairs.
  *

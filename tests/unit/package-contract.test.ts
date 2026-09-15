@@ -6,14 +6,8 @@ import { test } from "node:test";
 /** The released version this branch ships (SemVer, ADR 0018). */
 const RELEASE_VERSION = "0.10.0";
 
-/** The five ordinary browser assets the server, the snapshot and the package share. */
-const BROWSER_ASSETS = [
-  "shell.html",
-  "style.css",
-  "route.js",
-  "range.js",
-  "client.js",
-] as const;
+/** The three browser assets the server and package share. */
+const BROWSER_ASSETS = ["shell.html", "style.css", "client.js"] as const;
 
 /** The producer trees that never ship and must never be required at runtime. */
 const DEVELOPMENT_TREES = ["tests/", "benchmark/", "docs/", ".superpowers/"];
@@ -54,12 +48,17 @@ test("package declares Pi extension and ships entrypoint", () => {
   assert.ok(existsSync("src/index.ts"), "missing Pi extension entrypoint");
 });
 
-test("package allowlist includes license and published source", () => {
+test("package allowlist includes licenses and published source", () => {
   const pkg = packageManifest();
 
   assert.ok(pkg.files.includes("LICENSE"));
+  assert.ok(pkg.files.includes("THIRD_PARTY_NOTICES.md"));
   assert.ok(pkg.files.includes("src"));
   assert.ok(existsSync("LICENSE"), "missing MIT license");
+  assert.ok(
+    existsSync("THIRD_PARTY_NOTICES.md"),
+    "missing third-party notices",
+  );
 });
 
 test("both manifests report the released version", () => {
@@ -81,7 +80,7 @@ test("both manifests report the released version", () => {
   assert.deepEqual(lock.packages[""].dependencies, pkg.dependencies);
 });
 
-test("the five browser assets ship inside the published tree", () => {
+test("the three browser assets ship inside the published tree", () => {
   const pkg = packageManifest();
   assert.ok(pkg.files.includes("src"));
 
@@ -90,7 +89,7 @@ test("the five browser assets ship inside the published tree", () => {
     assert.ok(existsSync(path), `missing shipped asset ${path}`);
     assert.equal(statSync(path).isFile(), true, path);
   }
-  // The one loader reads exactly those five files, by relative URL only.
+  // The one loader reads exactly those three files, by relative URL only.
   const loader = readFileSync("src/ui/web-assets.ts", "utf8");
   const specifiers = [
     ...loader.matchAll(/new URL\("([^"]+)",\s*import\.meta\.url\)/g),
@@ -99,8 +98,6 @@ test("the five browser assets ship inside the published tree", () => {
     .sort();
   assert.deepEqual(specifiers, [
     "./web/client.js",
-    "./web/range.js",
-    "./web/route.js",
     "./web/shell.html",
     "./web/style.css",
   ]);

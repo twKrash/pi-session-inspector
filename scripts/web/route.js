@@ -1,5 +1,5 @@
 /**
- * The browser's route grammar (`/route.js`): one canonical hash, parsed and
+ * The browser's route grammar (`scripts/web/route.js`): one canonical hash, parsed and
  * serialized with the closed section, tab and entity vocabularies.
  *
  * Canonical parameter order — the order this serializer emits, so one route has
@@ -11,7 +11,7 @@
  * rather than echoed.
  *
  * This module owns the route grammar and the coercion that goes with it. It
- * resolves no range: the `range` member of the sibling `range.js` parses and
+ * resolves no range: the `range` member of sibling `scripts/web/range.js` parses and
  * serializes the intent, and the resolved span is whatever the API returned.
  */
 (function () {
@@ -73,7 +73,11 @@
     const intent = source.range;
     if (intent !== undefined && intent !== null) {
       if (intent.kind === "preset") {
-        if (intent.preset === 7 || intent.preset === 14 || intent.preset === 30) {
+        if (
+          intent.preset === 7 ||
+          intent.preset === 14 ||
+          intent.preset === 30
+        ) {
           pairs.push("preset=" + intent.preset);
         }
       } else if (
@@ -86,7 +90,11 @@
       }
     }
     const session = source.session;
-    if (section === "history" && typeof session === "string" && session !== "") {
+    if (
+      section === "history" &&
+      typeof session === "string" &&
+      session !== ""
+    ) {
       pairs.push("session=" + encodeURIComponent(session));
     }
     const entity = source.entity;
@@ -229,7 +237,8 @@
     const scopeParam = params.get("scope");
     const fallback = settings.scope === "tree" ? "tree" : "active";
     const scope =
-      section !== "current" || (scopeParam !== "active" && scopeParam !== "tree")
+      section !== "current" ||
+      (scopeParam !== "active" && scopeParam !== "tree")
         ? fallback
         : scopeParam;
 
@@ -265,7 +274,11 @@
       const separator = entity.indexOf(":");
       const kind = separator > 0 ? entity.slice(0, separator) : "";
       const id = separator > 0 ? entity.slice(separator + 1) : "";
-      if (ENTITY_KINDS.indexOf(kind) >= 0 && id !== "" && ids.indexOf(id) >= 0) {
+      if (
+        ENTITY_KINDS.indexOf(kind) >= 0 &&
+        id !== "" &&
+        ids.indexOf(id) >= 0
+      ) {
         route.entity = { kind: kind, id: id };
       }
     }
@@ -278,7 +291,9 @@
       route.table = state;
     }
 
-    return notice === undefined ? { route: route } : { route: route, notice: notice };
+    return notice === undefined
+      ? { route: route }
+      : { route: route, notice: notice };
   }
 
   /**
@@ -308,7 +323,8 @@
     const tab = typeof source.tab === "string" ? source.tab : "";
     if (tab !== "") {
       if (visibleTabs.indexOf(tab) >= 0) activeTab = tab;
-      else if (notice === undefined && tab !== defaultTab) notice = "tab-unavailable";
+      else if (notice === undefined && tab !== defaultTab)
+        notice = "tab-unavailable";
     }
     const view = {
       activeSection: requested,

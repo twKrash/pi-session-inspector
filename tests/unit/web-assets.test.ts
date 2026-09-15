@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
-import { ENGLISH_CATALOG } from "../../src/ui/report-projection.ts";
+import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
   projectInspectorUi,
@@ -16,28 +18,23 @@ import {
 } from "../helpers/client-harness.ts";
 
 /**
- * The ordinary browser assets (`src/ui/web/`) are the interactive application:
- * route, range intent, navigation, HTTP bootstrap and DOM rendering. These tests
- * execute the shipped bytes in a `vm` context with a stub DOM, so what they pin
- * is what a browser runs. Report semantics stay pinned in `ui-projection.test.ts`
- * and `snapshot.test.ts`; nothing here recomputes them.
+ * The readable browser sources (`scripts/web/`) implement route, range intent,
+ * navigation, HTTP bootstrap and DOM rendering. These tests execute generated
+ * shipped bytes in a `vm` context with a stub DOM, so what they pin is what a
+ * browser runs. Report semantics stay pinned in `ui-projection.test.ts` and
+ * `snapshot.test.ts`; nothing here recomputes them.
  */
 
 const ASSET_PATHS = {
   shell: "src/ui/web/shell.html",
   style: "src/ui/web/style.css",
-  route: "src/ui/web/route.js",
-  range: "src/ui/web/range.js",
   client: "src/ui/web/client.js",
 } as const;
 
-const SCRIPTS: readonly (keyof typeof ASSET_PATHS)[] = [
-  "route",
-  "range",
-  "client",
-];
+const SCRIPTS: readonly (keyof typeof ASSET_PATHS)[] = ["client"];
 
 const PROJECT_ROOT = new URL("../../", import.meta.url);
+const PROJECT_ROOT_PATH = fileURLToPath(PROJECT_ROOT);
 
 /**
  * A value that crossed the `vm` realm, as its plain test-realm structure: the
@@ -51,6 +48,11 @@ function plain(value: unknown): unknown {
 function assetText(name: keyof typeof ASSET_PATHS): string {
   return readFileSync(new URL(ASSET_PATHS[name], PROJECT_ROOT), "utf8");
 }
+
+const CLIENT_SOURCE = readFileSync(
+  new URL("../../scripts/web/client.js", import.meta.url),
+  "utf8",
+);
 
 /** The fixture bundle, projected by L2 exactly as the API returns it. */
 function uiSnapshot(): InspectorUiSnapshot {
@@ -78,11 +80,16 @@ const ALL_TABS = [
 // The asset boundary
 // ---------------------------------------------------------------------------
 
-test("the loader reads exactly the five known files and serves their bytes", () => {
+test("the generated client asset is fresh", () => {
+  execFileSync(process.execPath, ["scripts/build-web.mjs", "--check"], {
+    cwd: PROJECT_ROOT_PATH,
+    stdio: "pipe",
+  });
+});
+
+test("the loader reads exactly the three known files and serves their bytes", () => {
   assert.deepEqual(Object.keys(WEB_ASSETS).sort(), [
     "client",
-    "range",
-    "route",
     "shell",
     "style",
   ]);
@@ -94,7 +101,7 @@ test("the loader reads exactly the five known files and serves their bytes", () 
   // The record is data: no path lookup, no function, no locator surface.
   assert.deepEqual(
     Object.values(WEB_ASSETS).map((value) => typeof value),
-    ["string", "string", "string", "string", "string"],
+    ["string", "string", "string"],
   );
 });
 
@@ -110,7 +117,7 @@ test("the stylesheet is the one source for the asset and the snapshot", () => {
   assert.equal(WEB_ASSETS.style.includes("<"), false);
 });
 
-test("the shell is report-free and loads the known assets in explicit order", () => {
+test("the shell is report-free and loads the generated client asset", () => {
   const shell = WEB_ASSETS.shell;
   // No report payload, no catalog blob, no attribute a report could arrive in.
   for (const forbidden of [
@@ -124,12 +131,9 @@ test("the shell is report-free and loads the known assets in explicit order", ()
   ]) {
     assert.equal(shell.includes(forbidden), false, forbidden);
   }
-  // Classic scripts only: every script tag names a file, and nothing is inline.
+  // One external script only: the bundle is loaded after the fixed landmarks.
   const scriptTags = shell.match(/<script[^>]*>/g) ?? [];
-  assert.equal(scriptTags.length, 3);
-  for (const tag of scriptTags) {
-    assert.match(tag, /^<script src="\/[a-z]+\.js">$/);
-  }
+  assert.deepEqual(scriptTags, ['<script src="/client.js">']);
   assert.equal(
     shell.indexOf('<script src="/client.js">') >
       shell.indexOf('id="announcement"'),
@@ -137,7 +141,7 @@ test("the shell is report-free and loads the known assets in explicit order", ()
   );
   assert.deepEqual(
     [...shell.matchAll(/(?:href|src)="(\/[^"]+)"/g)].map((match) => match[1]),
-    ["/style.css", "/route.js", "/range.js", "/client.js"],
+    ["/style.css", "/client.js"],
   );
   // The fixed landmarks the client renders into.
   for (const landmark of [
@@ -250,47 +254,31 @@ test("no raw producer field name or host path reaches a browser asset", () => {
   }
 });
 
-test("the browser copy is the server catalog, not a second set of strings", () => {
-  // Scope: every string this table carries is the catalog's own text for the
-  // same key. That the table carries every key the renderer looks up — the
-  // other half of "no second catalog" — is pinned by the next test.
-  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(WEB_ASSETS.client);
-  assert.notEqual(literal, null, "client.js must declare its copy literal");
-  const copy = JSON.parse(literal?.[1] as string) as Record<string, string>;
-  assert.equal(Object.keys(copy).length > 40, true);
-  const catalog: Readonly<Record<string, string>> = ENGLISH_CATALOG;
-  for (const [key, value] of Object.entries(copy)) {
-    assert.equal(catalog[key], value, key);
-  }
+test("the browser source delegates copy to the shared translator", () => {
+  assert.equal(CLIENT_SOURCE.includes("const COPY = {"), false);
+  assert.equal(CLIENT_SOURCE.includes("new Proxy"), true);
+  assert.equal(CLIENT_SOURCE.includes("translator.t"), true);
+  // The generated asset carries one bundled catalog, not a browser-maintained
+  // second literal; adapter behavior is covered by i18n.test.ts.
+  assert.equal(WEB_ASSETS.client.includes("Pi Session Inspector"), true);
 });
 
-test("every copy key the renderer names resolves in the catalog", () => {
-  const literal = /const COPY = (\{[\s\S]*?\n\s*\})/.exec(WEB_ASSETS.client);
-  assert.notEqual(literal, null, "client.js must declare its copy literal");
-  const declared = literal as RegExpExecArray;
-  const copy = JSON.parse(declared[1] as string) as Record<string, string>;
-  const catalog: Readonly<Record<string, string>> = ENGLISH_CATALOG;
-  // The renderer only: a key named outside the table is a lookup this test has
-  // to see, and a key named inside it would otherwise pass by construction.
-  const renderer =
-    WEB_ASSETS.client.slice(0, declared.index) +
-    WEB_ASSETS.client.slice(declared.index + declared[0].length);
-
+test("every browser copy lookup resolves in the shared catalog", () => {
   const named = new Set<string>();
-  // A dotted key written literally is a copy lookup; a prefix with a trailing
-  // dot is one half of a concatenation, covered by the families below.
-  for (const found of renderer.matchAll(
-    /"([a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+\.?)"/g,
-  )) {
-    if (!found[1].endsWith(".")) named.add(found[1]);
+  for (const found of CLIENT_SOURCE.matchAll(/COPY\["([^"]+)"\]/g)) {
+    named.add(found[1]);
   }
-  // The two single-word keys the renderer reads through a dotted access.
-  for (const found of renderer.matchAll(/COPY\.([A-Za-z][\w]*)/g)) {
+  for (const found of CLIENT_SOURCE.matchAll(/COPY\.([A-Za-z][\w]*)/g)) {
+    named.add(found[1]);
+  }
+  // Literal keys passed through tr(), indexed COPY lookups, and bounded
+  // conditional lookups use the same dotted spelling even without COPY text.
+  for (const found of CLIENT_SOURCE.matchAll(
+    /"([a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+)"/g,
+  )) {
     named.add(found[1]);
   }
 
-  // The families the renderer builds from a bounded vocabulary: each prefix and
-  // every value the DTO can carry under it.
   const { route } = namespaces();
   const sections = plain(route.sections) as string[];
   const families: [string, readonly string[]][] = [
@@ -307,17 +295,12 @@ test("every copy key the renderer names resolves in the catalog", () => {
     ["tools.", ["succeeded", "failed", "interrupted"]],
     ["agents.", ["succeeded", "failed", "interrupted", "running", "unknown"]],
     ["presence.", ["present", "absent", "unknown"]],
-    // An integration's evidence state, plus the confidence the ledger's own
-    // rows carry (the reducer records native rows only).
     ["evidence.", ["native", "supported", "unavailable", "unsupported"]],
-    // The one status verdict L2 publishes per history row.
     ["status.", ["errors", "interrupted", "clean"]],
   ];
   for (const [prefix, values] of families) {
     for (const value of values) named.add(prefix + value);
   }
-  // The label keys a projection publishes for its own usage ladder and the
-  // coverage wording it renders through `coverage.line`.
   for (const key of [
     "metric.cost",
     "metric.knownCost",
@@ -330,18 +313,22 @@ test("every copy key the renderer names resolves in the catalog", () => {
     "coverage.sessionsLimited",
     "coverage.unknownCompletenessCost",
     "coverage.unknownCompletenessTokens",
+    "metric.costUnavailable",
   ]) {
     named.add(key);
   }
 
   assert.equal(named.size > 150, true);
   for (const key of named) {
-    assert.equal(typeof copy[key], "string", key);
-    assert.equal(copy[key], catalog[key], key);
+    assert.equal(
+      typeof ENGLISH_CATALOG[key as keyof typeof ENGLISH_CATALOG],
+      "string",
+      key,
+    );
   }
 });
 
-test("the assets own one namespace with route, range, and start", async () => {
+test("the assets own one namespace with route, range, i18n, and start", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()] });
   await harness.start();
   const injected = [
@@ -355,6 +342,9 @@ test("the assets own one namespace with route, range, and start", async () => {
     "fetch",
     "console",
     "setTimeout",
+    "getComputedStyle",
+    "ResizeObserver",
+    "MutationObserver",
   ];
   const added = Object.keys(harness.context).filter(
     (key) => !injected.includes(key) && key !== "globalThis",
@@ -364,8 +354,22 @@ test("the assets own one namespace with route, range, and start", async () => {
     string,
     unknown
   >;
-  assert.deepEqual(Object.keys(namespace).sort(), ["range", "route", "start"]);
+  assert.deepEqual(Object.keys(namespace).sort(), [
+    "i18n",
+    "range",
+    "route",
+    "start",
+  ]);
   assert.equal(typeof namespace.start, "function");
+  const i18n = namespace.i18n as Record<string, unknown>;
+  assert.equal(typeof i18n.t, "function");
+  assert.equal(
+    (i18n.t as (key: string, values?: Record<string, number>) => string)(
+      "range.last",
+      { days: 7 },
+    ),
+    "Last 7 days",
+  );
   // The route module owns the closed vocabularies and the four route behaviors.
   const route = namespace.route as Record<string, unknown>;
   assert.deepEqual(Object.keys(route).sort(), [

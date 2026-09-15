@@ -3,10 +3,9 @@
 **Current release:** `0.10.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones, and
-Pre-M8.1–Pre-M8.5 are complete. M8 is not started.
+Pre-M8.1–Pre-M8.6 are complete. M8 is not started.
 
-**Next gate:** complete Pre-M8.6 and the remaining readiness sequence below
-before starting M8.
+**Next gate:** complete Pre-M8.7 before starting M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -300,8 +299,9 @@ whether the localhost server exists.
 **Required boundary**
 
 - Use Node's built-in `node:http` and `node:crypto` facilities. Do **not** add
-  Express, Fastify, a generic query DSL, runtime TypeScript, a bundler, or
-  another server framework before the Pre-M8.6 client comparison.
+  Express, Fastify, a generic query DSL, runtime TypeScript, or another server
+  framework. The separately evaluated client build may use build-time tooling;
+  it must not become a runtime server or browser dependency.
 - `/session-ins ui` starts one ephemeral server instance for that Pi process,
   binds only to `127.0.0.1:0`, prints/opens its tokenized URL, and exposes an
   explicit `close()` path for tests. No daemon, service, autostart, global
@@ -319,9 +319,11 @@ whether the localhost server exists.
   evidence health, unavailable-vs-zero semantics, and native/child usage.
   HTTP handlers own only routing, bounded validation, callbacks, auth, and
   serialization. Browser code owns interaction/presentation only.
-- Interactive assets are ordinary classic files under `src/ui/web/`:
-  `shell.html`, `style.css`, `route.js`, `range.js`, and `client.js`. They do
-  not use `Function.prototype.toString()` to inline TypeScript modules.
+- Interactive assets are three known files under `src/ui/web/`: `shell.html`,
+  `style.css`, and generated `client.js`. The latter is a deterministic
+  build-time bundle from readable route/range/client sources under
+  `scripts/web/`; it does not use `Function.prototype.toString()` or runtime
+  module loading.
 - Browser-local theme preference is allowed; the server persists no preference
   and accepts no arbitrary state mutation.
 
@@ -567,13 +569,14 @@ enter committed fixtures or diagnostics.
 **Release:** This test-only hardening does not require a SemVer bump; the
 project remains on `0.10.0`.
 
-**Deferred follow-up:** `npm run knip` still reports existing `publint` and
-`esbuild` declarations. Retain them for future M8 dependency review; this
-slice adds no package usage and does not remove dependencies outside scope.
+**Deferred follow-up:** resolved. `publint` is pinned dev tooling with an
+explicit `npm run publint` script, so `knip` and the pre-commit hook pass again;
+`esbuild` is used by the adopted build script and is no longer an unused
+declaration.
 
 ### Pre-M8.6 — code optimization and client-bundle evaluation
 
-**Status:** Planned. **Depends on:** Pre-M8.5 and the Pre-M8.3 dependency
+**Status:** Complete. **Depends on:** Pre-M8.5 and the Pre-M8.3 dependency
 review. **Related:** Pre-M8.4 localhost UI server.
 
 Look for smaller, safer implementations before adding code or dependencies.
@@ -587,12 +590,24 @@ candidate using the same sanitized fixture, Node version, host, and benchmark
 method. Pre-M8.6 may adopt or reject only the client build/bundling strategy;
 it must not re-decide whether the accepted localhost server exists.
 
-| Metric | Pre-M8.4 normal client | Optional bundled-client candidate | Delta | Evidence |
+| Metric | Pre-M8.4 normal client | Adopted bundled client | Delta | Evidence |
 | --- | ---: | ---: | ---: | --- |
-| Client source LOC | measured | measured | measured | reproducible command |
-| Generated HTML bytes | measured | measured | measured | same report fixture |
-| Render time | measured | measured | measured | repeated warm/cold samples |
-| Package bytes | measured | measured | measured | `npm pack --dry-run` |
+| Client source LOC | 3,224 | 3,099 | −125 | `git show`/`wc -l` vs `wc -l scripts/web/*` |
+| Client asset raw / gzip bytes | 113,563 / 26,786 | 99,311 / 30,612 | −14,252 / +3,826 | same fixture, gzip level 9 |
+| Generated shell bytes | 4,125 | 4,057 | −68 | same fixture, local harness |
+| Evaluate median / p95 ms | 0.82 / 1.39 | 0.78 / 2.47 | −0.04 / +1.08 | 40 samples after 5 warmups |
+| Startup median / p95 ms | 2.13 / 4.71 | 2.48 / 4.59 | +0.35 / −0.12 | same local harness, 40 samples |
+| Tarball / unpacked / files | 230,983 / 908,323 / 72 | 236,722 / 895,968 / 73 | +5,739 / −12,355 / +1 | `npm pack --dry-run --json` |
+
+The one bundle is smaller than the three unbundled scripts, but the gzip figure
+is larger because the bundle now carries i18next: byte count is not the reason
+for the seam. One deterministic classic asset with modular readable sources, and
+one authoritative catalog instead of a browser copy literal, are the adoption
+reasons.
+
+The representation evaluation (chart library) is the follow-up change and is not
+part of this delivery; `docs/benchmarks` and the maintained browser benchmark
+arrive with it.
 
 Server startup/refresh belongs to the accepted Pre-M8.4 architecture and the
 Pre-M8.7 RC benchmark, not to this bundler adoption decision.
@@ -645,8 +660,21 @@ or changes deterministic output.
 - No optimization PR bundles unrelated cleanup, server migration, or UI
   redesign.
 
-**Release:** compatible optimization or rejected-prototype documentation may
-bump the next patch version only when it changes the shipped product.
+**Outcome:** esbuild `0.28.2` is adopted as build-time bundling only. The
+readable `scripts/web/` sources emit one deterministic classic client asset;
+server transport and browser semantic ownership are unchanged. i18next
+`26.4.2` is adopted behind the Inspector-owned synchronous translator with one
+local catalog, explicit English fallback, and no detector/backend/persistence.
+`publint` is pinned dev tooling with an explicit `npm run publint` script, so
+`knip` and the pre-commit hook pass again. Runtime audit is clean; the full
+audit's one low advisory is confined to `tsx`'s nested `esbuild@0.27.7` Windows
+development-server path and is deferred with `tsx`. Durable comparison evidence
+is recorded in the table above; detailed candidate audit remains local working
+evidence. The chart-library evaluation is the follow-up representation change.
+
+**Release:** this seam changes no rendered output and no API, and it does not
+publish or bump the package version; the package stays on `0.10.0` and the
+RC/release step names the version that actually ships.
 
 ### Pre-M8.7 — RC hardening and package audit
 
@@ -661,7 +689,8 @@ reviews.
 1. Run the executable invariant/property suite, dependency rules, static
    inventory dispositions, privacy corpus, and deterministic regression suite
    from a clean checkout.
-2. Run `publint` and `npm pack --dry-run`; inspect the actual tarball contents,
+2. Run `npm run publint` and `npm pack --dry-run`; inspect the actual tarball
+   contents,
    package entry points, ESM/Node engine metadata, file allowlist, license,
    README, CHANGELOG, and repository URLs.
 3. Install the packed artifact on a clean machine/container with no repository
@@ -802,7 +831,8 @@ explicitly documented.
 5. Low — Dependency hygiene
 
    - Verify whether `publint` is used by build, packaging, CI, or release
-     validation.
+     validation. (Resolved: it is pinned dev tooling with an explicit
+     `npm run publint` script, so `knip` and the pre-commit hook pass.)
    - If it is tooling-only, move it to `devDependencies`.
    - Remove it if unused.
 

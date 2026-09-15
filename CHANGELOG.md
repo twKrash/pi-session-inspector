@@ -9,6 +9,22 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 - Pre-M8.5 executable reconciliation and property gate covering canonical
   usage, dated attribution, projections, privacy, availability, and bounded
   `fast-check` checks.
+- Build-time esbuild bundling for one deterministic classic browser client,
+  with readable route/range/client sources retained under `scripts/web/`.
+- One shared local i18n catalog and synchronous Inspector-owned i18next adapter
+  with explicit English fallback and no detector, backend, or persistence.
+
+### Changed
+
+- The interactive server now serves shell, stylesheet, and generated client
+  assets; browser behavior and report semantics remain unchanged.
+- `publint` is pinned dev tooling with an explicit `npm run publint` script, so
+  `knip` and the pre-commit hook pass again.
+
+### Removed
+
+- `/route.js` and `/range.js` are no longer served as runtime assets; their
+  readable sources are bundled into `/client.js` at build time.
 
 ### Fixed
 
