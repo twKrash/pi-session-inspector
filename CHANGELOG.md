@@ -24,7 +24,11 @@ tab of its own); no report, DTO, or persisted-schema change.**
   read derived presence from the checkpoint alone, so a session whose own WAL
   recorded `permissions:ready` reported `present` to a live reader and `unknown`
   once replayed; both projections now read the checkpoint fold plus the retained
-  WAL suffix and agree.
+  WAL suffix and agree. Presence that comes from the **inventory** signal (an
+  extension command or a tool the environment reports) can still differ between
+  the two: the live read uses the process-local inventory and a history read
+  uses the persisted snapshot. That is environment state, not session evidence,
+  and it predates this change.
 - A read that finds no fold boundary folds the retained WAL once (the pass the
   session-start trigger schedules, bounded to one attempt per session and root)
   before it publishes counters. Previously a live session with WAL evidence but
