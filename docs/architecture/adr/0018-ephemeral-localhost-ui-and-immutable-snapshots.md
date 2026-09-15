@@ -160,6 +160,13 @@ server CSP, using a hash for the exact inlined stylesheet and no script,
 connect, or external-resource permission unless a future decision explicitly
 requires one.
 
+Where the browser discloses a hierarchy, the snapshot prints it in full. A
+per-node disclosure control would be, without a script, either a control that
+cannot act or a row the reader must open one level at a time to see the shape
+of the execution at all, so the artifact prints every level and imitates no
+control: the count a collapsed node would state (`n children · m failed`) is
+what each row carries instead.
+
 Identical bounded `SnapshotDto` and theme inputs produce byte-identical HTML.
 The artifact remains self-contained and works through `file://` without a
 server or network.

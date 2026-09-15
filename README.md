@@ -2,7 +2,7 @@
 
 Deterministic, local-only session analytics for [Pi](https://github.com/earendil-works/pi). Reconstructs Pi-native session data with confidence-aware live/cooperative metadata. No LLM analytics. No cloud. No daemon.
 
-> **Status: current, history, global, ledger, localhost UI, immutable snapshots, TUI, and JSON reports are available in `0.12.1`.**
+> **Status: current, history, global, ledger, localhost UI, immutable snapshots, TUI, and JSON reports are available in `0.13.0`.**
 
 ## Install
 
@@ -126,7 +126,11 @@ carry that token as `Authorization: Bearer`. The boundary is exact:
 
 The browser only navigates, requests, formats and renders: every scope, range,
 partiality, evidence and unavailable-versus-zero decision comes from the
-server's own projection.
+server's own projection. The Agents view reads those rows two ways — an
+execution tree rooted in the session, and the flat breakdown — and the tree's
+two grouping nodes (the session root and a run container) exist in the
+presentation alone: neither is an agent run, and neither is added to the
+report.
 
 The legacy `--subagents-artifact` option is removed; subagent runs are
 auto-discovered from persisted tool results. Missing or unreadable evidence

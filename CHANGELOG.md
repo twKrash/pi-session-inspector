@@ -2,6 +2,46 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0]
+
+### Added
+
+- The Agents panel opens on the execution tree instead of a flat table, and the
+  flat table stays one click away behind a Tree | Table switch. The tree shows
+  what executed and who launched whom: a UI-only **Primary session** root with
+  the session's own figures for the selected range, materialized agent runs
+  nested under the run that produced them, and a neutral **Run container** group
+  for the children one run container published (flattened into the run itself
+  when it would wrap a single child). A run container is not an agent, so it
+  carries no status, model, or usage, and neither it nor the session root ever
+  becomes an `AgentRun`.
+- Each tree row states the run's role, status, model, thinking level, known
+  tokens and cost, artifact state, and any usage it could not publish, plus what
+  a collapsed branch hides (`4 descendants · 1 failed`). With several session
+  models the root says so (`2 models used`) and lists each model's own
+  generations; no model is promoted to "primary" and no run claims that a model
+  launched it.
+- Search, status, and model filters keep the ancestors a match needs and mark
+  them as `context` instead of detaching a nested result from its topology, and
+  an active filter holds the hierarchy open rather than hiding its own matches
+  behind a collapsed branch.
+- The offline snapshot prints the same hierarchy in full, expanded, with no
+  control it cannot honour.
+- A route that focuses a nested agent opens the branches holding it, and the
+  presentation is part of the route, so Back/Forward and deep links restore both
+  the view and the focused row.
+
+### Fixed
+
+- A known non-zero cost is never rendered as `$0.00`. `toFixed(2)` alone turned
+  a persisted cost such as `0.004893924` into a different figure that was also
+  indistinguishable from a real zero; one shared rule now renders zero as
+  `$0.00`, one cent or more with two decimals, below one cent with four
+  (`$0.0049`), and below `0.0001` as the stated bound `< $0.0001`. The browser
+  bundle and the snapshot resolve that rule from the same module.
+- The entry-scope note says when Active path and Full session tree carry the
+  same report data, instead of leaving an inert scope switch unexplained.
+
 ## [0.12.1]
 
 ### Fixed
