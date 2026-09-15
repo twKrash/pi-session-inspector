@@ -14,7 +14,7 @@ import type {
   HistoricalSession,
   HistoryReport,
 } from "../../src/ui/load-history.ts";
-import { ENGLISH_CATALOG } from "../../src/ui/report-projection.ts";
+import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import {
   escapeSnapshotAttribute,
   escapeSnapshotText,

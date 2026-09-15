@@ -51,12 +51,17 @@ test("package declares Pi extension and ships entrypoint", () => {
   assert.ok(existsSync("src/index.ts"), "missing Pi extension entrypoint");
 });
 
-test("package allowlist includes license and published source", () => {
+test("package allowlist includes licenses and published source", () => {
   const pkg = packageManifest();
 
   assert.ok(pkg.files.includes("LICENSE"));
+  assert.ok(pkg.files.includes("THIRD_PARTY_NOTICES.md"));
   assert.ok(pkg.files.includes("src"));
   assert.ok(existsSync("LICENSE"), "missing MIT license");
+  assert.ok(
+    existsSync("THIRD_PARTY_NOTICES.md"),
+    "missing third-party notices",
+  );
 });
 
 test("both manifests report the released version", () => {

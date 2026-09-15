@@ -192,6 +192,14 @@ include the client; it may inline the known stylesheet. The bundle installs one
 bounded `globalThis.SessionInspectorWeb` namespace (or an equivalent single owned
 namespace).
 
+Localization is one boundary: `src/ui/i18n/catalog.ts` is the single English
+catalog, and `src/ui/i18n.ts` is the Inspector-owned synchronous translator that
+the TypeScript renderers, the snapshot, and the browser bundle all resolve copy
+through. The bundle is built with that translator installed, so the browser
+carries no second, hand-maintained copy table. Locale selection is explicit
+English with local fallback: no detector, backend, persistence, CDN, or network
+resource is used, and the translator never receives producer text or markup.
+
 Browser assets own only interaction/presentation behavior: route
 parsing/serialization, hash navigation, Back/Forward state, tab/sidebar state,
 range intent, search/sort UI state, token bootstrap, HTTP requests, loading and

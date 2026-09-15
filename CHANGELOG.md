@@ -12,6 +12,9 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 - Build-time esbuild bundling for one deterministic classic browser client, with
   the readable route/range/client sources retained under `scripts/web/` and
   freshness enforced by `npm run build:web:check`.
+- One local English catalog behind an Inspector-owned synchronous translator,
+  shared by the TypeScript renderers, the snapshot, and the browser bundle; the
+  browser no longer maintains a second copy table.
 
 ### Removed
 
