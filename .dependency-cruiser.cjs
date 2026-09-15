@@ -295,7 +295,33 @@ module.exports = {
       }
     },
     {
-      name: 'l2-loaders-not-to-pi-entry-adapter',
+      name: 'integration-adapters-not-to-consumers',
+      severity: 'error',
+      comment:
+        'An integration adapter owns one integration knowledge and must stay below its consumers (ADR 0019): it may use core contracts and its own implementation modules, never reports, renderers, loaders, commands, or the composition root.',
+      from: {
+        path: '^src/integrations/adapters/'
+      },
+      to: {
+        path: '^(?:src/(?:core/(?:reports|canonical|reduce|retained-aggregates)|ui|commands)|src/index[.]ts$)',
+        dependencyTypesNot: ['type-only', 'type-import']
+      }
+    },
+    {
+      name: 'integration-catalog-not-to-consumers',
+      severity: 'error',
+      comment:
+        'The integration catalog owns validation and lookup only (ADR 0019); importing a consumer back would invert the direction and turn it into orchestration.',
+      from: {
+        path: '^src/integrations/(?:catalog|index)[.]ts$'
+      },
+      to: {
+        path: '^(?:src/(?:core/(?:reports|canonical|reduce)|ui|commands)|src/index[.]ts$)',
+        dependencyTypesNot: ['type-only', 'type-import']
+      }
+    },
+    {
+      name: 'l2-loaders-not-to-persisted-integration-evidence',
       severity: 'error',
       comment:
         'L2 loaders receive persisted integration evidence from L1; they must not reread Pi entries for a second projection.',
@@ -303,7 +329,7 @@ module.exports = {
         path: '^src/ui/load-(?:current|history)[.]ts$'
       },
       to: {
-        path: '^src/integrations/pi-entries[.]ts$'
+        path: '^src/integrations/(?:catalog[.]ts$|persisted[.]ts$|index[.]ts$|adapters/)'
       }
     },
     {
