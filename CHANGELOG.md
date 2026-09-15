@@ -9,17 +9,39 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 - Pre-M8.5 executable reconciliation and property gate covering canonical
   usage, dated attribution, projections, privacy, availability, and bounded
   `fast-check` checks.
-- Build-time esbuild bundling for one deterministic classic browser client, with
-  the readable route/range/client sources retained under `scripts/web/` and
-  freshness enforced by `npm run build:web:check`.
-- One local English catalog behind an Inspector-owned synchronous translator,
-  shared by the TypeScript renderers, the snapshot, and the browser bundle; the
-  browser no longer maintains a second copy table.
+- Build-time esbuild bundling for one deterministic classic browser client,
+  with readable route/range/client sources retained under `scripts/web/`.
+- One shared local i18n catalog and synchronous Inspector-owned i18next adapter
+  with explicit English fallback and no detector, backend, or persistence.
+- Chart.js `4.5.1` behind the thin `scripts/web/chart.ts` adapter: the daily
+  chart gains date-labelled axes, hover tooltips, multiple series, independent
+  Y axes, legend visibility, and responsive sizing, while the exact-value table
+  stays the accessible representation and the browser owns no range, aggregate,
+  or unavailable-versus-zero rule.
+
+### Changed
+
+- The interactive server now serves shell, stylesheet, and generated client
+  assets; browser behavior and report semantics remain unchanged.
+- dependency-cruiser cruises `scripts/` as well and enforces that only
+  `scripts/web/chart.ts` imports `chart.js`.
+- `publint` is pinned dev tooling with an explicit `npm run publint` script, so
+  `knip` and the pre-commit hook pass again.
+- Shipped-asset gates assert capabilities instead of substrings: a parsed check
+  for module loading, host loaders, `import.meta`, and dynamic code evaluation,
+  a calendar rule scoped to Inspector's own sources, and a render test that
+  poisons `Date` and requires the chart to draw anyway.
+- `benchmark/browser.ts` tracks the browser surface: bundle evaluation, startup,
+  refresh, chart create, and chart update, with behavior invariants asserted on
+  every sample and an accepted baseline in `benchmark/baselines/browser.json`
+  (`npm run benchmark:browser:check`).
 
 ### Removed
 
 - `/route.js` and `/range.js` are no longer served as runtime assets; their
   readable sources are bundled into `/client.js` at build time.
+- The custom SVG chart renderer is replaced by the chart adapter; the exact
+  values remain available in the retained data table.
 
 ### Fixed
 

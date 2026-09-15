@@ -31,7 +31,8 @@ module.exports = {
           '[.]d[.]ts$',                                                       // TypeScript declaration files
           '(^|/)tsconfig[.]json$',                                            // TypeScript config
           '(^|/)(?:babel|webpack)[.]config[.](?:js|cjs|mjs|ts|cts|mts|json)$', // other configs
-          '^src/ui/web/'                                                      // browser assets: read by path at runtime
+          '^src/ui/web/',                                                     // browser assets: read by path at runtime
+          '^scripts/web/'                                                     // browser sources: concatenated by path at build time
         ]
       },
       to: {},
@@ -303,6 +304,18 @@ module.exports = {
       },
       to: {
         path: '^src/integrations/pi-entries[.]ts$'
+      }
+    },
+    {
+      name: 'chart-library-only-in-adapter',
+      severity: 'error',
+      comment:
+        'The browser asset bundles one chart library, and only scripts/web/chart.ts may import it (ADR 0018). Every other caller consumes the Inspector-owned adapter, so chart semantics, ranges, and unavailable-versus-zero rules stay outside the library.',
+      from: {
+        pathNot: '^scripts/web/chart[.]ts$'
+      },
+      to: {
+        path: '^node_modules/chart[.]js/'
       }
     }
   ],

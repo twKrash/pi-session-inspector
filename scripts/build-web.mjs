@@ -1,8 +1,8 @@
 /**
  * The build seam (ADR 0018): the authored sources in `scripts/web/`
  * (`route.js`, `range.js`, `client.js`) are concatenated in that order, behind a
- * prelude that installs the shared translator, and bundled into one deterministic
- * classic asset, `src/ui/web/client.bundle.js`.
+ * prelude that installs the shared translator and the chart adapter, and bundled
+ * into one deterministic classic asset, `src/ui/web/client.bundle.js`.
  *
  * The build does not transform behaviour: it joins the three files the browser
  * used to load separately, then minifies. `--check` rebuilds and compares bytes,
@@ -20,8 +20,10 @@ const resolveDir = fileURLToPath(new URL("../", import.meta.url));
 // The translation boundary is installed before the client runs, so the browser
 // resolves copy through the same catalog the TypeScript renderers use.
 const prelude = `import { createTranslator } from "./src/ui/i18n.ts";
+import { applyChartTheme, chartTheme, createDailyChart } from "./scripts/web/chart.ts";
 const web = (globalThis.SessionInspectorWeb = globalThis.SessionInspectorWeb || {});
-web.i18n = { t: createTranslator("en") };`;
+web.i18n = { t: createTranslator("en") };
+web.chart = { applyChartTheme, chartTheme, createDailyChart };`;
 const input = [
   prelude,
   ...sourceFiles.map((name) =>

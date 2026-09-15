@@ -12,18 +12,18 @@ import {
 } from "../../src/ui/ui-projection.ts";
 import { createTranslator } from "../../src/ui/i18n.ts";
 import { WEB_ASSETS } from "../../src/ui/web-assets.ts";
+import { calendarFree, forbiddenCapabilities } from "../helpers/asset-gate.ts";
 import {
   createWebClient,
   type StubElement,
 } from "../helpers/client-harness.ts";
 
 /**
- * The ordinary browser assets (`src/ui/web/`) are the interactive application:
- * route, range intent, navigation, HTTP bootstrap and DOM rendering. The
- * authored sources live in `scripts/web/` and are bundled at build time, so
- * these tests execute the shipped bytes in a `vm` context with a stub DOM: what
- * they pin is what a browser runs. Report semantics stay pinned in
- * `ui-projection.test.ts` and `snapshot.test.ts`; nothing here recomputes them.
+ * The readable browser sources (`scripts/web/`) implement route, range intent,
+ * navigation, HTTP bootstrap and DOM rendering. These tests execute generated
+ * shipped bytes in a `vm` context with a stub DOM, so what they pin is what a
+ * browser runs. Report semantics stay pinned in `ui-projection.test.ts` and
+ * `snapshot.test.ts`; nothing here recomputes them.
  */
 
 const ASSET_PATHS = {
@@ -127,7 +127,7 @@ test("the shell is report-free and loads the generated client asset", () => {
   ]) {
     assert.equal(shell.includes(forbidden), false, forbidden);
   }
-  // One classic script only: the bundled asset, and nothing inline.
+  // One external script only: the bundle is loaded after the fixed landmarks.
   const scriptTags = shell.match(/<script[^>]*>/g) ?? [];
   assert.deepEqual(scriptTags, ['<script src="/client.js">']);
   assert.equal(
@@ -174,19 +174,73 @@ test("no shipped asset carries a storage, socket, or html sink", () => {
       assert.equal(source.includes(forbidden), false, `${name}: ${forbidden}`);
     }
   }
-  // Classic scripts: no module syntax, no bundler, no filesystem access.
   for (const name of SCRIPTS) {
-    const source = WEB_ASSETS[name];
-    for (const forbidden of [
-      "import ",
-      "export ",
-      "require(",
-      "node:fs",
-      "process.",
-    ]) {
-      assert.equal(source.includes(forbidden), false, `${name}: ${forbidden}`);
-    }
+    // Classic scripts: no module loading, no host access, no runtime code
+    // evaluation. This parses the shipped bytes instead of scanning for the
+    // substrings `import ` / `export `, which is only a proxy for the rule and
+    // which library diagnostics (a message telling a developer which plugin to
+    // import) can trip without any capability being present.
+    assert.deepEqual(
+      forbiddenCapabilities(WEB_ASSETS[name], name),
+      [],
+      `${name} must not load modules or evaluate code`,
+    );
   }
+});
+
+test("the capability gate detects every capability it names", () => {
+  // A gate that cannot fail is not a gate: these synthetic sources must each be
+  // reported, and inert text must not be.
+  const samples: [string, string][] = [
+    ['import x from "mod";', "static-module-syntax"],
+    ['export { x } from "mod";', "static-module-syntax"],
+    ['import("mod");', "dynamic-import"],
+    ["import.meta.url;", "import-meta"],
+    ['require("node:fs");', "host-loader-call"],
+    ["eval('1');", "dynamic-code-eval"],
+    ["new Function('return 1');", "dynamic-code-eval"],
+  ];
+  for (const [source, kind] of samples) {
+    assert.equal(
+      forbiddenCapabilities(source, "synthetic.js").some(
+        (finding) => finding.kind === kind,
+      ),
+      true,
+      `${kind} in ${source}`,
+    );
+  }
+  // The false positive that blocked the chart library: a diagnostic naming the
+  // word import is not module loading.
+  assert.deepEqual(
+    forbiddenCapabilities(
+      'console.warn("Please import and register the plugin");',
+      "synthetic.js",
+    ),
+    [],
+  );
+  // Nor is a comment, or a string that quotes module syntax.
+  assert.deepEqual(
+    forbiddenCapabilities(
+      '// import x from "mod";\nconst text = "export { x }";\nconst y = 1;\n',
+      "synthetic.js",
+    ),
+    [],
+  );
+});
+
+test("the calendar gate reports calls, not mentions", () => {
+  assert.equal(calendarFree("const x = 1;", "synthetic.js"), true);
+  assert.equal(
+    calendarFree(
+      "// Date.now is never called here\nconst x = 1;",
+      "synthetic.js",
+    ),
+    true,
+  );
+  assert.equal(calendarFree("Date.now();", "synthetic.js"), false);
+  assert.equal(calendarFree("new Date();", "synthetic.js"), false);
+  assert.equal(calendarFree("Date.parse(value);", "synthetic.js"), false);
+  assert.equal(calendarFree("Date.UTC(2026, 0, 1);", "synthetic.js"), false);
 });
 
 test("the shipped scripts contain no L2 range, aggregation, or verdict function", () => {
@@ -219,13 +273,73 @@ test("the shipped scripts contain no L2 range, aggregation, or verdict function"
     for (const forbidden of l2Names) {
       assert.equal(source.includes(forbidden), false, `${name}: ${forbidden}`);
     }
-    // No date arithmetic at all: a range is an intent, never a computed span.
-    assert.equal(
-      /new Date|Date\.parse|Date\.now|Date\.UTC|Date\.\(/.test(source),
-      false,
-      `${name}: date arithmetic`,
-    );
   }
+});
+
+test("Inspector's own browser sources do no calendar arithmetic", () => {
+  // A range is an intent, never a computed span, and no Inspector figure may
+  // depend on the wall clock. This is scoped to the sources Inspector writes:
+  // the shipped asset also carries vendored library code whose date calls are
+  // inert in this configuration, and which the behavioural test below pins.
+  for (const name of ["route.js", "range.js", "client.js", "chart.ts"]) {
+    const source = readFileSync(
+      new URL(`../../scripts/web/${name}`, import.meta.url),
+      "utf8",
+    );
+    for (const forbidden of [
+      "resolveRange",
+      "filterView",
+      "historyRowRange",
+      "periodTotals",
+      "isInRange",
+      "latestObservedDate",
+      "shiftUtcDay",
+      "presetRange",
+      "parseRangeOptions",
+      "projectInspectorUi",
+    ]) {
+      assert.equal(source.includes(forbidden), false, `${name}: ${forbidden}`);
+    }
+    assert.equal(calendarFree(source, name), true, `${name}: date arithmetic`);
+  }
+});
+
+test("the shipped client renders without reading the wall clock", async () => {
+  // The real contract behind "no date arithmetic": rendering a view must not
+  // consult the clock at all. The realm's `Date` is poisoned, so any read — by
+  // Inspector code or by the chart library it bundles — fails the render.
+  class PoisonedDate extends Date {
+    constructor() {
+      super();
+      throw new Error("wall clock read: new Date");
+    }
+    static now(): number {
+      throw new Error("wall clock read: Date.now");
+    }
+    static parse(): number {
+      throw new Error("wall clock read: Date.parse");
+    }
+    static UTC(): number {
+      throw new Error("wall clock read: Date.UTC");
+    }
+  }
+  const harness = createWebClient({
+    globals: { Date: PoisonedDate },
+    hash: "#/current/overview?scope=tree",
+    responses: [uiSnapshot()],
+  });
+  await harness.start();
+  assert.equal(harness.element("title").textContent, "A session, in focus.");
+  // The chart is drawn — the canvas is sized by the renderer, not by the clock.
+  const canvases = harness.element("view").querySelectorAll("canvas");
+  assert.equal(canvases.length, 1);
+  assert.equal((canvases[0]?.width ?? 0) > 0, true);
+  // A second render (a range change) goes through the same path.
+  const seven = control(harness, "range", "days", "7");
+  harness.click(seven);
+  await settle();
+  assert.equal(harness.fetches().length, 2);
+  assert.equal(harness.element("view").querySelectorAll("canvas").length, 1);
 });
 
 test("no raw producer field name or host path reaches a browser asset", () => {
@@ -298,6 +412,9 @@ test("the assets own one namespace with route, range, i18n, and start", async ()
     "fetch",
     "console",
     "setTimeout",
+    "getComputedStyle",
+    "ResizeObserver",
+    "MutationObserver",
   ];
   const added = Object.keys(harness.context).filter(
     (key) => !injected.includes(key) && key !== "globalThis",
@@ -308,12 +425,29 @@ test("the assets own one namespace with route, range, i18n, and start", async ()
     unknown
   >;
   assert.deepEqual(Object.keys(namespace).sort(), [
+    "chart",
     "i18n",
     "range",
     "route",
     "start",
   ]);
   assert.equal(typeof namespace.start, "function");
+  // The chart namespace is the adapter: create, recolor, palette.
+  const chart = namespace.chart as Record<string, unknown>;
+  assert.deepEqual(Object.keys(chart).sort(), [
+    "applyChartTheme",
+    "chartTheme",
+    "createDailyChart",
+  ]);
+  const i18n = namespace.i18n as Record<string, unknown>;
+  assert.equal(typeof i18n.t, "function");
+  assert.equal(
+    (i18n.t as (key: string, values?: Record<string, number>) => string)(
+      "range.last",
+      { days: 7 },
+    ),
+    "Last 7 days",
+  );
   // The route module owns the closed vocabularies and the four route behaviors.
   const route = namespace.route as Record<string, unknown>;
   assert.deepEqual(Object.keys(route).sort(), [
