@@ -45,6 +45,9 @@ export const DEBUG_EVENTS: Readonly<Record<DebugComponent, readonly string[]>> =
       "canonical-rejected",
       "canonical-correlated",
       "canonical-uncorrelated",
+      "replay-summary",
+      "replay-unavailable",
+      "correlation-summary",
     ],
     settings: ["loaded", "malformed", "resolved"],
   };
@@ -52,10 +55,16 @@ export const DEBUG_EVENTS: Readonly<Record<DebugComponent, readonly string[]>> =
 /**
  * The field allowlist, by name. A field outside this set is dropped: the
  * vocabulary is closed so no future caller can accidentally log a payload.
+ *
+ * A `-summary` event reports one operation (a replay, a correlation) with these
+ * counts instead of one event per healthy record, so a report read over N
+ * healthy records writes O(1) lines; the per-record event names stay reserved
+ * for the anomalies an operator acts on.
  */
 const DEBUG_FIELDS: Readonly<Record<string, "number" | "boolean" | "token">> = {
   adapter: "token",
   code: "token",
+  correlated: "number",
   counters: "number",
   durationMs: "number",
   endedAtMs: "number",
@@ -65,11 +74,19 @@ const DEBUG_FIELDS: Readonly<Record<string, "number" | "boolean" | "token">> = {
   presence: "token",
   reason: "token",
   recordId: "token",
+  records: "number",
+  running: "number",
   source: "token",
   startedAtMs: "number",
   status: "token",
   subject: "token",
+  telemetryRecords: "number",
+  timedRecords: "number",
+  timingRecords: "number",
+  tools: "number",
+  uncorrelated: "number",
   version: "number",
+  zeroDuration: "number",
 };
 
 /** Bounded token: a plain name or one canonical `<domain>-<64hex>` digest. */

@@ -853,10 +853,19 @@ function toCanonicalLiveTiming(
   };
 }
 
+/** Per-operation cap on the actionable per-call anomaly events. */
+const MAX_UNCORRELATED_EVENTS = 8;
+
 /**
  * Per-tool duration exists only from an exact live subject correlation (§13.1):
  * the native call id is hashed through the shared helper and matched against a
  * completed `live-tool-` subject. Name or time proximity never links a row.
+ *
+ * The operation reports itself once: one bounded `correlation-summary` carries
+ * the totals, so a healthy read over N correlated calls writes one line instead
+ * of N. A call whose live boundary is missing is the actionable anomaly and
+ * keeps its own event, capped per operation so a wide report cannot turn the
+ * diagnostic into a per-row log.
  */
 function correlateLiveDuration(
   sessionId: string,
@@ -871,31 +880,36 @@ function correlateLiveDuration(
       durationBySubject.set(fact.subjectId, fact.durationMs);
     }
   }
-  if (durationBySubject.size === 0) {
-    debugLog("tool-timing", "canonical-uncorrelated", {
-      found: false,
-      counters: tools.length,
-    });
-    return [...tools];
-  }
-  return tools.map((tool) => {
+  let correlated = 0;
+  let uncorrelated = 0;
+  const result = tools.map((tool) => {
     const subject = toolSubjectId(sessionId, tool.id);
-    if (subject.length === 0) return tool;
-    const durationMs = durationBySubject.get(subject);
-    if (durationMs === undefined) {
-      debugLog("tool-timing", "canonical-uncorrelated", {
-        subject,
-        found: false,
-      });
+    if (subject.length === 0) {
+      uncorrelated += 1;
       return tool;
     }
-    debugLog("tool-timing", "canonical-correlated", {
-      subject,
-      durationMs,
-      found: true,
-    });
+    const durationMs = durationBySubject.get(subject);
+    if (durationMs === undefined) {
+      uncorrelated += 1;
+      if (uncorrelated <= MAX_UNCORRELATED_EVENTS) {
+        debugLog("tool-timing", "canonical-uncorrelated", {
+          subject,
+          found: false,
+        });
+      }
+      return tool;
+    }
+    correlated += 1;
     return { ...tool, durationMs };
   });
+  debugLog("tool-timing", "correlation-summary", {
+    tools: tools.length,
+    correlated,
+    uncorrelated,
+    records: durationBySubject.size,
+    found: true,
+  });
+  return result;
 }
 
 /** Returns the subject only when it is the canonical `live-tool-<64hex>` form. */

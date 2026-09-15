@@ -125,6 +125,8 @@ export async function recoverSession({
   )
     diagnostics.add("wal-sealed");
 
+  logReplaySummary(replay.records, !replay.unavailable);
+
   return {
     availability: replay.unavailable ? "unavailable" : "available",
     aggregates: usableCheckpoint
@@ -152,6 +154,51 @@ export async function recoverSession({
           checkpoint?.cursors.wal ?? {},
         ),
   };
+}
+
+/**
+ * One bounded summary per replay, so a healthy read writes O(1) diagnostic lines
+ * instead of one line per record. An unavailable replay is the anomaly an
+ * operator acts on, so it keeps its own event and the summary stays silent.
+ */
+function logReplaySummary(
+  records: readonly WalRecord[],
+  available: boolean,
+): void {
+  if (!available) {
+    debugLog("tool-timing", "replay-unavailable", { found: false });
+    return;
+  }
+  let timingRecords = 0;
+  let telemetryRecords = 0;
+  let timedRecords = 0;
+  let running = 0;
+  let zeroDuration = 0;
+  for (const record of records) {
+    if (record.kind === "telemetry") {
+      telemetryRecords += 1;
+      continue;
+    }
+    const timing = record.timing;
+    if (timing === undefined) continue;
+    timingRecords += 1;
+    if (timing.status === "running") {
+      running += 1;
+      continue;
+    }
+    if (timing.durationMs === undefined) continue;
+    timedRecords += 1;
+    if (timing.durationMs === 0) zeroDuration += 1;
+  }
+  debugLog("tool-timing", "replay-summary", {
+    records: records.length,
+    timingRecords,
+    telemetryRecords,
+    timedRecords,
+    running,
+    zeroDuration,
+    found: true,
+  });
 }
 
 async function readWal(
@@ -381,15 +428,6 @@ function recoverRunning(
   for (const record of [...records].sort(compareLifecycleRecords)) {
     if (record.kind !== "live_timing" || record.timing === undefined) continue;
     const timing = record.timing;
-    debugLog("tool-timing", "wal-replayed", {
-      source: timing.category,
-      status: timing.status,
-      recordId: record.eventId,
-      found: timing.durationMs !== undefined,
-      ...(timing.durationMs === undefined
-        ? {}
-        : { durationMs: timing.durationMs }),
-    });
     if (
       timing.category !== "agent" &&
       timing.category !== "turn" &&

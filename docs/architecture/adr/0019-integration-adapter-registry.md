@@ -158,7 +158,7 @@ Debug logging is a local diagnostic facility, not telemetry:
 - every logger failure is swallowed and never alters Inspector execution;
 - **never** prompts, responses, tool args, tool result bodies, environment variables, secrets/tokens, arbitrary producer text, unrestricted paths, or raw third-party payloads. Only explicitly allowlisted structured fields are written, correlated by existing canonical opaque/digest identities rather than raw producer IDs.
 
-Instrumentation sits at the subsystem boundaries (the loops above) and on the tool-duration pipeline, not inside a registry object.
+Instrumentation sits at the subsystem boundaries (the loops above) and on the tool-duration pipeline, not inside a registry object. A healthy operation reports itself once: a bounded `*-summary` event (a replay, a correlation) carries per-operation counts, so one report read over N healthy records writes O(1) diagnostic lines. The per-record events stay for the anomalies an operator acts on — a malformed or unavailable replay, an uncorrelated call (capped per operation), duplicate or conflicting evidence, and rejected integration evidence.
 
 ## Alternatives considered
 
