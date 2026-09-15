@@ -1,4 +1,4 @@
-import type { IntegrationKey } from "./events.ts";
+import type { IntegrationKey } from "../integrations/index.ts";
 
 export const MAX_SKILL_KEYS = 64;
 export const MAX_COUNTER_KEYS = 16;

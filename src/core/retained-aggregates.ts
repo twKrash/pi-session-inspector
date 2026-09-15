@@ -1,4 +1,10 @@
-import type { IntegrationKey } from "./events.ts";
+import { findIntegration } from "../integrations/catalog.ts";
+import type { IntegrationKey } from "../integrations/index.ts";
+import { integrations } from "../integrations/index.ts";
+import type {
+  CheckpointEvidence,
+  CheckpointResourceCounts,
+} from "../storage/checkpoint.ts";
 import type { TimeEvidence } from "./evidence.ts";
 import {
   MAX_COUNTER_KEYS,
@@ -6,10 +12,6 @@ import {
   MAX_SKILL_KEYS,
   SKILL_NAME_PATTERN,
 } from "./live-counter-fold.ts";
-import type {
-  CheckpointEvidence,
-  CheckpointResourceCounts,
-} from "../storage/checkpoint.ts";
 
 /** Counter-key grammar shared with the checkpoint parser and the live fold. */
 const COUNTER_KEY_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
@@ -18,20 +20,13 @@ const ISO_INSTANT =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const MAX_TIMESTAMP_LENGTH = 35;
 
-/** Canonical integration keys accepted by the report projection (spec §11). */
-const INTEGRATION_KEYS: ReadonlySet<string> = new Set<IntegrationKey>([
-  "context",
-  "rtk",
-  "ponytail",
-  "caveman",
-  "permission",
-  "subagents",
-  "lens",
-]);
-
-/** Narrowing guard over the validated canonical integration key set. */
+/**
+ * Narrowing guard over the declared integration keys (report and legacy alike:
+ * a historical aggregate may name either). Membership comes from the
+ * declaration, never from a second list.
+ */
 export function isIntegrationKey(value: string): value is IntegrationKey {
-  return INTEGRATION_KEYS.has(value);
+  return findIntegration(integrations, value) !== undefined;
 }
 
 /**
@@ -259,7 +254,7 @@ function mergeIntegrationCounters(
 
   if (isRecord(folded)) {
     for (const integration of Object.keys(folded).sort()) {
-      if (!INTEGRATION_KEYS.has(integration)) continue;
+      if (!isIntegrationKey(integration)) continue;
       const counters = parseCounterMap(folded[integration]);
       if (counters !== undefined) {
         merged[integration as IntegrationKey] = {
@@ -273,7 +268,7 @@ function mergeIntegrationCounters(
 
   if (isRecord(retained)) {
     for (const integration of Object.keys(retained).sort()) {
-      if (!INTEGRATION_KEYS.has(integration)) continue;
+      if (!isIntegrationKey(integration)) continue;
       const counters = retained[integration];
       if (!isRecord(counters)) continue;
       const target =

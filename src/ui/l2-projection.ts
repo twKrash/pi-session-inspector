@@ -1,7 +1,7 @@
 import type { CanonicalSession } from "../core/canonical.ts";
-import type { IntegrationKey } from "../core/events.ts";
 import type { FoldedCounters } from "../core/live-counter-fold.ts";
 import { isIntegrationKey } from "../core/retained-aggregates.ts";
+import type { IntegrationKey } from "../integrations/index.ts";
 
 /** Shared L2 projection of L1-effective counters; it never folds evidence. */
 export function countersFrom(session: CanonicalSession): {

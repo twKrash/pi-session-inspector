@@ -7,8 +7,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { completeInspectorCommand } from "./commands/completions.ts";
 import {
-  parseInspectorCommand,
   type InspectorCommand,
+  parseInspectorCommand,
 } from "./commands/grammar.ts";
 import { createInspectorHelpComponent } from "./commands/help.ts";
 import type { Scope } from "./core/events.ts";
@@ -23,14 +23,14 @@ import {
   mergeFoldedCounters,
 } from "./core/live-counter-fold.ts";
 import type { InventorySnapshot } from "./integrations/inventory.ts";
-import { readSubagentEvidenceWithArchives } from "./integrations/subagents.ts";
 import {
   type LiveCounterApi,
   type LiveCounterWriter,
   registerLiveCounters as registerLiveCounterProducers,
 } from "./integrations/live-counters.ts";
-import { readIntegrationPresence } from "./integrations/presence.ts";
+import { readPresence } from "./integrations/presence.ts";
 import { readSkillInvocations } from "./integrations/skill-invocations.ts";
+import { readSubagentEvidenceWithArchives } from "./integrations/subagents.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
 import {
   type LiveWalRegistration,
@@ -44,16 +44,16 @@ import {
 } from "./pi/session-start.ts";
 import { setupSessionWal } from "./pi/session-wal.ts";
 import { trackPiSession } from "./pi/tracking-pi.ts";
-import { readCheckpoint, type Checkpoint } from "./storage/checkpoint.ts";
+import { type Checkpoint, readCheckpoint } from "./storage/checkpoint.ts";
 import {
   boundInventorySnapshot,
   readInventorySnapshot,
   refreshInventorySnapshot,
 } from "./storage/inventory-snapshot.ts";
 import { scheduleMaintenance } from "./storage/maintenance.ts";
-import { recoverSession, type RecoveredWalRecord } from "./storage/recovery.ts";
+import { type RecoveredWalRecord, recoverSession } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
-import { loadInspectorBundle, loadCurrentView } from "./ui/bundle.ts";
+import { loadCurrentView, loadInspectorBundle } from "./ui/bundle.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
 import { renderJson } from "./ui/json.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
@@ -464,7 +464,7 @@ async function readSessionEvidence(input: {
         folded: foldedCheckpointEvidence(input.sessionId, checkpoint),
       },
       observation: {
-        presence: readIntegrationPresence({
+        presence: readPresence({
           // Only `source === "extension"` rows may signal extension presence; a
           // skill sharing the name must never be reported as the extension.
           extensionCommands:
@@ -475,12 +475,16 @@ async function readSessionEvidence(input: {
                   .map((row) => row.name),
           tools:
             inventory === undefined ? [] : Object.keys(inventory.toolSources),
-          // Durable presence: the bus may have been observed in a previous
-          // process, so the folded permission flag is ORed in.
-          permissionsReady:
-            (state?.ready ?? false) || counters.presence.permission,
+          // Generic observations: the in-process sighting plus every durable
+          // sighting the fold carries (a previous process may have seen it).
+          observed: [
+            ...(state?.ready === true ? ["permission"] : []),
+            ...Object.entries(counters.presence)
+              .filter(([, seen]) => seen === true)
+              .map(([key]) => key),
+          ],
           inventoryAvailable: inventory !== undefined,
-        }),
+        }).presence,
         counters,
         ...(inventory === undefined ? {} : { inventory }),
       },
@@ -672,7 +676,7 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
       walRecords: recovered.records,
       subagents: await readSubagentEvidenceWithArchives(entries, sessionId),
       observation: {
-        presence: readIntegrationPresence({
+        presence: readPresence({
           // Only `source === "extension"` rows may signal extension presence; a
           // skill sharing the name must never be reported as the extension.
           extensionCommands:
@@ -684,10 +688,10 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
           tools:
             inventory === undefined ? [] : Object.keys(inventory.toolSources),
           // Durable presence: the checkpoint may have folded a previously
-          // observed `permissions:ready`; absence is `unknown`, not `absent`.
-          permissionsReady: permission,
+          // observed sighting; absence is `unknown`, not `absent`.
+          observed: permission ? ["permission"] : [],
           inventoryAvailable: inventory !== undefined,
-        }),
+        }).presence,
         ...(inventory === undefined ? {} : { inventory }),
       },
     };

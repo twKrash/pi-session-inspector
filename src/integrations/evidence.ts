@@ -1,26 +1,18 @@
-import { isAllowedIntegrationCounter } from "../core/integration-counter-allowlists.ts";
 import type {
   EvidenceState,
-  IntegrationKey,
   IntegrationObservation,
   IntegrationObservationInput,
 } from "../core/events.ts";
+import {
+  isAllowedIntegrationCounter,
+  resolveIntegrationKey,
+} from "./catalog.ts";
+import type { IntegrationKey } from "./index.ts";
+import { integrations } from "./index.ts";
 
 const MAX_COUNTERS = 12;
 const MAX_COUNTER_KEY_LENGTH = 48;
 const TOKEN = /^[A-Za-z][A-Za-z0-9_-]*$/;
-
-const INTEGRATION_ALIASES = {
-  context: "context",
-  ctx: "context",
-  rtk: "rtk",
-  ponytail: "ponytail",
-  caveman: "caveman",
-  mode: "mode",
-  permission: "permission",
-  subagents: "subagents",
-  lens: "lens",
-} as const satisfies Record<string, IntegrationKey | "mode">;
 
 export type BoundedEvidenceValue = Readonly<Record<string, number | boolean>>;
 
@@ -48,8 +40,14 @@ export type EvidenceRegistry = {
 };
 
 /**
- * Validates explicit local integration evidence before a versioned adapter sees it.
- * Values deliberately admit only bounded numeric/boolean state, never producer text.
+ * Validates explicit local integration evidence before a versioned adapter sees
+ * it. Values deliberately admit only bounded numeric/boolean state, never
+ * producer text.
+ *
+ * Which integration keys and spellings are acceptable, and which counter names
+ * a version accepts, both come from the declared integration catalog
+ * (ADR 0019): this validator owns the *shape* rules, the adapters own the
+ * *vocabulary*, so a producer can never invent either.
  */
 export function createEvidenceRegistry(
   adapters: readonly EvidenceAdapter[],
@@ -72,11 +70,7 @@ export function createEvidenceRegistry(
         }
 
         const integration = normalizeIntegration(evidenceInput.integration);
-        if (
-          integration === undefined ||
-          integration === "mode" ||
-          !isVersion(evidenceInput.version)
-        ) {
+        if (integration === undefined || !isVersion(evidenceInput.version)) {
           return invalidEvidence();
         }
         const value = toBoundedValue(evidenceInput.value);
@@ -130,13 +124,14 @@ function isEvidenceInput(value: Record<string, unknown>): boolean {
   );
 }
 
-function normalizeIntegration(
-  value: unknown,
-): IntegrationKey | "mode" | undefined {
-  // `Object.hasOwn` so `__proto__`, `constructor`, and other prototype member
-  // names are rejected as invalid evidence rather than resolving to a value.
-  return typeof value === "string" && Object.hasOwn(INTEGRATION_ALIASES, value)
-    ? INTEGRATION_ALIASES[value as keyof typeof INTEGRATION_ALIASES]
+/**
+ * Resolves a key or one of its registered spellings through the catalog, so
+ * `__proto__`, `constructor`, and other prototype member names are rejected as
+ * invalid evidence rather than resolving to a value.
+ */
+function normalizeIntegration(value: unknown): IntegrationKey | undefined {
+  return typeof value === "string"
+    ? (resolveIntegrationKey(integrations, value) as IntegrationKey | undefined)
     : undefined;
 }
 
@@ -181,7 +176,7 @@ function toAdapterOutput(
   if (
     counters === undefined ||
     !Object.keys(counters).every((key) =>
-      isAllowedIntegrationCounter(integration, version, key),
+      isAllowedIntegrationCounter(integrations, integration, version, key),
     )
   ) {
     return undefined;
@@ -221,7 +216,7 @@ function isVersion(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-function adapterKey(integration: IntegrationKey, version: number): string {
+function adapterKey(integration: string, version: number): string {
   return `${integration}:${version}`;
 }
 
@@ -233,9 +228,4 @@ function adapterRejected(): EvidenceResult {
   return { state: "unsupported", diagnostic: "adapter-rejected" };
 }
 
-export type {
-  EvidenceState,
-  IntegrationKey,
-  IntegrationObservation,
-  IntegrationObservationInput,
-};
+export type { EvidenceState, IntegrationKey, IntegrationObservation };
