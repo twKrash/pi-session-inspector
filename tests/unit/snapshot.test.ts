@@ -1020,6 +1020,107 @@ test("prints the DTO's child breakdown instead of summing the rendered runs", ()
   assert.equal(html.includes("2 of 2 runs reported usage"), false);
 });
 
+test("prints a grouped duration with its coverage, and Unavailable without one", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const range = base.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const html = renderSnapshot({
+    ...base,
+    projection: {
+      ...base.projection,
+      range: {
+        ...range,
+        toolSummary: [
+          // Every call correlated: the total and the mean stand alone, with no
+          // coverage note claiming otherwise.
+          {
+            name: "read",
+            calls: 2,
+            succeeded: 2,
+            failed: 0,
+            interrupted: 0,
+            tokens: 12,
+            cost: 0.12,
+            withUsage: 2,
+            withDuration: 2,
+            durationMs: 4000,
+            durationLabel: "4.0 s",
+            averageLabel: "2.0 s",
+            lastUsed: READ_AT,
+            partial: false,
+            durationPartial: false,
+          },
+          // Some calls correlated: the total carries its own coverage note.
+          {
+            name: "bash",
+            calls: 3,
+            succeeded: 1,
+            failed: 2,
+            interrupted: 0,
+            tokens: 7,
+            cost: 0.07,
+            withUsage: 3,
+            withDuration: 1,
+            durationMs: 1000,
+            durationLabel: "1.0 s",
+            averageLabel: "1.0 s",
+            lastUsed: BASH_AT,
+            partial: false,
+            durationPartial: true,
+          },
+          // No call correlated: Unavailable, never `0 ms`.
+          {
+            name: "grep",
+            calls: 1,
+            succeeded: 1,
+            failed: 0,
+            interrupted: 0,
+            tokens: 1,
+            cost: 0.01,
+            withUsage: 1,
+            withDuration: 0,
+            durationMs: 0,
+            durationLabel: null,
+            averageLabel: null,
+            lastUsed: READ_AT,
+            partial: false,
+            durationPartial: false,
+          },
+        ],
+      },
+    },
+  });
+
+  const rowFor = (name: string): string => {
+    const match = new RegExp(
+      `<tr>(?:(?!</tr>)[\\s\\S])*${name}(?:(?!</tr>)[\\s\\S])*</tr>`,
+    ).exec(html);
+    assert.notEqual(match, null, `the ${name} row must render`);
+    return match?.[0] ?? "";
+  };
+  const coverageNote = (withDuration: number, total: number): string =>
+    CATALOG["tools.durationFraction"]
+      .replace("{withDuration}", String(withDuration))
+      .replace("{total}", String(total));
+
+  const read = rowFor("read");
+  assert.equal(read.includes("4.0 s"), true, read);
+  assert.equal(read.includes("2.0 s"), true, read);
+  // Complete coverage states no fraction: the figures stand alone.
+  assert.equal(read.includes(coverageNote(2, 2)), false, read);
+
+  const bash = rowFor("bash");
+  assert.equal(bash.includes("1.0 s"), true, bash);
+  // An incomplete total carries its own coverage note.
+  assert.equal(bash.includes(coverageNote(1, 3)), true, bash);
+
+  const grep = rowFor("grep");
+  assert.equal(grep.includes(CATALOG["evidence.unavailable"]), true, grep);
+  // Nothing estimates a duration: no fabricated `0 ms` anywhere in the table.
+  assert.equal(html.includes("0 ms"), false);
+});
+
 test("prints the DTO's tool-usage partiality instead of comparing row counts", () => {
   const base = currentDto();
   if (base.kind !== "current") throw new Error("the fixture is current");

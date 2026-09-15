@@ -140,9 +140,7 @@ test("the rendered coverage verdict names the incomplete figure", () => {
   assert.equal(partial.withUsage, 1);
   assert.equal(partial.withDuration, 1);
 
-  const none = toolUsageVerdict(
-    only(toolSummary({ tools: [call("bash")] })),
-  );
+  const none = toolUsageVerdict(only(toolSummary({ tools: [call("bash")] })));
   assert.equal(none.partial, false);
   assert.equal(none.durationPartial, false);
 });
