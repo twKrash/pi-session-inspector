@@ -173,6 +173,7 @@ assets:
 scripts/web/
   route.js
   range.js
+  chart.ts           # the one file that talks to Chart.js
   client.js
 src/ui/web/
   shell.html
@@ -180,8 +181,8 @@ src/ui/web/
   client.js          # deterministic esbuild output
 ```
 
-The build-time esbuild step bundles the source scripts and the local i18n
-catalog/runtime into one classic client asset.
+The build-time esbuild step bundles the source scripts, the chart adapter, the
+local i18n catalog/runtime, and the chart library into one classic client asset.
 The server serves generated assets unchanged. The static snapshot does not
 include `client.js`; it may inline the known stylesheet. The generated client
 initializes one bounded `globalThis.SessionInspectorWeb` namespace (or an
@@ -219,6 +220,17 @@ Pre-M8.6 adopted build-time esbuild bundling after comparing the unbundled
 client against isolated and final candidates. It changes asset assembly only,
 not server adoption or browser semantic ownership. No runtime TypeScript
 transformation, module loader, CDN, or network resource is introduced.
+
+Chart rendering is delegated to Chart.js behind the thin `scripts/web/chart.ts`
+adapter, which receives labels and values already projected from the DTO. The
+library owns generic representation — canvas drawing, scales and ticks, label
+collision handling, tooltips, the legend, responsive resizing, point/line
+rendering — and is configured with `animation: false`. The adapter owns no
+range, aggregation, attribution, evidence, or unavailable-versus-zero rule, and
+the exact-value table stays the accessible representation. The chart library is
+bundled; its internals that read the wall clock belong to animation code that
+this configuration never reaches, which the poisoned-clock test proves rather
+than assumes.
 
 ### Localhost server and API
 

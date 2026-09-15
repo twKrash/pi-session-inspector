@@ -592,22 +592,28 @@ it must not re-decide whether the accepted localhost server exists.
 
 | Metric | Pre-M8.4 normal client | Adopted bundled client | Delta | Evidence |
 | --- | ---: | ---: | ---: | --- |
-| Client source LOC | 3,224 | 3,099 | −125 | `git show`/`wc -l` vs `wc -l scripts/web/*` |
-| Client asset raw / gzip bytes | 113,563 / 26,786 | 99,311 / 30,612 | −14,252 / +3,826 | same fixture, gzip level 9 |
-| Generated shell bytes | 4,125 | 4,057 | −68 | same fixture, local harness |
-| Evaluate median / p95 ms | 0.82 / 1.39 | 0.78 / 2.47 | −0.04 / +1.08 | 40 samples after 5 warmups |
-| Startup median / p95 ms | 2.13 / 4.71 | 2.48 / 4.59 | +0.35 / −0.12 | same local harness, 40 samples |
-| Tarball / unpacked / files | 230,983 / 908,323 / 72 | 236,722 / 895,968 / 73 | +5,739 / −12,355 / +1 | `npm pack --dry-run --json` |
+| Client source LOC | 3,224 | 3,478 | +254 | `git show`/`wc -l` vs `wc -l scripts/web/*` (includes the 344-line chart adapter) |
+| Client asset raw / gzip bytes | 113,563 / 26,786 | 264,547 / 88,379 | +150,984 / +61,593 | same fixture, gzip level 9 |
+| Chart.js share of that asset | — | not separately counted | +165,236 / +57,767 | marginal vs the `esbuild + i18n` build; adapter-only build measures 164,712 / 57,442 |
+| Generated shell bytes | 4,125 | 4,057 | −68 | same fixture, benchmark harness |
+| Evaluate median / p95 ms | 0.82 / 1.39 | 1.33 / 3.04 | +0.51 / +1.65 | 40 samples after 5 warmups |
+| Startup median / p95 ms | 2.13 / 4.71 | 8.19 / 10.00 | +6.06 / +5.29 | one local harness throughout: 2.48 / 4.59 before the chart adapter, 40 samples |
+| Tarball / unpacked / files | 230,983 / 908,323 / 72 | 295,046 / 1,064,452 / 73 | +64,063 / +156,129 / +1 | `npm pack --dry-run --json` |
 
-The one bundle is smaller than the three unbundled scripts, but the gzip figure
-is larger because the bundle now carries i18next: byte count is not the reason
-for the seam. One deterministic classic asset with modular readable sources, and
-one authoritative catalog instead of a browser copy literal, are the adoption
-reasons.
+The asset is deliberately larger: bundle size is not the winning metric. Chart.js
+is adopted for the generic chart representation Inspector would otherwise keep
+own, and the harness numbers include drawing the chart on a canvas.
 
-The representation evaluation (chart library) is the follow-up change and is not
-part of this delivery; `docs/benchmarks` and the maintained browser benchmark
-arrive with it.
+**Regression baseline:** the adoption table above is decision evidence from one
+local harness. Durable tracking moved into the maintained harness
+(`benchmark/browser.ts`), which measures the shipped asset in the test harness
+(evaluation, startup, refresh) plus the chart adapter (create, update) and
+asserts the behavior invariants on every sample. The accepted baseline is
+`benchmark/baselines/browser.json` (identified by the shipped asset's SHA-256),
+checked by `npm run benchmark:browser:check`, and reported in
+[docs/benchmarks/m8.6-browser-baseline.md](benchmarks/m8.6-browser-baseline.md):
+startup median `8.55` ms / p95 `11.53` ms, chart create `1.08` / `3.25`, chart
+update `0.68` / `1.20`.
 
 Server startup/refresh belongs to the accepted Pre-M8.4 architecture and the
 Pre-M8.7 RC benchmark, not to this bundler adoption decision.
@@ -665,16 +671,31 @@ readable `scripts/web/` sources emit one deterministic classic client asset;
 server transport and browser semantic ownership are unchanged. i18next
 `26.4.2` is adopted behind the Inspector-owned synchronous translator with one
 local catalog, explicit English fallback, and no detector/backend/persistence.
-`publint` is pinned dev tooling with an explicit `npm run publint` script, so
-`knip` and the pre-commit hook pass again. Runtime audit is clean; the full
-audit's one low advisory is confined to `tsx`'s nested `esbuild@0.27.7` Windows
+Chart.js `4.5.1` is adopted behind the thin `scripts/web/chart.ts` adapter after
+the reopened decision showed its two flagged byte patterns were inert: the
+`"import "` hit is a vendor `console.warn` string, and the `Date.now` hits are
+animation and time-scale internals that this configuration never reaches
+(`animation: false`, no time scale). The blocked adoption was a substring gate,
+not a contract violation, so the gate now asserts the capability by parsing the
+shipped bytes for module loading, host loaders, `import.meta`, and dynamic code
+evaluation, and the calendar rule is scoped to the sources Inspector writes plus
+a poisoned-`Date` render test. The accessible exact-value table remains
+ownered, and the custom SVG chart is deleted. `publint` is pinned dev tooling
+with an explicit `npm run publint` script. Runtime audit is clean; the full
+audit's one low
+advisory is confined to `tsx`'s nested `esbuild@0.27.7` Windows
 development-server path and is deferred with `tsx`. Durable comparison evidence
-is recorded in the table above; detailed candidate audit remains local working
-evidence. The chart-library evaluation is the follow-up representation change.
+is recorded in the table above; detailed candidate audit and the gate
+classification remain local working evidence. The chart-library boundary is
+enforced by dependency-cruiser (only `scripts/web/chart.ts` may import
+`chart.js`), and the browser regression baseline lives in
+`benchmark/baselines/browser.json` with its record in
+`docs/benchmarks/m8.6-browser-baseline.md`.
 
-**Release:** this seam changes no rendered output and no API, and it does not
-publish or bump the package version; the package stays on `0.10.0` and the
-RC/release step names the version that actually ships.
+**Release:** this change is product-visible (chart rendering and asset size),
+but it is not published separately: the package stays on `0.10.0` and the
+RC/release step names the version that actually ships. See ADR 0018 and
+`docs/benchmarks/m8.6-browser-baseline.md`.
 
 ### Pre-M8.7 — RC hardening and package audit
 

@@ -39,7 +39,6 @@
   // Namespace and small DOM helpers
   // -------------------------------------------------------------------------
 
-  const SVG_NS = "http:" + "//www.w3.org/2000/svg";
   /** The route this page applies when the fragment names none. */
   const DEFAULT_KEY = "#/current/overview";
   /** The fragment the bootstrap consumes; nothing else is a bootstrap token. */
@@ -100,6 +99,39 @@
   let startPromise = null;
   let state = { section: "current", tab: "overview", scope: "active" };
   let view = null;
+  // The one drawn chart of the rendered view. It is destroyed before the view
+  // subtree it lives in is replaced, recolored in place on a theme toggle, and
+  // created only after its canvas is in the document, so the canvas is measured
+  // where it is drawn rather than at zero size.
+  let activeChart = null;
+  let pendingChart = null;
+
+  /** Whether the page shows the dark theme; the canvas colors must match it. */
+  const isDarkTheme = () => document.body.className.includes("theme-dark");
+
+  /** Releases the live chart, if any. Never throws at the caller. */
+  const destroyChart = () => {
+    if (activeChart === null) return;
+    try {
+      activeChart.destroy();
+    } catch (error) {
+      // Observer-only: a chart that cannot be destroyed must not break the page.
+    }
+    activeChart = null;
+  };
+
+  /** Creates the chart the last rendered view asked for, if any. */
+  const mountChart = () => {
+    const pending = pendingChart;
+    pendingChart = null;
+    if (pending === null || web.chart === undefined) return;
+    try {
+      activeChart = web.chart.createDailyChart(pending.canvas, pending.input);
+    } catch (error) {
+      // Observer-only: a chart that cannot be drawn leaves the table alone.
+      activeChart = null;
+    }
+  };
   // One remembered range intent per view identity, and the ephemeral per-(view,
   // tab) settings of the views this document is not showing.
   const rangeIntents = {};
@@ -758,8 +790,7 @@
     if (name === "tools") return row.tools;
     return row.sessions;
   };
-  const chartText = (name, value) =>
-    name === "cost" ? money(value) : number(value);
+  const chartFormat = (name) => (name === "cost" ? "cost" : "number");
   const chartLabel = (name) => COPY["chart." + name];
   const CHART_METRICS = ["sessions", "cost", "tokens", "generations", "tools"];
   /**
@@ -771,8 +802,13 @@
   const GLOBAL_CHART_METRICS = ["sessions", "cost", "tokens"];
 
   /**
-   * One chart over the published daily rows. Points are spaced by row position,
-   * so no calendar arithmetic happens here: the row order is L2's own.
+   * One chart over the published daily rows, drawn by the bundled adapter. The
+   * caller has already decided that every point is a published value and that a
+   * row without the metric is Unavailable rather than a zero; the adapter is
+   * handed labels and values in the DTO's own order and owns no range,
+   * aggregation, or verdict. The exact-value table below stays the accessible
+   * representation, and a browser that cannot give us a canvas keeps that table
+   * and loses only the drawing.
    */
   const chartSection = (rows, metrics) => {
     const section = card(COPY["panel.daily"], rangeText());
@@ -800,64 +836,43 @@
       section.append(el("div", "chart-note", COPY["evidence.unavailable"]));
       return section;
     }
-    const maximum = Math.max.apply(null, values.concat([1]));
-    const points = values.map((value, index) => ({
-      x: rows.length === 1 ? 400 : 8 + (index / (rows.length - 1)) * 784,
-      y: 172 - (value / maximum) * 164,
-      row: rows[index],
-      value: value,
-    }));
-    const canvas = el("div", "chart");
-    const axis = el("div", "chart-axis");
-    axis.setAttribute("aria-hidden", "true");
-    [maximum, maximum / 2, 0].forEach((value) =>
-      axis.append(el("span", "", chartText(metricName, value))),
-    );
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("class", "line-chart");
-    svg.setAttribute("viewBox", "0 0 800 180");
-    svg.setAttribute("preserveAspectRatio", "none");
-    svg.setAttribute("role", "img");
-    svg.setAttribute(
-      "aria-label",
-      tr("chart.aria", {
-        metric: chartLabel(metricName),
-        days: rows.length,
-      }),
-    );
-    [8, 90, 172].forEach((y) => {
-      const line = document.createElementNS(SVG_NS, "line");
-      line.setAttribute("class", "chart-grid");
-      line.setAttribute("x1", "8");
-      line.setAttribute("x2", "792");
-      line.setAttribute("y1", String(y));
-      line.setAttribute("y2", String(y));
-      svg.append(line);
-    });
-    const polyline = document.createElementNS(SVG_NS, "polyline");
-    polyline.setAttribute("class", "activity-line");
-    polyline.setAttribute(
-      "points",
-      points
-        .map((point) => point.x.toFixed(2) + "," + point.y.toFixed(2))
-        .join(" "),
-    );
-    svg.append(polyline);
-    points.forEach((point) => {
-      const circle = document.createElementNS(SVG_NS, "circle");
-      circle.setAttribute("class", "line-point");
-      circle.setAttribute("cx", point.x.toFixed(2));
-      circle.setAttribute("cy", point.y.toFixed(2));
-      circle.setAttribute("r", "3");
-      const title = document.createElementNS(SVG_NS, "title");
-      title.textContent =
-        point.row.date + " · " + chartText(metricName, point.value);
-      circle.append(title);
-      svg.append(circle);
-    });
-    canvas.append(
-      axis,
-      svg,
+    const figure = el("div", "chart");
+    const chartModule = web.chart;
+    const canvas = document.createElement("canvas");
+    if (
+      chartModule !== undefined &&
+      typeof chartModule.createDailyChart === "function" &&
+      typeof canvas.getContext === "function"
+    ) {
+      canvas.setAttribute("class", "line-chart");
+      const host = el("div", "chart-canvas");
+      host.append(canvas);
+      figure.append(host);
+      // Drawn after the view swap, when the canvas has a size to measure.
+      pendingChart = {
+        canvas: canvas,
+        input: {
+          ariaLabel: tr("chart.aria", {
+            days: rows.length,
+            metric: chartLabel(metricName),
+          }),
+          format: (kind, value) =>
+            kind === "cost" ? money(value) : number(value),
+          labels: rows.map((row) => row.date),
+          series: [
+            {
+              axis: "y",
+              format: chartFormat(metricName),
+              key: metricName,
+              label: chartLabel(metricName),
+              values: values,
+            },
+          ],
+          theme: chartModule.chartTheme(isDarkTheme()),
+        },
+      };
+    }
+    figure.append(
       el(
         "div",
         "chart-dates",
@@ -865,7 +880,7 @@
       ),
     );
     section.append(
-      canvas,
+      figure,
       el(
         "div",
         "chart-note",
@@ -2250,8 +2265,11 @@
     syncRange();
     syncNotice();
     syncHeadings();
+    // The chart is drawn on a canvas inside the subtree about to be replaced.
+    destroyChart();
     const output = q("view");
     if (output !== null) output.replaceChildren(...viewNodes());
+    mountChart();
     const focused = flags.structural === true ? focusEntity() : false;
     if (
       !focused &&
@@ -2562,6 +2580,23 @@
         const dark = document.body.classList.toggle("theme-dark");
         theme.textContent = dark ? COPY["theme.light"] : COPY["theme.dark"];
         theme.setAttribute("aria-pressed", String(dark));
+        // The canvas cannot read the stylesheet's custom properties: recolor the
+        // live chart from the palette of the theme now in effect.
+        const chartModule = web.chart;
+        if (
+          activeChart !== null &&
+          chartModule !== undefined &&
+          typeof chartModule.applyChartTheme === "function"
+        ) {
+          try {
+            chartModule.applyChartTheme(
+              activeChart,
+              chartModule.chartTheme(dark),
+            );
+          } catch (error) {
+            // Observer-only: recoloring is presentation, never a state change.
+          }
+        }
       });
     }
     const custom = q("custom-range");

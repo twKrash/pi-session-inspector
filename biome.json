@@ -6,7 +6,8 @@
       "tests/**/*.ts",
       "benchmark/**/*.ts",
       "scripts/**/*.js",
-      "scripts/**/*.mjs"
+      "scripts/**/*.mjs",
+      "scripts/**/*.ts"
     ]
   },
   "formatter": {

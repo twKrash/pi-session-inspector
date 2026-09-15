@@ -6,8 +6,10 @@ const sourceFiles = ["route.js", "range.js", "client.js"];
 const outputUrl = new URL("../src/ui/web/client.js", import.meta.url);
 const resolveDir = fileURLToPath(new URL("../", import.meta.url));
 const prelude = `import { createTranslator } from "./src/ui/i18n.ts";
+import { applyChartTheme, chartTheme, createDailyChart } from "./scripts/web/chart.ts";
 const web = (globalThis.SessionInspectorWeb = globalThis.SessionInspectorWeb || {});
-web.i18n = { t: createTranslator("en") };`;
+web.i18n = { t: createTranslator("en") };
+web.chart = { applyChartTheme, chartTheme, createDailyChart };`;
 const input = [
   prelude,
   ...sourceFiles.map((name) =>

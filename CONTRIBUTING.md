@@ -32,6 +32,7 @@ npm run build:web:check
 npm run depcruise
 npm run knip
 npm run publint
+npm run benchmark:browser:check   # browser asset + chart, against the accepted baseline
 npm pack --dry-run
 ```
 
@@ -55,5 +56,5 @@ is a rejection, and a heuristic that stands in for a capability is not a gate:
 5. **Measured footprint** — record asset size, gzip, and the browser benchmark
    deltas before adopting.
 
-The adopted example of this pattern is `i18next` (ADR 0018, `docs/roadmap.md`
-Pre-M8.6).
+The adopted examples of this pattern are `i18next` and `chart.js` (ADR 0018,
+`docs/roadmap.md` Pre-M8.6).

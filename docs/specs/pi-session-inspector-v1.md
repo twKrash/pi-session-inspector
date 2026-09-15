@@ -153,9 +153,12 @@ diagnostic values are data, never trusted markup.
 
 The interactive surface has three known assets under `src/ui/web/`:
 `shell.html`, `style.css`, and generated `client.js`. `client.js` is a
-build-time deterministic classic bundle from the readable route, range, and
-client sources under `scripts/web/`; the server serves the generated asset
-without runtime module loading. The static snapshot does not include the
+build-time deterministic classic bundle from the readable route, range, chart
+adapter, and client sources under `scripts/web/`; the server serves the
+generated asset without runtime module loading, and the chart library it uses
+is bundled rather than fetched. The chart is drawn on a canvas from
+DTO-projected labels and values, and the exact-value table beside it is the
+accessible representation. The static snapshot does not include the
 interactive client. Browsers may probe exact `/favicon.ico`; `GET` and `HEAD`
 return an empty `204` response without report data or a diagnostic, and this
 compatibility route is not an additional browser asset.
