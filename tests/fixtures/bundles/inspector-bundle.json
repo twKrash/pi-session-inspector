@@ -24,10 +24,9 @@
       "dailyTruncated": false,
       "capabilities": [
         "overview",
-        "models",
+        "llm",
         "tools",
         "environment",
-        "agents",
         "integrations",
         "errors",
         "ledger"
@@ -182,10 +181,9 @@
       "dailyTruncated": false,
       "capabilities": [
         "overview",
-        "models",
+        "llm",
         "tools",
         "environment",
-        "agents",
         "integrations",
         "errors",
         "ledger"

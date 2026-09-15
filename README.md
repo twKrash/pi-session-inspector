@@ -61,6 +61,34 @@ content-security-policy with one hash for its own inlined stylesheet. Repeated
 renders of the same projection are byte-identical, and only the chosen theme
 changes the bytes.
 
+## Settings
+
+Inspector reads one optional JSON file it owns, next to its own data:
+
+```text
+<agentDir>/session-inspector/settings.json
+```
+
+```json
+{ "theme": "dark", "debug": true }
+```
+
+| Key | Values | Effect |
+| --- | --- | --- |
+| `theme` | `"light"` (default), `"dark"` | The initial theme of a `ui` page and of a `snapshot` document; the in-page toggle still switches the running page |
+| `debug` | `true`, `false` (default) | Writes Inspector's bounded local debug log (`0o600` JSONL under `session-inspector/v1/debug/`) |
+
+Precedence is `explicit CLI option > settings.json > product default`, so
+`--theme light` overrides `"theme": "dark"` and a per-invocation `--debug`
+enables logging even when settings leave it off. A missing file is the default
+configuration, not an error; a malformed, unreadable, or oversized (over 64 KiB)
+file degrades to the product defaults with a bounded diagnostic and never
+prevents Inspector from starting. Unknown keys are ignored rather than guessed.
+
+The file carries presentation and diagnostics only. Which integrations Inspector
+supports, what each descriptor publishes, and how to add one are documented in
+[Integrations](docs/integrations.md).
+
 ## Localhost UI security boundary
 
 `ui` starts (or reuses) one ephemeral loopback server bound to `127.0.0.1`

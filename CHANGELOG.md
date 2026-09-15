@@ -4,6 +4,23 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+**Browser UI only. One tab vocabulary change (`models`/`agents` deep links
+coerce to the section default); no report, DTO, or persisted-schema change.**
+
+### Changed
+
+- The browser's Models and Agents tabs are one **LLM** tab: the scope's model
+  table, and below it the child-run breakdown of the same scope. The route id is
+  `llm`, so an old `#/current/models` or `#/current/agents` link coerces to the
+  section default with the bounded "not available here" notice. The TUI keeps
+  its own fixed tab list.
+
+### Added
+
+- A refresh control in the page header that re-reads the report from the running
+  Inspector (`/api/v1/ui`, the same request the route already makes) and renders
+  the new payload without moving the reader off their tab, scope, or table state.
+
 ## [0.11.0]
 
 **Additive: integration descriptors with typed hooks, Inspector-owned settings,

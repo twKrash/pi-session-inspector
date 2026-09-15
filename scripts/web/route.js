@@ -24,10 +24,9 @@
   /** The closed tab vocabulary; a view's capability list is bounded by it. */
   const TABS = [
     "overview",
-    "models",
+    "llm",
     "tools",
     "environment",
-    "agents",
     "integrations",
     "errors",
     "ledger",

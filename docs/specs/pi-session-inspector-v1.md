@@ -686,14 +686,16 @@ section default with a bounded notice. No tab is ever "present but guaranteed
 
 | Section | Tabs |
 | --- | --- |
-| current (view available) | overview, models, tools, environment (commands / skills / resources), agents, integrations, errors, ledger |
+| current (view available) | overview, llm (models + child runs), tools, environment (commands / skills / resources), integrations, errors, ledger |
 | current (view unavailable) | none — a single `Unavailable` panel with the bounded diagnostic |
 | history (aggregate) | overview (chart, session list) |
 | history (session selected) | all tabs (the session carries a full `SessionReport`) |
 | global | overview (chart) |
 
 Commands, Skills, and Resources are **environment** inventory and are grouped under
-one Environment tab in the browser; inventory is environment state (never a
+one Environment tab in the browser; Models and Agents are one **LLM** tab there,
+the model table with the child-run breakdown of the same scope below it. Inventory
+is environment state (never a
 "used"/"invocation" claim) and is never range-filtered, while skill invocations
 come only from explicit folded counters and integration rows keep detection,
 telemetry, activity, and version independent (ADR 0017, ADR 0009, ADR 0014). The

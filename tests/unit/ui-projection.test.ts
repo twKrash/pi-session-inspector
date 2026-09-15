@@ -1094,10 +1094,9 @@ test("history carries the coverage ladder, membership order and per-session view
   assert.equal(selected?.view?.report?.sessionId, "session-partial");
   assert.deepEqual(selected?.view?.capabilities, [
     "overview",
-    "models",
+    "llm",
     "tools",
     "environment",
-    "agents",
     "integrations",
     "errors",
     "ledger",

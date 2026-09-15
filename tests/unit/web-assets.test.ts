@@ -63,10 +63,9 @@ function uiSnapshot(): InspectorUiSnapshot {
 
 const ALL_TABS = [
   "overview",
-  "models",
+  "llm",
   "tools",
   "environment",
-  "agents",
   "integrations",
   "errors",
   "ledger",
@@ -558,11 +557,11 @@ test("the route round-trips the canonical parameter order", () => {
     [
       {
         section: "current",
-        tab: "models",
+        tab: "llm",
         scope: "active",
         range: { kind: "preset", preset: 7 },
       },
-      "#/current/models?scope=active&preset=7",
+      "#/current/llm?scope=active&preset=7",
     ],
     [
       {
@@ -681,7 +680,7 @@ test("the route parses a range intent and refuses to resolve one", () => {
 test("the derived view coerces a tab the section cannot render", () => {
   const { route } = namespaces();
   const derived = route.derive(
-    { section: "history", tab: "models", scope: "tree" },
+    { section: "history", tab: "llm", scope: "tree" },
     CAPABILITIES,
   );
   assert.equal(derived.activeSection, "history");
@@ -756,21 +755,21 @@ test("the route parses anything, keeps no null field, and derives only render st
     "#/current/tools?scope=tree",
   );
   // An optional field that is absent or null serializes and keys as absent.
-  const absent = { section: "current", tab: "models", scope: "tree" };
+  const absent = { section: "current", tab: "llm", scope: "tree" };
   const nulled = {
     ...absent,
     range: null,
     entity: null,
     table: null,
   };
-  assert.equal(route.key(nulled), "#/current/models?scope=tree");
+  assert.equal(route.key(nulled), "#/current/llm?scope=tree");
   assert.equal(route.key(nulled), route.key(absent));
   // Deriving exposes exactly the state that drives rendering: the resolved
   // range is not the browser's to know.
   const derived = route.derive(
     {
       section: "global",
-      tab: "models",
+      tab: "llm",
       scope: "tree",
       range: { kind: "preset", preset: 30 },
     },
@@ -945,7 +944,7 @@ test("a token is never accepted from a query, storage, or a cookie", async () =>
 test("a range intent is the only query the client sends", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
-    hash: "#/current/models?scope=tree&preset=7&q=acme",
+    hash: "#/current/llm?scope=tree&preset=7&q=acme",
   });
   await harness.start();
   assert.deepEqual(harness.fetches(), [
@@ -954,10 +953,10 @@ test("a range intent is the only query the client sends", async () => {
   // The route names the tab, the scope and the table query; the request does not.
   assert.equal(
     harness.location.hash,
-    "#/current/models?scope=tree&preset=7&q=acme",
+    "#/current/llm?scope=tree&preset=7&q=acme",
   );
   assert.equal(harness.element("title").textContent, "A session, in focus.");
-  assert.equal(tabLink(harness, "models").attributes["aria-current"], "page");
+  assert.equal(tabLink(harness, "llm").attributes["aria-current"], "page");
 });
 
 test("the loading and error landmarks report the request state", async () => {
@@ -995,6 +994,108 @@ test("the loading and error landmarks report the request state", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(failed.fetches().length, 2);
   assert.equal(failed.element("error").hidden, false);
+});
+
+test("the header refresh re-reads the report without moving the reader", async () => {
+  const first = uiSnapshot();
+  const second = uiSnapshot();
+  if (second.current.tree.range?.resolved === undefined) {
+    throw new Error("fixture must carry a tree range");
+  }
+  second.current.tree.range.resolved = {
+    preset: 7,
+    from: "2026-01-27",
+    to: "2026-02-02",
+  };
+  const harness = createWebClient({
+    responses: [first, second],
+    hash: "#/current/llm?scope=tree&q=acme",
+  });
+  await harness.start();
+  assert.equal(harness.element("range-name").textContent, "Custom range");
+  const refresh = harness.element("refresh");
+  // The control names itself, and it is a request rather than a route.
+  assert.equal(refresh.attributes["aria-label"], "Refresh");
+  harness.click(refresh);
+  await settle();
+
+  // The one request the route already makes, with the range the address bar
+  // already carries: a refresh sends no new intent.
+  assert.deepEqual(harness.fetches(), [
+    { url: "/api/v1/ui", authorization: "" },
+    { url: "/api/v1/ui", authorization: "" },
+  ]);
+  // The new payload is what the page now shows, and the reader is still on the
+  // same tab, table query and scope.
+  assert.equal(harness.element("range-name").textContent, "Last 7 days");
+  assert.equal(
+    harness.element("range-dates").textContent,
+    "2026-01-27 → 2026-02-02",
+  );
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree&q=acme");
+  assert.equal(currentTab(harness), "llm");
+  assert.equal(harness.element("search").value, "acme");
+
+  // A refresh the boundary fails reports the failure rather than inventing an
+  // empty report, and it stays a request the page survived.
+  const broken = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "",
+    fetchFailure: "http",
+  });
+  await broken.start();
+  assert.equal(broken.element("error").hidden, false);
+  broken.click(broken.element("refresh"));
+  await settle();
+  assert.equal(broken.fetches().length, 2);
+  assert.equal(broken.element("error").hidden, false);
+  assert.equal(broken.element("view").children.length, 0);
+});
+
+test("a superseded refresh never publishes its older payload", async () => {
+  const older = uiSnapshot();
+  const newer = uiSnapshot();
+  if (newer.current.tree.range?.resolved === undefined) {
+    throw new Error("fixture must carry a tree range");
+  }
+  newer.current.tree.range.resolved = {
+    preset: 7,
+    from: "2026-01-27",
+    to: "2026-02-02",
+  };
+  // Two requests the test answers itself, so the first click's answer can be
+  // delivered after the second click's.
+  const answers: ((snapshot: InspectorUiSnapshot) => void)[] = [];
+  const harness = createWebClient({
+    hash: "",
+    globals: {
+      fetch: () =>
+        new Promise((resolve) => {
+          answers.push((snapshot) =>
+            resolve({ ok: true, status: 200, json: async () => snapshot }),
+          );
+        }),
+    },
+  });
+  const started = harness.start();
+  assert.equal(answers.length, 1);
+  harness.click(harness.element("refresh"));
+  assert.equal(answers.length, 2);
+
+  // The second click answers first. It is the newest request, so it publishes
+  // and renders.
+  answers[1](newer);
+  await settle();
+  assert.equal(harness.element("range-name").textContent, "Last 7 days");
+  const renders = harness.renders();
+
+  // The first click answers late. A newer payload is already on the page, so
+  // the older one is dropped instead of overwriting it.
+  answers[0](older);
+  await settle();
+  assert.equal(harness.element("range-name").textContent, "Last 7 days");
+  assert.equal(harness.renders(), renders);
+  await started;
 });
 
 /**
@@ -1094,8 +1195,8 @@ test("tab navigation supports browser DOM collections", async () => {
   // A native click focuses its link before the delegated navigation handler
   // rebuilds the tab strip.
   tabLink(harness, "overview").focus();
-  harness.click(tabLink(harness, "models"));
-  assert.equal(currentTab(harness), "models");
+  harness.click(tabLink(harness, "llm"));
+  assert.equal(currentTab(harness), "llm");
 });
 
 test("one navigation renders once, however many events report it", async () => {
@@ -1116,11 +1217,31 @@ test("one navigation renders once, however many events report it", async () => {
   assert.equal(harness.fetches().length, 1);
 });
 
+test("a retired tab id coerces to the section default with one bounded notice", async () => {
+  // The LLM merge retired two route ids. A link or bookmark that still names
+  // one lands on the section default, with the same bounded notice any other
+  // capability this document cannot honour gets.
+  for (const retired of ["models", "agents"]) {
+    const harness = createWebClient({
+      responses: [uiSnapshot()],
+      hash: `#/current/${retired}?scope=tree`,
+    });
+    await harness.start();
+    assert.equal(harness.location.hash, "#/current/overview?scope=tree");
+    assert.equal(currentTab(harness), "overview");
+    assert.equal(harness.element("route-notice").hidden, false);
+    assert.equal(
+      harness.element("route-notice").textContent,
+      "That view isn't available here.",
+    );
+  }
+});
+
 test("a deep link coerces a tab the section cannot render", async () => {
   const snapshot = uiSnapshot();
   const aggregate = createWebClient({
     responses: [snapshot],
-    hash: "#/history/models",
+    hash: "#/history/llm",
   });
   await aggregate.start();
   assert.deepEqual(visibleTabs(aggregate), ["overview"]);
@@ -1131,14 +1252,14 @@ test("a deep link coerces a tab the section cannot render", async () => {
   );
 
   // The same deep link against a selected session is honoured: a session detail
-  // carries a full report, so Models is a real destination.
+  // carries a full report, so LLM is a real destination.
   const detail = createWebClient({
     responses: [snapshot],
-    hash: "#/history/models?session=session-a",
+    hash: "#/history/llm?session=session-a",
   });
   await detail.start();
   assert.deepEqual(visibleTabs(detail), ALL_TABS);
-  assert.equal(currentTab(detail), "models");
+  assert.equal(currentTab(detail), "llm");
   assert.equal(detail.element("breadcrumb").textContent, "session-a");
   assert.equal(detail.element("route-notice").hidden, true);
   // Exactly one sidebar link is current, and it is the section the route names.
@@ -1237,9 +1358,9 @@ test("back and forward apply the route the address bar names", async () => {
   await harness.start();
   const before = harness.renders();
 
-  harness.click(tabLink(harness, "models"));
-  assert.equal(harness.location.hash, "#/current/models?scope=tree");
-  assert.equal(currentTab(harness), "models");
+  harness.click(tabLink(harness, "llm"));
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree");
+  assert.equal(currentTab(harness), "llm");
   assert.equal(harness.renders() - before, 1);
 
   // Back: the browser restores the previous entry and reports it. No second
@@ -1251,9 +1372,9 @@ test("back and forward apply the route the address bar names", async () => {
   assert.equal(harness.fetches().length, 1);
 
   // Forward: the tab entry is restored as an entry of its own.
-  harness.location.hash = "#/current/models?scope=tree";
+  harness.location.hash = "#/current/llm?scope=tree";
   harness.hashchange();
-  assert.equal(currentTab(harness), "models");
+  assert.equal(currentTab(harness), "llm");
   assert.equal(harness.renders() - before, 3);
 });
 
@@ -1263,7 +1384,7 @@ test("a discrete change pushes an entry; only search typing replaces", async () 
   const start = harness.replacements();
 
   // A tab is a destination, so it may not overwrite the entry it came from.
-  harness.click(tabLink(harness, "models"));
+  harness.click(tabLink(harness, "llm"));
   assert.equal(harness.replacements() - start, 0);
 
   // Typing in a search box is in progress, not a destination: it replaces.
@@ -1271,7 +1392,7 @@ test("a discrete change pushes an entry; only search typing replaces", async () 
   search.value = "acme";
   harness.input(search);
   assert.equal(harness.replacements() - start, 1);
-  assert.equal(harness.location.hash, "#/current/models?scope=tree&q=acme");
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree&q=acme");
 
   const sort = harness.element("sort");
   sort.value = "name";
@@ -1279,20 +1400,20 @@ test("a discrete change pushes an entry; only search typing replaces", async () 
   assert.equal(harness.replacements() - start, 1);
   assert.equal(
     harness.location.hash,
-    "#/current/models?scope=tree&q=acme&sort=name",
+    "#/current/llm?scope=tree&q=acme&sort=name",
   );
 
   // Clearing the sort empties the table state rather than naming "default".
   const cleared = harness.element("sort");
   cleared.value = "default";
   harness.change(cleared);
-  assert.equal(harness.location.hash, "#/current/models?scope=tree&q=acme");
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree&q=acme");
 });
 
 test("a table's search and sort reorder only the rows it already renders", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
-    hash: "#/current/models?scope=tree",
+    hash: "#/current/llm?scope=tree",
   });
   await harness.start();
   const rows = (): number =>
@@ -1317,10 +1438,7 @@ test("a table's search and sort reorder only the rows it already renders", async
   assert.equal(sort.querySelectorAll("option").length, 3);
   sort.value = "reverse";
   harness.change(sort);
-  assert.equal(
-    harness.location.hash,
-    "#/current/models?scope=tree&sort=reverse",
-  );
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree&sort=reverse");
 });
 
 test("a view's range and table settings are remembered, never linked", async () => {
@@ -1348,8 +1466,8 @@ test("a view's range and table settings are remembered, never linked", async () 
 
   // A table's own query follows the same rule: the active table's is the route's
   // (so the hash carries it), the inactive one's lives in memory.
-  harness.click(tabLink(harness, "models"));
-  assert.equal(harness.location.hash, "#/current/models?scope=tree&preset=7");
+  harness.click(tabLink(harness, "llm"));
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree&preset=7");
   const search = harness.element("search");
   search.value = "acme";
   harness.input(search);
@@ -1357,28 +1475,28 @@ test("a view's range and table settings are remembered, never linked", async () 
 
   harness.click(tabLink(harness, "tools"));
   assert.equal(harness.element("search").value, "");
-  harness.click(tabLink(harness, "models"));
+  harness.click(tabLink(harness, "llm"));
   assert.equal(harness.element("search").value, "acme");
 });
 
 test("a table's sort is remembered across a tab switch", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
-    hash: "#/current/models?scope=tree",
+    hash: "#/current/llm?scope=tree",
   });
   await harness.start();
   const sort = harness.element("sort");
   sort.value = "name";
   harness.change(sort);
-  assert.equal(harness.location.hash, "#/current/models?scope=tree&sort=name");
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree&sort=name");
 
   // The leaving table's sort is not the next table's; it is remembered for the
   // table it belongs to and restored when that table comes back.
   harness.click(tabLink(harness, "tools"));
   assert.equal(selectedSort(harness), "default");
-  harness.click(tabLink(harness, "models"));
+  harness.click(tabLink(harness, "llm"));
   assert.equal(selectedSort(harness), "name");
-  assert.equal(harness.location.hash, "#/current/models?scope=tree&sort=name");
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree&sort=name");
 });
 
 test("focus moves to the section heading on a section change only", async () => {
@@ -1402,16 +1520,16 @@ test("focus moves to the section heading on a section change only", async () => 
 test("a tab that held keyboard focus keeps it across a re-render", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()], hash: "" });
   await harness.start();
-  harness.click(tabLink(harness, "models"));
-  const models = tabLink(harness, "models");
+  harness.click(tabLink(harness, "llm"));
+  const models = tabLink(harness, "llm");
   models.focus();
   assert.equal(harness.activeElement(), models);
 
   // A range change rebuilds the strip: the focused tab gets its focus back.
   harness.click(control(harness, "range", "days", "14"));
   await settle();
-  assert.equal(currentTab(harness), "models");
-  assert.equal(harness.activeElement()?.dataset.tab, "models");
+  assert.equal(currentTab(harness), "llm");
+  assert.equal(harness.activeElement()?.dataset.tab, "llm");
 
   // A section change leaves focus to the heading instead.
   harness.click(navLink(harness, "history"));
@@ -1422,7 +1540,7 @@ test("a tab that held keyboard focus keeps it across a re-render", async () => {
 test("the search box keeps its focus and caret across its own re-render", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
-    hash: "#/current/models?scope=tree",
+    hash: "#/current/llm?scope=tree",
   });
   await harness.start();
   const search = harness.element("search");
@@ -1475,7 +1593,7 @@ test("an address bar that refuses canonicalization never suppresses the render",
 test("a refused replacement applies the search route through one hash assignment", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
-    hash: "#/current/models?scope=tree",
+    hash: "#/current/llm?scope=tree",
     replaceStateFails: true,
   });
   await harness.start();
@@ -1491,9 +1609,9 @@ test("a refused replacement applies the search route through one hash assignment
     "parse",
   ]);
   assert.deepEqual(harness.events.slice(before, before + 1), [
-    { kind: "hashAssign", hash: "#/current/models?scope=tree&q=acme" },
+    { kind: "hashAssign", hash: "#/current/llm?scope=tree&q=acme" },
   ]);
-  assert.equal(harness.location.hash, "#/current/models?scope=tree&q=acme");
+  assert.equal(harness.location.hash, "#/current/llm?scope=tree&q=acme");
   assert.equal(harness.element("search").value, "acme");
   assert.equal(harness.renders(), renders + 1);
   assert.equal(harness.fetches().length, 1);
@@ -1638,8 +1756,16 @@ test("every session tab renders from the DTO's own published rows", async () => 
   }
   const rendered = (): string =>
     harness.texts(harness.element("view")).join(" ");
-  harness.click(tabLink(harness, "models"));
+  // The one LLM tab renders both halves of the same scope: the model table
+  // first, then the child-run breakdown. The fixture publishes no child runs,
+  // so the second half states that published emptiness instead of inventing a
+  // zero or a row.
+  harness.click(tabLink(harness, "llm"));
   assert.equal(rendered().includes("acme"), true);
+  assert.equal(
+    rendered().includes("No observations in the selected scope."),
+    true,
+  );
   harness.click(tabLink(harness, "tools"));
   assert.equal(rendered().includes("bash"), true);
   harness.click(tabLink(harness, "errors"));
@@ -1650,13 +1776,6 @@ test("every session tab renders from the DTO's own published rows", async () => 
   assert.equal(rendered().includes("Description"), true);
   harness.click(tabLink(harness, "integrations"));
   assert.equal(rendered().includes("context"), true);
-  // The fixture publishes no child runs, so the Agents tab states that published
-  // emptiness instead of inventing a zero or a row.
-  harness.click(tabLink(harness, "agents"));
-  assert.equal(
-    rendered().includes("No observations in the selected scope."),
-    true,
-  );
   // The evidence tab is always present and carries the DTO's own rows.
   harness.click(tabLink(harness, "overview"));
   assert.equal(rendered().includes("Evidence, not estimates."), true);
@@ -1696,7 +1815,7 @@ test("a tools row narrows the calls list in place, and the clear control restore
 test("a row link is a real route that keeps the context and focuses its row", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
-    hash: "#/current/models?scope=tree&preset=7",
+    hash: "#/current/llm?scope=tree&preset=7",
   });
   await harness.start();
   const link = harness
@@ -1708,7 +1827,7 @@ test("a row link is a real route that keeps the context and focuses its row", as
   // The destination keeps the active scope and range and names the row's id.
   assert.equal(
     row.attributes.href,
-    "#/current/models?scope=tree&preset=7&entity=model%3Aacme%2Falpha",
+    "#/current/llm?scope=tree&preset=7&entity=model%3Aacme%2Falpha",
   );
   const view = harness.element("view");
   const querySelectorAll = view.querySelectorAll.bind(view);
@@ -1819,7 +1938,7 @@ test("ErrorRow references are entity links wherever the DTO publishes an id", as
   assert.equal((child as StubElement).textContent, "worker");
   assert.equal(
     (child as StubElement).attributes.href,
-    "#/current/agents?scope=tree&entity=agent%3Achild-run",
+    "#/current/llm?scope=tree&entity=agent%3Achild-run",
   );
   // A candidate the payload does not carry is the catalog's Unavailable wording,
   // never the raw run id.
@@ -1831,7 +1950,7 @@ test("ErrorRow references are entity links wherever the DTO publishes an id", as
   // and following it focuses that row.
   const agents = createWebClient({
     responses: [snapshot],
-    hash: "#/current/agents?scope=tree",
+    hash: "#/current/llm?scope=tree",
   });
   await agents.start();
   const parent = agents
@@ -2040,7 +2159,7 @@ test("the renderer's words are catalog words, including at its four lookups", as
   // The live region: an entity focus is announced with the catalog's wording.
   const entity = createWebClient({
     responses: [uiSnapshot()],
-    hash: "#/current/models?scope=tree",
+    hash: "#/current/llm?scope=tree",
   });
   await entity.start();
   const link = entity

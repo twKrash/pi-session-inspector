@@ -147,7 +147,7 @@ async function sample(): Promise<Run> {
   // route changes and the client rebuilds the view exactly once, without a
   // request, because the range intent did not change. Firing hashchange() with
   // the already-applied route would measure nothing (the client returns early).
-  client.location.hash = "#/current/models?scope=tree";
+  client.location.hash = "#/current/llm?scope=tree";
   const rerenderStart = performance.now();
   client.hashchange();
   const rerendered = performance.now();
@@ -238,7 +238,7 @@ function assertBehavior(measurement: Measurement): void {
     // once: in both cases the measured operation is not the re-render it claims.
     problems.push("route-change renders");
   }
-  if (!behavior.appliedRoute.includes("/current/models")) {
+  if (!behavior.appliedRoute.includes("/current/llm")) {
     problems.push("route change never applied");
   }
   if (!behavior.renderedCanvas) problems.push("chart canvas");

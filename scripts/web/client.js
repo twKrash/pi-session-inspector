@@ -12,7 +12,8 @@
  * Report-derived strings reach the document through `textContent` and bounded
  * `setAttribute` calls; report-derived markup is never parsed. First-party
  * storage, cookies, and sockets are not used, and the capability token lives in
- * one in-memory variable for the lifetime of the page.
+ * one in-memory variable for the lifetime of the page. The theme a run starts
+ * with comes from the report settings; the in-page toggle is presentation only.
  */
 (function () {
   "use strict";
@@ -96,6 +97,10 @@
   let lastAppliedKey = "";
   let stateNotice = undefined;
   let inFlight = null;
+  // The identity of the newest request. A response the client has already
+  // superseded (a second refresh, a range the reader moved on from) is dropped
+  // rather than published, so a slow answer never overwrites a newer one.
+  let latestRequest = 0;
   let startPromise = null;
   let state = { section: "current", tab: "overview", scope: "active" };
   let view = null;
@@ -365,9 +370,8 @@
 
   /** The destination tab of one entity kind. */
   const tabFor = (kind) => {
-    if (kind === "model") return "models";
+    if (kind === "model" || kind === "agent") return "llm";
     if (kind === "tool") return "tools";
-    if (kind === "agent") return "agents";
     if (kind === "error") return "errors";
     if (kind === "integration") return "integrations";
     return "environment";
@@ -470,18 +474,21 @@
   /**
    * One protected request. The token is sent as the bearer credential only, and
    * the transport's own text never reaches the document: a failed request is one
-   * bounded state, not a message.
+   * bounded state, not a message. Only the newest request publishes a payload and
+   * owns the loading state.
    */
-  const load = async (query) => {
+  const load = async (query, id) => {
     setFailure(false);
     try {
       const response = await fetch(requestUrl(query), {
         headers: token === null ? {} : { Authorization: "Bearer " + token },
       });
+      if (id !== undefined && id !== latestRequest) return false;
       if (response === undefined || response === null || response.ok !== true) {
         return false;
       }
       const body = await response.json();
+      if (id !== undefined && id !== latestRequest) return false;
       if (body === undefined || body === null || body.kind !== "ui")
         return false;
       snapshot = body;
@@ -1048,6 +1055,13 @@
     }
     return [section];
   };
+
+  /**
+   * The one LLM tab: the scope's model table, and below it the child-run
+   * breakdown of the same scope. Both halves are the DTO's own rows; this is a
+   * composition of two existing panels, never a joined or recomputed figure.
+   */
+  const llmNodes = (target) => [...modelsNodes(target), ...agentsNodes(target)];
 
   /** Known usage only: a partial row keeps its qualifier and its own fraction. */
   const toolUsageCell = (value, labelKey, row) => {
@@ -1976,10 +1990,9 @@
     if (target.report === undefined) {
       return [sectionUnavailable(target, "unavailable.current")];
     }
-    if (view.activeTab === "models") return modelsNodes(target);
+    if (view.activeTab === "llm") return llmNodes(target);
     if (view.activeTab === "tools") return toolsNodes(target);
     if (view.activeTab === "environment") return environmentNodes(target);
-    if (view.activeTab === "agents") return agentsNodes(target);
     if (view.activeTab === "integrations") return integrationsNodes(target);
     if (view.activeTab === "errors") return errorsNodes(target);
     if (view.activeTab === "ledger") return ledgerNodes(target);
@@ -2001,6 +2014,7 @@
       : resolved.from + " → " + resolved.to;
   };
 
+  /** Puts the DTO's own initial theme in effect, once, on the first payload. */
   const syncTheme = () => {
     const body = document.body;
     const dark = snapshot !== null && snapshot.theme === "dark";
@@ -2326,9 +2340,13 @@
    * change never blanks the page it came from.
    */
   const request = (query, effects) => {
+    const id = (latestRequest += 1);
     setLoading(true);
     inFlight = (async () => {
-      const served = await load(query);
+      const served = await load(query, id);
+      // A newer request owns the page now: it renders and it clears the loading
+      // state, so this one leaves both alone.
+      if (id !== latestRequest) return;
       setLoading(false);
       if (!served) {
         setFailure(true);
@@ -2597,6 +2615,18 @@
             // Observer-only: recoloring is presentation, never a state change.
           }
         }
+      });
+    }
+    const refresh = q("refresh");
+    if (refresh !== null) {
+      const label = COPY["action.refresh"];
+      refresh.setAttribute("aria-label", label);
+      refresh.setAttribute("title", label);
+      // Re-reads the running Inspector through the one request the route
+      // already makes: the range stays whatever the address bar names, so a
+      // refresh never moves the reader off the view they are looking at.
+      refresh.addEventListener("click", () => {
+        request(requestQuery(location.hash || ""), undefined);
       });
     }
     const custom = q("custom-range");

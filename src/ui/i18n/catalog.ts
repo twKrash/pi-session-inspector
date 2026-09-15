@@ -26,6 +26,8 @@ export const ENGLISH_CATALOG = {
     "Native usage within the selected dates. Each session counted once.",
   "theme.dark": "Dark theme",
   "theme.light": "Light theme",
+  // The header control that re-reads the report from the running Inspector.
+  "action.refresh": "Refresh",
   "scope.label": "Entry scope",
   "scope.active": "Active path",
   "scope.tree": "Full session tree",
@@ -54,7 +56,9 @@ export const ENGLISH_CATALOG = {
   "nav.entityFocus": "Focused entity",
   "panel.allDates": "All report dates",
   "tab.overview": "Overview",
-  "tab.models": "Models",
+  // One tab for the whole LLM side of a scope: the model table and, under it,
+  // the child-run breakdown of the same rows.
+  "tab.llm": "LLM",
   "tab.tools": "Tools",
   // The browser's inventory grouping (design §9.3): Commands, Skills and
   // Resources are sub-navigation inside this one environment panel, never

@@ -20,17 +20,17 @@ import type { SessionObservation } from "./observation.ts";
 export type { DailyRow } from "./daily.ts";
 
 /**
- * The tabs each section can render (spec §15, design §9.3). `environment`
+ * The tabs each section can render (spec §15, design §9.3). `llm` carries the
+ * model table and the child-run breakdown of one scope, and `environment`
  * replaces the separate commands/skills tabs; a multi-session aggregate exposes
  * overview only until its breakdowns are defined, while a selected history
  * session carries a full `SessionReport` and therefore offers every tab.
  */
 const ALL_TABS: readonly string[] = [
   "overview",
-  "models",
+  "llm",
   "tools",
   "environment",
-  "agents",
   "integrations",
   "errors",
   "ledger",
@@ -39,8 +39,8 @@ const ALL_TABS: readonly string[] = [
 /**
  * The one capability table the browser is built from. `historySession` is not a
  * section: it is the set a history route offers once a session is selected
- * (design §9.3), so a deep link to a session's Models tab is honoured while
- * `#/history/models` for the aggregate still coerces to overview.
+ * (design §9.3), so a deep link to a session's LLM tab is honoured while
+ * `#/history/llm` for the aggregate still coerces to overview.
  */
 export const CAPABILITIES: Readonly<
   Record<"current" | "history" | "historySession" | "global", readonly string[]>
