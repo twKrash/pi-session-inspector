@@ -16,6 +16,16 @@ test("help lists only valid combinations and every mode", () => {
   assert.match(lines, /session-inspector snapshot/);
   assert.match(lines, /tui\s+interactive/);
   assert.match(lines, /session-inspector json/);
+  // Both export modes name one historical session the same way.
+  assert.match(
+    lines,
+    /snapshot {2}current \| history \| global \| session <sessionId>/,
+  );
+  assert.match(
+    lines,
+    /json {6}current \| history \| global \| session <sessionId>/,
+  );
+  assert.match(lines, /json session session-a/);
   assert.match(lines, /localhost interactive browser application/);
   assert.match(lines, /--preset 7\|14\|30/);
   assert.match(lines, /--theme dark\|light/);

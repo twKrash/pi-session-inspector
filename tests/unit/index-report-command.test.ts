@@ -23,7 +23,10 @@ import type {
 import registerSessionInspector, { registerTracking } from "../../src/index.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
-import { generatedSnapshotPath } from "../../src/ui/report-output.ts";
+import {
+  generatedReportPath,
+  generatedSnapshotPath,
+} from "../../src/ui/report-output.ts";
 import { closeInspectorServer } from "../../src/ui/server.ts";
 
 type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -293,6 +296,94 @@ async function writeSessionManifest(harness: Harness): Promise<void> {
       sourceFile: "session.jsonl",
       state: "tracking",
     }),
+  );
+}
+
+/** A second tracked session, with its own facts, distinct from the live one. */
+const OTHER_SESSION_SOURCE = `${[
+  { type: "session", version: 3, id: "other-session" },
+  {
+    type: "custom",
+    id: "marker",
+    parentId: null,
+    customType: "session-inspector:tracking-start",
+    data: { schemaVersion: 1 },
+    timestamp: "2026-02-03T00:00:00Z",
+  },
+  {
+    type: "message",
+    id: "other-main",
+    parentId: "marker",
+    timestamp: "2026-02-03T01:00:00Z",
+    message: {
+      role: "assistant",
+      provider: "acme",
+      model: "beta",
+      content: [{ type: "text", text: "PRIVATE_BODY" }],
+      usage: { totalTokens: 4321, cost: { total: 0.5 } },
+    },
+  },
+  {
+    type: "message",
+    id: "other-call",
+    parentId: "other-main",
+    timestamp: "2026-02-03T01:05:00Z",
+    message: {
+      role: "assistant",
+      provider: "acme",
+      model: "beta",
+      content: [
+        {
+          type: "toolCall",
+          id: "other-call-1",
+          name: "bash",
+          arguments: { command: "PRIVATE_ARGUMENT" },
+        },
+      ],
+      usage: { totalTokens: 0, cost: { total: 0 } },
+    },
+  },
+  {
+    type: "message",
+    id: "other-result",
+    parentId: "other-call",
+    timestamp: "2026-02-03T01:06:00Z",
+    message: {
+      role: "toolResult",
+      toolCallId: "other-call-1",
+      toolName: "bash",
+      isError: false,
+      content: "PRIVATE_RESULT",
+      usage: { totalTokens: 0, cost: { total: 0 } },
+    },
+  },
+]
+  .map((row) => JSON.stringify(row))
+  .join("\n")}\n`;
+
+/** Every raw producer string the fixtures carry, for absence assertions. */
+const RAW_PRODUCER_TEXT = [
+  "PRIVATE_BODY",
+  "PRIVATE_ARGUMENT",
+  "PRIVATE_RESULT",
+] as const;
+
+/** Declares that second session the way tracking does, and writes its source. */
+async function writeOtherSession(harness: Harness): Promise<void> {
+  const directory = join(harness.root, "sessions", "other-session");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "meta.json"),
+    JSON.stringify({
+      schemaVersion: 2,
+      sessionId: "other-session",
+      sourceFile: "other.jsonl",
+      state: "tracking",
+    }),
+  );
+  await writeFile(
+    join(harness.sessionDirectory, "other.jsonl"),
+    OTHER_SESSION_SOURCE,
   );
 }
 
@@ -1048,6 +1139,184 @@ test("json current, history and global export deterministically and never open",
     assert.equal(global.usage.totalTokens, 18);
     assert.equal(harness.opens.length, 0);
     assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("json session exports one requested historical session through the snapshot loader", async () => {
+  const harness = await createHarness();
+  try {
+    await writeSessionManifest(harness);
+    await writeOtherSession(harness);
+
+    const output = join(harness.directory, "session.json");
+    await harness.handler()(
+      `json session other-session --output ${JSON.stringify(output)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(harness.notices.at(-1), `Inspector report written: ${output}`);
+    // A JSON export never opens a browser, and never starts the UI server.
+    assert.equal(harness.opens.length, 0);
+    const first = await readFile(output, "utf8");
+    assert.equal(
+      harness.notices.some((notice) =>
+        notice.startsWith("Inspector UI available at:"),
+      ),
+      false,
+    );
+
+    const exported = JSON.parse(first) as {
+      availability: string;
+      sessionId: string;
+      usageByDate: readonly unknown[];
+      report: { sessionId: string; usage: { totalTokens: number } };
+    };
+    // The requested historical session, never the live one Pi reports: the
+    // live session's own source carries 18 tokens, the requested one 4321.
+    assert.equal(exported.availability, "available");
+    assert.equal(exported.sessionId, "other-session");
+    assert.equal(exported.report.sessionId, "other-session");
+    assert.equal(exported.report.usage.totalTokens, 4321);
+    assert.equal(Array.isArray(exported.usageByDate), true);
+    // The document is the canonical report plus its dated evidence: never a
+    // raw prompt body, tool argument, or tool result.
+    for (const raw of RAW_PRODUCER_TEXT)
+      assert.equal(first.includes(raw), false, raw);
+
+    // Same session, same facts, one renderer apart: the snapshot document is
+    // built from the projection this export publishes.
+    await harness.handler()(
+      "snapshot session other-session --no-open",
+      harness.context({ mode: "interactive" }),
+    );
+    const document = await readFile(
+      generatedSnapshotPath(harness.cache, {
+        target: "session",
+        sessionId: "other-session",
+        theme: "light",
+      }),
+      "utf8",
+    );
+    assert.equal(document.includes("other-session"), true);
+    for (const raw of RAW_PRODUCER_TEXT)
+      assert.equal(document.includes(raw), false, raw);
+    // The count the export publishes is the count the document states: 4321
+    // thousands-separated, chosen so no stylesheet or label can carry it.
+    assert.equal(document.includes("4,321"), true);
+
+    // Repeating the command is byte-identical, and no destination means the
+    // generated cache path — named for the session, never for the live one.
+    await harness.handler()(
+      `json session other-session --output ${JSON.stringify(output)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(await readFile(output, "utf8"), first);
+    await harness.handler()(
+      "json session other-session",
+      harness.context({ mode: "interactive" }),
+    );
+    const generated = generatedReportPath(
+      harness.cache,
+      "session-other-session",
+      "json",
+    );
+    assert.equal(
+      harness.notices.at(-1),
+      `Inspector report written: ${generated}`,
+    );
+    assert.equal(await readFile(generated, "utf8"), first);
+    assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("json session refuses unsafe destinations and unknown sessions as snapshot does", async () => {
+  const harness = await createHarness();
+  try {
+    await writeSessionManifest(harness);
+    await writeOtherSession(harness);
+    const bare = await countFiles(harness.cache);
+
+    // The existing JSON destination rules hold unchanged for a session target:
+    // a `.json` file only, and never a Pi session source.
+    for (const destination of [
+      join(harness.directory, "session.html"),
+      join(harness.sessionDirectory, "other.jsonl"),
+      join(harness.directory, "session"),
+    ]) {
+      harness.notices.length = 0;
+      await harness.handler()(
+        `json session other-session --output ${JSON.stringify(destination)}`,
+        harness.context({ mode: "interactive" }),
+      );
+      const notice = harness.notices.at(-1) ?? "";
+      assert.match(notice, /json output/i, destination);
+      // Bounded refusal: neither the destination nor exception text leaks.
+      assert.equal(notice.includes(destination), false, destination);
+      assert.equal(await countFiles(harness.cache), bare, destination);
+      assert.equal(
+        await readFile(join(harness.sessionDirectory, "other.jsonl"), "utf8"),
+        OTHER_SESSION_SOURCE,
+        destination,
+      );
+    }
+
+    // Scope and range are refused before any load, in both modes alike.
+    for (const args of [
+      "json session other-session --scope tree",
+      "json session other-session --preset 7",
+      "json session",
+    ]) {
+      harness.notices.length = 0;
+      await harness.handler()(args, harness.context({ mode: "interactive" }));
+      assert.match(harness.notices.at(-1) ?? "", /usage|invalid|help/i, args);
+    }
+    assert.equal(await countFiles(harness.cache), bare);
+
+    // A session no manifest declares is the same bounded refusal in both
+    // export modes, and it writes nothing.
+    for (const args of [
+      "json session absent-session",
+      "snapshot session absent-session --no-open",
+    ]) {
+      harness.notices.length = 0;
+      await harness.handler()(args, harness.context({ mode: "interactive" }));
+      assert.match(
+        harness.notices.at(-1) ?? "",
+        /^Inspector session (snapshot|JSON report) is unavailable\.$/,
+        args,
+      );
+      assert.equal(await countFiles(harness.cache), bare, args);
+    }
+
+    // A declared session whose own source cannot be read is not an unknown
+    // one: both modes state the unavailable verdict, because the export is the
+    // loader's DTO verbatim and the document renders that same projection.
+    const brokenDirectory = join(harness.root, "sessions", "broken-session");
+    await mkdir(brokenDirectory, { recursive: true });
+    await writeFile(
+      join(brokenDirectory, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        sessionId: "broken-session",
+        sourceFile: "absent.jsonl",
+        state: "tracking",
+      }),
+    );
+    const broken = join(harness.directory, "broken.json");
+    await harness.handler()(
+      `json session broken-session --output ${JSON.stringify(broken)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    assert.equal(harness.notices.at(-1), `Inspector report written: ${broken}`);
+    const brokenBody = JSON.parse(await readFile(broken, "utf8")) as {
+      availability: string;
+      sessionId: string;
+    };
+    assert.equal(brokenBody.availability, "unavailable");
+    assert.equal(brokenBody.sessionId, "broken-session");
   } finally {
     await harness.cleanup();
   }

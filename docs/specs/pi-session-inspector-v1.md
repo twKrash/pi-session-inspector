@@ -59,7 +59,7 @@ targets
   ui       — no target; the application carries its own navigation
   snapshot current | history | global | session <sessionId>
   tui      current | ledger           (default current)
-  json     current | history | global (default current)
+  json     current | history | global | session <sessionId> (default current)
 
 snapshot options
   current  --scope active|tree; range options allowed
@@ -82,9 +82,10 @@ ui options
   --no-open
 
 json options
-  --scope active|tree    current only; history/global stay full tree
+  --scope active|tree    current only; every other target stays full tree
   --debug
   --output PATH
+  session <sessionId>    atomic; scope and range options rejected
 
 help | --help | -h        usage panel (esc/q closes)
 ```
@@ -101,7 +102,11 @@ help | --help | -h        usage panel (esc/q closes)
 - `snapshot current` accepts scope and range. `snapshot history` and
   `snapshot global` are full-tree and accept range only. `snapshot session
   <sessionId>` accepts neither scope nor range because the session report is
-  atomic.
+  atomic. `json session <sessionId>` is that same atomic target under the same
+  rule: the requested session's own canonical report DTO, loaded through the
+  same historical-session seam `snapshot session` uses, with only the renderer
+  differing — the snapshot resolves a projection of that DTO, the JSON export
+  writes the DTO itself (no JSON-specific session parser or data path exists).
 - Range presets resolve against each projection's latest observed date. Custom
   ranges use inclusive real calendar dates. Invalid, mixed, duplicate, or
   unsupported range input is rejected; no range is silently clamped or
@@ -118,7 +123,8 @@ help | --help | -h        usage panel (esc/q closes)
   and never prevent Inspector from starting.
 - `--format`, `current|history|global|ledger` as a first token, unknown
   modes/targets/options, missing or empty values, `ui --output`, snapshot scope
-  or range options in `snapshot session`, scope in `snapshot history|global`,
+  or range options in `snapshot session`, scope or range options in
+  `json session`, scope in `snapshot history|global`,
   invalid range forms, `--theme` with `tui`/`json`, `--output` with `ui`/`tui`,
   and `--no-open` with `json` return one-line usage plus `Run
   /session-inspector help`, never generic failure text.

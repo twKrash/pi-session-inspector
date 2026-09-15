@@ -88,6 +88,42 @@ test("parses the documented positional modes, targets, and options", () => {
     scope: "tree",
     noOpen: false,
   });
+  // One named historical session is a full-tree report in both export modes,
+  // and it is the same positional `session <sessionId>` form for each.
+  assert.deepEqual(report("json session abc"), {
+    kind: "report",
+    mode: "json",
+    target: "session",
+    scope: "tree",
+    sessionId: "abc",
+    noOpen: false,
+  });
+  assert.deepEqual(report("json session abc --output report.json"), {
+    kind: "report",
+    mode: "json",
+    target: "session",
+    scope: "tree",
+    sessionId: "abc",
+    output: "report.json",
+    noOpen: false,
+  });
+  assert.deepEqual(report("json session abc --debug"), {
+    kind: "report",
+    mode: "json",
+    target: "session",
+    scope: "tree",
+    sessionId: "abc",
+    debug: true,
+    noOpen: false,
+  });
+  assert.deepEqual(report('json session "session with spaces"'), {
+    kind: "report",
+    mode: "json",
+    target: "session",
+    scope: "tree",
+    sessionId: "session with spaces",
+    noOpen: false,
+  });
   assert.deepEqual(report("help"), { kind: "help" });
   assert.deepEqual(report("--help"), { kind: "help" });
 });
@@ -99,6 +135,16 @@ test("rejects invalid combinations and removed syntax with a usable message", ()
     "ui --preset 7",
     "tui global",
     "json ledger",
+    "json session",
+    "json session abc --scope tree",
+    "json session abc --scope active",
+    "json session abc --preset 7",
+    "json session abc --from 2026-01-01 --to 2026-01-02",
+    "json session abc --theme dark",
+    "json session abc --no-open",
+    "json session abc --output",
+    "json session abc extra",
+    "json session --scope tree",
     "json history --scope active",
     "json global --scope active",
     "tui --theme dark",

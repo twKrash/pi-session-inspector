@@ -4,8 +4,9 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
-**Browser UI only. One tab vocabulary change (`models`/`agents` deep links
-coerce to the section default); no report, DTO, or persisted-schema change.**
+**Browser UI plus one additive command target (`json session <sessionId>`).
+One tab vocabulary change (`models`/`agents` deep links coerce to the section
+default); no report, DTO, or persisted-schema change.**
 
 ### Changed
 
@@ -20,6 +21,15 @@ coerce to the section default); no report, DTO, or persisted-schema change.**
 - A refresh control in the page header that re-reads the report from the running
   Inspector (`/api/v1/ui`, the same request the route already makes) and renders
   the new payload without moving the reader off their tab, scope, or table state.
+- `json session <sessionId>`: one requested historical session exported as JSON,
+  with the same `--output` and `--debug` options as the other JSON targets and
+  the same atomic, scope-free, range-free rules as `snapshot session`. It loads
+  that session through the same historical-session seam `snapshot session` uses
+  and writes the canonical report DTO itself, where the snapshot resolves its
+  own projection of that DTO; no JSON-specific session parser or data path
+  exists. The generated cache name
+  is `session-<sessionId>.json`, so it can never be the file a `json current`
+  export wrote.
 
 ## [0.11.0]
 

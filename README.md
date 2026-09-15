@@ -33,13 +33,19 @@ starting a server.
 /session-ins snapshot global --output "global.html"
 /session-ins snapshot session <sessionId>
 /session-ins json history --output report.json
+/session-ins json session <sessionId> --output report.json
 ```
 
 `snapshot` requires an explicit target: `current`, `history`, `global`, or
-`session <sessionId>`. `--output` is valid only for `snapshot` and `json`, so
+`session <sessionId>`; `json` takes the same four and defaults to `current`.
+`--output` is valid only for `snapshot` and `json`, so
 `ui` never writes a file; `--no-open` suppresses only the platform browser
-opener. Atomic snapshots (`snapshot session <sessionId>`) take no `--scope` and
-no range options: one requested session, nothing else.
+opener. Atomic session exports (`snapshot session <sessionId>` and
+`json session <sessionId>`) take no `--scope` and
+no range options: one requested session, nothing else. Both load that session
+through the same historical-session loader and publish the same canonical
+report DTO; the snapshot renders its own resolved projection of that DTO,
+while the JSON export writes the DTO itself.
 
 Snapshots are created lazily under Pi's agent directory at
 `session-inspector/v1/reports/` when `--output` is omitted. Unsafe/non-portable

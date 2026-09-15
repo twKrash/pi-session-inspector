@@ -54,7 +54,7 @@ export const INSPECTOR_TARGETS: Readonly<
   ui: [],
   snapshot: ["current", "history", "global", "session"],
   tui: ["current", "ledger"],
-  json: ["current", "history", "global"],
+  json: ["current", "history", "global", "session"],
 };
 /** Option names valid per mode, in completion order. */
 export const INSPECTOR_OPTIONS: Readonly<
@@ -240,8 +240,10 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
     target = candidate as InspectorTarget;
   }
 
+  // `session <sessionId>` is the one target that names its subject positionally,
+  // in every mode that offers it: one requested history session, never a scope.
   let sessionId: string | undefined;
-  if (mode === "snapshot" && target === "session") {
+  if (target === "session") {
     const value = tokens.shift();
     if (!value || value.startsWith("-")) return reject();
     sessionId = value;
@@ -296,9 +298,10 @@ export function parseInspectorCommand(args: string): InspectorParseResult {
 
   const parsedRange = parseRangeOptions(range);
   if (!parsedRange.ok) return reject();
+  // A target that names one historical session is scope-free: its entry set is
+  // the session's own full tree, so both snapshot and json force it.
   const forcedTree =
-    (mode === "snapshot" && target !== "current") ||
-    (mode === "json" && (target === "history" || target === "global"));
+    (mode === "snapshot" || mode === "json") && target !== "current";
   scope = forcedTree ? "tree" : (scope ?? "active");
 
   return {

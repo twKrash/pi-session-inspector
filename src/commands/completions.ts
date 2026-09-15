@@ -151,7 +151,7 @@ export function completeInspectorCommand(
       pendingValue = undefined;
       continue;
     }
-    if (typedMode === "snapshot" && chosenTarget === "session") {
+    if (chosenTarget === "session") {
       if (sessionIdChosen) return null;
       sessionIdChosen = token.length > 0;
       continue;
@@ -171,12 +171,8 @@ export function completeInspectorCommand(
     return choices ? items(choices, current, prefix, span) : null;
   }
 
-  if (
-    typedMode === "snapshot" &&
-    chosenTarget === "session" &&
-    !sessionIdChosen
-  )
-    return null;
+  // A session id is free-form: there is nothing to suggest after `session`.
+  if (chosenTarget === "session" && !sessionIdChosen) return null;
   if (typedMode === "snapshot" && !targetChosen && current.startsWith("-"))
     return null;
   // Options already present are never offered again (§10.2).

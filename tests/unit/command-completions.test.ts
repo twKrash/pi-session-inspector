@@ -15,7 +15,12 @@ test("offers only valid completions for the current token", () => {
     "session",
   ]);
   assert.deepEqual(labels("tui "), ["current", "ledger"]);
-  assert.deepEqual(labels("json "), ["current", "history", "global"]);
+  assert.deepEqual(labels("json "), [
+    "current",
+    "history",
+    "global",
+    "session",
+  ]);
   assert.deepEqual(labels("ui -"), [
     "--scope",
     "--theme",
@@ -79,6 +84,20 @@ test("offers only valid completions for the current token", () => {
     "--output",
     "--no-open",
   ]);
+  // The json export names the same subject positionally. The bare-token case is
+  // the control that fails without the target: a mode without it suggests
+  // nothing here, and with it the options a session target refuses stay out.
+  assert.deepEqual(labels("json session"), ["session"]);
+  assert.deepEqual(labels("json session "), []);
+  assert.deepEqual(labels("json s"), ["session"]);
+  assert.deepEqual(labels("json session session-a "), ["--debug", "--output"]);
+  assert.deepEqual(labels("json session session-a -"), ["--debug", "--output"]);
+  assert.equal(
+    completeInspectorCommand("json session session-a --scope "),
+    null,
+  );
+  // A session id is consumed once: a second positional is not a target.
+  assert.equal(completeInspectorCommand("json session session-a extra "), null);
 });
 
 test("keeps completing after a settled target without offering options too early", () => {

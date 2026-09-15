@@ -114,6 +114,10 @@ const description = "Open Pi Session Inspector reports";
 const SESSION_SNAPSHOT_UNAVAILABLE =
   "Inspector session snapshot is unavailable.";
 
+/** Bounded refusal for a JSON export of a session no manifest declares. */
+const SESSION_JSON_UNAVAILABLE =
+  "Inspector session JSON report is unavailable.";
+
 /**
  * Bounded refusal for an explicit snapshot destination that is not a
  * user-owned HTML export outside Pi's session directory. It names the
@@ -1352,6 +1356,23 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
           } else if (target === "global") {
             dto = await loadGlobalReport(common);
             reportName = "global";
+          } else if (target === "session") {
+            // One requested historical session, through the same atomic loader
+            // and canonical projection `snapshot session` uses: only the
+            // renderer differs, so both exports state the same facts.
+            const sessionId = command.sessionId;
+            if (sessionId === undefined)
+              return notifyInfo(ctx, SESSION_JSON_UNAVAILABLE);
+            const session = await loadHistorySessionReport(
+              sessionId,
+              historyRead,
+            );
+            if (session === undefined)
+              return notifyInfo(ctx, SESSION_JSON_UNAVAILABLE);
+            dto = session;
+            // The generated cache name is prefixed, so a session's export can
+            // never be the file a current-session export wrote.
+            reportName = `session-${sessionId}`;
           } else {
             const model = await loadCurrentSessionReport(
               sessionFile,
