@@ -36,6 +36,19 @@
   const COPY = new Proxy(Object.create(null), {
     get: (_target, key) => (typeof key === "string" ? t(key) : undefined),
   });
+  /**
+   * The two projections this client borrows from L2's own modules instead of
+   * re-implementing: the one cost rule, and the execution topology of the agent
+   * rows it was handed. Both are the same code the snapshot renderer runs.
+   */
+  const format = web.format;
+  if (format === undefined || typeof format.cost !== "function") {
+    throw new Error("browser format module must initialize first");
+  }
+  const agentTree = web.agentTree;
+  if (agentTree === undefined || typeof agentTree.build !== "function") {
+    throw new Error("browser agent-tree module must initialize first");
+  }
   // -------------------------------------------------------------------------
   // Namespace and small DOM helpers
   // -------------------------------------------------------------------------
@@ -54,7 +67,7 @@
       notation: "compact",
       maximumFractionDigits: 1,
     }).format(Number(value));
-  const money = (value) => "$" + Number(value).toFixed(2);
+  const money = (value) => format.cost(Number(value));
   const tr = (key, values) => t(key, values);
   const el = (name, cls, value) => {
     const node = document.createElement(name);

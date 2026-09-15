@@ -399,7 +399,7 @@ test("the browser renders the shared catalog's copy", async () => {
   );
 });
 
-test("the assets own one namespace with route, range, i18n, and start", async () => {
+test("the assets own one namespace with route, range, i18n, format, and start", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()] });
   await harness.start();
   const injected = [
@@ -426,13 +426,24 @@ test("the assets own one namespace with route, range, i18n, and start", async ()
     unknown
   >;
   assert.deepEqual(Object.keys(namespace).sort(), [
+    "agentTree",
     "chart",
+    "format",
     "i18n",
     "range",
     "route",
     "start",
   ]);
   assert.equal(typeof namespace.start, "function");
+  // The cost rule is the shared one, not a second implementation.
+  const format = namespace.format as Record<string, unknown>;
+  assert.deepEqual(Object.keys(format).sort(), ["cost"]);
+  assert.equal(typeof format.cost, "function");
+  assert.equal((format.cost as (value: number) => string)(0.0049), "$0.0049");
+  assert.equal((format.cost as (value: number) => string)(0), "$0.00");
+  // The execution topology is the shared projection too.
+  const agentTree = namespace.agentTree as Record<string, unknown>;
+  assert.deepEqual(Object.keys(agentTree).sort(), ["build", "filter"]);
   // The chart namespace is the adapter: create, recolor, palette.
   const chart = namespace.chart as Record<string, unknown>;
   assert.deepEqual(Object.keys(chart).sort(), [

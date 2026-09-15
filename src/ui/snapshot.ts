@@ -5,6 +5,7 @@ import { WEB_ASSETS } from "./web-assets.ts";
 import type { EvidenceState } from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
 import type { DailyRow } from "./daily.ts";
+import { formatCost } from "./format.ts";
 import { createTranslator } from "./i18n.ts";
 import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
 import {
@@ -328,9 +329,12 @@ function count(value: number): string {
   return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-function money(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
+/**
+ * The one cost rule, shared with the browser bundle: a known non-zero cost is
+ * never printed as `$0.00`, and a value below the smallest shown precision is
+ * stated as a bound (see `format.ts`).
+ */
+const money = formatCost;
 
 function orUnavailable(value: string | null | undefined): string {
   return value ?? t("evidence.unavailable");
