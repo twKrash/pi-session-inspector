@@ -1,3 +1,4 @@
+import { debugLog } from "../debug/log.ts";
 import { integrations } from "./index.ts";
 import type {
   CanonicalIntegrationContext,
@@ -36,6 +37,10 @@ export async function readCanonicalContributions(
       }
     } catch {
       reasons[integration.key] = "contribution-failed";
+      debugLog("integration", "evidence-rejected", {
+        integration: integration.key,
+        reason: "contribution-failed",
+      });
     }
   }
 

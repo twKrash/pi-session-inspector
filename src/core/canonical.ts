@@ -6,6 +6,7 @@ import {
 } from "./presence.ts";
 import { integrations } from "../integrations/index.ts";
 import { readPersistedEvidence } from "../integrations/persisted.ts";
+import { debugLog } from "../debug/log.ts";
 import type { SubagentEvidence } from "../integrations/subagents.ts";
 import type { ParsedSession } from "../pi/adapter.ts";
 import { resolveScope } from "../pi/scope.ts";
@@ -869,12 +870,30 @@ function correlateLiveDuration(
       durationBySubject.set(fact.subjectId, fact.durationMs);
     }
   }
-  if (durationBySubject.size === 0) return [...tools];
+  if (durationBySubject.size === 0) {
+    debugLog("tool-timing", "canonical-uncorrelated", {
+      found: false,
+      counters: tools.length,
+    });
+    return [...tools];
+  }
   return tools.map((tool) => {
     const subject = toolSubjectId(sessionId, tool.id);
     if (subject.length === 0) return tool;
     const durationMs = durationBySubject.get(subject);
-    return durationMs === undefined ? tool : { ...tool, durationMs };
+    if (durationMs === undefined) {
+      debugLog("tool-timing", "canonical-uncorrelated", {
+        subject,
+        found: false,
+      });
+      return tool;
+    }
+    debugLog("tool-timing", "canonical-correlated", {
+      subject,
+      durationMs,
+      found: true,
+    });
+    return { ...tool, durationMs };
   });
 }
 

@@ -1,4 +1,5 @@
 import { SKILL_NAME_PATTERN } from "../core/live-counter-fold.ts";
+import { debugLog } from "../debug/log.ts";
 import { integrations } from "./index.ts";
 import type {
   Integration,
@@ -51,10 +52,21 @@ export function registerIntegrationLive(
     try {
       const registration = hook(context);
       if (registration !== undefined) {
-        disposers.push(() => registration.dispose());
+        debugLog("integration", "live-registered", {
+          integration: integration.key,
+        });
+        disposers.push(() => {
+          debugLog("integration", "live-disposed", {
+            integration: integration.key,
+          });
+          registration.dispose();
+        });
       }
     } catch {
-      // Registration failures are observer-only.
+      debugLog("integration", "live-registration-failed", {
+        integration: integration.key,
+        reason: "registration-failed",
+      });
     }
   }
   return disposers;

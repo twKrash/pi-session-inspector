@@ -1,3 +1,4 @@
+import { debugLog } from "../debug/log.ts";
 import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import {
   registerLiveObserver,
@@ -157,17 +158,41 @@ function appendToolBoundary(
   context: LiveTimingContext,
 ): void {
   const subjectId = toolSubjectId(context.sessionId, event.toolCallId);
-  if (subjectId === undefined) return;
+  if (subjectId === undefined) {
+    debugLog("tool-timing", "subject-unavailable", {
+      source: start ? "start" : "end",
+      found: event.toolCallId !== undefined,
+    });
+    return;
+  }
 
   if (start) {
-    if (context.openTools.has(subjectId)) return;
+    debugLog("tool-timing", "start-observed", {
+      subject: subjectId,
+      startedAtMs: current.getTime(),
+    });
+    if (context.openTools.has(subjectId)) {
+      debugLog("tool-timing", "start-dropped", {
+        subject: subjectId,
+        reason: "already-open",
+      });
+      return;
+    }
     if (context.openTools.size >= MAX_OPEN_TIMINGS_PER_CATEGORY) {
       context.onOverflow();
+      debugLog("tool-timing", "start-dropped", {
+        subject: subjectId,
+        reason: "overflow",
+      });
       return;
     }
     context.openTools.set(subjectId, {
       startedAt: timestamp,
       startedMs: current.getTime(),
+    });
+    debugLog("tool-timing", "start-stored", {
+      subject: subjectId,
+      startedAtMs: current.getTime(),
     });
     append(context.writer, context.randomId, timestamp, {
       category: "tool",
@@ -180,9 +205,31 @@ function appendToolBoundary(
     return;
   }
 
+  debugLog("tool-timing", "end-observed", {
+    subject: subjectId,
+    endedAtMs: current.getTime(),
+  });
   const started = context.openTools.get(subjectId);
-  if (started === undefined) return;
+  if (started === undefined) {
+    debugLog("tool-timing", "pair-missing", {
+      subject: subjectId,
+      endedAtMs: current.getTime(),
+    });
+    return;
+  }
   context.openTools.delete(subjectId);
+  const durationMs = Math.max(0, current.getTime() - started.startedMs);
+  debugLog("tool-timing", "pair-matched", {
+    subject: subjectId,
+    startedAtMs: started.startedMs,
+    endedAtMs: current.getTime(),
+    durationMs,
+  });
+  debugLog("tool-timing", "duration-computed", {
+    subject: subjectId,
+    durationMs,
+    found: true,
+  });
   append(context.writer, context.randomId, timestamp, {
     category: "tool",
     status: "unknown",
@@ -190,7 +237,7 @@ function appendToolBoundary(
     subjectId,
     startedAt: started.startedAt,
     endedAt: timestamp,
-    durationMs: Math.max(0, current.getTime() - started.startedMs),
+    durationMs,
   });
   scheduleFlush(context.writer);
 }
@@ -222,16 +269,31 @@ function append(
   timing: LiveTiming,
 ): void {
   void Promise.resolve()
-    .then(() =>
-      writer.append({
-        eventId: randomId(),
+    .then(async () => {
+      const eventId = randomId();
+      await writer.append({
+        eventId,
         timestamp,
         kind: "live_timing",
         timing,
-      }),
-    )
+      });
+      debugLog("tool-timing", "wal-append", {
+        source: timing.category,
+        status: timing.status,
+        found: true,
+        recordId: eventId,
+        ...(timing.durationMs === undefined
+          ? {}
+          : { durationMs: timing.durationMs }),
+      });
+    })
     .catch(() => {
       // Clock, ID, and append failures must not alter Pi execution.
+      debugLog("tool-timing", "wal-append", {
+        source: timing.category,
+        status: timing.status,
+        found: false,
+      });
     });
 }
 

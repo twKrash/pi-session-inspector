@@ -7,6 +7,7 @@ import {
   emptyFoldedCounters,
   type FoldedCounters,
 } from "../core/live-counter-fold.js";
+import { debugLog } from "../debug/log.ts";
 import { validateTelemetry } from "../pi/telemetry.js";
 import {
   readCheckpoint,
@@ -380,6 +381,13 @@ function recoverRunning(
   for (const record of [...records].sort(compareLifecycleRecords)) {
     if (record.kind !== "live_timing" || record.timing === undefined) continue;
     const timing = record.timing;
+    debugLog("tool-timing", "wal-replayed", {
+      source: timing.category,
+      status: timing.status,
+      recordId: record.eventId,
+      found: timing.durationMs !== undefined,
+      ...(timing.durationMs === undefined ? {} : { durationMs: timing.durationMs }),
+    });
     if (
       timing.category !== "agent" &&
       timing.category !== "turn" &&
