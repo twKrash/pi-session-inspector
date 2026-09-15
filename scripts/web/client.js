@@ -1084,6 +1084,33 @@
     return value;
   };
 
+  /**
+   * A duration figure for one grouped row: a missing correlation is Unavailable
+   * (never `0 ms`), and a partial correlation carries its coverage beside the
+   * figure so the total is never read as complete.
+   */
+  const toolDurationCell = (label, row) => {
+    if (row.withDuration === 0) return COPY["evidence.unavailable"];
+    if (row.durationPartial !== true) return text(label);
+    const span = el("span");
+    span.append(text(label) + " ", badge(COPY["metric.correlated"], "warn"));
+    span.append(
+      el(
+        "small",
+        "",
+        tr("tools.durationFraction", {
+          withDuration: row.withDuration,
+          total: row.calls,
+        }),
+      ),
+    );
+    return span;
+  };
+
+  /** The mean correlated duration; the coverage note lives on the total. */
+  const toolAverageCell = (label, row) =>
+    row.withDuration === 0 ? COPY["evidence.unavailable"] : text(label);
+
   const toolsNodes = (target) => {
     const meta = target.range;
     if (meta === undefined) {
@@ -1107,6 +1134,8 @@
         COPY["tools.interrupted"],
         COPY["table.tokens"],
         COPY["table.cost"],
+        COPY["table.duration"],
+        COPY["table.average"],
         COPY["tools.lastUsed"],
         COPY["table.source"],
       ],
@@ -1119,12 +1148,16 @@
           number(row.interrupted),
           toolUsageCell(number(row.tokens), "metric.knownTokens", row),
           toolUsageCell(money(row.cost), "metric.knownCost", row),
+          toolDurationCell(row.durationLabel, row),
+          toolAverageCell(row.averageLabel, row),
           row.lastUsed,
           orUnavailable(row.source),
         ],
       })),
       [
         "status-cell",
+        "num",
+        "num",
         "num",
         "num",
         "num",

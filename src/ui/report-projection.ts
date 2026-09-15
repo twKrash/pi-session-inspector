@@ -530,8 +530,28 @@ export type ToolSummaryRow = {
   cost: number;
   /** How many of `calls` persisted usage; `0` makes tokens/cost Unavailable. */
   withUsage: number;
+  /**
+   * How many of `calls` correlated to a live duration. A call with no
+   * correlated boundary contributes to `calls` and never to the duration
+   * figures, so an incomplete coverage is visible rather than averaged away.
+   */
+  withDuration: number;
+  /** The sum of this name's correlated durations; `0` when none correlated. */
+  durationMs: number;
+  /** Total correlated duration, formatted; `null` makes Duration Unavailable. */
+  durationLabel: string | null;
+  /** Mean correlated duration, formatted; `null` when none correlated. */
+  averageLabel: string | null;
   /** The maximum persisted call timestamp; fixed-width UTC sorts by string. */
   lastUsed: string;
+};
+
+/**
+ * The rows a summary groups: a call plus the optional correlated duration the
+ * per-call projection publishes. Absent means "not correlated", never zero.
+ */
+export type ToolSummaryInput = ToolCallRow & {
+  durationMs?: number | null;
 };
 
 /**
@@ -541,10 +561,13 @@ export type ToolSummaryRow = {
  * persisted call timestamp of that selected set (range-filtered like the counts,
  * §5.2) and `source` the first known label of that name, which is a static
  * inventory fact and not a range figure. A call with no persisted usage
- * contributes to `calls` and never to `tokens`, `cost`, or `withUsage`.
+ * contributes to `calls` and never to `tokens`, `cost`, or `withUsage`; a call
+ * with no correlated duration contributes to `calls` and never to the duration
+ * figures, whose labels stay `null` (Unavailable) until at least one call
+ * correlated.
  */
 export function toolSummary(view: {
-  tools?: readonly ToolCallRow[];
+  tools?: readonly ToolSummaryInput[];
 }): ToolSummaryRow[] {
   const grouped = new Map<string, ToolSummaryRow>();
   for (const row of view.tools ?? []) {
@@ -557,6 +580,10 @@ export function toolSummary(view: {
       tokens: 0,
       cost: 0,
       withUsage: 0,
+      withDuration: 0,
+      durationMs: 0,
+      durationLabel: null,
+      averageLabel: null,
       lastUsed: row.timestamp,
     };
     grouped.set(row.name, group);
@@ -574,7 +601,18 @@ export function toolSummary(view: {
         Math.round((group.cost + row.usage.cost) * 1_000_000_000_000) /
         1_000_000_000_000;
     }
+    // Duration is a correlation fact, never an estimate: only a call the live
+    // boundary matched contributes, and the count travels with the total.
+    if (typeof row.durationMs === "number") {
+      group.withDuration += 1;
+      group.durationMs += row.durationMs;
+    }
     if (row.timestamp > group.lastUsed) group.lastUsed = row.timestamp;
+  }
+  for (const group of grouped.values()) {
+    if (group.withDuration === 0) continue;
+    group.durationLabel = formatDuration(group.durationMs);
+    group.averageLabel = formatDuration(group.durationMs / group.withDuration);
   }
   return [...grouped.values()].sort((left, right) =>
     left.name < right.name ? -1 : left.name > right.name ? 1 : 0,

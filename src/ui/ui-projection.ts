@@ -107,7 +107,12 @@ export type UiChildUsage = {
 };
 
 /** One tool-summary row plus L2's own partial-usage verdict. */
-export type UiToolSummaryRow = ToolSummaryRow & { partial: boolean };
+export type UiToolSummaryRow = ToolSummaryRow & {
+  /** Some calls persisted usage and some did not. */
+  partial: boolean;
+  /** Some calls correlated to a duration and some did not. */
+  durationPartial: boolean;
+};
 
 /**
  * One rendered run's parent membership verdict: `in-range` when the selected
@@ -825,8 +830,17 @@ function emptyChildUsage(): UiChildUsage {
  * calls reported usage, partial when fewer did than its call count. A row with
  * no usage-bearing call is Unavailable rather than partial.
  */
-function toolUsageVerdict(row: ToolSummaryRow): UiToolSummaryRow {
-  return { ...row, partial: row.withUsage > 0 && row.withUsage < row.calls };
+/**
+ * The coverage verdicts the browser row renders: some-but-not-all usage, and
+ * some-but-not-all duration correlation. Both are computed from the counts the
+ * summary already carries, so a row can never claim completeness it lacks.
+ */
+export function toolUsageVerdict(row: ToolSummaryRow): UiToolSummaryRow {
+  return {
+    ...row,
+    partial: row.withUsage > 0 && row.withUsage < row.calls,
+    durationPartial: row.withDuration > 0 && row.withDuration < row.calls,
+  };
 }
 
 /**
