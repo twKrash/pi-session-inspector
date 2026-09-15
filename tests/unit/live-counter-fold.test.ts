@@ -285,7 +285,9 @@ test("counterDeltaAfterCursors folds only records strictly after each writer cur
     allowed: 2,
     denied: 1,
   });
-  assert.equal(folded.presence.permission, false);
+  // Absence is an absent key in the generic presence map, never a stored
+  // `false`: nothing observed the integration.
+  assert.deepEqual(folded.presence, {});
 
   // Cursors for different writers are applied independently.
   const bounded = counterDeltaAfterCursors(records, { w1: 2, w2: 5 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { presenceToCheckpointV1 } from "../core/presence.ts";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
 
@@ -300,7 +301,9 @@ function foldedAggregateFields(
     ...(folded.otherInvocations > 0
       ? { skillOverflowInvocations: folded.otherInvocations }
       : {}),
-    ...(folded.presence.permission ? { presence: { permission: true } } : {}),
+    ...(presenceToCheckpointV1(folded.presence) === undefined
+      ? {}
+      : { presence: presenceToCheckpointV1(folded.presence) }),
   };
 }
 

@@ -1,4 +1,9 @@
 import type { IntegrationKey } from "../integrations/index.ts";
+import {
+  CHECKPOINT_V1_PRESENCE_KEY,
+  presenceAggregateObserved,
+  presenceKeys,
+} from "./presence.ts";
 import { integrations } from "../integrations/index.ts";
 import { readPersistedEvidence } from "../integrations/persisted.ts";
 import type { SubagentEvidence } from "../integrations/subagents.ts";
@@ -281,7 +286,12 @@ export type CanonicalEffectiveCounterValues = {
     named?: Record<string, number>;
     overflow?: number;
   };
-  permissionPresence?: true;
+  /**
+   * Integration keys with a durable presence sighting in this effective total.
+   * Generic: the projection of the checkpoint v1 presence field is named by
+   * `retainedAggregates`, never here.
+   */
+  observedPresence?: readonly string[];
 };
 
 export type CanonicalSessionBuildResult =
@@ -1309,7 +1319,7 @@ function effectiveCounters(
         integration: suffix.counters,
         skillInvocations: suffix.skillInvocations,
         overflow: suffix.otherInvocations,
-        permission: suffix.presence.permission,
+        presence: presenceKeys(suffix.presence),
       }),
     };
   }
@@ -1325,7 +1335,7 @@ function effectiveCounters(
         ...(aggregates.skillInvocations?.named?.value ?? {}),
       },
       overflow: aggregates.skillInvocations?.overflow?.value ?? 0,
-      permission: aggregates.permissionPresence?.value === true,
+      presence: observedRetainedPresence(aggregates),
     }),
   };
 }
@@ -1336,7 +1346,7 @@ function publishedCounters(input: {
   integration: Readonly<Record<string, Record<string, number> | undefined>>;
   skillInvocations: Record<string, number>;
   overflow: number;
-  permission: boolean;
+  presence: readonly string[];
 }): CanonicalEffectiveCounterValues {
   const integration: Partial<Record<IntegrationKey, Record<string, number>>> =
     {};
@@ -1364,8 +1374,22 @@ function publishedCounters(input: {
             ...(input.overflow === 0 ? {} : { overflow: input.overflow }),
           },
         }),
-    ...(input.permission ? { permissionPresence: true as const } : {}),
+    ...(input.presence.length === 0
+      ? {}
+      : { observedPresence: [...input.presence].sort() }),
   };
+}
+
+/**
+ * The retained presence aggregate is the checkpoint v1 projection; the generic
+ * key set it stands for is named here, next to that projection.
+ */
+function observedRetainedPresence(
+  aggregates: CanonicalRetainedAggregates,
+): readonly string[] {
+  return aggregates.permissionPresence?.value === true
+    ? [CHECKPOINT_V1_PRESENCE_KEY]
+    : [];
 }
 
 function isWalFold(folded: FoldedAggregateEvidence): folded is WalFold {
@@ -1557,7 +1581,7 @@ function supplement(
           state: "aggregate-only" as const,
           boundary,
         };
-  const permissionPresence = suffix.presence.permission
+  const presenceAggregate = presenceAggregateObserved(suffix.presence)
     ? { value: true as const, state: "aggregate-only" as const, boundary }
     : foldedOnly.permissionPresence;
   return {
@@ -1571,7 +1595,9 @@ function supplement(
             ...(overflow === undefined ? {} : { overflow }),
           },
         }),
-    ...(permissionPresence === undefined ? {} : { permissionPresence }),
+    ...(presenceAggregate === undefined
+      ? {}
+      : { permissionPresence: presenceAggregate }),
   };
 }
 

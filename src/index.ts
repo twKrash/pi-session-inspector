@@ -11,7 +11,7 @@ import {
   parseInspectorCommand,
 } from "./commands/grammar.ts";
 import { createInspectorHelpComponent } from "./commands/help.ts";
-import type { Scope } from "./core/events.ts";
+import type { Scope, SessionEntry } from "./core/events.ts";
 import {
   type FoldedAggregateEvidence,
   isBoundedIsoInstant,
@@ -30,7 +30,15 @@ import {
 } from "./integrations/live-counters.ts";
 import { readPresence } from "./integrations/presence.ts";
 import { readSkillInvocations } from "./integrations/skill-invocations.ts";
-import { readSubagentEvidenceWithArchives } from "./integrations/subagents.ts";
+import {
+  readSubagentEvidenceWithArchives,
+  type SubagentEvidence,
+} from "./integrations/subagents.ts";
+import { readCanonicalContributions } from "./integrations/contributions.ts";
+import {
+  presenceFromCheckpointV1,
+  presenceKeys,
+} from "./core/presence.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
 import {
   type LiveWalRegistration,
@@ -122,7 +130,11 @@ type LiveSessionState = {
   writer?: LiveWalWriter;
   /** Bounded live-producer state (R29); its overflow count reaches L1. */
   live?: LiveWalRegistration;
-  ready: boolean;
+  /**
+   * Integration keys observed live in this process. Generic: the live hook
+   * reports a sighting for its own key and nothing here names an integration.
+   */
+  observedPresence: string[];
   inventory?: InventorySnapshot;
   /**
    * The observation instant of `inventory`, captured once per successful
@@ -139,7 +151,7 @@ let liveInventoryScope: { root: string; sessionId: string } | undefined;
 function liveSession(sessionId: string): LiveSessionState {
   let state = liveSessions.get(sessionId);
   if (state === undefined) {
-    state = { ready: false, inventoryNames: new Set<string>() };
+    state = { observedPresence: [], inventoryNames: new Set<string>() };
     liveSessions.set(sessionId, state);
   }
   return state;
@@ -332,28 +344,19 @@ function setupProductionSessionWal(input: {
           sessionId: context.sessionId,
           inventoryNames: context.inventoryNames,
           now: () => new Date(),
+          // A live sighting is presence evidence for this process; the
+          // subscribing integration owns the signal and the live subsystem owns
+          // the key it reported.
+          markPresence: (integration) => {
+            const observed = liveSession(input.sessionId).observedPresence;
+            if (!observed.includes(integration)) observed.push(integration);
+          },
         },
       );
-      observePermissionsReady(api, context.sessionId);
     },
     readInventoryNames: () => liveSession(input.sessionId).inventoryNames,
     scheduleMaintenance: scheduleProductionMaintenance,
   });
-}
-
-type PermissionBusApi = {
-  events?: { on?(channel: string, handler: () => void): unknown };
-};
-
-/** Records a live `permissions:ready` sighting; presence only, never a counter. */
-function observePermissionsReady(api: unknown, sessionId: string): void {
-  try {
-    (api as PermissionBusApi).events?.on?.("permissions:ready", () => {
-      liveSession(sessionId).ready = true;
-    });
-  } catch {
-    // Live presence observation is observer-only.
-  }
 }
 
 function readSessionId(sessionManager: unknown): string | undefined {
@@ -478,7 +481,7 @@ async function readSessionEvidence(input: {
           // Generic observations: the in-process sighting plus every durable
           // sighting the fold carries (a previous process may have seen it).
           observed: [
-            ...(state?.ready === true ? ["permission"] : []),
+            ...(state?.observedPresence ?? []),
             ...Object.entries(counters.presence)
               .filter(([, seen]) => seen === true)
               .map(([key]) => key),
@@ -660,7 +663,6 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
       directory,
       piCursor: checkpoint?.cursors.pi ?? NO_PI_SOURCE_CURSOR,
     });
-    const permission = checkpoint?.aggregates.presence?.permission === true;
     return {
       evidence: {
         atomic: [
@@ -674,7 +676,7 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
         folded: foldedCheckpointEvidence(sessionId, checkpoint),
       },
       walRecords: recovered.records,
-      subagents: await readSubagentEvidenceWithArchives(entries, sessionId),
+      subagents: await readSubagentContribution(entries, sessionId),
       observation: {
         presence: readPresence({
           // Only `source === "extension"` rows may signal extension presence; a
@@ -689,7 +691,9 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
             inventory === undefined ? [] : Object.keys(inventory.toolSources),
           // Durable presence: the checkpoint may have folded a previously
           // observed sighting; absence is `unknown`, not `absent`.
-          observed: permission ? ["permission"] : [],
+          observed: presenceKeys(
+            presenceFromCheckpointV1(checkpoint?.aggregates.presence),
+          ),
           inventoryAvailable: inventory !== undefined,
         }).presence,
         ...(inventory === undefined ? {} : { inventory }),
@@ -699,6 +703,36 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
     return undefined;
   }
 };
+
+/**
+ * The rich canonical contributions the declared integrations contribute
+ * (subagent runs and activity today), reassembled into the shape L1 consumes.
+ * A failed contribution falls back to the direct reader so a history row
+ * degrades exactly as it did before.
+ */
+async function readSubagentContribution(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+): Promise<SubagentEvidence> {
+  try {
+    const { contributions } = await readCanonicalContributions({
+      entries,
+      sessionId,
+    });
+    const contribution = contributions.subagents;
+    if (contribution?.activity !== undefined) {
+      return {
+        state: contribution.state,
+        runs: contribution.runs ?? [],
+        activity: contribution.activity,
+        diagnostics: contribution.diagnostics ?? [],
+      };
+    }
+  } catch {
+    // Fall through to the direct read; a contribution failure is observer-only.
+  }
+  return readSubagentEvidenceWithArchives(entries, sessionId);
+}
 
 function notifyCurrentUnavailable(ctx: {
   ui: { notify(message: string, level: "info"): void };
