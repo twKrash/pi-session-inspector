@@ -491,9 +491,12 @@ function setupProductionSessionWal(input: {
 }
 
 /**
- * Sessions this process already gave a fold-boundary attempt. Bounded: a
- * process observes a handful of sessions, and a session that cannot be folded
- * (untracked, or a maintenance failure) must not be retried on every read.
+ * Sessions this process already gave a fold-boundary attempt, keyed by the
+ * Inspector root as well as the session id: the same id can name a session in
+ * another root (a different agent directory), and one root's attempt must never
+ * suppress another's. Bounded: a process observes a handful of sessions, and a
+ * session that cannot be folded (untracked, or a maintenance failure) must not
+ * be retried on every read.
  */
 const foldBoundaryAttempts = new Set<string>();
 const MAX_FOLD_BOUNDARY_ATTEMPTS = 64;
@@ -513,9 +516,10 @@ async function ensureFoldBoundary(input: {
 }): Promise<void> {
   const { root, sessionFile, sessionId } = input;
   if (sessionFile === undefined) return;
-  if (foldBoundaryAttempts.has(sessionId)) return;
+  const attemptKey = `${root}\u0000${sessionId}`;
+  if (foldBoundaryAttempts.has(attemptKey)) return;
   if (foldBoundaryAttempts.size < MAX_FOLD_BOUNDARY_ATTEMPTS) {
-    foldBoundaryAttempts.add(sessionId);
+    foldBoundaryAttempts.add(attemptKey);
   }
   try {
     await maintainSession({
