@@ -8,6 +8,10 @@ milestone (see below) are complete. M8 is not started.
 
 **Next gate:** complete Pre-M8.7 before starting M8.
 
+**Post-1.0:** one planned follow-up milestone (integration expansion and skill
+invocation evidence) is recorded at the end of this document. Neither item is a
+`1.0.0` release gate and neither blocks M8 or Pre-M8.7.
+
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
 `docs/superpowers/**` material is removed by Pre-M8.1 after useful decisions are
@@ -917,3 +921,149 @@ explicitly documented.
 
 **Release:** a compatible RC hardening pass may bump the next patch version;
 publication remains part of M8.
+
+## Post-1.0 — Integration expansion and evidence follow-ups
+
+**Status:** Planned. **Depends on:** successful M8 / `1.0.0` publication.
+
+This milestone is explicitly **not** a `1.0.0` release gate. It collects
+product-facing follow-ups discovered during Pre-M8 hardening that are useful
+but do not justify expanding the qualified release-candidate scope.
+
+### 1. MCP semantic integration
+
+Validate and ship the `pi-mcp-adapter` integration proven during the
+integration-authoring architecture spike.
+
+Research baseline:
+
+- inspected producer: `pi-mcp-adapter 2.34.0`;
+- producer exposes a versioned sanitized status channel:
+  `pi-mcp-adapter/status/v1`;
+- persisted approval evidence uses the versioned `mcp-approval-v1` entry;
+- evidence contains bounded identifiers/hashes and no user prose;
+- server/tool identifiers and hashes are discarded by Inspector where they are
+  not required for the report;
+- status is treated as presence/gauge evidence, never as an event counter;
+- the spike required zero integration-specific production edits outside the
+  adapter and registration surface.
+
+Expected implementation shape:
+
+- one `mcp` integration adapter;
+- registration in the integration composition root;
+- focused tests;
+- `docs/integrations.md` update;
+- no MCP-server-specific integrations;
+- no core/report/UI integration-key lists;
+- no parsing of arbitrary MCP arguments, results, prompts, or errors.
+
+Before merge:
+
+1. repeat the producer-contract review against the version actually targeted by
+   the post-1.0 release;
+2. remove remaining test-side hard-coded integration-count/order mirrors where
+   they are only mechanical table-size assertions;
+3. review whether the adapters barrel is useful or merely creates a second
+   registration edit;
+4. run focused privacy/dedup/status review and the normal verification suite.
+
+Architecture acceptance:
+
+- ordinary integration-specific core edits outside adapter/registration remain
+  zero;
+- presence, persisted evidence, live telemetry, retention, report ordering, and
+  UI observation continue to derive from the generic integration descriptors;
+- adding `mcp` must not reopen the integration architecture.
+
+### 2. Skill invocation evidence follow-up
+
+Preserve the findings from the Pi skill-attribution investigation and do not
+infer skill use from presentation-only signals.
+
+Research baseline (`@earendil-works/pi-coding-agent 0.85.1`):
+
+Pi can render the same visual form:
+
+    [skill] <name>
+
+from two semantically different sources.
+
+**Compact read renderer**
+
+A normal read of a path whose basename is `SKILL.md` is rendered compactly as
+`[skill] <parent-directory>`.
+
+This is presentation-only:
+
+- the label is derived from the read-tool path;
+- it does not prove that Pi resolved or invoked a skill;
+- the parent directory is not guaranteed to equal the declared skill name;
+- no dedicated skill event or persisted skill marker exists.
+
+Inspector must therefore continue to treat ordinary `SKILL.md` reads as
+insufficient skill-invocation evidence.
+
+**Expanded skill envelope**
+
+An explicit/resolved `/skill:<name>` expansion can be persisted as a normal
+`role:"user"` message containing an anchored envelope such as:
+
+    <skill name="..." location="...">
+      ...
+    </skill>
+
+Pi exports `parseSkillBlock()`, and the skill name can be recovered without
+retaining the body/location.
+
+However this representation is:
+
+- serialized message content rather than a dedicated entry type;
+- undocumented;
+- unversioned;
+- path-bearing;
+- not a stable telemetry contract;
+- not identity-correlated with Inspector's existing live `/skill:` observation.
+
+The same explicit invocation may therefore be visible through both:
+
+    live input `/skill:<name>`
+    persisted skill envelope
+
+and no exact shared invocation identity exists.
+
+Do **not** adopt count-level `min()` / `max()` pairing as deduplication without
+a stronger producer invariant. Live-only and envelope-only observations can
+coexist for the same skill, so aggregate cancellation can undercount distinct
+events.
+
+Post-1.0 options:
+
+1. Prefer an upstream/versioned Pi skill-invocation signal carrying a bounded
+   skill name, stable invocation identity, source, and lifecycle state.
+2. If Inspector adopts the current skill envelope, treat it as its own explicit
+   evidence class (`skill-envelope`, Pi JSONL/native), with documented stability
+   risk, privacy stripping, and a reviewed identity/dedup contract.
+3. Consider replacing the pre-expansion `/skill:` counter with a single
+   successful-expansion authority only if the product intentionally changes the
+   meaning from "explicit skill request observed" to "successful Pi skill
+   expansion observed".
+4. Do not infer invocation from:
+   - `read(.../SKILL.md)`;
+   - filesystem paths;
+   - tool names;
+   - prompts or assistant prose;
+   - skill body content.
+
+Any implementation that broadens `skills.invocationCount` /
+`SkillRow.explicitInvocations` must review and update their semantic naming and
+documentation rather than silently changing the meaning of "explicit".
+
+### Acceptance
+
+- Neither MCP nor skill-attribution work is required for `1.0.0`.
+- Post-1.0 changes preserve observer-only, local-only, bounded, redacted, and
+  deterministic behavior.
+- New semantic evidence is accepted only from a producer contract strong enough
+  to support historical replay and honest unavailable-vs-zero behavior.
+- No presentation-only heuristic becomes canonical evidence.
