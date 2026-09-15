@@ -1316,7 +1316,7 @@ function sessionFigures(range: SnapshotRange): string {
  * printed even though the model rows are always shown in a static artifact.
  */
 function sessionModelCaveat(range: SnapshotRange): string {
-  if (range.modelsTruncated !== true || range.models.length === 0) return "";
+  if (range.modelsTruncated !== true) return "";
   return `<p class="tree-count">${text(ENGLISH_CATALOG["models.truncated"])}</p>`;
 }
 
@@ -1332,13 +1332,9 @@ function sessionModels(range: SnapshotRange, datable: boolean): string {
         )}</li>`,
     )
     .join("");
-  const truncated =
-    range.modelsTruncated === true
-      ? `<li class="tree-model muted">${text(catalog["models.truncated"])}</li>`
-      : "";
   return (
     `<p class="tree-detail-label">${text(catalog["agents.tree.models"])}</p>` +
-    `<ul class="tree-models" role="list">${rows}${truncated}</ul>`
+    `<ul class="tree-models" role="list">${rows}</ul>`
   );
 }
 

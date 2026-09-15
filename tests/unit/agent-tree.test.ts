@@ -194,6 +194,12 @@ test("the container identity is never an entry of its own, only an Inspector-own
     entry.kind === "container" ? entry.key : entry.run.id,
   );
   assert.deepEqual(keys, ["container-1", "container-2"]);
+  assert.deepEqual(
+    forest.entries.map((entry) =>
+      entry.kind === "container" ? entry.ordinal : null,
+    ),
+    [1, 2],
+  );
   for (const entry of forest.entries) {
     if (entry.kind !== "container") continue;
     // A container is a group this projection formed, so it has no row to render

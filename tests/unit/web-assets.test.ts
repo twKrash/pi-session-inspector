@@ -2868,6 +2868,10 @@ test("children of one run container group under a node that is not an agent", as
   assert.equal(text.includes("1 failed"), true);
   // The container is a group node; each child is its own row.
   assert.equal(treeRows(harness).filter((row) => row !== "").length, 3);
+  // Its disclosure control is named by the same words the row shows, plus the
+  // ordinal that tells two equally-sized groups apart.
+  const containerToggle = treeToggle(harness, "Run container 1 · 3 children");
+  assert.equal(containerToggle.attributes["aria-expanded"], "true");
   // A group node is never a run row: it carries no run identity at all.
   const container = harness
     .element("view")
@@ -3338,8 +3342,16 @@ test("a capped model list states that it lists rather than how many ran", async 
   const text = viewText(harness);
   assert.equal(text.includes("2 models listed"), true);
   assert.equal(text.includes("models used"), false);
-  // The caveat is stated on the root row, not only inside the Models detail.
-  assert.equal(text.includes(createTranslator("en")("models.truncated")), true);
+  // Inside the hierarchy the caveat is stated once, on the root row that is
+  // always visible, and not repeated in the Models detail. (The Models table
+  // above carries its own footnote for its own capped table.)
+  const caveat = createTranslator("en")("models.truncated");
+  const tree = harness
+    .element("view")
+    .querySelectorAll("ul")
+    .find((list) => list.className === "tree");
+  if (tree === undefined) throw new Error("the tree must be rendered");
+  assert.equal(harness.texts(tree).join(" ").split(caveat).length - 1, 1);
 });
 
 test("an unresolved range states Unavailable at the root instead of a zero", async () => {
@@ -3365,6 +3377,36 @@ test("an unresolved range states Unavailable at the root instead of a zero", asy
   assert.equal(text.includes("Primary session"), true);
   assert.equal(text.includes("$0.00"), false);
   assert.equal(text.includes("0 generations"), false);
+  // The root says so itself: a range with no resolved day publishes no figure.
+  const sessionMeta = harness
+    .element("view")
+    .querySelectorAll("div")
+    .find((node) => node.className === "tree-meta mono");
+  assert.equal(
+    sessionMeta?.textContent,
+    createTranslator("en")("evidence.unavailable"),
+  );
+});
+
+test("an unsupported producer is stated as a capability gap, not an empty range", async () => {
+  const snapshot = uiSnapshot();
+  const view = snapshot.current.tree;
+  if (view.report === undefined)
+    throw new Error("the fixture must carry a report");
+  view.report.agentEvidence = "unsupported";
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  assert.equal(
+    viewText(harness).includes(createTranslator("en")("agents.none")),
+    true,
+  );
+  assert.equal(
+    viewText(harness).includes(createTranslator("en")("bars.empty")),
+    false,
+  );
 });
 
 test("the table keeps ordinary rows: a tree-only filter never hides them", async () => {

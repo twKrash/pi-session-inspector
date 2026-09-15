@@ -1879,7 +1879,7 @@
       context.filtering === true
         ? treeSpacer()
         : treeToggle(
-            COPY["agents.tree.container"] +
+            tr("agents.tree.containerOrdinal", { ordinal: node.ordinal }) +
               " · " +
               tr("agents.tree.children", { count: node.children.length }),
             open,
@@ -2096,6 +2096,13 @@
 
   const agentsNodes = (target) => {
     const meta = target.range;
+    const report = target.report;
+    // No runs to project is two different facts: a producer that publishes no
+    // child-run evidence at all (a capability gap, so no run count is inferred)
+    // and a selection whose range holds none of the runs the producer published.
+    if (report !== undefined && report.agentEvidence !== "supported") {
+      return [emptyCard(COPY["tab.agents"], COPY["agents.none"])];
+    }
     if (meta === undefined || meta.childUsage.runsTotal === 0) {
       return [emptyCard(COPY["tab.agents"], COPY["bars.empty"])];
     }

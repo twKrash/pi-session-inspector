@@ -1790,9 +1790,11 @@ test("a partial or capped session root states what it cannot complete", () => {
   assert.equal(partial.includes("1 model listed"), true);
   assert.equal(partial.includes("1 generations"), false);
   assert.equal(partial.includes("1 generation ·"), true);
+  // The caveat is stated once inside the hierarchy: on the root row, not in the
+  // model list below it.
   assert.equal(
-    partial.includes(escapeSnapshotText(CATALOG["models.truncated"])),
-    true,
+    partial.split(escapeSnapshotText(CATALOG["models.truncated"])).length - 1,
+    1,
   );
 
   // An unresolved range has no figures at all: no figure is a fabricated zero.
@@ -1809,6 +1811,11 @@ test("a partial or capped session root states what it cannot complete", () => {
   });
   const root = cardOf(unresolved, CATALOG["tab.agents"]);
   assert.equal(root.includes(CATALOG["agents.tree.session"]), true);
+  // The root states Unavailable itself rather than printing any figure.
+  assert.equal(
+    /<div class="tree-meta mono">([^<]*)<\/div>/.exec(root)?.[1],
+    CATALOG["evidence.unavailable"],
+  );
   assert.equal(/\$0\.00(?!\d)/.test(root), false);
   assert.equal(root.includes("0 generations"), false);
   assert.equal(

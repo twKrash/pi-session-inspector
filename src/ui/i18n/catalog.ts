@@ -200,6 +200,9 @@ export const ENGLISH_CATALOG = {
   "agents.view.table": "Table",
   "agents.tree.session": "Primary session",
   "agents.tree.container": "Run container",
+  // Every container row reads the same, so the group ordinal is what tells two
+  // of them apart (for a reader who cannot see which list they are in).
+  "agents.tree.containerOrdinal": "Run container {ordinal}",
   "agents.tree.container.note":
     "A grouping of the runs this container published. The container is not an agent run, so it has no status, model, or usage of its own.",
   "agents.tree.generations": "{count, number} generations",
@@ -216,6 +219,7 @@ export const ENGLISH_CATALOG = {
   // this label is what says the rows below are the flat reading.
   "agents.tree.flat": "Flat breakdown",
   "agents.tree.tokens": "{count, number} tokens",
+  "agents.tree.tokens_one": "{count, number} token",
   "agents.tree.usageUnavailable": "usage Unavailable",
   "agents.tree.children": "{count, number} children",
   "agents.tree.children_one": "{count, number} child",

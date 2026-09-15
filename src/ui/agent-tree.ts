@@ -48,6 +48,8 @@ export type UiAgentTreeContainer = Counts & {
   kind: "container";
   /** Inspector-owned ordinal (`container-1`); never a producer run id. */
   key: string;
+  /** The same ordinal as a number, so a row can name which group it is. */
+  ordinal: number;
   /** The container's direct children, which are always materialized runs. */
   children: readonly UiAgentTreeNode[];
 };
@@ -229,6 +231,7 @@ export function buildAgentForest(runs: readonly UiAgentRow[]): UiAgentForest {
     entries.push({
       kind: "container",
       key: `container-${ordinal}`,
+      ordinal,
       children,
       ...summarize(children),
     });
