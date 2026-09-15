@@ -1,67 +1,18 @@
 import { SKILL_NAME_PATTERN } from "../core/live-counter-fold.ts";
-import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
+import { integrations } from "./index.ts";
+import type {
+  Integration,
+  LiveIntegrationContext,
+} from "./contract.ts";
 
 const SKILL_PREFIX = "/skill:";
-/** Byte bound shared with `canonicalOpaqueDigest` for raw opaque identities. */
-const MAX_REQUEST_ID_BYTES = 512;
-const encoder = new TextEncoder();
 
 /**
- * Permission resolution classes are a closed vocabulary. Any producer value
- * outside this set is retained only as the bounded placeholder "other"; raw
- * producer text never reaches the WAL.
+ * Extracts only a bounded skill identity; the remainder is never retained.
+ * Skill invocation counting is generic skill infrastructure: a discovered
+ * `/skill:<name>` invocation is not an integration adapter, because every
+ * discovered skill would otherwise need a registry entry.
  */
-const PERMISSION_RESOLUTIONS: ReadonlySet<string> = new Set([
-  "policy_allow",
-  "policy_deny",
-  "session_approved",
-  "infrastructure_auto_allowed",
-  "user_approved",
-  "user_approved_for_session",
-  "user_denied",
-  "auto_approved",
-  "confirmation_unavailable",
-  "authorizer_allowed",
-  "authorizer_denied",
-  "gate_error",
-]);
-
-function readResolution(value: unknown): string {
-  return typeof value === "string" && PERMISSION_RESOLUTIONS.has(value)
-    ? value
-    : "other";
-}
-
-/**
- * Session-scoped, domain-separated hash of a validated permission request ID.
- * Returns `undefined` for an absent, non-string, empty, control-character, or
- * oversized `requestId`; a malformed ID yields no attribution rather than a
- * hash of a fallback. The raw producer ID never leaves this function.
- */
-function readRequestAttribution(
-  payload: unknown,
-  sessionId: string,
-): { request: string } | undefined {
-  try {
-    const requestId = asRecord(payload)?.requestId;
-    if (typeof requestId !== "string" || requestId.length === 0) {
-      return undefined;
-    }
-    if (encoder.encode(requestId).byteLength > MAX_REQUEST_ID_BYTES) {
-      return undefined;
-    }
-    const digest = canonicalOpaqueDigest(
-      "permission-request",
-      sessionId,
-      requestId,
-    );
-    return { request: `permission-request-${digest}` };
-  } catch {
-    return undefined;
-  }
-}
-
-/** Extracts only a bounded skill identity; the remainder is never retained. */
 function readSkillCommandName(text: string): string | undefined {
   if (!text.startsWith(SKILL_PREFIX)) return undefined;
   const rest = text.slice(SKILL_PREFIX.length);
@@ -80,8 +31,34 @@ export type LiveCounterApi = {
   on(
     event: "input",
     handler: (event: { text: string }, ctx?: unknown) => void,
-  ): unknown;
+  ): (() => void) | undefined;
 };
+
+/**
+ * The live subsystem's iteration: invoke each declared integration's `live`
+ * hook, retain a disposer for every registration, and isolate failures so one
+ * integration cannot stop another (or the generic producers) from registering.
+ */
+export function registerIntegrationLive(
+  context: LiveIntegrationContext,
+  list: readonly Integration[] = integrations,
+): readonly (() => void)[] {
+  const disposers: Array<() => void> = [];
+  for (const integration of list) {
+    if (integration.legacyOnly === true) continue;
+    const hook = integration.hooks?.live;
+    if (hook === undefined) continue;
+    try {
+      const registration = hook(context);
+      if (registration !== undefined) {
+        disposers.push(() => registration.dispose());
+      }
+    } catch {
+      // Registration failures are observer-only.
+    }
+  }
+  return disposers;
+}
 
 export type LiveCounterRegistration = {
   /** Removes every retained listener; safe to call repeatedly. */
@@ -103,6 +80,8 @@ export function registerLiveCounters(
     sessionId: string;
     inventoryNames(): ReadonlySet<string>;
     now(): Date;
+    /** Records an integration observed live in this process (presence only). */
+    markPresence?(integration: string): void;
   },
 ): LiveCounterRegistration {
   const existing = activeRegistrations.get(options.sessionId);
@@ -115,61 +94,7 @@ export function registerLiveCounters(
       // Producer failures are observer-only.
     }
   };
-  const decision = (data: unknown): void => {
-    try {
-      const row = asRecord(data);
-      const result = row?.result;
-      if (result !== "allow" && result !== "deny") return;
-      const attribution = readRequestAttribution(data, options.sessionId);
-      append({
-        schemaVersion: 1,
-        source: "permission-system",
-        metric: "permission.decision",
-        kind: "counter",
-        value: 1,
-        dimensions: { result, resolution: readResolution(row?.resolution) },
-        ...(attribution === undefined ? {} : { attribution }),
-        timestamp: options.now().getTime(),
-      });
-    } catch {}
-  };
-  const prompt = (data: unknown): void => {
-    try {
-      const source = asRecord(data)?.source;
-      if (
-        source !== "tool_call" &&
-        source !== "skill_input" &&
-        source !== "skill_read"
-      )
-        return;
-      const attribution = readRequestAttribution(data, options.sessionId);
-      append({
-        schemaVersion: 1,
-        source: "permission-system",
-        metric: "permission.prompt",
-        kind: "counter",
-        value: 1,
-        dimensions: { promptSource: source },
-        ...(attribution === undefined ? {} : { attribution }),
-        timestamp: options.now().getTime(),
-      });
-    } catch {}
-  };
-  const ready = (): void => {
-    try {
-      append({
-        schemaVersion: 1,
-        source: "permission-system",
-        metric: "permission.ready",
-        kind: "counter",
-        value: 1,
-        timestamp: options.now().getTime(),
-      });
-    } catch {}
-  };
-  // Bus `on` returns an unsubscribe function; retain it so the registration can
-  // be disposed. Pi's `on` may return a disposer too, which is retained when
-  // present (its public type is `void`).
+
   const disposers: Array<() => void> = [];
   const subscribe = (register: () => unknown): void => {
     try {
@@ -179,9 +104,8 @@ export function registerLiveCounters(
       // Subscription failures are observer-only.
     }
   };
-  subscribe(() => api.events.on("permissions:ready", ready));
-  subscribe(() => api.events.on("permissions:ui_prompt", prompt));
-  subscribe(() => api.events.on("permissions:decision", decision));
+
+  // Generic skill invocation producer: bounded name, allowlisted by inventory.
   subscribe(() =>
     api.on("input", (event) => {
       try {
@@ -204,6 +128,19 @@ export function registerLiveCounters(
     }),
   );
 
+  // Integration-owned live subscriptions (the permission bus today): one
+  // iterated list, one disposer per registration, and no registry object.
+  for (const dispose of registerIntegrationLive({
+    api,
+    appendTelemetry: append,
+    sessionId: options.sessionId,
+    now: options.now,
+    inventoryNames: options.inventoryNames,
+    markPresence: (key) => options.markPresence?.(key),
+  })) {
+    disposers.push(dispose);
+  }
+
   const registration: LiveCounterRegistration = {
     dispose() {
       for (const dispose of disposers.splice(0)) {
@@ -220,10 +157,4 @@ export function registerLiveCounters(
   };
   activeRegistrations.set(options.sessionId, registration);
   return registration;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : undefined;
 }

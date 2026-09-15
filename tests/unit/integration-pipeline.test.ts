@@ -11,6 +11,12 @@ import {
   defineIntegrations,
 } from "../../src/integrations/catalog.ts";
 import type { Integration } from "../../src/integrations/contract.ts";
+import { readCanonicalContributions } from "../../src/integrations/contributions.ts";
+import { registerIntegrationLive } from "../../src/integrations/live-counters.ts";
+import {
+  applyIntegrationTelemetry,
+  emptyFoldedCounters,
+} from "../../src/core/live-counter-fold.ts";
 import { readPersistedEvidence } from "../../src/integrations/persisted.ts";
 import { readPresence } from "../../src/integrations/presence.ts";
 
@@ -217,6 +223,118 @@ test("an alias resolves through the catalog, and a legacy key never does", () =>
     report.integrations.map((row) => row.integration),
     ["widget", "legacy-mode"],
   );
+});
+
+test("a fixture telemetry hook folds by its own key and never another's", () => {
+  const widget = defineIntegration({
+    key: "widget",
+    schemas: { 1: { counters: ["calls"] } },
+    hooks: {
+      telemetry: (envelope) =>
+        (envelope as { metric?: unknown }).metric === "widget.metric"
+          ? { counters: { calls: 3 }, presence: true }
+          : undefined,
+    },
+  });
+  const list = defineIntegrations([widget]);
+
+  const folded = emptyFoldedCounters();
+  const applied = applyIntegrationTelemetry(
+    folded,
+    { metric: "widget.metric" },
+    list,
+  );
+
+  assert.equal(applied, true);
+  assert.deepEqual(
+    (folded.counters as Record<string, Record<string, number>>).widget,
+    { calls: 3 },
+  );
+  assert.deepEqual(folded.presence, { widget: true });
+  // No cross-contamination: the shipped permission vocabulary is untouched.
+  assert.equal(Object.hasOwn(folded.counters, "permission"), false);
+  assert.equal(Object.hasOwn(folded.presence, "permission"), false);
+
+  // An envelope no integration claims yields nothing at all.
+  const untouched = emptyFoldedCounters();
+  assert.equal(
+    applyIntegrationTelemetry(untouched, { metric: "other" }, list),
+    false,
+  );
+  assert.deepEqual(untouched.counters, {});
+  assert.deepEqual(untouched.presence, {});
+});
+
+test("a fixture live hook registers and disposes while another fails safely", () => {
+  let disposed = 0;
+  const healthy = defineIntegration({
+    key: "healthy",
+    schemas: { 1: { counters: ["calls"] } },
+    hooks: {
+      live: () => ({
+        dispose: () => {
+          disposed += 1;
+        },
+      }),
+    },
+  });
+  const throwing = defineIntegration({
+    key: "throwing",
+    schemas: { 1: { counters: [] } },
+    hooks: {
+      live: () => {
+        throw new Error("registration failed");
+      },
+    },
+  });
+  const list = defineIntegrations([throwing, healthy]);
+
+  const disposers = registerIntegrationLive(
+    {
+      api: { events: { on: () => () => {} }, on: () => () => {} },
+      appendTelemetry: () => {},
+      sessionId: "session-fixture",
+      now: () => new Date("2026-09-15T10:00:00.000Z"),
+      inventoryNames: () => new Set<string>(),
+      markPresence: () => {},
+    },
+    list,
+  );
+
+  assert.equal(disposers.length, 1, "the healthy integration still registered");
+  for (const dispose of disposers) dispose();
+  assert.equal(disposed, 1);
+});
+
+test("a fixture rich contribution flows through generic orchestration", async () => {
+  const rich = defineIntegration({
+    key: "rich",
+    schemas: { 1: { counters: [] } },
+    hooks: {
+      canonical: async () => ({
+        state: "supported" as const,
+        runs: [],
+        reason: "evidence-supported" as const,
+      }),
+    },
+  });
+  const failing = defineIntegration({
+    key: "failing",
+    schemas: { 1: { counters: [] } },
+    hooks: {
+      canonical: () => {
+        throw new Error("contribution failed");
+      },
+    },
+  });
+  const list = defineIntegrations([rich, failing]);
+
+  const result = await readCanonicalContributions(
+    { entries: [], sessionId: "session-fixture" },
+    list,
+  );
+  assert.deepEqual(Object.keys(result.contributions), ["rich"]);
+  assert.equal(result.reasons.failing, "contribution-failed");
 });
 
 test("a wide registry publishes every declared row, legacy row included", () => {

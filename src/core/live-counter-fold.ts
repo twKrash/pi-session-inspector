@@ -1,4 +1,16 @@
+import type { AppliedTelemetryFold } from "../integrations/contract.ts";
+import { integrations } from "../integrations/index.ts";
+import type { Integration } from "../integrations/contract.ts";
 import type { IntegrationKey } from "../integrations/index.ts";
+import {
+  emptyPresence,
+  type PresenceMap,
+  mergePresence,
+  presenceFromCheckpointV1,
+} from "./presence.ts";
+
+/** The one source label the generic skill producer publishes under. */
+const SKILL_SOURCE = "pi-input";
 
 export const MAX_SKILL_KEYS = 64;
 export const MAX_COUNTER_KEYS = 16;
@@ -7,12 +19,17 @@ export const MAX_FOLDED_COUNT = 1_000_000_000;
 /** Bounded skill-name grammar; shared by the fold table and the producer adapter. */
 export const SKILL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
 const COUNTER_KEY_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
-const SKILL_SOURCE = "pi-input";
 export type FoldedCounters = {
   counters: Partial<Record<IntegrationKey, Record<string, number>>>;
   skillInvocations: Record<string, number>;
   otherInvocations: number;
-  presence: { permission: boolean };
+  /**
+   * Durable presence sightings, keyed by integration. The map is generic: the
+   * fold applies whatever key the registry's telemetry fold reports, and the
+   * checkpoint v1 shape is mapped at its own compatibility boundary
+   * (`core/presence.ts`).
+   */
+  presence: PresenceMap;
 };
 
 export function emptyFoldedCounters(): FoldedCounters {
@@ -20,7 +37,7 @@ export function emptyFoldedCounters(): FoldedCounters {
     counters: {},
     skillInvocations: {},
     otherInvocations: 0,
-    presence: { permission: false },
+    presence: emptyPresence(),
   };
 }
 
@@ -39,9 +56,7 @@ export function mergeFoldedCounters(
   const merged =
     base === undefined ? emptyFoldedCounters() : cloneFoldedCounters(base);
   merged.otherInvocations += delta.otherInvocations;
-  merged.presence = {
-    permission: merged.presence.permission || delta.presence.permission,
-  };
+  merged.presence = mergePresence(merged.presence, delta.presence);
   for (const name of Object.keys(delta.skillInvocations).sort()) {
     const count = delta.skillInvocations[name] ?? 0;
     // Own-key check: `constructor`/`toString` are legal skill names, and an
@@ -149,7 +164,8 @@ export function foldedFromCheckpointAggregates(
     }
   }
 
-  folded.presence = { permission: aggregates.presence?.permission === true };
+  // The checkpoint's frozen v1 shape becomes the generic presence map here.
+  folded.presence = presenceFromCheckpointV1(aggregates.presence);
   return folded;
 }
 
@@ -191,6 +207,34 @@ export function foldTelemetryCounters(
   return folded;
 }
 
+/**
+ * The telemetry subsystem's iteration: ask each declared integration with a
+ * `telemetry` hook, stamp the key it applied, and apply the result generically.
+ * One failing integration yields no counters rather than a partial fold and
+ * never blocks another.
+ */
+export function applyIntegrationTelemetry(
+  folded: FoldedCounters,
+  envelope: unknown,
+  list: readonly Integration[] = integrations,
+): boolean {
+  for (const integration of list) {
+    if (integration.legacyOnly === true) continue;
+    const hook = integration.hooks?.telemetry;
+    if (hook === undefined) continue;
+    try {
+      const value = hook(envelope);
+      if (value !== undefined) {
+        applyTelemetryFold(folded, { integration: integration.key, ...value });
+        return true;
+      }
+    } catch {
+      // One failing integration never blocks another.
+    }
+  }
+  return false;
+}
+
 function cloneFoldedCounters(source: FoldedCounters): FoldedCounters {
   return {
     counters: Object.fromEntries(
@@ -201,46 +245,35 @@ function cloneFoldedCounters(source: FoldedCounters): FoldedCounters {
     ) as FoldedCounters["counters"],
     skillInvocations: { ...source.skillInvocations },
     otherInvocations: source.otherInvocations,
-    presence: { permission: source.presence.permission },
+    presence: { ...source.presence },
   };
+}
+
+/**
+ * Applies one registry-produced telemetry fold: counters are added under the
+ * key the registry reported (never a hardcoded integration), and a presence
+ * sighting is recorded for that same key.
+ */
+function applyTelemetryFold(
+  folded: FoldedCounters,
+  applied: AppliedTelemetryFold,
+): void {
+  if (applied.presence === true) folded.presence[applied.integration] = true;
+  for (const [key, count] of Object.entries(applied.counters ?? {}).sort()) {
+    bump(folded, applied.integration as IntegrationKey, key, count);
+  }
 }
 
 function addEnvelope(folded: FoldedCounters, input: unknown): void {
   if (!isRecord(input) || input.kind !== "counter" || input.value !== 1) return;
-  const metric = input.metric;
+
+  // Integration telemetry is translated by the integration that owns it; the
+  // telemetry subsystem stamps the key it applied, so the fold itself owns no
+  // integration vocabulary.
+  if (applyIntegrationTelemetry(folded, input)) return;
+
   const dimensions = isRecord(input.dimensions) ? input.dimensions : undefined;
-  if (metric === "permission.decision") {
-    const result = dimensions?.result;
-    const resolution = dimensions?.resolution;
-    if (result !== "allow" && result !== "deny") return;
-    if (typeof resolution !== "string") return;
-    bump(folded, "permission", "decisions");
-    bump(folded, "permission", result === "allow" ? "allowed" : "denied");
-    if (resolution === "gate_error") bump(folded, "permission", "gateErrors");
-    return;
-  }
-  if (metric === "permission.prompt") {
-    const source = dimensions?.promptSource;
-    if (
-      source !== "tool_call" &&
-      source !== "skill_input" &&
-      source !== "skill_read"
-    )
-      return;
-    bump(folded, "permission", "prompts");
-    bump(
-      folded,
-      "permission",
-      `prompt${source === "tool_call" ? "ToolCall" : source === "skill_input" ? "SkillInput" : "SkillRead"}`,
-    );
-    return;
-  }
-  if (metric === "permission.ready") {
-    // Presence only: durable boolean, never an activity counter.
-    folded.presence.permission = true;
-    return;
-  }
-  if (input.source === SKILL_SOURCE && metric === "skill.invocation") {
+  if (input.source === SKILL_SOURCE && input.metric === "skill.invocation") {
     const skill = dimensions?.skill;
     if (typeof skill !== "string" || !SKILL_NAME_PATTERN.test(skill)) return;
     // Own-key check (R45): a skill named after a prototype member must start
@@ -263,6 +296,7 @@ function bump(
   folded: FoldedCounters,
   integration: IntegrationKey,
   key: string,
+  amount = 1,
 ): void {
   const counters = folded.counters[integration] ?? {};
   folded.counters[integration] = counters;
@@ -271,7 +305,7 @@ function bump(
     Object.keys(counters).length >= MAX_COUNTER_KEYS
   )
     return;
-  counters[key] = (counters[key] ?? 0) + 1;
+  counters[key] = (counters[key] ?? 0) + amount;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

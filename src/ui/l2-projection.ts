@@ -1,5 +1,10 @@
 import type { CanonicalSession } from "../core/canonical.ts";
 import type { FoldedCounters } from "../core/live-counter-fold.ts";
+import {
+  emptyPresence,
+  presenceKeys,
+  type PresenceMap,
+} from "../core/presence.ts";
 import { isIntegrationKey } from "../core/retained-aggregates.ts";
 import type { IntegrationKey } from "../integrations/index.ts";
 
@@ -16,7 +21,7 @@ export function countersFrom(session: CanonicalSession): {
         counters: {},
         skillInvocations: { ...retained.named },
         otherInvocations: retained.overflow,
-        presence: { permission: false },
+        presence: emptyPresence(),
       },
     };
   }
@@ -28,12 +33,16 @@ export function countersFrom(session: CanonicalSession): {
   }
   const skillInvocations = { ...(effective.skillInvocations?.named ?? {}) };
   const otherInvocations = effective.skillInvocations?.overflow ?? 0;
-  const permission = effective.permissionPresence === true;
+  // Presence is the generic map the effective total carries; nothing here
+  // names an integration.
+  const presence: PresenceMap = Object.fromEntries(
+    (effective.observedPresence ?? []).map((key) => [key, true]),
+  );
   if (
     Object.keys(counters).length === 0 &&
     Object.keys(skillInvocations).length === 0 &&
     otherInvocations === 0 &&
-    !permission
+    presenceKeys(presence).length === 0
   )
     return {};
   return {
@@ -41,7 +50,7 @@ export function countersFrom(session: CanonicalSession): {
       counters,
       skillInvocations,
       otherInvocations,
-      presence: { permission },
+      presence,
     },
   };
 }

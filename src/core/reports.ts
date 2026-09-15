@@ -628,7 +628,7 @@ function projectEvidence(
         input.integrations,
         input.presence,
         input.counters,
-        counters?.permissionPresent ?? false,
+        counters?.observedPresence ?? [],
         list,
       ),
       duration: projectDuration(input.duration),
@@ -893,17 +893,21 @@ function projectIntegrations(
   value: unknown,
   presenceValue: unknown,
   countersValue: unknown,
-  permissionPresent: boolean,
+  observedPresence: readonly string[],
   list: readonly Integration[],
 ): IntegrationObservation[] {
   const adapterRows = projectAdapterRows(value, list);
   const presence = projectPresence(presenceValue, list);
   const counters = projectFoldedCounters(countersValue, list);
   // Without an observation the projection keeps its adapter-only shape; with one
-  // it emits exactly one row per known key so absence is explicit. A persisted
-  // `presence.permission` is itself an observation, so it also promotes the
-  // permission row to `present` (never `absent`).
-  if (presence === undefined && counters === undefined && !permissionPresent)
+  // it emits exactly one row per known key so absence is explicit. A durable
+  // presence sighting is itself an observation, so it also promotes that
+  // integration's row to `present` (never `absent`).
+  if (
+    presence === undefined &&
+    counters === undefined &&
+    observedPresence.length === 0
+  )
     return adapterRows;
 
   const adapterByKey = new Map<string, IntegrationObservation>();
@@ -932,7 +936,7 @@ function projectIntegrations(
     mergeIntegrationRow(
       entry.key,
       adapterByKey.get(entry.key),
-      entry.key === "permission" && permissionPresent
+      observedPresence.includes(entry.key)
         ? "present"
         : (presence as Record<string, IntegrationPresence | undefined>)?.[
             entry.key
@@ -1246,7 +1250,8 @@ function roundCost(value: number): number {
 type ProjectedCounters = {
   skillInvocations: Record<string, number>;
   otherInvocations: number;
-  permissionPresent: boolean;
+  /** Integration keys with a durable presence sighting in the folded evidence. */
+  observedPresence: readonly string[];
 };
 
 /**
@@ -1272,7 +1277,11 @@ function projectCounterEvidence(value: unknown): ProjectedCounters | undefined {
   return {
     skillInvocations,
     otherInvocations: isFoldedCount(other) ? other : 0,
-    permissionPresent: presence?.permission === true,
+    // Re-validated generic presence map: only a real `true` sighting counts, so
+    // a forged map of `false` values yields no sighting at all.
+    observedPresence: Object.keys(presence ?? {})
+      .filter((key) => presence?.[key] === true)
+      .sort(),
   };
 }
 

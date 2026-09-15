@@ -109,6 +109,11 @@ export type IntegrationTelemetryFold = {
   presence?: true;
 };
 
+/** One applied fold: the integration key that produced it plus its contribution. */
+export type AppliedTelemetryFold = IntegrationTelemetryFold & {
+  integration: string;
+};
+
 export type CanonicalIntegrationContext = {
   entries: readonly SessionEntry[];
   sessionId: string;

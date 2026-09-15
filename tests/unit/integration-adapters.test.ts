@@ -262,10 +262,19 @@ test("lens presence and evidence share one tool vocabulary", () => {
 });
 
 test("permission declares no presence or persisted hook of its own", () => {
-  // Presence comes from the generic live/durable observation, and its counters
-  // come from the telemetry fold: this slice declares none of those hooks, so
-  // the integration is never inferred `absent` from a missing bus.
-  assert.equal((permissionIntegration as Integration).hooks, undefined);
+  // Presence comes from the generic live/durable observation and its counters
+  // come from the telemetry fold, so the integration declares no inventory
+  // signal: it is never inferred `absent` from a missing bus.
+  assert.equal(
+    (permissionIntegration as Integration).hooks?.presence,
+    undefined,
+  );
+  assert.equal(
+    (permissionIntegration as Integration).hooks?.persisted,
+    undefined,
+  );
+  assert.equal(typeof permissionIntegration.hooks?.live, "function");
+  assert.equal(typeof permissionIntegration.hooks?.telemetry, "function");
   assert.deepEqual(permissionIntegration.schemas[1].counters, [
     "decisions",
     "allowed",
