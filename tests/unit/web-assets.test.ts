@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { after, afterEach, test } from "node:test";
+import { test } from "node:test";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
@@ -16,54 +16,6 @@ import {
   createWebClient,
   type StubElement,
 } from "../helpers/client-harness.ts";
-
-
-function mib(value: number): string {
-  return (value / 1024 / 1024).toFixed(0);
-}
-
-afterEach((ctx) => {
-  const m = process.memoryUsage();
-
-  console.error(
-    `[MEM] ${ctx.name} ` +
-      `rss=${mib(m.rss)}M ` +
-      `heap=${mib(m.heapUsed)}/${mib(m.heapTotal)}M ` +
-      `ext=${mib(m.external)}M ` +
-      `ab=${mib(m.arrayBuffers)}M ` +
-      `resources=${process.getActiveResourcesInfo().join(",")}`,
-  );
-});
-
-after(() => {
-  const m = process.memoryUsage();
-
-  console.error(
-    `[FINAL] rss=${mib(m.rss)}M ` +
-      `heap=${mib(m.heapUsed)}/${mib(m.heapTotal)}M ` +
-      `ext=${mib(m.external)}M ` +
-      `ab=${mib(m.arrayBuffers)}M`,
-  );
-
-  console.error(
-    "[FINAL resources]",
-    process.getActiveResourcesInfo(),
-  );
-
-  console.error(
-    "[FINAL handles]",
-    (process as unknown as {
-      _getActiveHandles(): unknown[];
-    })
-      ._getActiveHandles()
-      .map((handle) => handle?.constructor?.name),
-  );
-
-  process.report.writeReport(
-    `/tmp/web-assets-${process.pid}.json`,
-  );
-});
-
 
 /**
  * The readable browser sources (`scripts/web/`) implement route, range intent,

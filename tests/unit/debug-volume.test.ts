@@ -30,7 +30,10 @@ function events(lines: readonly string[]): string[] {
   return lines.map((line) => (JSON.parse(line) as { event: string }).event);
 }
 
-function only(lines: readonly string[], event: string): Record<string, unknown> {
+function only(
+  lines: readonly string[],
+  event: string,
+): Record<string, unknown> {
   const matching = lines
     .map((line) => JSON.parse(line) as Record<string, unknown>)
     .filter((entry) => entry.event === event);
@@ -60,7 +63,10 @@ function telemetryRecord(sequence: number): Record<string, unknown> {
   };
 }
 
-function timingRecord(sequence: number, subjectId: string): Record<string, unknown> {
+function timingRecord(
+  sequence: number,
+  subjectId: string,
+): Record<string, unknown> {
   return {
     eventId: `event-${sequence}`,
     timestamp: "2026-09-15T10:00:00.000Z",
@@ -204,8 +210,16 @@ function liveFact(
     startedAt: "2026-09-15T10:00:01.000Z",
     endedAt: "2026-09-15T10:00:02.000Z",
     durationMs,
-    provenance: { source: "inspector-wal", authority: "live", schemaVersion: 1 },
-    time: { state: "known", at: "2026-09-15T10:00:02.000Z", basis: "wal-observer" },
+    provenance: {
+      source: "inspector-wal",
+      authority: "live",
+      schemaVersion: 1,
+    },
+    time: {
+      state: "known",
+      at: "2026-09-15T10:00:02.000Z",
+      basis: "wal-observer",
+    },
   };
 }
 
@@ -216,11 +230,7 @@ function buildCorrelated(
 ) {
   return buildCanonicalSession({
     parsed: parseSessionJsonl(
-      [
-        { ...HEADER, id: sessionId },
-        MARKER,
-        ...generations(toolCalls),
-      ]
+      [{ ...HEADER, id: sessionId }, MARKER, ...generations(toolCalls)]
         .map((record) => JSON.stringify(record))
         .join("\n") + "\n",
     ),
