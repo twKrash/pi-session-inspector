@@ -308,12 +308,12 @@ module.exports = {
       }
     },
     {
-      name: 'integration-registry-not-to-consumers',
+      name: 'integration-catalog-not-to-consumers',
       severity: 'error',
       comment:
-        'The registry derives generic views from adapters (ADR 0019); importing a consumer back would invert the direction and reintroduce the closed-world list.',
+        'The integration catalog owns validation and lookup only (ADR 0019); importing a consumer back would invert the direction and turn it into orchestration.',
       from: {
-        path: '^src/integrations/registry[.]ts$'
+        path: '^src/integrations/(?:catalog|index)[.]ts$'
       },
       to: {
         path: '^(?:src/(?:core/(?:reports|canonical|reduce)|ui|commands)|src/index[.]ts$)',
@@ -321,7 +321,7 @@ module.exports = {
       }
     },
     {
-      name: 'l2-loaders-not-to-pi-entry-adapter',
+      name: 'l2-loaders-not-to-persisted-integration-evidence',
       severity: 'error',
       comment:
         'L2 loaders receive persisted integration evidence from L1; they must not reread Pi entries for a second projection.',
@@ -329,7 +329,7 @@ module.exports = {
         path: '^src/ui/load-(?:current|history)[.]ts$'
       },
       to: {
-        path: '^src/integrations/pi-entries[.]ts$'
+        path: '^src/integrations/(?:catalog[.]ts$|persisted[.]ts$|index[.]ts$|adapters/)'
       }
     },
     {

@@ -1,6 +1,6 @@
-# ADR 0019: integration adapter registry, settings precedence, and the debug-log privacy boundary
+# ADR 0019: integration descriptors, catalog, and subsystem orchestration, settings precedence, and the debug-log privacy boundary
 
-**Status:** accepted.
+**Status:** accepted. Supersedes the runtime-registry model described by an earlier revision of this ADR.
 
 ## Context
 
@@ -19,91 +19,123 @@ Seven built-in integrations (`context`, `rtk`, `ponytail`, `caveman`, `permissio
 | `src/core/retained-aggregates.ts` | retained aggregate key set |
 | `src/ui/observation.ts` | observation default key list |
 | `src/index.ts` | presence signal collection, live registration wiring, durable permission presence |
-| `src/storage/checkpoint.ts` | persisted presence/aggregate shape |
 
-The result was closed-world: one new integration meant touching enums, presence switches, Pi-entry parsing, counter allowlists, report order, validation, retained aggregates, observation defaults, tests, and sometimes live subscriptions. Two of those lists could silently disagree (a key present in the report order but missing from the counter table, or vice versa), and `Present / Unavailable` gave no reason for the mismatch, so integration defects could only be diagnosed by reading every site.
+The result was closed-world: one new integration meant touching enums, presence switches, Pi-entry parsing, counter allowlists, report order, validation, retained aggregates, observation defaults, tests, and sometimes live subscriptions.
 
-Separately, the Inspector had no settings surface (only the `--theme` CLI flag) and no internal debug facility, so a real-session defect such as a persisted `durationMs: 0` had no instrumented boundary to point at.
-
-This ADR records the architecture that replaces the scattered tables, and the two boundaries (configuration precedence, debug-log privacy) that the diagnostic facility depends on. It does not change the semantics of ADR 0009 (hybrid integrations), ADR 0010 (telemetry protocol v1), ADR 0011 (local-only privacy), ADR 0014 (durable live integration evidence), or ADR 0015 (presence model); it relocates their implementation to one owner per integration.
+A first attempt replaced those tables with a runtime `IntegrationRegistry` object that validated registrations **and** orchestrated every operation (`readPresence`, `readPersistedEvidence`, `registerLive`, `foldTelemetry`, `contributeCanonical`, lifecycle, disposal, fault isolation). That solved the closed-world problem but produced a framework: ~500 lines of generic orchestration whose main consumer was itself, duplicate configuration (`order` metadata *and* array position), and a place where every subsystem's behavior had to be routed even though the subsystem already knew how to do the work.
 
 ## Decision
 
-### One adapter owns one integration's knowledge
-
-`src/integrations/contract.ts` defines a capability-based interface. An adapter declares identity, report order, and its versioned schema, and *optionally* implements the capabilities it actually has:
+### An integration describes itself
 
 ```ts
-interface IntegrationAdapter {
-  readonly key: string;                 // bounded token
-  readonly order: number;               // report order
-  readonly schemas: Readonly<Record<number, { counters: readonly string[] }>>;
-  readonly aliases?: readonly string[]; // accepted evidence key spellings
-  readonly legacyOnly?: boolean;        // key validates, but has no row/presence
-
-  detectPresence?(context: PresenceContext): IntegrationPresence;
-  readPersistedEvidence?(context: PersistedEvidenceContext): IntegrationEvidence | undefined;
-  registerLive?(context: LiveIntegrationContext): IntegrationRegistration | undefined;
-  contributeCanonical?(context: CanonicalIntegrationContext): CanonicalIntegrationContribution;
-}
+type Integration = {
+  key: string;
+  aliases?: readonly string[];
+  schemas: IntegrationSchemas;
+  legacyOnly?: boolean;
+  hooks?: {
+    presence?(context: PresenceContext): IntegrationPresence;
+    persisted?(context: PersistedEvidenceContext): IntegrationEvidence | undefined;
+    live?(context: LiveIntegrationContext): IntegrationRegistration | undefined;
+    telemetry?(envelope: unknown): IntegrationTelemetryFold | undefined;
+    canonical?(context: CanonicalIntegrationContext):
+      | CanonicalIntegrationContribution
+      | undefined
+      | Promise<CanonicalIntegrationContribution | undefined>;
+  };
+};
 ```
 
-Capabilities are separate methods rather than one mandatory set so a counter-only integration (ponytail) and a rich one (subagents) both fit without either stubbing methods it does not have or forcing rich evidence into generic counters. `subagents` keeps its `agents`/`agentActivity` contribution through `contributeCanonical`; its row-level empty schema is simply what that adapter reports for counters.
+Metadata is data; behavior is a small set of **separate optional typed hooks**. An integration implements only the hooks its protocol actually has, so nothing stubs a capability it does not own.
 
-The Ponytail adapter, for example, is the only place that knows: which extension command signals Ponytail presence, that `ponytail-mode` custom entries are Ponytail evidence, that its v1 schema has a `changes` counter, and that a malformed entry yields `malformed-evidence` rather than a guess.
-
-### One authoritative registry, everything else derived
-
-`src/integrations/registry.ts` validates a static adapter list once and exposes the derived views every generic consumer needs: known keys, report order, presence defaults, schema/counter tables, alias lookup, adapter lookup, live registrations, persisted-evidence readers, and retained-aggregate key sets.
+### `src/integrations/index.ts` declares which integrations Inspector supports
 
 ```ts
-export const integrations = createIntegrationRegistry([
-  contextAdapter,
-  rtkAdapter,
-  ponytailAdapter,
-  cavemanAdapter,
-  permissionAdapter,
-  subagentsAdapter,
-  lensAdapter,
-  legacyModeAdapter,
+export const integrations = defineIntegrations([
+  contextIntegration,
+  rtkIntegration,
+  ponytailIntegration,
+  cavemanIntegration,
+  permissionIntegration,
+  subagentsIntegration,
+  lensIntegration,
+  legacyModeIntegration,
 ]);
 ```
 
-There is no second hand-maintained `INTEGRATION_KEYS`, `INTEGRATION_ORDER`, `SIGNALS`, `COUNTER_KEYS`, or retained-aggregate key table. Adding a normal built-in integration is one adapter file, one registry entry, and its tests/docs.
+Opening that file answers, in ten seconds: which integrations exist, their report order, and where to add another one. **The array order is the report order**; there is no numeric `order` field to keep in sync with the array, and nothing sorts.
 
-Construction is fail-fast on defects the developer controls (duplicate key, duplicate order, duplicate `key:version` schema, empty or duplicated counter name, malformed key/alias token) and per-adapter fault-isolated on defects the producer controls (presence read, persisted read, live registration, canonical contribution). A throwing adapter degrades only its own row to `unknown`/`unavailable` with a bounded reason; it never aborts report construction, never affects another adapter, and never alters Pi execution.
+### The catalog validates and looks up; it does not orchestrate
 
-### Trusted keys are registry membership, not a duplicated union
+`src/integrations/catalog.ts` holds:
 
-`IntegrationKey` is no longer a hand-written union that has to be extended in `core`. The registry derivation provides a compile-time key type from the adapter list itself:
+- `defineIntegration` — one definition's local validation (key grammar, schema versions, counter-name grammar, alias grammar, legacy-only alias rejection) while preserving the literal key;
+- `defineIntegrations` — collection-level validation (duplicate key, alias collisions, legacy-only integrations may not own hooks), freezing, and the explicit list;
+- pure lookup helpers — `reportIntegrations`, `rowKeys`, `findIntegration`, `resolveIntegrationKey`, `isKnownIntegrationVersion`, `isAllowedIntegrationCounter`, `integrationCounters`, `primaryVersion`.
+
+It exposes no `readPresence`-style methods.
+
+### Subsystems iterate the list and invoke the hook they own
+
+| Operation | Owner | Shape |
+| --- | --- | --- |
+| Presence | `src/integrations/presence.ts` | observed sighting wins, else `hooks.presence`, bounded reason, fault-isolated |
+| Persisted evidence | `src/integrations/persisted.ts` | `hooks.persisted` → row/schema/counter validation → rows and reasons |
+| Live registration | `src/integrations/live-counters.ts` | `hooks.live` → disposers, registered once, disposal isolated |
+| Telemetry folding | `src/core/live-counter-fold.ts` | `hooks.telemetry` → stamp `integration.key` → generic counter/presence application |
+| Rich canonical contribution | `src/integrations/contributions.ts` | `hooks.canonical` → keyed contributions |
+
+The loops are deliberately boring:
 
 ```ts
-export type IntegrationKey = RegisteredIntegrationKey<typeof integrationAdapters>;
+for (const integration of list) {
+  const hook = integration.hooks?.telemetry;
+  if (hook === undefined) continue;
+  try {
+    const value = hook(envelope);
+    if (value !== undefined) return { integration: integration.key, ...value };
+  } catch {
+    // One failing integration never blocks another.
+  }
+}
 ```
 
-and the runtime boundary is registry membership. Producer input stays untrusted: an evidence payload's key must match a registered adapter (or alias) after bounded-token validation, its version must be one the adapter declares, and its counter names must be in that version's allowlist. Extensibility never weakens validation — a producer cannot invent a key, a counter name, a schema version, a reason code, or a free-text diagnostic by adding a registry-shaped object.
+Fault isolation, bounded reasons, deterministic order, and "unavailable is not zero" stay exactly as they are; they simply live where the operation happens instead of inside one registry object.
+
+### Rejected: import-time self-registration
+
+`registerIntegration(x)` called at module scope was rejected: hidden global state, import-order coupling, module-cache interaction in tests, and unclear ownership of the supported set. The explicit array is the single ownership point, and it is also the report-order contract.
+
+### Rejected: one generic callback
+
+`integration.cb({ type: "presence", … })` was rejected: it erases capability-specific types, forces every integration into switch statements and union return values, and makes "which hooks does this integration have?" invisible at the declaration site. Optional typed hooks keep both the typing and the declaration readable.
+
+### Keys and validation
+
+`IntegrationKey` is derived from the composition array by plain indexed access (no conditional-type derivation of a key universe). Producer input stays untrusted everywhere: an evidence payload's key must resolve through the catalog (or an alias), its version must be declared, and its counter names must be in that version's allowlist. A legacy-only key validates historical rows but never resolves as a report key.
 
 ### Presence and evidence stay separate, with a bounded reason
 
-The presence model of ADR 0015 is unchanged: `present` from a native signal or from evidence itself, `absent` only when the inventory is available and the defined signal is missing, `unknown` otherwise, and `permission`/`rtk` never inferred `absent`. Presence is still never installation proof and never activity.
-
-What is new is that every adapter result carries a bounded `IntegrationEvidenceReason` from a closed enum — for example `not-present`, `presence-only`, `no-persisted-evidence`, `no-live-evidence`, `unsupported-schema`, `malformed-evidence`, `registration-failed`. Reasons are canonical Inspector vocabulary, never producer text, and are available to debug logging and tests. The normal UI wording does not change in this milestone.
+The presence model of ADR 0015 is unchanged: `present` from an inventory signal or from a live/durable observation, `absent` only when the inventory is readable and the defined signal is missing, `unknown` otherwise, and `permission`/`rtk` never inferred `absent`. Every presence and evidence result carries a bounded `IntegrationEvidenceReason` from a closed enum; reasons are canonical Inspector vocabulary, never producer text, and the normal UI wording does not change in this milestone.
 
 ### Skills, resources, and MCP tools are not integrations
 
-An integration adapter describes a **known semantic protocol** with a versioned evidence contract that Inspector interprets. A skill is a **dynamically discovered generic resource**: it is inventoried (`inventory.json`) and its `/skill:<name>` invocations are counted by generic skill infrastructure, which needs no adapter. Graphify is therefore an ordinary discovered skill unless and until it exposes extra structured telemetry worth interpreting, at which point a specialized skill observer adapter is the extension point. Likewise MCP servers stay tool sources; no Inspector integration exists per MCP server without an MCP-specific semantic telemetry contract.
+An integration adapter describes a **known semantic protocol** with a versioned evidence contract that Inspector interprets. A skill is a **dynamically discovered generic resource**: it is inventoried and its `/skill:<name>` invocations are counted by generic skill infrastructure, which needs no integration entry. Graphify is therefore an ordinary discovered skill unless it exposes structured telemetry worth interpreting, at which point a specialized skill observer is the extension point. Likewise MCP servers stay tool sources; no Inspector integration exists per MCP server without an MCP-specific semantic telemetry contract. `docs/integrations.md` is the contributor-facing guide for this distinction.
 
 ### Dependency direction
 
 ```text
 core/events (types only)
       ↑
-integrations/contract  ←  integrations/adapters/*  →  registry.ts
-      ↑                                                   ↑
-core/{reports,canonical,retained-aggregates}, ui/* ←──────┘
+integrations/contract  ←  integrations/adapters/*  →  integrations/catalog
+      ↑                                                      ↑
+integrations/{presence,persisted,contributions,index} ──────┘
+      ↑
+core/{reports,canonical,retained-aggregates}, ui/*
 ```
 
-Adapters may import `core` types and helpers, but never `core/reports`, the UI, the loaders, or the composition root. `registry.ts` imports contracts and adapters only. `dependency-cruiser` enforces that no adapter imports a report/UI/loader/entry module, so the direction cannot silently invert.
+Adapters may import the contract and their own helpers, never a subsystem, report, UI module, or the composition root. `integrations/index.ts` imports the catalog and the adapters only — it imports no subsystem, so no cycle exists. `dependency-cruiser` enforces the direction.
 
 ### Settings precedence
 
@@ -113,34 +145,35 @@ The Inspector gains one authoritative settings loader for `<agentDir>/session-in
 { "theme": "dark", "debug": false }
 ```
 
-Resolution is `explicit CLI option > settings.json > product default`. `--theme light` overrides `"theme": "dark"`; `--debug` enables debug logging for that invocation even when settings say `false`; `"debug": true` enables it by default. Malformed, unreadable, oversized, or unknown-shaped settings degrade to product defaults with one bounded debug diagnostic and never prevent Inspector from starting. Browser-local state (the in-page theme toggle) stays ephemeral and never overwrites the durable configured default.
+Resolution is `explicit CLI option > settings.json > product default`. A missing file is the default configuration; malformed, unreadable, or oversized settings degrade to the product defaults with one bounded debug diagnostic and never prevent Inspector from starting. Browser-local state (the in-page theme toggle) stays ephemeral and never overwrites the durable configured default.
 
 ### Debug-log privacy boundary
 
 Debug logging is a local diagnostic facility, not telemetry:
 
 - off by default; enabled only by resolved debug configuration;
-- Inspector-owned path under the storage root, structured JSONL, bounded records, bounded size with rotation/truncation, mode `0o600`, no network;
+- Inspector-owned path under the storage root, structured JSONL, bounded records, bounded size with rotation/truncation, directory `0o700`, files `0o600` (enforced on pre-existing paths too), no network;
+- if a required private mode cannot be enforced, the sink fails closed and stops writing rather than persisting diagnostics at a wider mode;
 - never rendered in TUI/browser/snapshot/JSON reports, never folded into counters, never canonical evidence;
 - every logger failure is swallowed and never alters Inspector execution;
 - **never** prompts, responses, tool args, tool result bodies, environment variables, secrets/tokens, arbitrary producer text, unrestricted paths, or raw third-party payloads. Only explicitly allowlisted structured fields are written, correlated by existing canonical opaque/digest identities rather than raw producer IDs.
 
-The debug facility is what makes the integration reasons of this ADR and the tool-duration boundary observable; the privacy rules of ADR 0011 are unchanged by enabling it.
+Instrumentation sits at the subsystem boundaries (the loops above) and on the tool-duration pipeline, not inside a registry object.
 
 ## Alternatives considered
 
-- **Abstract base class per integration.** Rejected: forces unrelated capability stub implementations and hides which capabilities an adapter actually has.
-- **One mandatory method set for every adapter.** Rejected: subagents' rich run/activity evidence would either be flattened into counters (losing ADR 0007 semantics) or stubbed everywhere else.
-- **Dynamic third-party plugin loading in this milestone.** Rejected: the closed-world problem is an internal maintenance cost; external loading adds trust, versioning, and sandboxing requirements that are out of scope. The registry stays a static, statically-typed list of trusted adapters.
-- **Keep the hand-written `IntegrationKey` union and only move the tables.** Rejected: the union is one of the scattered lists; adding an adapter would still require a core edit.
-- **Derive validation from producer-declared schemas at runtime.** Rejected: producer values are untrusted; validation metadata must come from the adapter, not the payload.
-- **Reuse Pi's own `settings.json`.** Rejected: Inspector must not write or reinterpret Pi's user configuration; a file it owns keeps the observer boundary.
-- **A debug log next to the inspected session files or in a temp dir.** Rejected: it would either write near Pi data or lose the storage-root privacy (mode, retention, discovery) Inspector already applies.
+- **Runtime registry object with orchestration methods.** Rejected: framework-shaped, duplicate configuration, and every subsystem's behavior routed through a layer that adds nothing. The catalog keeps only what registration needs.
+- **Import-time self-registration.** Rejected: hidden side effects, import-order coupling, global mutable state, test isolation problems.
+- **One generic capability callback.** Rejected: loses capability-specific typing, forces internal switches and union handling into every integration.
+- **Numeric order metadata plus sort.** Rejected: two sources of truth for one contract.
+- **Elaborate compile-time key derivation.** Rejected: runtime boundaries already validate untrusted producer keys; the type stays ergonomic without conditional-type machinery.
+- **Dynamic third-party plugin loading.** Out of scope: the supported set is a static, trusted list.
+- **Reuse Pi's own `settings.json`.** Rejected: Inspector must not write or reinterpret Pi's user configuration.
+- **A debug log next to inspected session files or in a temp dir.** Rejected: it would either write near Pi data or lose the storage-root privacy (mode, retention, discovery) Inspector already applies.
 
 ## Consequences
 
-- Adding a normal built-in integration is one adapter, one registry entry, tests, and docs.
-- Report order, presence defaults, version/counter validation, retained-aggregate keys, and observation defaults are registry-derived by construction; a new adapter cannot forget them.
-- `Present / Unavailable` becomes explainable through bounded reasons, which the debug facility can surface without putting raw data in the UI.
-- Existing public report semantics, privacy rules, determinism, and retention behaviour are unchanged; the migration is expected to keep the existing suite green, and any semantic difference it exposes is treated as a defect to be fixed deliberately in the UAT phase, not silently during the move.
-- The adapter list is static and trusted; external plugin loading remains a future feature with its own ADR.
+- Adding an ordinary integration is one definition file, one line in `src/integrations/index.ts`, focused tests, and one `docs/integrations.md` matrix row — with no edits to reports, retention, canonical projection, generic telemetry folding, observation defaults, or UI integration lists.
+- Generic machinery shrinks: no registry object, no derived key tables, no numeric order, no duplicate configuration.
+- Presence/evidence semantics, privacy rules, determinism, retention behavior, and the settings/debug boundaries above are unchanged.
+- One integration failing cannot break another; live registrations are disposed exactly once; reasons stay bounded and closed.
