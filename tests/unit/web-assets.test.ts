@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
+import { createTranslator } from "../../src/ui/i18n.ts";
 import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
-  projectInspectorUi,
   type InspectorUiSnapshot,
+  projectInspectorUi,
   type UiAgentParent,
   type UiAgentRow,
 } from "../../src/ui/ui-projection.ts";
-import { createTranslator } from "../../src/ui/i18n.ts";
 import { WEB_ASSETS } from "../../src/ui/web-assets.ts";
 import { calendarFree, forbiddenCapabilities } from "../helpers/asset-gate.ts";
 import {
@@ -463,6 +463,8 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
   // The route module owns the closed vocabularies and the four route behaviors.
   const route = namespace.route as Record<string, unknown>;
   assert.deepEqual(Object.keys(route).sort(), [
+    "agentViews",
+    "defaultAgentView",
     "derive",
     "entityKinds",
     "key",
@@ -472,6 +474,9 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
     "serialize",
     "tabs",
   ]);
+  // The Agents presentation is a closed vocabulary whose default is the tree.
+  assert.deepEqual(plain(route.agentViews), ["tree", "table"]);
+  assert.equal(route.defaultAgentView, "tree");
   assert.deepEqual(plain(route.sections), ["current", "history", "global"]);
   assert.deepEqual(plain(route.entityKinds), [
     "model",
@@ -575,6 +580,28 @@ test("the route round-trips the canonical parameter order", () => {
         range: { kind: "preset", preset: 7 },
       },
       "#/current/llm?scope=active&preset=7",
+    ],
+    [
+      {
+        section: "current",
+        tab: "llm",
+        scope: "tree",
+        view: "table",
+        range: { kind: "preset", preset: 7 },
+        entity: { kind: "agent", id: "acme/alpha" },
+      },
+      "#/current/llm?scope=tree&view=table&preset=7&entity=agent%3Aacme%2Falpha",
+    ],
+    [
+      {
+        section: "current",
+        tab: "llm",
+        scope: "active",
+        // The default presentation is not serialized: the tree is what a route
+        // that names no view renders, so one presentation still has one string.
+        view: "tree",
+      },
+      "#/current/llm?scope=active",
     ],
     [
       {
@@ -1923,7 +1950,9 @@ test("an in-range parent link navigates, and back and forward restore its focus"
 
   const harness = createWebClient({
     responses: [snapshot],
-    hash: "#/current/llm?scope=tree",
+    // The parent column is the table's own presentation of the relation; the
+    // tree expresses the same in-range verdict by nesting the row instead.
+    hash: "#/current/llm?scope=tree&view=table",
   });
   await harness.start();
   const link = harness
@@ -1935,7 +1964,7 @@ test("an in-range parent link navigates, and back and forward restore its focus"
   assert.equal(parentLink.textContent, "orchestrator");
   assert.equal(
     parentLink.attributes.href,
-    `#/current/llm?scope=tree&entity=agent%3A${parentId}`,
+    `#/current/llm?scope=tree&view=table&entity=agent%3A${parentId}`,
   );
 
   // Following it stays in the same view and focuses the parent's own row.
@@ -1950,7 +1979,7 @@ test("an in-range parent link navigates, and back and forward restore its focus"
 
   // Back: the entity leaves the route, so the focus effect is not applied and
   // the replaced subtree leaves nothing pinned or filtered.
-  harness.location.hash = "#/current/llm?scope=tree";
+  harness.location.hash = "#/current/llm?scope=tree&view=table";
   harness.popstate();
   assert.equal(
     harness.element("view").querySelectorAll(".entity-focus").length,
@@ -1960,7 +1989,7 @@ test("an in-range parent link navigates, and back and forward restore its focus"
   assert.equal(harness.fetches().length, 1);
 
   // Forward: the same route focuses the same row again.
-  harness.location.hash = `#/current/llm?scope=tree&entity=agent%3A${parentId}`;
+  harness.location.hash = parentLink.attributes.href;
   harness.hashchange();
   assert.equal(harness.activeElement()?.dataset.entity, `agent:${parentId}`);
   assert.equal(
@@ -2035,7 +2064,7 @@ test("a known parent with no materialized row never renders as Unavailable", asy
 
   const harness = createWebClient({
     responses: [snapshot],
-    hash: "#/current/llm?scope=tree",
+    hash: "#/current/llm?scope=tree&view=table",
   });
   await harness.start();
   const view = harness.element("view");
@@ -2162,7 +2191,7 @@ test("ErrorRow references are entity links wherever the DTO publishes an id", as
   // and following it focuses that row.
   const agents = createWebClient({
     responses: [snapshot],
-    hash: "#/current/llm?scope=tree",
+    hash: "#/current/llm?scope=tree&view=table",
   });
   await agents.start();
   const parent = agents
@@ -2591,4 +2620,641 @@ test("the History table hides unavailable sessions by default and reveals them",
   harness.click(toggle as StubElement);
   assert.deepEqual(membership(), ["member", "unknown"]);
   assert.equal(harness.texts(view()).join(" ").includes("session-b"), true);
+});
+
+// ---------------------------------------------------------------------------
+// The Agents execution view: Tree | Table, run containers, and the session root
+// ---------------------------------------------------------------------------
+
+const CONTAINER_ID = `subagent-${"f".repeat(64)}`;
+
+/**
+ * One run row as L2 publishes it. The parent verdict is an input here: L2 owns
+ * it, and these tests render what it published rather than re-deriving it.
+ */
+function agentRow(input: {
+  id: string;
+  parentId?: string | null;
+  parent?: UiAgentParent;
+  agent?: string | null;
+  status?: UiAgentRow["status"];
+  model?: string | null;
+  thinking?: string | null;
+  artifacts?: UiAgentRow["artifacts"];
+  tokens?: number | null;
+  cost?: number | null;
+}): UiAgentRow {
+  const tokens = input.tokens === undefined ? null : input.tokens;
+  const cost = input.cost === undefined ? null : input.cost;
+  return {
+    id: input.id,
+    parentId: input.parentId ?? null,
+    agent: input.agent === undefined ? "worker" : input.agent,
+    status: input.status ?? "succeeded",
+    confidence: "native",
+    artifacts: input.artifacts ?? null,
+    observedAt: null,
+    evidenceToolId: null,
+    model: input.model === undefined ? null : input.model,
+    thinking: input.thinking === undefined ? null : input.thinking,
+    failure: null,
+    usage:
+      tokens === null && cost === null
+        ? null
+        : { totalTokens: tokens ?? 0, cost: cost ?? 0 },
+    parent: input.parent ?? "none",
+  };
+}
+
+/** The DTO a run row arrives in: the fixture range, replaced with these rows. */
+function treeSnapshot(rows: readonly UiAgentRow[]): InspectorUiSnapshot {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  range.agents = [...rows];
+  const byStatus = {
+    succeeded: 0,
+    failed: 0,
+    interrupted: 0,
+    running: 0,
+    unknown: 0,
+  };
+  let withUsage = 0;
+  for (const row of rows) {
+    byStatus[row.status] += 1;
+    if (row.usage !== null) withUsage += 1;
+  }
+  range.childUsage = {
+    runsTotal: rows.length,
+    runsWithUsage: withUsage,
+    totalTokens: null,
+    cost: null,
+    failedCost: null,
+    failedRunsWithUsage: 0,
+    byStatus,
+  };
+  return snapshot;
+}
+
+/** Every text the rendered view shows, in one string. */
+function viewText(harness: Harness): string {
+  return harness.texts(harness.element("view")).join(" ");
+}
+
+/** The Agents view switch button for one mode. */
+function viewButton(harness: Harness, mode: string): StubElement {
+  const found = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.agentsView === mode);
+  if (found === undefined) throw new Error(`no ${mode} control`);
+  return found;
+}
+
+/** One tree row's toggle, by the identity the row renders. */
+function treeToggle(harness: Harness, label: string): StubElement {
+  const found = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find(
+      (button) =>
+        button.attributes["aria-label"] === `Collapse ${label}` ||
+        button.attributes["aria-label"] === `Expand ${label}`,
+    );
+  if (found === undefined) throw new Error(`no toggle for ${label}`);
+  return found;
+}
+
+/** The rendered tree rows, as their identity text. */
+function treeRows(harness: Harness): string[] {
+  return harness
+    .element("view")
+    .querySelectorAll("li")
+    .map((row) => row.dataset.treeRow ?? "");
+}
+
+test("the Agents view is a Tree by default and keeps the table one click away", async () => {
+  const parentId = `subagent-${"1".repeat(64)}`;
+  const childId = `subagent-${"2".repeat(64)}`;
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: parentId, agent: "reviewer" }),
+        agentRow({
+          id: childId,
+          agent: "scout",
+          parentId,
+          parent: "in-range",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+
+  assert.equal(viewButton(harness, "tree").attributes["aria-pressed"], "true");
+  assert.equal(
+    viewButton(harness, "table").attributes["aria-pressed"],
+    "false",
+  );
+  // The tree nests the child in its parent's own list, not in a flat list.
+  const child = harness
+    .element("view")
+    .querySelectorAll("li")
+    .find((row) => row.dataset.treeRow === childId);
+  if (child === undefined) throw new Error("the nested run must be rendered");
+  const parentRow = child.parentNode?.parentNode;
+  assert.equal(parentRow?.dataset.treeRow, parentId);
+
+  // Table is a real route: it survives a reload and Back restores the tree.
+  harness.click(viewButton(harness, "table"));
+  assert.equal(harness.location.hash.includes("view=table"), true);
+  assert.equal(
+    harness.element("view").querySelectorAll("table").length > 0,
+    true,
+  );
+  assert.equal(harness.element("view").querySelectorAll("ul").length, 0);
+
+  harness.click(viewButton(harness, "tree"));
+  assert.equal(harness.location.hash.includes("view=table"), false);
+  assert.equal(harness.element("view").querySelectorAll("ul").length > 0, true);
+});
+
+test("a collapsed branch hides its children and states what it hides", async () => {
+  const parentId = `subagent-${"3".repeat(64)}`;
+  const failedId = `subagent-${"4".repeat(64)}`;
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: parentId, agent: "reviewer" }),
+        agentRow({
+          id: failedId,
+          agent: "scout",
+          parentId,
+          parent: "in-range",
+          status: "failed",
+        }),
+        agentRow({
+          id: `subagent-${"5".repeat(64)}`,
+          agent: "worker",
+          parentId,
+          parent: "in-range",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const toggle = treeToggle(harness, "reviewer");
+  assert.equal(toggle.attributes["aria-expanded"], "true");
+  assert.equal(viewText(harness).includes("scout"), true);
+
+  harness.click(toggle);
+  const collapsed = treeToggle(harness, "reviewer");
+  assert.equal(collapsed.attributes["aria-expanded"], "false");
+  // A hidden failure is never silently hidden: the summary states it.
+  assert.equal(viewText(harness).includes("scout"), false);
+  assert.equal(viewText(harness).includes("2 descendants"), true);
+  assert.equal(viewText(harness).includes("1 failed"), true);
+
+  harness.click(treeToggle(harness, "reviewer"));
+  assert.equal(
+    treeToggle(harness, "reviewer").attributes["aria-expanded"],
+    "true",
+  );
+  assert.equal(viewText(harness).includes("scout"), true);
+});
+
+test("children of one run container group under a node that is not an agent", async () => {
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({
+          id: `subagent-${"6".repeat(64)}`,
+          agent: "reviewer",
+          parentId: CONTAINER_ID,
+          parent: "orchestration-run",
+        }),
+        agentRow({
+          id: `subagent-${"7".repeat(64)}`,
+          agent: "worker",
+          parentId: CONTAINER_ID,
+          parent: "orchestration-run",
+          status: "failed",
+        }),
+        agentRow({
+          id: `subagent-${"8".repeat(64)}`,
+          agent: "scout",
+          parentId: CONTAINER_ID,
+          parent: "orchestration-run",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const text = viewText(harness);
+  assert.equal(text.includes("Run container"), true);
+  assert.equal(text.includes("3 children"), true);
+  assert.equal(text.includes("1 failed"), true);
+  // The container is a group node; each child is its own row.
+  assert.equal(treeRows(harness).filter((row) => row !== "").length, 3);
+  // A group node is never a run row: it carries no run identity at all.
+  const container = harness
+    .element("view")
+    .querySelectorAll("li")
+    .find((row) => row.className.includes("is-container"));
+  if (container === undefined) throw new Error("the container row must exist");
+  assert.equal(container.dataset.treeRow, undefined);
+  assert.equal(
+    container.closest("[data-entity]"),
+    null,
+    "the container is not an entity",
+  );
+  const groupLabel = harness
+    .element("view")
+    .querySelectorAll("span")
+    .find((span) => span.className.includes("tree-group"));
+  assert.notEqual(groupLabel, undefined);
+  assert.equal(
+    harness
+      .element("view")
+      .querySelectorAll("span")
+      .some((span) => span.dataset.entity === `agent:${CONTAINER_ID}`),
+    false,
+  );
+  // The producer's container identity is never rendered.
+  assert.equal(text.includes(CONTAINER_ID), false);
+  // Every child is a real agent row, and there are exactly three of them.
+  assert.equal(
+    harness
+      .element("view")
+      .querySelectorAll("span")
+      .filter((span) => (span.dataset.entity ?? "").startsWith("agent:"))
+      .length,
+    3,
+  );
+});
+
+test("a single child of a run container is flattened, stating its parent verdict", async () => {
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({
+          id: `subagent-${"9".repeat(64)}`,
+          agent: "worker",
+          parentId: CONTAINER_ID,
+          parent: "orchestration-run",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const text = viewText(harness);
+  // The run is rendered as one tree row of its own, with no group node around it.
+  assert.equal(treeRows(harness).filter((row) => row !== "").length, 1);
+  assert.equal(text.includes("Run container"), false);
+  assert.equal(text.includes("Parent: orchestration run"), true);
+  assert.equal(text.includes(CONTAINER_ID), false);
+});
+
+test("the session root summarizes one model without claiming a launch", async () => {
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({
+          id: `subagent-${"a".repeat(64)}`,
+          agent: "worker",
+          model: "terraform-luna",
+          thinking: "high",
+          tokens: 34_477,
+          cost: 0.004893924,
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const text = viewText(harness);
+  assert.equal(text.includes("Primary session"), true);
+  assert.equal(text.includes("alpha · 2 generations"), true);
+  assert.equal(text.includes("1,200 tokens"), true);
+  assert.equal(text.includes("$0.24"), true);
+  // The child's own model, tokens, and cost are its own row's figures.
+  assert.equal(text.includes("terraform-luna · high"), true);
+  assert.equal(text.includes("34,477 tokens"), true);
+  assert.equal(text.includes("$0.0049"), true);
+  assert.equal(/\$0\.00(?!\d)/.test(text), false);
+});
+
+test("several session models are listed, never reduced to one primary model", async () => {
+  const snapshot = treeSnapshot([
+    agentRow({ id: `subagent-${"b".repeat(64)}`, agent: "worker" }),
+  ]);
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  range.models = [
+    {
+      provider: "acme",
+      model: "alpha",
+      generations: 287,
+      totalTokens: 1000,
+      cost: 0.2,
+    },
+    {
+      provider: "acme",
+      model: "luna",
+      generations: 15,
+      totalTokens: 200,
+      cost: 0.04,
+    },
+  ];
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const text = viewText(harness);
+  assert.equal(text.includes("2 models used"), true);
+  const models = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.textContent === "Models");
+  if (models === undefined) throw new Error("the models detail must exist");
+  assert.equal(models.attributes["aria-expanded"], "false");
+  // The detail names each model's own generations; neither is called primary.
+  assert.equal(text.includes("alpha · 287 generations"), false);
+  harness.click(models);
+  const expanded = viewText(harness);
+  assert.equal(expanded.includes("alpha · 287 generations"), true);
+  assert.equal(expanded.includes("luna · 15 generations"), true);
+  // The root stays the session's own root: no model is promoted to its label.
+  assert.equal(expanded.includes("Primary session"), true);
+  assert.equal(expanded.includes("2 models used"), true);
+});
+
+test("search keeps the ancestors a matching child needs, and marks them as context", async () => {
+  const parentId = `subagent-${"c".repeat(64)}`;
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: parentId, agent: "reviewer", model: "deepseek" }),
+        agentRow({
+          id: `subagent-${"d".repeat(64)}`,
+          agent: "scout",
+          parentId,
+          parent: "in-range",
+          model: "terraform-luna",
+        }),
+        agentRow({ id: `subagent-${"e".repeat(64)}`, agent: "worker" }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const search = harness.element("search");
+  search.value = "scout";
+  harness.input(search);
+  const text = viewText(harness);
+  assert.equal(text.includes("reviewer"), true);
+  assert.equal(text.includes("scout"), true);
+  assert.equal(text.includes("worker"), false);
+  assert.equal(text.includes("context"), true);
+  assert.equal(text.includes("1 of 3 runs match"), true);
+});
+
+test("a status and a model filter keep the same ancestor context", async () => {
+  const parentId = `subagent-${"1a".repeat(32)}`;
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: parentId, agent: "reviewer", model: "deepseek" }),
+        agentRow({
+          id: `subagent-${"1b".repeat(32)}`,
+          agent: "scout",
+          parentId,
+          parent: "in-range",
+          model: "terraform-luna",
+          status: "failed",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const model = harness.element("agent-model");
+  model.value = "terraform-luna";
+  harness.change(model);
+  assert.equal(viewText(harness).includes("reviewer"), true);
+  assert.equal(viewText(harness).includes("1 of 2 runs match"), true);
+
+  const status = harness.element("agent-status");
+  status.value = "succeeded";
+  harness.change(status);
+  const text = viewText(harness);
+  assert.equal(text.includes("0 of 2 runs match"), true);
+  assert.equal(text.includes("No run matches"), true);
+
+  const all = harness.element("agent-status");
+  all.value = "";
+  harness.change(all);
+  assert.equal(viewText(harness).includes("scout"), true);
+});
+
+test("an unavailable child model and partial child usage stay stated, never blank", async () => {
+  const parentId = `subagent-${"1c".repeat(32)}`;
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: parentId, agent: "reviewer" }),
+        agentRow({
+          id: `subagent-${"1d".repeat(32)}`,
+          agent: "scout",
+          parentId,
+          parent: "in-range",
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const text = viewText(harness);
+  assert.equal(text.includes("Unavailable"), true);
+  assert.equal(text.includes("usage Unavailable"), true);
+  // The coverage fraction is L2's own figure and is never implied complete.
+  assert.equal(text.includes("0 of 2 runs reported usage"), true);
+});
+
+test("a nested agent is revealed by its route, even in a collapsed forest", async () => {
+  const rows: UiAgentRow[] = [];
+  for (let index = 0; index < 60; index += 1) {
+    rows.push(agentRow({ id: `root-${index}`, agent: `root-${index}` }));
+    rows.push(
+      agentRow({
+        id: `child-${index}`,
+        agent: `child-${index}`,
+        parentId: `root-${index}`,
+        parent: "in-range",
+      }),
+    );
+  }
+  // One deep target, three levels down a branch of its own.
+  rows.push(agentRow({ id: "deep-root", agent: "deep-root" }));
+  rows.push(
+    agentRow({
+      id: "deep-mid",
+      agent: "deep-mid",
+      parentId: "deep-root",
+      parent: "in-range",
+    }),
+  );
+  rows.push(
+    agentRow({
+      id: "deep-target",
+      agent: "deep-target",
+      parentId: "deep-mid",
+      parent: "in-range",
+    }),
+  );
+  const started = process.hrtime.bigint();
+  const harness = createWebClient({
+    responses: [treeSnapshot(rows)],
+    hash: "#/current/llm?scope=tree&preset=7&entity=agent%3Adeep-target",
+  });
+  await harness.start();
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  // 123 runs, progressively disclosed: the ancestors of the focused run are
+  // expanded, and nothing else is.
+  assert.equal(treeRows(harness).includes("deep-target"), true);
+  assert.equal(harness.activeElement()?.dataset.entity, "agent:deep-target");
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    1,
+  );
+  const rendered = treeRows(harness).filter((row) => row !== "").length;
+  assert.equal(rendered <= 130, true, `rendered ${rendered} rows`);
+  assert.equal(elapsedMs < 5000, true, `${elapsedMs}ms`);
+});
+
+test("focusing an agent never pins the view, and Back restores what it showed", async () => {
+  const parentId = `subagent-${"2a".repeat(32)}`;
+  const childId = `subagent-${"2b".repeat(32)}`;
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({ id: parentId, agent: "reviewer" }),
+        agentRow({
+          id: childId,
+          agent: "scout",
+          parentId,
+          parent: "in-range",
+        }),
+      ]),
+    ],
+    hash: `#/current/llm?scope=tree&preset=7&entity=agent%3A${childId}`,
+  });
+  await harness.start();
+  assert.equal(harness.activeElement()?.dataset.entity, `agent:${childId}`);
+
+  // A focused entity keeps the reader free to change the view it is shown in.
+  harness.click(viewButton(harness, "table"));
+  assert.equal(
+    harness.location.hash,
+    `#/current/llm?scope=tree&view=table&preset=7&entity=agent%3A${childId}`,
+  );
+  assert.equal(
+    harness.element("view").querySelectorAll("table").length > 0,
+    true,
+  );
+  assert.equal(harness.activeElement()?.dataset.entity, `agent:${childId}`);
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    1,
+  );
+
+  // Back returns to the tree the reader came from, with the same focused row.
+  harness.location.hash = `#/current/llm?scope=tree&preset=7&entity=agent%3A${childId}`;
+  harness.popstate();
+  assert.equal(harness.element("view").querySelectorAll("ul").length > 0, true);
+  assert.equal(harness.activeElement()?.dataset.entity, `agent:${childId}`);
+});
+
+test("a zero cost is the only cost that renders as zero", async () => {
+  const harness = createWebClient({
+    responses: [
+      treeSnapshot([
+        agentRow({
+          id: `subagent-${"3a".repeat(32)}`,
+          agent: "worker",
+          tokens: 12,
+          cost: 0,
+        }),
+        agentRow({
+          id: `subagent-${"3b".repeat(32)}`,
+          agent: "reviewer",
+          tokens: 34_477,
+          cost: 0.004893924,
+        }),
+      ]),
+    ],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  assert.equal(/\$0\.00(?!\d)/.test(viewText(harness)), true);
+  assert.equal(viewText(harness).includes("$0.0049"), true);
+  // The same rule holds in the table view of the same rows.
+  harness.click(viewButton(harness, "table"));
+  assert.equal(/\$0\.00(?!\d)/.test(viewText(harness)), true);
+  assert.equal(viewText(harness).includes("$0.0049"), true);
+});
+
+test("the entry scope note explains a scope switch that changes nothing", async () => {
+  const snapshot = treeSnapshot([
+    agentRow({ id: `subagent-${"4a".repeat(32)}`, agent: "worker" }),
+  ]);
+  snapshot.current.sameReportProjection = true;
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  assert.equal(
+    harness.element("scope-sub").textContent,
+    createTranslator("en")("scope.sameReport"),
+  );
+});
+
+test("a run container and the session root are never rendered as agent rows", async () => {
+  const rows = [
+    agentRow({
+      id: `subagent-${"5a".repeat(32)}`,
+      agent: "reviewer",
+      parentId: CONTAINER_ID,
+      parent: "orchestration-run",
+    }),
+    agentRow({
+      id: `subagent-${"5b".repeat(32)}`,
+      agent: "worker",
+      parentId: CONTAINER_ID,
+      parent: "orchestration-run",
+    }),
+  ];
+  const snapshot = treeSnapshot(rows);
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  // Exactly the DTO's own runs carry an agent identity: the session root and the
+  // container add none, and nothing is added to the report the DTO carries.
+  const marks = harness
+    .element("view")
+    .querySelectorAll("span")
+    .filter((span) => (span.dataset.entity ?? "").startsWith("agent:"));
+  assert.deepEqual(
+    marks.map((span) => span.dataset.entity),
+    rows.map((row) => `agent:${row.id}`),
+  );
+  assert.equal(snapshot.current.tree.range?.agents.length, 2);
 });

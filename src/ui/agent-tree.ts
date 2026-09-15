@@ -216,7 +216,9 @@ export function buildAgentForest(runs: readonly UiAgentRow[]): UiAgentForest {
 /**
  * The forest narrowed to the runs a predicate accepts, with the ancestors those
  * runs need. A kept ancestor reports `context`, so a renderer can state that its
- * own row did not match instead of implying it did.
+ * own row did not match instead of implying it did, and every kept node's counts
+ * are recomputed over the subtree that survives: a summary must never print a
+ * figure over rows the reader cannot see.
  */
 export function filterAgentForest(
   forest: UiAgentForest,
@@ -236,7 +238,12 @@ export function filterAgentForest(
     if (!isMatch && children.length === 0) return null;
     if (isMatch) matched += 1;
     shown += 1;
-    return { ...node, children, state: isMatch ? "match" : "context" };
+    return {
+      ...node,
+      children,
+      state: isMatch ? "match" : "context",
+      ...summarize(children),
+    };
   };
 
   const entries: UiAgentTreeFilteredEntry[] = [];
@@ -248,7 +255,7 @@ export function filterAgentForest(
         if (kept !== null) children.push(kept);
       }
       if (children.length === 0) continue;
-      entries.push({ ...entry, children });
+      entries.push({ ...entry, children, ...summarize(children) });
       continue;
     }
     const kept = keepRun(entry);

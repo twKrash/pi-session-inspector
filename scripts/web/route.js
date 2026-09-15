@@ -3,12 +3,13 @@
  * serialized with the closed section, tab and entity vocabularies.
  *
  * Canonical parameter order — the order this serializer emits, so one route has
- * exactly one string: `scope, preset, from, to, session, entity, q, sort`.
- * `scope` is serialized for `current` routes only, a preset serializes alone, and
- * a custom range serializes only as a validated pair. Parsing is total: any
- * hash, including a malformed one, degrades to the section default and at most a
- * bounded notice code, and an id the payload does not already expose is dropped
- * rather than echoed.
+ * exactly one string: `scope, view, preset, from, to, session, entity, q, sort`.
+ * `scope` is serialized for `current` routes only, `view` only when it names the
+ * non-default Agents presentation, a preset serializes alone, and a custom range
+ * serializes only as a validated pair. Parsing is total: any hash, including a
+ * malformed one, degrades to the section default and at most a bounded notice
+ * code, and an id the payload does not already expose is dropped rather than
+ * echoed.
  *
  * This module owns the route grammar and the coercion that goes with it. It
  * resolves no range: the `range` member of the sibling `range.js` parses and
@@ -52,6 +53,14 @@
     "source",
   ];
   const DATE = /^\d{4}-\d{2}-\d{2}$/;
+  /**
+   * The one closed vocabulary of an Agents presentation, and the default it is
+   * absent from. Tree is the default because the execution topology is what the
+   * view is for; `table` is a reader's explicit choice, carried in the route so
+   * Back returns to the view that reader was looking at.
+   */
+  const AGENT_VIEWS = ["tree", "table"];
+  const DEFAULT_AGENT_VIEW = "tree";
 
   /** The range grammar, looked up at call time so load order cannot matter. */
   const rangeModule = () =>
@@ -77,6 +86,13 @@
     const pairs = [];
     if (section === "current") {
       pairs.push("scope=" + (source.scope === "tree" ? "tree" : "active"));
+    }
+    if (
+      section !== "global" &&
+      AGENT_VIEWS.indexOf(source.view) >= 0 &&
+      source.view !== DEFAULT_AGENT_VIEW
+    ) {
+      pairs.push("view=" + source.view);
     }
     const intent = source.range;
     if (intent !== undefined && intent !== null) {
@@ -259,6 +275,10 @@
     }
 
     const ids = Array.isArray(settings.knownIds) ? settings.knownIds : [];
+    const requestedView = params.get("view");
+    if (requestedView !== undefined && AGENT_VIEWS.indexOf(requestedView) >= 0) {
+      route.view = requestedView;
+    }
     const session = params.get("session");
     if (
       section === "history" &&
@@ -333,6 +353,8 @@
     sections: SECTIONS,
     tabs: TABS,
     entityKinds: ENTITY_KINDS,
+    agentViews: AGENT_VIEWS,
+    defaultAgentView: DEFAULT_AGENT_VIEW,
     serialize: serialize,
     key: key,
     rangeQuery: rangeQueryOf,

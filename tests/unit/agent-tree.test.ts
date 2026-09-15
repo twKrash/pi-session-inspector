@@ -344,6 +344,55 @@ test("a container survives a filter only through a matching child", () => {
   assert.equal(view.context, 0);
 });
 
+test("a filtered node's counts describe the subtree that is rendered", () => {
+  const forest = buildAgentForest([
+    run({ id: "reviewer", agent: "reviewer" }),
+    run({
+      id: "match",
+      agent: "scout",
+      parentId: "reviewer",
+      parent: "in-range",
+      model: "terra",
+      tokens: 10,
+      cost: 0.01,
+    }),
+    run({
+      id: "failed",
+      agent: "worker",
+      parentId: "reviewer",
+      parent: "in-range",
+      status: "failed",
+    }),
+    run({
+      id: "unknown-usage",
+      agent: "writer",
+      parentId: "reviewer",
+      parent: "in-range",
+      model: "deepseek",
+    }),
+  ]);
+  const whole = forest.entries[0];
+  if (whole === undefined || whole.kind !== "run") {
+    throw new Error("reviewer must be the one top-level entry");
+  }
+  assert.equal(whole.descendants, 3);
+  assert.equal(whole.failed, 1);
+  assert.equal(whole.withoutUsage, 2);
+
+  // Under a filter the summary counts what the reader can actually see: a count
+  // of hidden rows would be a figure printed over rows the tree does not hold.
+  const view = filterAgentForest(forest, (row) => row.model === "terra");
+  const shown = view.entries[0];
+  if (shown === undefined || shown.kind !== "run") {
+    throw new Error("the kept ancestor must stay a run entry");
+  }
+  assert.equal(shown.state, "context");
+  assert.equal(shown.descendants, 1);
+  assert.equal(shown.failed, 0);
+  assert.equal(shown.withoutUsage, 0);
+  assert.equal(view.total, 4);
+});
+
 test("a hundred-odd runs build and filter once, without quadratic work", () => {
   const rows: UiAgentRow[] = [];
   for (let index = 0; index < 150; index += 1) {

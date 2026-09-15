@@ -45,8 +45,8 @@
   if (format === undefined || typeof format.cost !== "function") {
     throw new Error("browser format module must initialize first");
   }
-  const agentTree = web.agentTree;
-  if (agentTree === undefined || typeof agentTree.build !== "function") {
+  const executions = web.agentTree;
+  if (executions === undefined || typeof executions.build !== "function") {
     throw new Error("browser agent-tree module must initialize first");
   }
   // -------------------------------------------------------------------------
@@ -364,6 +364,11 @@
           ? state.range
           : undefined;
     if (intent !== undefined && intent !== null) next.range = intent;
+    // The Agents presentation is the reader's choice of view, so it travels with
+    // every destination the same way the entry scope does. An explicit null
+    // clears it back to the default rather than carrying it.
+    const agentsView = patch.view !== undefined ? patch.view : state.view;
+    if (agentsView !== undefined && agentsView !== null) next.view = agentsView;
     const entity =
       patch.entity !== undefined
         ? patch.entity
@@ -522,12 +527,13 @@
   // Rendering primitives
   // -------------------------------------------------------------------------
 
-  const card = (title, note) => {
+  const card = (title, note, control) => {
     const section = el("section", "card");
     const head = el("div", "panel-head");
     const copy = el("div");
     copy.append(el("h2", "", title), el("p", "", note));
     head.append(copy);
+    if (control !== undefined && control !== null) head.append(control);
     section.append(head);
     return section;
   };
@@ -576,6 +582,17 @@
     return text(cell);
   };
 
+  /**
+   * A cell's content: a real node when the caller built one, else its text. One
+   * rule for both the tables and the execution tree, so a value that is a link
+   * in a table is a link in the tree.
+   */
+  const appendCell = (parent, content) => {
+    if (isNode(content) && content.tagName !== undefined) parent.append(content);
+    else parent.textContent = text(content);
+    return parent;
+  };
+
   /** One opaque id's copy control: a real button, labelled with the id it copies. */
   const copyControl = (fullId) => {
     const button = el("button", "copy-id", COPY["table.copyId"]);
@@ -609,11 +626,7 @@
           isNode(value) &&
           typeof value.fullId === "string";
         const content = opaque ? value.content : value;
-        if (isNode(content) && content.tagName !== undefined) {
-          cell.append(content);
-        } else {
-          cell.textContent = text(content);
-        }
+        appendCell(cell, content);
         if (className === "id-cell") {
           const fullId = opaque ? text(value.fullId) : cellText(content);
           cell.setAttribute("data-full-id", fullId);
@@ -667,8 +680,8 @@
    * itself calls unreportable, always with its control, its counts and a way
    * back.
    */
-  const table = (title, note, headers, rows, classes, filter) => {
-    const section = card(title, note);
+  const table = (title, note, headers, rows, classes, filter, control) => {
+    const section = card(title, note, control);
     const toolbar = el("div", "toolbar");
     const searchLabel = el("label", "", COPY.search);
     const search = document.createElement("input");
@@ -1497,6 +1510,519 @@
     return byId;
   };
 
+  // -------------------------------------------------------------------------
+  // The Agents execution view
+  // -------------------------------------------------------------------------
+
+  /**
+   * The session root is the tree's one grouping node that is not an agent run
+   * and not a run container: it is where the execution hierarchy begins, and it
+   * exists in this renderer alone.
+   */
+  const SESSION_ROOT_KEY = "session";
+  /**
+   * Past this many runs the tree opens shallow and discloses on demand. A
+   * four-agent session is never aggressively collapsed; a hundred-run selection
+   * renders its top level and nothing else until the reader asks.
+   */
+  const DEEP_FOREST = 50;
+  /** The model filter's value for the runs that published no model at all. */
+  const NO_MODEL_FILTER = "__none__";
+
+  /**
+   * The presentation in effect. The tree is the route grammar's own default, so
+   * a route that names no view renders it; only an explicit table leaves it.
+   */
+  const agentsInTree = () =>
+    state.view === undefined || state.view === route.defaultAgentView;
+
+  /** The Agents panel's Tree | Table switch: a real route, never a setting. */
+  const agentsViewControl = () => {
+    const group = el("div", "segments");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", COPY["agents.view.label"]);
+    route.agentViews.forEach((view) => {
+      const button = el("button", "", COPY["agents.view." + view]);
+      button.dataset.agentsView = view;
+      button.setAttribute(
+        "aria-pressed",
+        String((view === route.defaultAgentView) === agentsInTree()),
+      );
+      group.append(button);
+    });
+    return group;
+  };
+
+  /**
+   * The collapsed nodes of this view. Disclosure is this document's own state,
+   * never a route and never a persisted setting, so a query string never grows a
+   * node list and Back never replays a reader's expanding.
+   */
+  const collapsedNodes = () => {
+    const collapsed = activeSettings().collapsed;
+    return isNode(collapsed) ? collapsed : {};
+  };
+
+  const setCollapsed = (key, collapsed) => {
+    const collapsedMap = assign(collapsedNodes(), {});
+    if (collapsed) collapsedMap[key] = true;
+    else delete collapsedMap[key];
+    const key0 = settingsKey();
+    const settings = viewSettings[key0] === undefined ? {} : viewSettings[key0];
+    settings.collapsed = collapsedMap;
+    viewSettings[key0] = settings;
+  };
+
+  /** One bounded select value of this view, or `""` for no filter. */
+  const selectedOption = (name) => {
+    const value = activeSettings()[name];
+    return typeof value === "string" ? value : "";
+  };
+
+  /**
+   * The status and model filters, as one predicate over the rows the DTO
+   * published. They narrow which runs the view shows; they never rewrite a row,
+   * and a filtered-out ancestor is kept by the projection as context instead of
+   * being detached from the topology that gives a match its meaning.
+   */
+  const agentSelectionFilter = () => {
+    const status = selectedOption("agentStatus");
+    const model = selectedOption("agentModel");
+    return (run) => {
+      if (status !== "" && run.status !== status) return false;
+      if (model === "") return true;
+      if (model === NO_MODEL_FILTER) return run.model === null;
+      return run.model === model;
+    };
+  };
+
+  /** The search box's own predicate, over the fields a run row renders. */
+  const agentQueryFilter = () => {
+    const query = activeQuery().toLowerCase();
+    if (query === "") return () => true;
+    return (run) =>
+      [run.agent, run.status, run.model, run.thinking]
+        .filter((value) => typeof value === "string")
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+  };
+
+  /** One toggle: a real button that names the node it discloses. */
+  const treeToggle = (label, open, key) => {
+    const button = el("button", "tree-toggle");
+    button.dataset.treeToggle = key;
+    button.setAttribute("aria-expanded", String(open));
+    button.setAttribute(
+      "aria-label",
+      tr(open ? "agents.tree.collapse" : "agents.tree.expand", {
+        label: label,
+      }),
+    );
+    button.append(treeChevron());
+    return button;
+  };
+
+  /**
+   * The disclosure glyph: one inline SVG in the shipped icon style. It is
+   * decorative (the button carries the name and the state), and it rotates
+   * through a transform the stylesheet drops under reduced motion.
+   */
+  const treeChevron = () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M6 9l6 6 6-6");
+    svg.append(path);
+    return svg;
+  };
+
+  /** The spacer a leaf row keeps, so leaf and parent rows align. */
+  const treeSpacer = () => {
+    const spacer = el("span", "tree-toggle is-leaf");
+    spacer.setAttribute("aria-hidden", "true");
+    return spacer;
+  };
+
+  /**
+   * What a collapsed or expanded node states about what it holds: the rows a
+   * reader cannot see, and the failures those rows contain. The counts come from
+   * the projection, so a summary never counts a row the tree is not holding.
+   */
+  const treeCounts = (node, open) => {
+    const parts = [];
+    const hidden = node.descendants;
+    if (open) {
+      if (node.children.length > 0) {
+        parts.push(
+          tr("agents.tree.children", { count: number(node.children.length) }),
+        );
+      }
+    } else if (hidden > 0) {
+      parts.push(tr("agents.tree.descendants", { count: number(hidden) }));
+    }
+    if (node.failed > 0) {
+      parts.push(tr("agents.tree.failed", { count: number(node.failed) }));
+    }
+    if (node.interrupted > 0) {
+      parts.push(
+        tr("agents.tree.interrupted", { count: number(node.interrupted) }),
+      );
+    }
+    if (node.withoutUsage > 0) {
+      parts.push(
+        tr("agents.tree.withoutUsage", { count: number(node.withoutUsage) }),
+      );
+    }
+    return parts.join(" · ");
+  };
+
+  /**
+   * The keys on the path from the session root to one run, so a route that names
+   * a nested run opens exactly the branches holding it and nothing else.
+   */
+  const revealKeys = (entries, id) => {
+    if (id === null) return {};
+    const path = [];
+    const walk = (nodes) => {
+      for (const node of nodes) {
+        const key = node.kind === "container" ? node.key : node.run.id;
+        path.push(key);
+        if (node.kind === "run" && node.run.id === id) return true;
+        if (walk(node.children)) return true;
+        path.pop();
+      }
+      return false;
+    };
+    if (!walk(entries)) return {};
+    const reveal = { [SESSION_ROOT_KEY]: true };
+    path.forEach((key) => {
+      reveal[key] = true;
+    });
+    return reveal;
+  };
+
+  /** The run a route currently focuses, or null when it names no agent. */
+  const focusedRunId = () =>
+    state.entity !== undefined && state.entity.kind === "agent"
+      ? state.entity.id
+      : null;
+
+  /** A run row's own figures, each one a field the DTO published. */
+  const runMeta = (run) => {
+    const parts = [orUnavailable(run.model)];
+    if (run.thinking !== null) parts.push(run.thinking);
+    parts.push(
+      run.usage === null
+        ? COPY["agents.tree.usageUnavailable"]
+        : tr("agents.tree.tokens", { count: number(run.usage.totalTokens) }) +
+            " · " +
+            money(run.usage.cost),
+    );
+    if (run.artifacts !== null) {
+      parts.push(COPY["table.artifacts"] + ": " + run.artifacts);
+    }
+    return parts.join(" · ");
+  };
+
+  /**
+   * The session root's summary: the session's own native figures for the
+   * selected range, and how many models produced them. A range that resolves no
+   * day has no figures at all, so nothing is rendered as a zero, and more than
+   * one model is never reduced to one "primary" model.
+   */
+  const sessionSummary = (meta) => {
+    const datable = meta.resolved !== null && Number(meta.totals.days) > 0;
+    const models = meta.models;
+    if (!datable) return COPY["evidence.unavailable"];
+    const parts = [];
+    const single = meta.modelsTruncated !== true && models.length === 1;
+    if (single) {
+      parts.push(
+        models[0].model +
+          " · " +
+          tr("agents.tree.generations", {
+            count: number(models[0].generations),
+          }),
+      );
+    } else {
+      parts.push(
+        tr("agents.tree.generations", {
+          count: number(meta.totals.generations),
+        }),
+      );
+      parts.push(
+        models.length === 0
+          ? COPY["evidence.unavailable"]
+          : tr("agents.tree.modelsUsed", { count: number(models.length) }),
+      );
+    }
+    parts.push(
+      tr("agents.tree.tokens", { count: number(meta.totals.totalTokens) }),
+    );
+    parts.push(money(meta.totals.cost));
+    return parts.join(" · ");
+  };
+
+  /**
+   * The Models detail of the session root: one row per model the range published
+   * with that model's own generation count, and L2's truncation statement when
+   * the model list is not the whole picture.
+   */
+  const sessionModels = (meta) => {
+    const list = el("ul", "tree-models");
+    list.setAttribute("role", "list");
+    meta.models.forEach((model) => {
+      list.append(
+        el(
+          "li",
+          "tree-model",
+          model.model +
+            " · " +
+            tr("agents.tree.generations", { count: number(model.generations) }),
+        ),
+      );
+    });
+    if (meta.modelsTruncated === true) {
+      list.append(el("li", "tree-model muted", COPY["models.truncated"]));
+    }
+    return list;
+  };
+
+  /** The one tree row of a materialized run. */
+  const treeRunRow = (node, open, nested, rendered) => {
+    const run = node.run;
+    const row = el("div", "tree-row");
+    const label = orUnavailable(run.agent);
+    row.append(
+      node.children.length > 0
+        ? treeToggle(label, open, run.id)
+        : treeSpacer(),
+    );
+    const main = el("div", "tree-main");
+    const title = el("div", "tree-title");
+    title.append(entitySpan("agent", run.id, label));
+    title.append(
+      badgeCell(
+        COPY["agents." + run.status],
+        run.status === "failed" || run.status === "interrupted"
+          ? "warn"
+          : "neutral",
+      ),
+    );
+    // A row kept only because a descendant matched says so, so a reader never
+    // reads a context row as a result.
+    if (node.state === "context") {
+      title.append(badgeCell(COPY["agents.tree.context"], "neutral"));
+    }
+    const counts = treeCounts(node, open);
+    if (counts !== "") title.append(el("span", "tree-count", counts));
+    main.append(title);
+    main.append(el("div", "tree-meta mono", runMeta(run)));
+    // A row the tree does not nest still states the parent verdict L2 published
+    // for it: this renderer never re-decides one.
+    if (!nested) {
+      main.append(
+        appendCell(el("div", "tree-parent"), parentCell(run, rendered)),
+      );
+    }
+    row.append(main);
+    return row;
+  };
+
+  /** The one tree row of a run container: a group, and worded as one. */
+  const treeContainerRow = (node, open) => {
+    const row = el("div", "tree-row");
+    row.append(treeToggle(COPY["agents.tree.container"], open, node.key));
+    const main = el("div", "tree-main");
+    const title = el("div", "tree-title");
+    title.append(el("span", "tree-group", COPY["agents.tree.container"]));
+    const counts = treeCounts(node, open);
+    if (counts !== "") title.append(el("span", "tree-count", counts));
+    main.append(title);
+    main.append(el("div", "tree-meta", COPY["agents.tree.container.note"]));
+    row.append(main);
+    return row;
+  };
+
+  /** One tree item, and the nested list the node discloses when it is open. */
+  const treeItem = (node, context) => {
+    const key = node.kind === "container" ? node.key : node.run.id;
+    const open = context.open(key, node.children.length > 0);
+    const item = el(
+      "li",
+      "tree-node" + (node.kind === "container" ? " is-container" : ""),
+    );
+    const nested = node.kind === "container" ? false : context.nested;
+    if (node.kind === "container") {
+      item.append(treeContainerRow(node, open));
+    } else {
+      item.dataset.treeRow = node.run.id;
+      item.append(treeRunRow(node, open, nested, context.rendered));
+    }
+    if (open && node.children.length > 0) {
+      const children = el("ul", "tree-children");
+      children.setAttribute("role", "list");
+      node.children.forEach((child) =>
+        children.append(treeItem(child, assign(context, { nested: true }))),
+      );
+      item.append(children);
+    }
+    return item;
+  };
+
+  /** The session root: a label and the session's own figures, never a run row. */
+  const treeSessionItem = (meta, context) => {
+    const open = context.open(SESSION_ROOT_KEY, context.hasRuns);
+    const item = el("li", "tree-node is-session");
+    const row = el("div", "tree-row");
+    row.append(
+      context.hasRuns
+        ? treeToggle(COPY["agents.tree.session"], open, SESSION_ROOT_KEY)
+        : treeSpacer(),
+    );
+    const main = el("div", "tree-main");
+    const title = el("div", "tree-title");
+    title.append(el("span", "tree-session", COPY["agents.tree.session"]));
+    main.append(title);
+    main.append(el("div", "tree-meta mono", sessionSummary(meta)));
+    if (meta.models.length > 0) {
+      const modelsOpen = activeSettings().agentModels === true;
+      const detail = el("button", "tree-detail", COPY["agents.tree.models"]);
+      detail.dataset.treeModels = "toggle";
+      detail.setAttribute("aria-expanded", String(modelsOpen));
+      main.append(detail);
+      if (modelsOpen) main.append(sessionModels(meta));
+    }
+    row.append(main);
+    item.append(row);
+    if (open && context.children !== undefined) {
+      const children = el("ul", "tree-children");
+      children.setAttribute("role", "list");
+      context.children.forEach((child) => children.append(treeItem(child, context)));
+      item.append(children);
+    }
+    return item;
+  };
+
+  /**
+   * The execution tree of the selected runs: the session root, then the runs the
+   * DTO published, nested by the parent verdicts L2 decided. Filtering keeps the
+   * ancestors a match needs and states what is a result and what is context.
+   */
+  const agentsTreeSection = (target) => {
+    const meta = target.range;
+    const runs = meta.agents;
+    const query = activeQuery();
+    const filtering =
+      query !== "" ||
+      selectedOption("agentStatus") !== "" ||
+      selectedOption("agentModel") !== "";
+    const select = agentSelectionFilter();
+    const search = agentQueryFilter();
+    const view = executions.filter(executions.build(runs), (run) =>
+      select(run) && search(run),
+    );
+    const reveal = revealKeys(view.entries, focusedRunId());
+    const collapsed = collapsedNodes();
+    const deep = runs.length > DEEP_FOREST;
+    const open = (key, hasChildren) => {
+      if (!hasChildren) return false;
+      // A filter must not hide its own match behind a collapsed branch.
+      if (filtering) return true;
+      if (reveal[key] === true) return true;
+      if (collapsed[key] !== undefined) return collapsed[key] !== true;
+      return !deep;
+    };
+    const section = card(
+      COPY["tab.agents"],
+      COPY["agents.note"],
+      agentsViewControl(),
+    );
+    const toolbar = el("div", "toolbar");
+    const searchLabel = el("label", "", COPY["search"]);
+    const searchInput = document.createElement("input");
+    searchInput.id = "search";
+    searchInput.type = "search";
+    searchInput.value = query;
+    searchInput.placeholder = COPY["agents.tree.searchPlaceholder"];
+    searchLabel.append(searchInput);
+    const statusLabel = el("label", "", COPY["table.status"]);
+    const statusSelect = document.createElement("select");
+    statusSelect.id = "agent-status";
+    const statuses = ["succeeded", "failed", "interrupted", "running", "unknown"];
+    const anyStatus = el("option", "", COPY["agents.tree.filterAll"]);
+    anyStatus.value = "";
+    anyStatus.selected = selectedOption("agentStatus") === "";
+    statusSelect.append(anyStatus);
+    statuses.forEach((status) => {
+      const option = el("option", "", COPY["agents." + status]);
+      option.value = status;
+      option.selected = selectedOption("agentStatus") === status;
+      statusSelect.append(option);
+    });
+    statusLabel.append(statusSelect);
+    const modelLabel = el("label", "", COPY["table.model"]);
+    const modelSelect = document.createElement("select");
+    modelSelect.id = "agent-model";
+    const anyModel = el("option", "", COPY["agents.tree.filterAll"]);
+    anyModel.value = "";
+    anyModel.selected = selectedOption("agentModel") === "";
+    modelSelect.append(anyModel);
+    const models = [];
+    let withoutModel = false;
+    runs.forEach((run) => {
+      if (run.model === null) withoutModel = true;
+      else if (models.indexOf(run.model) < 0) models.push(run.model);
+    });
+    models.sort().forEach((model) => {
+      const option = el("option", "", model);
+      option.value = model;
+      option.selected = selectedOption("agentModel") === model;
+      modelSelect.append(option);
+    });
+    if (withoutModel) {
+      const option = el("option", "", COPY["evidence.unavailable"]);
+      option.value = NO_MODEL_FILTER;
+      option.selected = selectedOption("agentModel") === NO_MODEL_FILTER;
+      modelSelect.append(option);
+    }
+    modelLabel.append(modelSelect);
+    toolbar.append(statusLabel, modelLabel, searchLabel);
+    section.append(toolbar);
+    if (filtering) {
+      section.append(
+        el(
+          "p",
+          "tree-summary",
+          tr("agents.tree.filtered", {
+            matched: number(view.matched),
+            total: number(view.total),
+            context: number(view.context),
+          }),
+        ),
+      );
+    }
+    const tree = el("ul", "tree");
+    tree.setAttribute("role", "list");
+    tree.append(
+      treeSessionItem(meta, {
+        open: open,
+        hasRuns: view.entries.length > 0,
+        children: view.entries,
+        rendered: runsById(runs),
+        nested: false,
+      }),
+    );
+    section.append(tree);
+    if (view.entries.length === 0) {
+      section.append(el("p", "tree-empty", COPY["agents.tree.empty"]));
+    }
+    return section;
+  };
+
   const agentsNodes = (target) => {
     const meta = target.range;
     if (meta === undefined || meta.childUsage.runsTotal === 0) {
@@ -1551,6 +2077,9 @@
       );
     }
     const rendered = runsById(meta.agents);
+    if (agentsInTree()) {
+      return [metrics(cards), agentsTreeSection(target)];
+    }
     return [
       metrics(cards),
       table(
@@ -1565,7 +2094,9 @@
           COPY["table.artifacts"],
           COPY["table.parent"],
         ],
-        meta.agents.map((run) => ({
+        meta.agents
+          .filter(agentSelectionFilter())
+          .map((run) => ({
           cells: [
             entitySpan("agent", run.id, orUnavailable(run.agent)),
             badgeCell(
@@ -1594,6 +2125,8 @@
           "status-cell",
           "status-cell",
         ],
+        undefined,
+        agentsViewControl(),
       ),
     ];
   };
@@ -2227,11 +2760,20 @@
     if (fixed !== null) fixed.hidden = view.activeSection === "current";
     const note = q("scope-sub");
     if (note !== null) {
+      // The scope switch is inert when both views carry the same report data, so
+      // the DTO's own equality statement is what says so, instead of the switch
+      // appearing to do nothing.
+      const same =
+        snapshot !== null && snapshot.current.sameReportProjection === true;
       note.textContent =
         view.activeSection === "current"
-          ? COPY[
-              state.scope === "active" ? "scope.active.note" : "scope.tree.note"
-            ]
+          ? same
+            ? COPY["scope.sameReport"]
+            : COPY[
+                state.scope === "active"
+                  ? "scope.active.note"
+                  : "scope.tree.note"
+              ]
           : COPY["scope.fixed"];
     }
   };
@@ -2522,6 +3064,9 @@
         previous.section !== applied.section ||
         previous.tab !== applied.tab ||
         previous.session !== applied.session ||
+        // A presentation switch re-renders the same entity, so the focus effect
+        // has to run again to put the reader's row back in view.
+        previous.view !== applied.view ||
         !sameEntity(previous.entity, applied.entity),
       sectionChanged: previous.section !== applied.section,
     };
@@ -2637,6 +3182,25 @@
       setSetting(data.filter, activeSettings()[data.filter] === false);
       return;
     }
+    if (data.agentsView !== undefined) {
+      navigate(
+        routeFor({
+          view: data.agentsView === route.defaultAgentView ? null : data.agentsView,
+        }),
+      );
+      return;
+    }
+    if (data.treeToggle !== undefined) {
+      // A disclosure is this view's own state: it selects a presentation, never
+      // a route, so it pushes no history entry and writes no hash.
+      setCollapsed(data.treeToggle, collapsedNodes()[data.treeToggle] !== true);
+      render({});
+      return;
+    }
+    if (data.treeModels !== undefined) {
+      setSetting("agentModels", activeSettings().agentModels !== true);
+      return;
+    }
     if (data.retry !== undefined) {
       retry();
       return;
@@ -2703,6 +3267,13 @@
   const onDocumentChange = (event) => {
     const target = event.target;
     if (target === undefined || target === null) return;
+    if (target.id === "agent-status" || target.id === "agent-model") {
+      setSetting(
+        target.id === "agent-status" ? "agentStatus" : "agentModel",
+        target.value,
+      );
+      return;
+    }
     if (target.id === "sort") {
       navigate(
         withTable({ sort: target.value === "default" ? "" : target.value }),

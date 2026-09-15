@@ -190,6 +190,35 @@ export const ENGLISH_CATALOG = {
   "agents.knownCost": "Known child cost",
   "agents.knownFailedCost": "Known failed-run cost",
   "agents.usageFraction": "{withUsage} of {total} runs reported usage",
+  // The Agents execution view. One presentation owns two readings of the same
+  // runs: the tree is where the execution topology lives, and the table is the
+  // flat breakdown it always was. The session root and a run container are
+  // grouping nodes of this view alone: neither is an AgentRun, so neither is
+  // ever worded or shaped like one.
+  "agents.view.label": "Agents view",
+  "agents.view.tree": "Tree",
+  "agents.view.table": "Table",
+  "agents.tree.session": "Primary session",
+  "agents.tree.container": "Run container",
+  "agents.tree.container.note":
+    "A grouping of the runs this container published. The container is not an agent run, so it has no status, model, or usage of its own.",
+  "agents.tree.generations": "{count} generations",
+  "agents.tree.modelsUsed": "{count} models used",
+  "agents.tree.models": "Models",
+  "agents.tree.tokens": "{count} tokens",
+  "agents.tree.usageUnavailable": "usage Unavailable",
+  "agents.tree.children": "{count} children",
+  "agents.tree.descendants": "{count} descendants",
+  "agents.tree.failed": "{count} failed",
+  "agents.tree.interrupted": "{count} interrupted",
+  "agents.tree.withoutUsage": "{count} without usage",
+  "agents.tree.context": "context",
+  "agents.tree.filterAll": "All",
+  "agents.tree.filtered":
+    "{matched} of {total} runs match · {context} kept for context",
+  "agents.tree.empty": "No run matches the current filter.",
+  "agents.tree.expand": "Expand {label}",
+  "agents.tree.collapse": "Collapse {label}",
   "agents.parentNone": "Parent: none",
   "agents.parentOrchestrationRun": "Parent: orchestration run",
   "agents.parentOutsideScope": "Parent: outside selected scope",
@@ -296,6 +325,9 @@ export const ENGLISH_CATALOG = {
     "Pi-native usage is billing authority. Child usage is never added.",
   search: "Search rows",
   "search.placeholder": "Filter this table…",
+  // The tree filters the same rows, so it carries the same control in its own
+  // words rather than calling a tree a table.
+  "agents.tree.searchPlaceholder": "Filter these runs…",
   // The default-on availability filters. Each view states the predicate in its
   // own terms, so no view inherits another's meaning of available, and the
   // counts always say what is hidden and how many rows are shown.
