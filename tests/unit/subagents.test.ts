@@ -461,6 +461,12 @@ test("identifies two foreground children of one parallel run by index", () => {
   assert.match(complete?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(complete?.parentId, partial?.parentId);
   assert.notEqual(complete?.parentId, complete?.id);
+  // The publishing run container is a relationship, not a run: no synthetic
+  // AgentRun is materialized for the identity it names.
+  assert.equal(
+    evidence.runs.some((run) => run.id === complete?.parentId),
+    false,
+  );
   assert.equal(JSON.stringify(evidence).includes("PRIVATE_TASK"), false);
   assert.equal(JSON.stringify(evidence).includes("/home/dev/PRIVATE"), false);
 });
@@ -552,6 +558,10 @@ test("skips foreground result rows without a usable run id and index", () => {
   const [complete, partial] = evidence.runs;
   assert.notEqual(complete?.id, partial?.id);
   assert.equal(complete?.parentId, partial?.parentId);
+  assert.equal(
+    evidence.runs.some((run) => run.id === complete?.parentId),
+    false,
+  );
   assert.equal(complete?.agent, "worker");
   assert.deepEqual(complete?.usage, { totalTokens: 10, cost: 0.1 });
   assert.equal(partial?.agent, "other");
@@ -559,6 +569,56 @@ test("skips foreground result rows without a usable run id and index", () => {
   assert.equal(partial?.usage, undefined);
   assert.equal(JSON.stringify(evidence).includes("no-index"), false);
   assert.equal(JSON.stringify(evidence).includes("orphan"), false);
+});
+
+test("a malformed aggregate run id never becomes a parent identity", () => {
+  const entries = parseSessionJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s" }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-09-11T10:00:00Z",
+        message: {
+          role: "assistant",
+          provider: "p",
+          model: "m",
+          content: [{ type: "toolCall", id: "c1", name: "subagent" }],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-11T10:00:01Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "subagent",
+          isError: false,
+          content: [],
+          details: {
+            runId: "not a run id!",
+            results: [
+              { index: 0, agent: "container-only", exitCode: 0 },
+              { runId: "child-run-1", agent: "self-identified", exitCode: 0 },
+            ],
+          },
+        },
+      }),
+    ].join("\n"),
+  ).entries;
+
+  const evidence = readSubagentEvidence(entries);
+
+  // The row the unusable aggregate identity was the only identity for is
+  // skipped; the row with an identity of its own stays, with no parent.
+  assert.equal(evidence.runs.length, 1);
+  assert.equal(evidence.runs[0]?.agent, "self-identified");
+  assert.equal(evidence.runs[0]?.parentId, undefined);
+  assert.equal(JSON.stringify(evidence).includes("not a run id!"), false);
+  assert.equal(JSON.stringify(evidence).includes("container-only"), false);
 });
 
 test("counts a joined call id's tool-result usage exactly once", () => {

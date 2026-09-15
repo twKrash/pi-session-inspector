@@ -361,6 +361,13 @@ function collectRuns(
   const details = snapshotRecord(result.details);
   if (details === undefined) return;
   // Aggregate run id used to parent rows that carry no run id of their own.
+  // Producer semantics (pi-subagents `Details`, extension-api.md): this is the
+  // identity of the run container that published the result - a foreground
+  // fan-out run or a workflow run - whose children are its `(runId, index)`
+  // members. It is a real parent relationship, but the container is not itself
+  // an agent run and is never materialized as an AgentRun row, so the UI states
+  // that distinction (L2's `orchestration-run` verdict) rather than reporting a
+  // missing parent.
   const aggregateRunId = readRawRunId(details.runId);
   const aggregateParentId =
     aggregateRunId === undefined

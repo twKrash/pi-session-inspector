@@ -1264,6 +1264,71 @@ test("prints each inventory's published availability, never a row count", () => 
   assert.equal(html.includes("4,713"), true);
 });
 
+test("prints the known-but-unmaterialized parent as the orchestration run", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const view = base.projection.report;
+  const range = base.projection.range;
+  if (view === undefined || range === undefined) {
+    throw new Error("the fixture must carry a report and a range");
+  }
+  const run = range.agents[0];
+  if (run === undefined) throw new Error("the fixture must carry an agent row");
+  const containerId = `subagent-${"b".repeat(64)}`;
+  const html = renderSnapshot({
+    ...base,
+    projection: {
+      ...base.projection,
+      // The report carries no run for the parent identity: the child's parent is
+      // the publishing run container, so the cell states that fact instead of
+      // claiming an unavailable agent row.
+      report: { ...view, agents: [] },
+      range: {
+        ...range,
+        agents: [
+          {
+            ...run,
+            id: `subagent-${"c".repeat(64)}`,
+            parentId: containerId,
+            agent: "worker",
+            parent: "orchestration-run",
+          },
+          {
+            ...run,
+            id: `subagent-${"d".repeat(64)}`,
+            parentId: null,
+            agent: "rootless",
+            parent: "none",
+          },
+          {
+            ...run,
+            id: `subagent-${"e".repeat(64)}`,
+            parentId: "not-an-opaque-id",
+            agent: "malformed",
+            parent: "unknown",
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(
+    (
+      html.match(new RegExp(CATALOG["agents.parentOrchestrationRun"], "g")) ??
+      []
+    ).length,
+    1,
+  );
+  assert.equal(
+    (html.match(new RegExp(CATALOG["agents.parentNone"], "g")) ?? []).length,
+    1,
+  );
+  assert.equal(
+    (html.match(new RegExp(CATALOG["agents.parentUnknown"], "g")) ?? []).length,
+    1,
+  );
+});
+
 test("restores the skip link as the one same-document anchor", () => {
   const html = renderSnapshot(currentDto());
 

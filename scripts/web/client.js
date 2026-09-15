@@ -1590,9 +1590,11 @@
    * an in-range parent is a real entity link to the run that carries its id.
    */
   const parentCell = (run, rendered) => {
-    if (run.parent === "none") return COPY["evidence.unavailable"];
+    if (run.parent === "none") return COPY["agents.parentNone"];
     if (run.parent === "outside-range")
       return COPY["agents.parentOutsideScope"];
+    if (run.parent === "orchestration-run")
+      return COPY["agents.parentOrchestrationRun"];
     if (run.parent === "unknown") return COPY["agents.parentUnknown"];
     const parent = rendered[run.parentId];
     return entityLink(

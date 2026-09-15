@@ -115,11 +115,34 @@ export type UiToolSummaryRow = ToolSummaryRow & {
 };
 
 /**
- * One rendered run's parent membership verdict: `in-range` when the selected
- * rows carry the parent, `outside-range` when only the full report knows the
- * id, and `unknown` when nothing does. `none` is a run with no parent id.
+ * One rendered run's parent verdict. `none` is a run the report carries no
+ * parent identity for; `in-range`/`outside-range` answer whether the selected
+ * rows carry the parent AgentRun. `orchestration-run` is a valid parent
+ * identity with no materialized AgentRun anywhere in the report: the subagent
+ * adapter parents a child row on the id of the run that published it (the
+ * producer's `details.runId`, which pi-subagents documents as the run identity
+ * paired with `results[].index`), and that run container is never itself an
+ * agent row. It is a real relationship to the orchestration/fan-out run, never
+ * the same fact as a missing identity. `unknown` is L2's own boundary guard for
+ * a value that is not an Inspector-owned opaque identity: canonical projection
+ * already drops an unusable producer value, so a malformed producer parent
+ * surfaces as `none` in practice. Bounded ceiling: if the report's agent rows
+ * were capped, a dropped parent row can make this verdict name a container
+ * where an uncapped report would have linked the run.
  */
-export type UiAgentParent = "none" | "in-range" | "outside-range" | "unknown";
+export type UiAgentParent =
+  | "none"
+  | "in-range"
+  | "outside-range"
+  | "orchestration-run"
+  | "unknown";
+
+/**
+ * The opaque run identity the adapter publishes (see `core/opaque-id.ts`); L2
+ * re-checks it so an input it did not project (a stored or foreign DTO) can
+ * never be reported as a known parent.
+ */
+const OPAQUE_SUBAGENT_ID = /^subagent-[a-f0-9]{64}$/;
 
 /** One range-filtered run plus L2's own verdict for its parent. */
 export type UiAgentRow = AgentRow & { parent: UiAgentParent };
@@ -799,9 +822,11 @@ function childUsageBreakdown(runs: readonly AgentRow[]): UiChildUsage {
 /**
  * Each rendered run's parent verdict, decided here and never in a renderer: a
  * parent the selected rows carry is `in-range`, one only the full report knows
- * is `outside-range`, and an id nothing knows is `unknown`.
+ * is `outside-range`, one only the run container published is
+ * `orchestration-run`, and a value that is not an Inspector-owned identity is
+ * `unknown`.
  */
-function agentParentVerdicts(
+export function agentParentVerdicts(
   all: readonly AgentRow[],
   selected: readonly AgentRow[],
 ): UiAgentRow[] {
@@ -812,11 +837,13 @@ function agentParentVerdicts(
     parent:
       run.parentId === null
         ? "none"
-        : rendered.has(run.parentId)
-          ? "in-range"
-          : known.has(run.parentId)
-            ? "outside-range"
-            : "unknown",
+        : !OPAQUE_SUBAGENT_ID.test(run.parentId)
+          ? "unknown"
+          : rendered.has(run.parentId)
+            ? "in-range"
+            : known.has(run.parentId)
+              ? "outside-range"
+              : "orchestration-run",
   }));
 }
 

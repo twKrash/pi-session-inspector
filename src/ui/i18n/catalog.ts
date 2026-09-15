@@ -190,6 +190,8 @@ export const ENGLISH_CATALOG = {
   "agents.knownCost": "Known child cost",
   "agents.knownFailedCost": "Known failed-run cost",
   "agents.usageFraction": "{withUsage} of {total} runs reported usage",
+  "agents.parentNone": "Parent: none",
+  "agents.parentOrchestrationRun": "Parent: orchestration run",
   "agents.parentOutsideScope": "Parent: outside selected scope",
   "agents.parentUnknown": "Parent: Unavailable",
   // A run without an observed time cannot be placed in any range, so an empty

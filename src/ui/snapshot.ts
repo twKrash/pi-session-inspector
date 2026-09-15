@@ -1162,9 +1162,12 @@ function childUsageSummary(childUsage: UiChildUsage): string {
  * never re-derived from the rows here.
  */
 function parentLabel(run: UiAgentRow, runs: readonly UiAgentRow[]): string {
-  if (run.parent === "none") return t("evidence.unavailable");
+  if (run.parent === "none") return t("agents.parentNone");
   if (run.parent === "outside-range") {
     return t("agents.parentOutsideScope");
+  }
+  if (run.parent === "orchestration-run") {
+    return t("agents.parentOrchestrationRun");
   }
   if (run.parent === "unknown") {
     return t("agents.parentUnknown");

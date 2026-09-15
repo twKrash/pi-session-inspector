@@ -2,6 +2,21 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A subagent child whose parent identity is the publishing run container no
+  longer renders `Parent: Unavailable`. pi-subagents identifies a child as a
+  member of the run that produced it (`details.runId` with `results[].index`),
+  and that container is never itself an agent row, so the parent cell now
+  states the known relationship (`Parent: orchestration run`) instead of
+  claiming the identity is missing. The distinct verdicts stay distinct: no
+  parent identity, an in-range parent link, a parent outside the selected
+  range, and a value that is not an Inspector-owned identity. A range selection
+  still cannot change which parent a row has; it only decides whether that
+  parent is in the selected rows.
+
 ## [0.12.0]
 
 **Browser UI plus one additive command target (`json session <sessionId>`), a

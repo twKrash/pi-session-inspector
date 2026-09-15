@@ -8,6 +8,8 @@ import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
   projectInspectorUi,
   type InspectorUiSnapshot,
+  type UiAgentParent,
+  type UiAgentRow,
 } from "../../src/ui/ui-projection.ts";
 import { createTranslator } from "../../src/ui/i18n.ts";
 import { WEB_ASSETS } from "../../src/ui/web-assets.ts";
@@ -1854,6 +1856,198 @@ test("a row link is a real route that keeps the context and focuses its row", as
   assert.equal(
     harness.activeElement()?.className.includes("entity-focus"),
     true,
+  );
+});
+
+test("an in-range parent link navigates, and back and forward restore its focus", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const parentId = `subagent-${"b".repeat(64)}`;
+  const childId = `subagent-${"c".repeat(64)}`;
+  const agentRow = (input: {
+    id: string;
+    parentId: string | null;
+    agent: string;
+    parent: UiAgentParent;
+  }): UiAgentRow => ({
+    id: input.id,
+    parentId: input.parentId,
+    agent: input.agent,
+    status: "succeeded",
+    confidence: "native",
+    artifacts: null,
+    observedAt: null,
+    evidenceToolId: null,
+    model: null,
+    thinking: null,
+    failure: null,
+    usage: null,
+    parent: input.parent,
+  });
+  range.agents = [
+    agentRow({
+      id: parentId,
+      parentId: null,
+      agent: "orchestrator",
+      parent: "none",
+    }),
+    agentRow({ id: childId, parentId, agent: "worker", parent: "in-range" }),
+  ];
+  range.childUsage = {
+    runsTotal: 2,
+    runsWithUsage: 0,
+    totalTokens: null,
+    cost: null,
+    failedCost: null,
+    failedRunsWithUsage: 0,
+    byStatus: {
+      succeeded: 2,
+      failed: 0,
+      interrupted: 0,
+      running: 0,
+      unknown: 0,
+    },
+  };
+
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree",
+  });
+  await harness.start();
+  const link = harness
+    .element("view")
+    .querySelectorAll("a")
+    .find((anchor) => anchor.dataset.entity === `agent:${parentId}`);
+  assert.notEqual(link, undefined);
+  const parentLink = link as StubElement;
+  assert.equal(parentLink.textContent, "orchestrator");
+  assert.equal(
+    parentLink.attributes.href,
+    `#/current/llm?scope=tree&entity=agent%3A${parentId}`,
+  );
+
+  // Following it stays in the same view and focuses the parent's own row.
+  harness.click(parentLink);
+  assert.equal(harness.location.hash, parentLink.attributes.href);
+  assert.equal(harness.fetches().length, 1);
+  assert.equal(harness.activeElement()?.dataset.entity, `agent:${parentId}`);
+  assert.equal(
+    harness.activeElement()?.className.includes("entity-focus"),
+    true,
+  );
+
+  // Back: the entity leaves the route, so the focus effect is not applied and
+  // the replaced subtree leaves nothing pinned or filtered.
+  harness.location.hash = "#/current/llm?scope=tree";
+  harness.popstate();
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    0,
+  );
+  assert.equal(harness.activeElement()?.dataset.entity, undefined);
+  assert.equal(harness.fetches().length, 1);
+
+  // Forward: the same route focuses the same row again.
+  harness.location.hash = `#/current/llm?scope=tree&entity=agent%3A${parentId}`;
+  harness.hashchange();
+  assert.equal(harness.activeElement()?.dataset.entity, `agent:${parentId}`);
+  assert.equal(
+    harness.element("view").querySelectorAll(".entity-focus").length,
+    1,
+  );
+});
+
+test("a known parent with no materialized row never renders as Unavailable", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const containerId = `subagent-${"b".repeat(64)}`;
+  const childId = `subagent-${"c".repeat(64)}`;
+  const rootlessId = `subagent-${"d".repeat(64)}`;
+  const malformedId = `subagent-${"e".repeat(64)}`;
+  const agentRow = (input: {
+    id: string;
+    parentId: string | null;
+    agent: string;
+    parent: UiAgentParent;
+  }): UiAgentRow => ({
+    id: input.id,
+    parentId: input.parentId,
+    agent: input.agent,
+    status: "succeeded",
+    confidence: "native",
+    artifacts: null,
+    observedAt: null,
+    evidenceToolId: null,
+    model: null,
+    thinking: null,
+    failure: null,
+    usage: null,
+    parent: input.parent,
+  });
+  range.agents = [
+    agentRow({
+      id: childId,
+      parentId: containerId,
+      agent: "worker",
+      parent: "orchestration-run",
+    }),
+    agentRow({
+      id: rootlessId,
+      parentId: null,
+      agent: "rootless",
+      parent: "none",
+    }),
+    agentRow({
+      id: malformedId,
+      parentId: "not-an-opaque-id",
+      agent: "malformed",
+      parent: "unknown",
+    }),
+  ];
+  range.childUsage = {
+    runsTotal: 3,
+    runsWithUsage: 0,
+    totalTokens: null,
+    cost: null,
+    failedCost: null,
+    failedRunsWithUsage: 0,
+    byStatus: {
+      succeeded: 3,
+      failed: 0,
+      interrupted: 0,
+      running: 0,
+      unknown: 0,
+    },
+  };
+
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree",
+  });
+  await harness.start();
+  const view = harness.element("view");
+  const parentCell = (id: string): StubElement => {
+    const mark = view
+      .querySelectorAll("span")
+      .find((element) => element.dataset.entity === `agent:${id}`);
+    const row = mark?.closest("tr") ?? null;
+    if (row === null) throw new Error(`no row for ${id}`);
+    const cell = row.children[row.children.length - 1];
+    if (cell === undefined) throw new Error(`no parent cell for ${id}`);
+    return cell;
+  };
+  // The known-but-unmaterialized parent states the run container, never the
+  // Unavailable wording and never a link to a row that does not exist.
+  assert.equal(parentCell(childId).textContent, "Parent: orchestration run");
+  assert.equal(parentCell(rootlessId).textContent, "Parent: none");
+  assert.equal(parentCell(malformedId).textContent, "Parent: Unavailable");
+  assert.equal(
+    view
+      .querySelectorAll("a")
+      .some((anchor) => anchor.dataset.entity === `agent:${containerId}`),
+    false,
   );
 });
 

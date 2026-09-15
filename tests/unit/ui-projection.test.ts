@@ -10,7 +10,8 @@ import {
 import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../../src/core/reports.ts";
 import type { SessionCoverage } from "../../src/core/session-coverage.ts";
-import type { AgentRun } from "../../src/core/events.ts";
+import type { AgentRun, SessionEntry } from "../../src/core/events.ts";
+import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
   loadInspectorBundle,
@@ -27,6 +28,7 @@ import {
 import { buildDailyRows } from "../../src/ui/daily.ts";
 import type { GlobalReport, HistoryReport } from "../../src/ui/load-history.ts";
 import {
+  agentParentVerdicts,
   projectCurrentView,
   projectGlobalReport,
   projectHistoricalSession,
@@ -43,6 +45,7 @@ import {
   toolCalls,
   toolDuration,
   toolSummary,
+  type AgentRow,
 } from "../../src/ui/report-projection.ts";
 import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import {
@@ -1276,9 +1279,9 @@ test("the projection modules reach no loader, filesystem, or browser state", () 
 
 test("each rendered run carries L2's own parent verdict", () => {
   const parentId = `subagent-${"b".repeat(64)}`;
-  const orphanId = `subagent-${"c".repeat(64)}`;
+  const containerId = `subagent-${"c".repeat(64)}`;
   const childId = `subagent-${"d".repeat(64)}`;
-  const orphanChildId = `subagent-${"e".repeat(64)}`;
+  const containerChildId = `subagent-${"e".repeat(64)}`;
   const rootlessId = `subagent-${"f".repeat(64)}`;
   const report = toSessionReport(
     reduceEntries("session-parent-verdict", [
@@ -1316,9 +1319,9 @@ test("each rendered run carries L2's own parent verdict", () => {
             observedAt: "2026-03-10T10:00:00.000Z",
           },
           {
-            id: orphanChildId,
-            parentId: orphanId,
-            agent: "orphan-child",
+            id: containerChildId,
+            parentId: containerId,
+            agent: "container-child",
             status: "succeeded",
             confidence: "cooperative",
             observedAt: "2026-03-10T10:00:00.000Z",
@@ -1357,7 +1360,9 @@ test("each rendered run carries L2's own parent verdict", () => {
     selected.range?.agents.map((row) => [row.id, row.parent]),
     [
       [childId, "outside-range"],
-      [orphanChildId, "unknown"],
+      // A valid parent identity nothing materialized is the publisher's own run
+      // container, never the same fact as a missing identity.
+      [containerChildId, "orchestration-run"],
       [rootlessId, "none"],
     ],
   );
@@ -1373,9 +1378,236 @@ test("each rendered run carries L2's own parent verdict", () => {
     [
       [parentId, "none"],
       [childId, "in-range"],
-      [orphanChildId, "unknown"],
+      [containerChildId, "orchestration-run"],
       [rootlessId, "none"],
     ],
+  );
+});
+
+/**
+ * The parent ladder, read directly so every rung is observable: no identity,
+ * an identity the selection carries, one only the report carries, one that is
+ * the producer's run container, and one that is not an opaque identity at all.
+ */
+test("the parent verdict ladder keeps every identity state distinct", () => {
+  const materializedId = `subagent-${"b".repeat(64)}`;
+  const containerId = `subagent-${"c".repeat(64)}`;
+  const row = (id: string, parentId: string | null): AgentRow => ({
+    id,
+    parentId,
+    agent: null,
+    status: "succeeded",
+    confidence: "cooperative",
+    artifacts: null,
+    observedAt: null,
+    evidenceToolId: null,
+    model: null,
+    thinking: null,
+    failure: null,
+    usage: null,
+  });
+  const parent = row(materializedId, null);
+  const inRange = row(`subagent-${"d".repeat(64)}`, materializedId);
+  const sibling = row(`subagent-${"e".repeat(64)}`, materializedId);
+  const containerChild = row(`subagent-${"f".repeat(64)}`, containerId);
+  const rootless = row(`subagent-${"1".repeat(64)}`, null);
+  const malformed = row(`subagent-${"2".repeat(64)}`, "not-an-opaque-id");
+
+  const all = [parent, inRange, sibling, containerChild, rootless];
+  assert.deepEqual(
+    agentParentVerdicts(all, all).map((run) => [run.id, run.parent]),
+    [
+      [parent.id, "none"],
+      [inRange.id, "in-range"],
+      [sibling.id, "in-range"],
+      [containerChild.id, "orchestration-run"],
+      [rootless.id, "none"],
+    ],
+  );
+  // The selection answer for a parent the full report carries, and the
+  // defensive answer for a value that is not an Inspector-owned identity.
+  assert.equal(agentParentVerdicts(all, [sibling])[0]?.parent, "outside-range");
+  assert.equal(agentParentVerdicts(all, [malformed])[0]?.parent, "unknown");
+});
+
+/**
+ * The production UAT shape: pi-subagents publishes one run id for a subagent
+ * invocation (`details.runId`) and identifies each foreground child only by
+ * `results[].index`. The child therefore carries a real Inspector-owned parent
+ * id that no AgentRun carries: the parent is the run container itself, not an
+ * agent row whose details went missing.
+ */
+test("the UAT aggregate shape keeps a known parent distinct from unknown", () => {
+  const sessionId = "session-uat-aggregate";
+  const entries: SessionEntry[] = [
+    {
+      id: "gen-subagent",
+      parentId: null,
+      timestamp: "2026-03-10T10:00:00.000Z",
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-subagent", name: "subagent" }],
+      },
+    },
+    {
+      id: "res-subagent",
+      parentId: "gen-subagent",
+      timestamp: "2026-03-10T10:00:05.000Z",
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-subagent",
+        toolName: "subagent",
+        details: {
+          mode: "parallel",
+          runId: "PRIVATE_UAT_RUN",
+          results: [
+            {
+              index: 0,
+              agent: "worker",
+              exitCode: 0,
+              model: "deepseek/deepseek-flash",
+              thinking: "medium",
+            },
+          ],
+        },
+      },
+    },
+  ];
+  const evidence = readSubagentEvidence(entries, sessionId);
+  assert.equal(evidence.runs.length, 1);
+  const child = evidence.runs[0];
+  const parentId = child?.parentId;
+  if (child === undefined || parentId === undefined) {
+    throw new Error("the aggregate child must carry a parent identity");
+  }
+  // No synthetic parent AgentRun is materialized for the run container.
+  assert.equal(
+    evidence.runs.some((run) => run.id === parentId),
+    false,
+  );
+  assert.equal(child.agent, "worker");
+  assert.equal(child.status, "succeeded");
+
+  const report = toSessionReport(reduceEntries(sessionId, entries), {
+    agents: { state: evidence.state, runs: evidence.runs },
+  });
+  const view = {
+    availability: "available" as const,
+    report,
+    daily: foldedDaily(
+      [
+        dateRow({
+          date: "2026-03-10",
+          totalTokens: 0,
+          cost: 0,
+          generations: 1,
+        }),
+      ],
+      sessionId,
+    ),
+  };
+  const projected = projectCurrentView(view, "tree", {
+    kind: "custom",
+    from: "2026-03-10",
+    to: "2026-03-10",
+  });
+  assert.deepEqual(
+    projected.range?.agents.map((run) => run.parent),
+    ["orchestration-run"],
+  );
+  // Neither the raw producer run id nor a fabricated parent row reaches the
+  // projection.
+  assert.equal(JSON.stringify(projected).includes("PRIVATE_UAT_RUN"), false);
+  assert.equal(
+    projected.range?.agents.some((run) => run.id === parentId),
+    false,
+  );
+});
+
+/**
+ * The same report projected as a current view and as a historical session: the
+ * parent verdict is a property of the relationship, so a different projection
+ * path (or range) can never change it.
+ */
+test("current and historical projections publish the same parent verdict", () => {
+  const sessionId = "session-parent-parity";
+  const containerId = `subagent-${"c".repeat(64)}`;
+  const childId = `subagent-${"d".repeat(64)}`;
+  const report = toSessionReport(
+    reduceEntries(sessionId, [
+      {
+        type: "message",
+        id: "gen-parity",
+        parentId: null,
+        timestamp: "2026-03-10T10:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: { totalTokens: 10, cost: { total: 0.001 } },
+          content: [],
+        },
+      },
+    ]),
+    {
+      agents: {
+        state: "supported",
+        runs: [
+          {
+            id: childId,
+            parentId: containerId,
+            agent: "worker",
+            status: "succeeded",
+            confidence: "cooperative",
+            observedAt: "2026-03-10T10:00:05.000Z",
+          },
+        ],
+      },
+    },
+  );
+  const rows = [
+    dateRow({
+      date: "2026-03-10",
+      totalTokens: 10,
+      cost: 0.001,
+      generations: 1,
+    }),
+  ];
+  const intent = {
+    kind: "custom",
+    from: "2026-03-10",
+    to: "2026-03-10",
+  } as const;
+  const current = projectCurrentView(
+    {
+      availability: "available",
+      report,
+      daily: foldedDaily(rows, sessionId),
+    },
+    "tree",
+    intent,
+  );
+  const historical = projectHistoricalSession(
+    {
+      availability: "available",
+      sessionId,
+      usageByDate: rows,
+      usageByDateTruncated: false,
+      datedModels: [],
+      modelsTruncated: false,
+      report,
+    },
+    intent,
+  );
+  assert.deepEqual(
+    historical.range?.agents.map((run) => [run.id, run.parent]),
+    current.range?.agents.map((run) => [run.id, run.parent]),
+  );
+  assert.deepEqual(
+    current.range?.agents.map((run) => run.parent),
+    ["orchestration-run"],
   );
 });
 
