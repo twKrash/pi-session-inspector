@@ -623,7 +623,7 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   const liveTimings = liveFacts.map(toCanonicalLiveTiming);
   const tools = correlateLiveDuration(sessionId, reduced.tools, liveFacts);
   const stateTransitions = readStateTransitions(entries);
-  const integrationEvents = readIntegrationEvents(entries);
+  const integrationEvents = readIntegrationEvents(entries, sessionId);
   const agents = [...(input.subagents?.runs ?? [])];
   for (const conflict of input.subagents?.diagnostics ?? []) {
     diagnostics.add("subagent-result", conflict.code, conflict.count);
@@ -779,8 +779,9 @@ function readStateTransitions(
 
 function readIntegrationEvents(
   entries: readonly SessionEntry[],
+  sessionId: string,
 ): CanonicalIntegrationEvent[] {
-  return readPersistedEvidence({ entries }, integrations).rows.map(
+  return readPersistedEvidence({ entries, sessionId }, integrations).rows.map(
     (row: IntegrationObservationInput) => {
       const presence =
         row.presence ?? (row.state === "supported" ? "present" : "unknown");

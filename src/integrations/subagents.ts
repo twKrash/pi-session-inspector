@@ -2,10 +2,8 @@ import type {
   AgentFailure,
   AgentRun,
   AgentToolActivity,
-  EvidenceState,
   SessionEntry,
   SubagentEvidence,
-  SubagentEvidenceDiagnostic,
   Usage,
 } from "../core/events.ts";
 import { boundedProducerLabel } from "../core/evidence.ts";

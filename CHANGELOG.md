@@ -4,7 +4,76 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [0.11.0]
+
+**Additive: integration descriptors with typed hooks, Inspector-owned settings,
+and a bounded local debug log. No public report or persisted-schema break; see
+ADR 0019.**
+
 ### Added
+
+- Integrations describe themselves as a descriptor plus optional typed hooks
+  (`presence`, `persisted`, `live`, `telemetry`, `canonical`). One explicit
+  array in `src/integrations/index.ts` declares which integrations Inspector
+  supports and in what report order; each subsystem iterates that list and
+  invokes the hook it owns, and the catalog validates definitions and answers
+  lookups only. Adding an ordinary integration is one definition file, one
+  registration line, focused tests, and one `docs/integrations.md` row.
+- `docs/integrations.md`: the supported-integration matrix, how to add an
+  integration, and the integration vs skill vs tool/MCP distinction.
+- Inspector-owned `settings.json` at
+  `<agentDir>/session-inspector/settings.json` with `theme` and `debug`,
+  resolved as `CLI option > settings.json > product default`; a missing file is
+  the default configuration, and malformed, unreadable, or oversized settings
+  degrade to the defaults with a bounded diagnostic.
+- `--debug` on `ui`, `snapshot`, `tui`, and `json`, plus a local, bounded
+  `0o600` JSONL debug log under `session-inspector/v1/debug/` that never
+  reaches a report, a counter, or a snapshot. One event is capped, the file
+  rotates, the footprint stays under two files plus one line, and the sink fails
+  closed if its private modes cannot be enforced.
+- Registry-shaped regressions: fixture integrations prove presence, persisted
+  evidence, telemetry folding (with no cross-integration contamination), live
+  registration/disposal, and rich canonical contribution flow through the
+  generic subsystems; 64 declared integrations plus a legacy row publish all 65
+  rows while hostile adapter input stays independently capped.
+
+### Changed
+
+- Integration keys are validated by catalog membership, so the trusted key set
+  can no longer drift from runtime validation. The scattered `IntegrationKey`
+  union, `SIGNALS` table, `COUNTER_KEYS` table, observation-default list, and
+  report key/order tables are gone (`integrations/presence.ts`,
+  `integrations/pi-entries.ts`, `integrations/registry.ts`, and
+  `core/integration-counter-allowlists.ts` are deleted).
+- Live and durable presence is one generic keyed map: the live subsystem reports
+  sightings by key, the fold applies telemetry under the key the registry stamped
+  from the integration that produced it, and the checkpoint v1 shape
+  (`presence: { permission?: boolean }`, ADR 0014) stays isolated in
+  `core/presence.ts` at the storage-compatibility boundary.
+- Skills stay generic discovered resources with inventory plus `/skill:`
+  invocation counting, and MCP servers stay tool sources; neither gains an
+  integration without a semantic telemetry contract.
+- Debug diagnostics are local and non-canonical: they never enter a report,
+  counter, evidence record, or snapshot, and any logger failure is swallowed.
+- The pre-M8.5 executable reconciliation and property gate, the esbuild-bundled
+  browser client with a shared i18n catalog, and the Chart.js chart adapter ship
+  in this release.
+
+### Fixed
+
+- Lens evidence counted only a bare `lens` tool name while presence accepted
+  the `lens_*`, `pi_lens_*`, `lsp_*`, and `ast_grep*` vocabulary, so a session
+  that called `lens_diagnostics` reported `Present / Unavailable`. Presence and
+  evidence now share the integration's one tool vocabulary.
+- The subagents row reported `unavailable` while the Agents view already showed
+  native subagent evidence. The row now publishes a counters-free `supported`
+  state from the integration's own persisted read, and its schema declares no
+  counters.
+- Real-session UAT explained the remaining `Present / Unavailable` rows
+  (ponytail had no mode change; caveman's only mode entry precedes the tracking
+  marker) and localized persisted `durationMs: 0` records to sub-millisecond
+  tools measured by the live millisecond clock - an honest floor, not a
+  persistence, recovery, or projection defect.
 
 - Pre-M8.5 executable reconciliation and property gate covering canonical
   usage, dated attribution, projections, privacy, availability, and bounded

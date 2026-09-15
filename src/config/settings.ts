@@ -71,7 +71,10 @@ export function readSettingsSync(path: string): SettingsRead {
     // The size is checked before the read, so an oversized file is never
     // loaded: the bound is on bytes read, not on bytes parsed.
     if (size > MAX_SETTINGS_BYTES) {
-      return { settings: DEFAULT_SETTINGS, diagnostics: ["settings-oversized"] };
+      return {
+        settings: DEFAULT_SETTINGS,
+        diagnostics: ["settings-oversized"],
+      };
     }
     return parseSettings(readFileSync(path, "utf8"));
   } catch (error) {
@@ -84,7 +87,10 @@ export async function readSettings(path: string): Promise<SettingsRead> {
   try {
     const size = (await stat(path)).size;
     if (size > MAX_SETTINGS_BYTES) {
-      return { settings: DEFAULT_SETTINGS, diagnostics: ["settings-oversized"] };
+      return {
+        settings: DEFAULT_SETTINGS,
+        diagnostics: ["settings-oversized"],
+      };
     }
     return parseSettings(await readFile(path, "utf8"));
   } catch (error) {

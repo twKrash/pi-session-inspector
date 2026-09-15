@@ -30,7 +30,7 @@ const readIntegrationPresence = (signals: PresenceContext) =>
 
 /** The registry's persisted-evidence read, in report order (ADR 0019). */
 const readPiEntryEvidence = (entries: readonly SessionEntry[]) =>
-  readPersistedEvidence({ entries }).rows;
+  readPersistedEvidence({ entries, sessionId: "session-privacy-test" }).rows;
 
 const SUBAGENT_SESSION_ID = "session-privacy-test";
 const readSubagentEvidence = (entries: readonly SessionEntry[]) =>

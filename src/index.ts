@@ -32,11 +32,7 @@ import { readPresence } from "./integrations/presence.ts";
 import { readSkillInvocations } from "./integrations/skill-invocations.ts";
 import { reportIntegrations } from "./integrations/catalog.ts";
 import { integrations } from "./integrations/index.ts";
-import {
-  configureDebugLog,
-  debugLog,
-  debugLogEnabled,
-} from "./debug/log.ts";
+import { configureDebugLog, debugLog, debugLogEnabled } from "./debug/log.ts";
 import { createDebugFileSink } from "./debug/file.ts";
 import {
   readSettings,
@@ -50,10 +46,7 @@ import {
   type SubagentEvidence,
 } from "./integrations/subagents.ts";
 import { readCanonicalContributions } from "./integrations/contributions.ts";
-import {
-  presenceFromCheckpointV1,
-  presenceKeys,
-} from "./core/presence.ts";
+import { presenceFromCheckpointV1, presenceKeys } from "./core/presence.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
 import {
   type LiveWalRegistration,
@@ -218,7 +211,8 @@ function settingsPath(agentDir: string): string {
 
 /** A bounded file-name token for a debug log; never a path or producer text. */
 function debugFileName(sessionId: string | undefined): string {
-  return sessionId !== undefined && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(sessionId)
+  return sessionId !== undefined &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(sessionId)
     ? sessionId
     : "session-unknown";
 }
@@ -324,7 +318,6 @@ function logResolvedConfig(
     counters: reportIntegrations(integrations).length,
   });
 }
-
 
 /** Wires Pi session-start observation to the Inspector tracking root. */
 export function registerTracking(

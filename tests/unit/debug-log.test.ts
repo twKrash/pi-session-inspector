@@ -189,7 +189,8 @@ test("the file sink stays bounded under rotation and writes 0o600", async () => 
       schemaVersion: 1,
       component: "registry",
       event: "initialized",
-      subject: "live-tool-0000000000000000000000000000000000000000000000000000000000000000",
+      subject:
+        "live-tool-0000000000000000000000000000000000000000000000000000000000000000",
     })}\n`.padEnd(7_900, " ");
     const writes = Math.ceil((MAX_DEBUG_BYTES * 3) / line.length);
     for (let index = 0; index < writes; index += 1) write(line);
@@ -198,8 +199,12 @@ test("the file sink stays bounded under rotation and writes 0o600", async () => 
     // Let the chain finish so the assertions read the settled footprint.
     await sleep(600);
 
-    assert.equal(await size(path) <= MAX_DEBUG_BYTES, true, "live bound");
-    assert.equal(await size(`${path}.1`) <= MAX_DEBUG_BYTES, true, "rotated bound");
+    assert.equal((await size(path)) <= MAX_DEBUG_BYTES, true, "live bound");
+    assert.equal(
+      (await size(`${path}.1`)) <= MAX_DEBUG_BYTES,
+      true,
+      "rotated bound",
+    );
     assert.equal((await stat(`${path}.1`)).mode & 0o777, 0o600);
 
     // A sink pointed at an impossible path swallows its failure.
@@ -217,7 +222,10 @@ test("the logger itself drops an event larger than the line bound", () => {
   withSink((lines) => {
     debugLog("registry", "initialized", { counters: 1 });
     assert.equal(lines.length, 1);
-    assert.equal(Buffer.byteLength(lines[0] ?? "", "utf8") <= MAX_DEBUG_LINE_BYTES, true);
+    assert.equal(
+      Buffer.byteLength(lines[0] ?? "", "utf8") <= MAX_DEBUG_LINE_BYTES,
+      true,
+    );
   });
 });
 

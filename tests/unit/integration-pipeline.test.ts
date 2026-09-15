@@ -128,7 +128,10 @@ test("a fixture integration's presence hook flows through generic iteration", ()
 });
 
 test("a fixture integration's persisted hook reaches the report", () => {
-  const read = readPersistedEvidence({ entries: [widgetEntry()] }, withWidget);
+  const read = readPersistedEvidence(
+    { entries: [widgetEntry()], sessionId: "session-fixture" },
+    withWidget,
+  );
   assert.deepEqual(read.rows, [
     {
       integration: "widget",
@@ -201,7 +204,10 @@ test("an alias resolves through the catalog, and a legacy key never does", () =>
   });
   const list = defineIntegrations([widget, legacy]);
 
-  const read = readPersistedEvidence({ entries: [] }, list);
+  const read = readPersistedEvidence(
+    { entries: [], sessionId: "session-1" },
+    list,
+  );
   assert.deepEqual(read.reasons, { widget: "no-persisted-evidence" });
 
   const report = toSessionReport(
@@ -452,7 +458,10 @@ test("a fixture integration failing never blocks another", () => {
   });
   assert.equal(presence.reasons.throwing, "presence-failed");
 
-  const persisted = readPersistedEvidence({ entries: [] }, list);
+  const persisted = readPersistedEvidence(
+    { entries: [], sessionId: "session-1" },
+    list,
+  );
   assert.deepEqual(
     persisted.rows.map((row) => row.integration),
     ["healthy"],

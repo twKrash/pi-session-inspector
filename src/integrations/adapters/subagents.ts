@@ -1,9 +1,13 @@
 import {
+  readSubagentEvidence,
   readSubagentEvidenceWithArchives,
   type SubagentEvidence,
 } from "../subagents.ts";
 import { defineIntegration } from "../catalog.ts";
-import type { CanonicalIntegrationContext } from "../contract.ts";
+import type {
+  CanonicalIntegrationContext,
+  PersistedEvidenceContext,
+} from "../contract.ts";
 
 /** Native subagent tool names; the presence signal for this integration. */
 const SUBAGENT_TOOLS = ["subagent", "subagent_wait", "subagent_supervisor"];
@@ -22,12 +26,32 @@ export const subagentsIntegration = defineIntegration({
         ? "present"
         : "absent",
     /**
+     * The row carries no counters (its schema declares none): the evidence is
+     * the run/activity contribution below. A session with native subagent tool
+     * calls therefore reports `Present / Supported` from the same persisted
+     * evidence the Agents view already shows, rather than
+     * `Present / Unavailable`.
+     */
+    persisted: ({ entries, sessionId }: PersistedEvidenceContext) => {
+      const evidence = readSubagentEvidence(entries, sessionId);
+      if (evidence.state !== "supported") return undefined;
+      return {
+        integration: "subagents",
+        state: "supported",
+        version: 1,
+        counters: {},
+        reason: "evidence-supported",
+      } as const;
+    },
+    /**
      * Archive validation needs the filesystem, so the contribution is async and
      * falls back to the persisted read without archive verdicts when it fails.
      */
     canonical: async ({ entries, sessionId }: CanonicalIntegrationContext) => {
-      const evidence: SubagentEvidence =
-        await readSubagentEvidenceWithArchives(entries, sessionId);
+      const evidence: SubagentEvidence = await readSubagentEvidenceWithArchives(
+        entries,
+        sessionId,
+      );
       return {
         state: evidence.state,
         runs: evidence.runs,

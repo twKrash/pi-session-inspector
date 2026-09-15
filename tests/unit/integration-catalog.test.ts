@@ -76,17 +76,13 @@ test("a malformed definition is rejected at its source", () => {
   );
   for (const alias of ["", "A", "al ias"]) {
     assert.throws(
-      () =>
-        defineIntegration(
-          integration("alpha", { aliases: [alias] }),
-        ),
+      () => defineIntegration(integration("alpha", { aliases: [alias] })),
       /invalid integration alias/,
       JSON.stringify(alias),
     );
   }
   assert.throws(
-    () =>
-      defineIntegration(integration("alpha", { aliases: ["alpha"] })),
+    () => defineIntegration(integration("alpha", { aliases: ["alpha"] })),
     /alias collides with an integration key: alpha/,
   );
 });
