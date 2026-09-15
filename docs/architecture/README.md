@@ -22,3 +22,4 @@ Pi Session Inspector uses small, explicit ADRs. Canonical behavior lives in [v1 
 | [0016](adr/0016-evidence-foundation-and-canonical-session-model.md) | evidence foundation and canonical session model (L0/L1/L2) |
 | [0017](adr/0017-report-coverage-attribution-and-navigation.md) | report coverage, attribution, and navigation authority |
 | [0018](adr/0018-ephemeral-localhost-ui-and-immutable-snapshots.md) | ephemeral localhost UI and immutable snapshot exports |
+| [0019](adr/0019-integration-adapter-registry.md) | integration adapter registry, settings precedence, and debug-log privacy |

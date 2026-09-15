@@ -82,6 +82,40 @@ export type AgentRun = {
   usage?: Usage;
 };
 
+/** Native subagent tool activity; usage is a breakdown, never a session total. */
+export type AgentToolActivity = {
+  state: EvidenceState;
+  calls: number;
+  succeeded: number;
+  failed: number;
+  interrupted: number;
+  tools: readonly { name: string; calls: number }[];
+  usage?: Usage;
+};
+
+/** Only a closed conflict code is emitted; a count carries the occurrence. */
+export type SubagentEvidenceDiagnostic = {
+  code: "cooperative-evidence-conflict";
+  count: number;
+};
+
+/**
+ * Rich cooperative subagent evidence: native tool activity plus the validated
+ * runs read from persisted tool results. It is a canonical DTO (see ADR 0007),
+ * not an adapter-private shape, so the composition root and the report seams can
+ * name it without importing an adapter implementation.
+ */
+export type SubagentEvidence = {
+  activity: AgentToolActivity;
+  runs: readonly AgentRun[];
+  state: EvidenceState;
+  /**
+   * Bounded, closed-code diagnostics. Repeated observations of one run that
+   * disagree on identity or regress a terminal status are counted here.
+   */
+  diagnostics: readonly SubagentEvidenceDiagnostic[];
+};
+
 export type Usage = {
   totalTokens: number;
   cost: number;

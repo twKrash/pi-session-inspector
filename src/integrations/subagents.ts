@@ -1,8 +1,11 @@
 import type {
   AgentFailure,
   AgentRun,
+  AgentToolActivity,
   EvidenceState,
   SessionEntry,
+  SubagentEvidence,
+  SubagentEvidenceDiagnostic,
   Usage,
 } from "../core/events.ts";
 import { boundedProducerLabel } from "../core/evidence.ts";
@@ -72,33 +75,8 @@ const PROCESS_SIGNALS: ReadonlySet<string> = new Set([
   "SIGXFSZ",
 ]);
 
-/** Native subagent tool activity; usage is a breakdown, never a session total. */
-export type AgentToolActivity = {
-  state: EvidenceState;
-  calls: number;
-  succeeded: number;
-  failed: number;
-  interrupted: number;
-  tools: readonly { name: string; calls: number }[];
-  usage?: Usage;
-};
-
-/** Only a closed conflict code is emitted; a count carries the occurrence. */
-export type SubagentEvidenceDiagnostic = {
-  code: "cooperative-evidence-conflict";
-  count: number;
-};
-
-export type SubagentEvidence = {
-  activity: AgentToolActivity;
-  runs: readonly AgentRun[];
-  state: EvidenceState;
-  /**
-   * Bounded, closed-code diagnostics. Repeated observations of one run that
-   * disagree on identity or regress a terminal status are counted here.
-   */
-  diagnostics: readonly SubagentEvidenceDiagnostic[];
-};
+/** Canonical agent DTOs owned by core (see ADR 0007 and ADR 0019). */
+export type { AgentToolActivity, SubagentEvidence } from "../core/events.ts";
 
 /**
  * Archive-aware subagent evidence: {@link readSubagentEvidence} plus the

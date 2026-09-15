@@ -295,6 +295,32 @@ module.exports = {
       }
     },
     {
+      name: 'integration-adapters-not-to-consumers',
+      severity: 'error',
+      comment:
+        'An integration adapter owns one integration knowledge and must stay below its consumers (ADR 0019): it may use core contracts and its own implementation modules, never reports, renderers, loaders, commands, or the composition root.',
+      from: {
+        path: '^src/integrations/adapters/'
+      },
+      to: {
+        path: '^(?:src/(?:core/(?:reports|canonical|reduce|retained-aggregates)|ui|commands)|src/index[.]ts$)',
+        dependencyTypesNot: ['type-only', 'type-import']
+      }
+    },
+    {
+      name: 'integration-registry-not-to-consumers',
+      severity: 'error',
+      comment:
+        'The registry derives generic views from adapters (ADR 0019); importing a consumer back would invert the direction and reintroduce the closed-world list.',
+      from: {
+        path: '^src/integrations/registry[.]ts$'
+      },
+      to: {
+        path: '^(?:src/(?:core/(?:reports|canonical|reduce)|ui|commands)|src/index[.]ts$)',
+        dependencyTypesNot: ['type-only', 'type-import']
+      }
+    },
+    {
       name: 'l2-loaders-not-to-pi-entry-adapter',
       severity: 'error',
       comment:
