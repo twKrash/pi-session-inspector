@@ -595,9 +595,10 @@ it must not re-decide whether the accepted localhost server exists.
 | Client source LOC | 3,224 | 3,415 | +191 | `git show`/`wc -l` vs `wc -l scripts/web/*` (includes the 297-line chart adapter) |
 | Client asset raw / gzip bytes | 113,563 / 26,786 | 264,631 / 88,429 | +151,068 / +61,643 | `benchmark:browser:release`, gzip level 9 |
 | Generated shell bytes | 4,125 | 4,057 | −68 | same fixture |
-| Bundle evaluation median / p95 ms | 0.82 / 1.39 | 1.51 / 2.17 | +0.69 / +0.78 | maintained harness, 40 samples after 5 warmups |
-| Startup median / p95 ms | 2.13 / 4.71 | 8.61 / 11.05 | +6.48 / +6.34 | same harness and fixture |
-| Chart create / update median ms | — | 1.10 / 0.77 | — | same harness and fixture |
+| Bundle evaluation median / p95 ms | 0.82 / 1.39 | 1.56 / 2.34 | +0.74 / +0.95 | maintained harness, 40 samples after 5 warmups |
+| Startup median / p95 ms | 2.13 / 4.71 | 9.00 / 11.35 | +6.87 / +6.64 | same harness and fixture |
+| Route-change re-render median / p95 ms | — | 0.55 / 0.77 | — | same harness and fixture |
+| Chart create / update median ms | — | 1.06 / 0.78 | — | same harness and fixture |
 | Tarball / unpacked / files | 230,983 / 908,323 / 72 | 295,498 / 1,065,738 / 73 | +64,515 / +157,415 / +1 | `npm pack --dry-run --json` |
 
 The asset is deliberately larger: bundle size is not the winning metric. Chart.js
@@ -605,10 +606,12 @@ is adopted for the generic chart representation Inspector would otherwise keep
 own; the harness numbers include drawing the chart on a canvas, and the earlier
 `2.48 ms` startup figure came from a local one-off harness rather than this one.
 
-**Regression baseline:** `benchmark/browser.ts` measures evaluation, startup,
-refresh, chart create, and chart update for the shipped asset, and asserts the
-behavior invariants (one authorized fetch, token out of URL/storage, no storage
-writes, one initial render, a rendered chart) on every sample. The accepted
+**Regression baseline:** `benchmark/browser.ts` measures evaluation, startup, a
+route change that re-renders the loaded view, chart create, and chart update for
+the shipped asset, and asserts the behavior invariants on every sample: one
+authorized fetch (the route change adds none), the token out of URL/storage, no
+storage writes, exactly one initial render, a rendered chart, and exactly one
+render caused by the route change, whose applied route is recorded and checked. The accepted
 baseline is `benchmark/baselines/browser.json`, identified by the shipped asset's
 SHA-256 and checked by `npm run benchmark:browser:check`; sizes must match
 exactly and a wall-time median may not exceed `2.5×` its recorded value. The

@@ -23,8 +23,8 @@ import { summarize, writeBenchmarkOutput, type Samples } from "./output.ts";
  * It measures the shipped classic asset the server serves, executed in the same
  * stub-DOM harness the browser tests use, plus the chart adapter on a canvas
  * stub. The point is a maintained, reproducible number for the browser surface:
- * bundle evaluation, first render (startup), refresh, and chart create/update —
- * the four costs a bundled chart library adds.
+ * bundle evaluation, first render (startup), a route change that re-renders the
+ * loaded view, and chart create/update — the costs the bundled client adds.
  *
  *   npm run benchmark:browser          # smoke
  *   npm run benchmark:browser:release  # release mode, writes an artifact
@@ -47,7 +47,7 @@ const TOKEN = "opaque-benchmark-token";
 type Metric =
   | "evaluateMs"
   | "startupMs"
-  | "refreshMs"
+  | "rerenderMs"
   | "chartCreateMs"
   | "chartUpdateMs";
 
@@ -63,7 +63,12 @@ type Run = {
     tokenLeakedToUrl: boolean;
     tokenLeakedToStorage: boolean;
     storageWrites: number;
+    /** Renders the client performed for the initial load; observed, not assumed. */
     initialRenders: number;
+    /** Renders the measured route change caused; must be exactly one. */
+    rerenderRenders: number;
+    /** The address bar the client applied after the measured route change. */
+    appliedRoute: string;
     renderedCanvas: boolean;
   };
   timings: Record<Metric, number>;
@@ -125,7 +130,7 @@ async function sample(): Promise<Run> {
   const asset = WEB_ASSETS.client;
   const sha256 = createHash("sha256").update(asset).digest("hex");
 
-  // The shipped client: evaluation, first render, then one refresh.
+  // The shipped client: evaluation, first render, then one route-change render.
   const evaluateStart = performance.now();
   const client = createWebClient({
     hash: `#token=${TOKEN}`,
@@ -134,8 +139,20 @@ async function sample(): Promise<Run> {
   const evaluated = performance.now();
   await client.start();
   const started = performance.now();
+  const initialRenders = client.renders();
+  const renderedCanvas =
+    client.element("view").querySelectorAll("canvas").length > 0;
+
+  // A real re-render: another view the loaded snapshot supports. The applied
+  // route changes and the client rebuilds the view exactly once, without a
+  // request, because the range intent did not change. Firing hashchange() with
+  // the already-applied route would measure nothing (the client returns early).
+  client.location.hash = "#/current/models?scope=tree";
+  const rerenderStart = performance.now();
   client.hashchange();
-  const refreshed = performance.now();
+  const rerendered = performance.now();
+  const rerenderRenders = client.renders() - initialRenders;
+  const appliedRoute = client.location.hash;
 
   // The chart adapter alone, on a canvas of the same size the layout gives it.
   const canvas = createChartCanvasStub();
@@ -148,7 +165,6 @@ async function sample(): Promise<Run> {
   chart.destroy();
 
   const fetches = client.fetches();
-  const rendered = client.element("view").querySelectorAll("canvas").length > 0;
   return {
     assetBytes: Buffer.byteLength(asset),
     assetGzipBytes: gzipSync(asset, { level: 9 }).length,
@@ -156,8 +172,10 @@ async function sample(): Promise<Run> {
     behavior: {
       authorizationValid: fetches[0]?.authorization === `Bearer ${TOKEN}`,
       fetchCount: fetches.length,
-      initialRenders: 1,
-      renderedCanvas: rendered,
+      appliedRoute,
+      initialRenders,
+      renderedCanvas,
+      rerenderRenders,
       storageWrites: client.storageWrites().length,
       tokenLeakedToStorage: client
         .storageWrites()
@@ -169,7 +187,7 @@ async function sample(): Promise<Run> {
       chartCreateMs: chartCreated - chartStart,
       chartUpdateMs: chartUpdated - chartCreated,
       evaluateMs: evaluated - evaluateStart,
-      refreshMs: refreshed - started,
+      rerenderMs: rerendered - rerenderStart,
       startupMs: started - evaluateStart,
     },
   };
@@ -182,7 +200,7 @@ async function measure(mode: "release" | "smoke"): Promise<Measurement> {
     chartCreateMs: [],
     chartUpdateMs: [],
     evaluateMs: [],
-    refreshMs: [],
+    rerenderMs: [],
     startupMs: [],
   };
   let last: Awaited<ReturnType<typeof sample>> | undefined;
@@ -214,6 +232,15 @@ function assertBehavior(measurement: Measurement): void {
   if (behavior.tokenLeakedToStorage) problems.push("token in storage");
   if (behavior.storageWrites !== 0) problems.push("storage writes");
   if (behavior.initialRenders !== 1) problems.push("initial renders");
+  // The measured operation must have been a real re-render, exactly one of them.
+  if (behavior.rerenderRenders !== 1) {
+    // Either the route change did not apply, or the view rendered more than
+    // once: in both cases the measured operation is not the re-render it claims.
+    problems.push("route-change renders");
+  }
+  if (!behavior.appliedRoute.includes("/current/models")) {
+    problems.push("route change never applied");
+  }
   if (!behavior.renderedCanvas) problems.push("chart canvas");
   if (measurement.chartPoints === 0) problems.push("chart points");
   if (problems.length > 0) {
