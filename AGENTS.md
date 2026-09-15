@@ -54,6 +54,15 @@ Keep tracked when durable:
 Use `.git/info/exclude` for developer-local Superpowers artifacts when possible
 instead of imposing those ignores on every repository consumer.
 
+Graphify outputs are the same kind of local material: `graphify-out/` is
+ignored by `.gitignore` and also stays out of graph input, which the tracked
+`.graphifyignore` declares. One case is outside that file's reach by
+construction — graphify's detector adds `graphify-out/memory/` as a second scan
+path and skips the ignore check for it ("Always include graphify-out/memory/"),
+so a run that must not read those filed-back query notes has to drop them from
+that run. Do not add graphify-generated files under `docs/`; a graph is a local
+map, never a canonical design source.
+
 ## Agent instructions
 
 All wait_agent tool calls MUST use at least 10 minutes timeout.

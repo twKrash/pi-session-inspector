@@ -1,7 +1,10 @@
 # Generated browser bundle: contains bundled Chart.js/i18next internals
 src/ui/web/client.bundle.js
 
-# Graphify's own outputs should not become graph inputs
+# Graphify's own outputs should not become graph inputs. The directory form
+# covers everything nested. `graphify-out/memory/` is exempt by construction:
+# graphify adds it as a second scan path and skips the ignore check for it, so a
+# run that must not read those filed-back query notes drops them per run.
 graphify-out/
 
 # Local execution/review artifacts, not product architecture
