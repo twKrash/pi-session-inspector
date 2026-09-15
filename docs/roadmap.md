@@ -598,7 +598,7 @@ it must not re-decide whether the accepted localhost server exists.
 | Bundle evaluation median / p95 ms | 0.82 / 1.39 | 1.49 / 2.86 | +0.67 / +1.47 | maintained harness, 40 samples after 5 warmups |
 | Startup median / p95 ms | 2.13 / 4.71 | 8.98 / 10.81 | +6.85 / +6.10 | same harness and fixture |
 | Chart create / update median ms | — | 1.07 / 0.75 | — | same harness and fixture |
-| Tarball / unpacked / files | 230,983 / 908,323 / 72 | 295,461 / 1,065,667 / 73 | +64,478 / +157,344 / +1 | `npm pack --dry-run --json` |
+| Tarball / unpacked / files | 230,983 / 908,323 / 72 | 295,462 / 1,065,675 / 73 | +64,479 / +157,352 / +1 | `npm pack --dry-run --json` |
 
 The asset is deliberately larger: bundle size is not the winning metric. Chart.js
 is adopted for the generic chart representation Inspector would otherwise keep
