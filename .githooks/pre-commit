@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
 
+npm run build:web:check
 npm run knip

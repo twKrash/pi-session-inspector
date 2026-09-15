@@ -9,6 +9,14 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 - Pre-M8.5 executable reconciliation and property gate covering canonical
   usage, dated attribution, projections, privacy, availability, and bounded
   `fast-check` checks.
+- Build-time esbuild bundling for one deterministic classic browser client, with
+  the readable route/range/client sources retained under `scripts/web/` and
+  freshness enforced by `npm run build:web:check`.
+
+### Removed
+
+- `/route.js` and `/range.js` are no longer served as runtime assets; their
+  readable sources are bundled into `/client.js` at build time.
 
 ### Fixed
 
