@@ -935,6 +935,14 @@ but do not justify expanding the qualified release-candidate scope.
 Validate and ship the `pi-mcp-adapter` integration proven during the
 integration-authoring architecture spike.
 
+**Parked work.** The spike implementation is committed on branch
+`spike/mcp-integration` (pushed to `origin`); `git worktree list` shows the
+parked worktree created for it. That branch is the continuation point and its
+head commit is the durable research record: exact producer contract, files and
+lines changed, the architecture measurement, the negative-control result, and
+the verification evidence behind this baseline. It stays unmerged while this
+section's before-merge items are unmet.
+
 Research baseline:
 
 - inspected producer: `pi-mcp-adapter 2.34.0`;
