@@ -826,11 +826,6 @@ function emptyChildUsage(): UiChildUsage {
 }
 
 /**
- * The partial-usage verdict of one summary row: known only when some of its
- * calls reported usage, partial when fewer did than its call count. A row with
- * no usage-bearing call is Unavailable rather than partial.
- */
-/**
  * The coverage verdicts the browser row renders: some-but-not-all usage, and
  * some-but-not-all duration correlation. Both are computed from the counts the
  * summary already carries, so a row can never claim completeness it lacks.

@@ -722,6 +722,8 @@ function toolsSections(
               catalog["tools.interrupted"],
               catalog["table.tokens"],
               catalog["table.cost"],
+              catalog["table.duration"],
+              catalog["table.average"],
               catalog["tools.lastUsed"],
               catalog["table.source"],
             ],
@@ -733,11 +735,18 @@ function toolsSections(
               count(row.interrupted),
               toolUsageCell(count(row.tokens), "metric.knownTokens", row),
               toolUsageCell(money(row.cost), "metric.knownCost", row),
+              // The grouped duration carries its own coverage, exactly as the
+              // interactive table renders it: an incomplete figure never reads
+              // as complete, and an uncorrelated name is Unavailable.
+              toolDurationCell(row.durationLabel, row, true),
+              toolDurationCell(row.averageLabel, row, false),
               row.lastUsed,
               orUnavailable(row.source ?? null),
             ]),
             [
               "status-cell",
+              "num",
+              "num",
               "num",
               "num",
               "num",
@@ -816,6 +825,26 @@ function toolUsageCell(
     );
   }
   return value;
+}
+
+/**
+ * One grouped duration figure: Unavailable when nothing correlated, and the
+ * coverage note on the total when only some calls did. The mean repeats no
+ * coverage note — the total already states it.
+ */
+function toolDurationCell(
+  label: string | null,
+  row: UiToolSummaryRow,
+  withCoverage: boolean,
+): Cell {
+  if (row.withDuration === 0 || label === null) {
+    return t("evidence.unavailable");
+  }
+  if (!withCoverage || !row.durationPartial) return label;
+  return raw(
+    `${text(label)} ${badge(t("metric.correlated"), "warn")}` +
+      `<small>${text(t("tools.durationFraction", { withDuration: row.withDuration, total: row.calls }))}</small>`,
+  );
 }
 
 /** Duration is live-correlated evidence only, never estimated from a timestamp. */

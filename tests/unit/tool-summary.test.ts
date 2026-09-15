@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { toolSummary } from "../../src/ui/report-projection.ts";
+import {
+  type ToolSummaryRow,
+  toolSummary,
+} from "../../src/ui/report-projection.ts";
 import { toolUsageVerdict } from "../../src/ui/ui-projection.ts";
 
 /**
@@ -10,6 +13,14 @@ import { toolUsageVerdict } from "../../src/ui/ui-projection.ts";
  * duration — never all of them. The summary must publish what it has and say
  * how much that is, instead of a total that reads as complete.
  */
+
+/** The single grouped row of one fixture, or a failed assertion. */
+function only(summary: readonly ToolSummaryRow[]): ToolSummaryRow {
+  const row = summary[0];
+  assert.notEqual(row, undefined, "the fixture must group to exactly one row");
+  if (row === undefined) throw new Error("unreachable");
+  return row;
+}
 
 function call(
   name: string,
@@ -95,29 +106,33 @@ test("duration coverage distinguishes complete, partial, and absent durations", 
 
 test("the rendered coverage verdict names the incomplete figure", () => {
   const complete = toolUsageVerdict(
-    toolSummary({
-      tools: [
-        call("bash", {
-          usage: { totalTokens: 1, cost: 0.01 },
-          durationMs: 10,
-        }),
-      ],
-    })[0] as never,
+    only(
+      toolSummary({
+        tools: [
+          call("bash", {
+            usage: { totalTokens: 1, cost: 0.01 },
+            durationMs: 10,
+          }),
+        ],
+      }),
+    ),
   );
   assert.equal(complete.partial, false);
   assert.equal(complete.durationPartial, false);
 
   const partial = toolUsageVerdict(
-    toolSummary({
-      tools: [
-        call("subagent", {
-          usage: { totalTokens: 34477, cost: 0.004893924 },
-          durationMs: 10,
-        }),
-        call("subagent"),
-        call("subagent"),
-      ],
-    })[0] as never,
+    only(
+      toolSummary({
+        tools: [
+          call("subagent", {
+            usage: { totalTokens: 34477, cost: 0.004893924 },
+            durationMs: 10,
+          }),
+          call("subagent"),
+          call("subagent"),
+        ],
+      }),
+    ),
   );
   assert.equal(partial.partial, true);
   assert.equal(partial.durationPartial, true);
@@ -125,7 +140,9 @@ test("the rendered coverage verdict names the incomplete figure", () => {
   assert.equal(partial.withUsage, 1);
   assert.equal(partial.withDuration, 1);
 
-  const none = toolUsageVerdict(toolSummary({ tools: [call("bash")] })[0] as never);
+  const none = toolUsageVerdict(
+    only(toolSummary({ tools: [call("bash")] })),
+  );
   assert.equal(none.partial, false);
   assert.equal(none.durationPartial, false);
 });
