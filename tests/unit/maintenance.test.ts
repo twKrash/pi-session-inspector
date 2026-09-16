@@ -621,10 +621,11 @@ test("production session start stamps resource counts with the inventory observa
     registerTracking(
       {
         on: (
-          _event: string,
+          event: string,
           registered: (event: unknown, context: unknown) => Promise<void>,
         ) => {
-          handler = registered;
+          // Pi registers several lifecycle handlers, so the stub keys by event.
+          if (event === "session_start") handler = registered;
         },
         appendEntry: () => {},
         getCommands: () => [

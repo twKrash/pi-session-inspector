@@ -538,10 +538,11 @@ test("stamps the session-start inventory snapshot with its observation time", as
   registerTracking(
     {
       on: (
-        _event: string,
+        event: string,
         registered: (event: unknown, context: unknown) => Promise<void>,
       ) => {
-        handler = registered;
+        // Pi registers several lifecycle handlers, so the stub keys by event.
+        if (event === "session_start") handler = registered;
       },
       appendEntry: () => {},
       getCommands: () => [

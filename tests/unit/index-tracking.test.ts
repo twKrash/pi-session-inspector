@@ -8,8 +8,9 @@ type SessionManager = {
 };
 
 type SessionStartApi = {
+  /** Pi registers several lifecycle handlers, so the stub keys by event. */
   on(
-    event: "session_start",
+    event: string,
     handler: (
       event: unknown,
       context: { sessionManager: SessionManager },
@@ -62,8 +63,8 @@ test("wires session-start tracking beneath Pi's public agent directory", async (
     | undefined;
   const calls: string[] = [];
   const api: SessionStartApi = {
-    on: (_event, registered) => {
-      handler = registered;
+    on: (event, registered) => {
+      if (event === "session_start") handler = registered;
     },
     appendEntry: (type, data) => calls.push(`${type}:${JSON.stringify(data)}`),
   };
@@ -103,8 +104,8 @@ test("does not set up a WAL when tracking is not promoted", async () => {
   let setups = 0;
   registerTracking(
     {
-      on: (_event, registered) => {
-        handler = registered;
+      on: (event, registered) => {
+        if (event === "session_start") handler = registered;
       },
       appendEntry: () => {},
     },
@@ -136,8 +137,8 @@ test("does not set up a WAL when tracking rejects", async () => {
   let setups = 0;
   registerTracking(
     {
-      on: (_event, registered) => {
-        handler = registered;
+      on: (event, registered) => {
+        if (event === "session_start") handler = registered;
       },
       appendEntry: () => {},
     },

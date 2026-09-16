@@ -43,6 +43,8 @@ test("translates public permission bus events into bounded envelopes only", asyn
     },
     {
       sessionId: "live-counters-session",
+      root: "/inspector",
+      runtimeId: "runtime-live-counters",
       inventoryNames: () => new Set(["council-mode", "hf-cli"]),
       now: () => new Date("2026-09-11T10:00:00Z"),
     },
@@ -190,6 +192,8 @@ test("prompt and decision share a hashed request attribution", () => {
     },
     {
       sessionId: "permission-attribution-session",
+      root: "/inspector",
+      runtimeId: "runtime-permission-attribution",
       inventoryNames: () => new Set<string>(),
       now: () => new Date("2026-09-12T10:00:00.000Z"),
     },
@@ -236,6 +240,8 @@ test("absent or invalid request ids produce no attribution at all", () => {
     },
     {
       sessionId: "permission-attribution-invalid-session",
+      root: "/inspector",
+      runtimeId: "runtime-permission-attribution-invalid",
       inventoryNames: () => new Set<string>(),
       now: () => new Date("2026-09-12T10:00:00.000Z"),
     },
@@ -279,6 +285,8 @@ test("repeated registration for one session keeps exactly one listener set", () 
   const secondEnvelopes: unknown[] = [];
   const options = {
     sessionId: "live-dedupe-session",
+    root: "/inspector",
+    runtimeId: "runtime-live-dedupe",
     inventoryNames: () => new Set(["council-mode"]),
     now: () => new Date("2026-09-11T10:00:00Z"),
   };
@@ -328,4 +336,192 @@ test("repeated registration for one session keeps exactly one listener set", () 
   assert.equal(inputHandlers.length, 2);
   inputHandlers[1]?.({ text: "/skill:council-mode" });
   assert.equal(secondEnvelopes.length, 1);
+});
+
+type LiveBus = {
+  api: {
+    events: {
+      on(channel: string, handler: (data: unknown) => void): () => void;
+    };
+    on(event: "input", handler: (event: { text: string }) => void): () => void;
+  };
+  emitSkill(text: string): void;
+  emit(channel: string, data: unknown): void;
+  inputHandlerCount(): number;
+  inputHandler(): ((event: { text: string }) => void) | undefined;
+  subscriptionCount(): number;
+};
+
+/** A live bus whose subscriptions can actually be removed on disposal. */
+function createLiveBus(options?: { failUnsubscribe?: boolean }): LiveBus {
+  const inputs: Array<(event: { text: string }) => void> = [];
+  const bus = new Map<string, Array<(data: unknown) => void>>();
+  const unsubscribe =
+    (remove: () => void): (() => void) =>
+    () => {
+      if (options?.failUnsubscribe === true) {
+        throw new Error("unsubscribe failed");
+      }
+      remove();
+    };
+  return {
+    api: {
+      events: {
+        on: (channel, handler) => {
+          const list = bus.get(channel) ?? [];
+          list.push(handler);
+          bus.set(channel, list);
+          return unsubscribe(() => {
+            const index = list.indexOf(handler);
+            if (index >= 0) list.splice(index, 1);
+          });
+        },
+      },
+      on: (_event, handler) => {
+        inputs.push(handler);
+        return unsubscribe(() => {
+          const index = inputs.indexOf(handler);
+          if (index >= 0) inputs.splice(index, 1);
+        });
+      },
+    },
+    emitSkill: (text) => {
+      for (const handler of [...inputs]) handler({ text });
+    },
+    emit: (channel, data) => {
+      for (const handler of [...(bus.get(channel) ?? [])]) handler(data);
+    },
+    inputHandlerCount: () => inputs.length,
+    inputHandler: () => inputs[0],
+    subscriptionCount: () =>
+      inputs.length +
+      [...bus.values()].reduce((total, list) => total + list.length, 0),
+  };
+}
+
+const liveWriter = (
+  sink: unknown[],
+): { appendTelemetry(envelope: unknown): void; flush(): Promise<void> } => ({
+  appendTelemetry: (envelope) => sink.push(envelope),
+  flush: async () => {},
+});
+
+const runtimeOptions = (
+  runtimeId: string,
+): {
+  root: string;
+  sessionId: string;
+  runtimeId: string;
+  inventoryNames(): ReadonlySet<string>;
+  now(): Date;
+} => ({
+  root: "/inspector",
+  sessionId: "runtime-session",
+  runtimeId,
+  inventoryNames: () => new Set(["council-mode"]),
+  now: () => new Date("2026-09-11T10:00:00Z"),
+});
+
+test("a registration owned by a replaced runtime is disposed, never reused", () => {
+  const bus = createLiveBus();
+  const replaced: unknown[] = [];
+  const resumed: unknown[] = [];
+
+  const first = registerLiveCounters(
+    bus.api,
+    liveWriter(replaced),
+    runtimeOptions("runtime-1"),
+  );
+  const firstHandler = bus.inputHandler();
+  bus.emitSkill("/skill:council-mode");
+  bus.emit("permissions:decision", {
+    result: "deny",
+    resolution: "policy_deny",
+  });
+  assert.equal(replaced.length, 2);
+  const subscriptions = bus.subscriptionCount();
+
+  // Same live api, new runtime: the previous runtime's listeners cannot observe
+  // this runtime, so its registration must be disposed instead of returned.
+  const second = registerLiveCounters(
+    bus.api,
+    liveWriter(resumed),
+    runtimeOptions("runtime-2"),
+  );
+  assert.notEqual(second, first);
+  assert.notEqual(bus.inputHandler(), firstHandler);
+  assert.equal(bus.inputHandlerCount(), 1);
+  assert.equal(bus.subscriptionCount(), subscriptions);
+
+  bus.emitSkill("/skill:council-mode");
+  bus.emit("permissions:decision", {
+    result: "allow",
+    resolution: "user_approved",
+  });
+  assert.equal(
+    replaced.length,
+    2,
+    "a replaced runtime must not receive events",
+  );
+  assert.equal(
+    resumed.length,
+    2,
+    "the resumed runtime must receive exactly one envelope per event",
+  );
+
+  // Duplicate prevention inside one runtime is unchanged: a repeated
+  // registration returns the same registration and adds no subscriptions.
+  assert.equal(
+    registerLiveCounters(
+      bus.api,
+      liveWriter(resumed),
+      runtimeOptions("runtime-2"),
+    ),
+    second,
+  );
+  assert.equal(bus.inputHandlerCount(), 1);
+});
+
+test("identity separates the same session id under two roots", () => {
+  const bus = createLiveBus();
+  const firstRoot: unknown[] = [];
+  const secondRoot: unknown[] = [];
+
+  const first = registerLiveCounters(bus.api, liveWriter(firstRoot), {
+    ...runtimeOptions("runtime-1"),
+    root: "/inspector-one",
+  });
+  const second = registerLiveCounters(bus.api, liveWriter(secondRoot), {
+    ...runtimeOptions("runtime-1"),
+    root: "/inspector-two",
+  });
+  assert.notEqual(first, second);
+  assert.equal(bus.inputHandlerCount(), 2);
+
+  bus.emitSkill("/skill:council-mode");
+  assert.equal(firstRoot.length, 1);
+  assert.equal(secondRoot.length, 1);
+});
+
+test("dispose is idempotent and a failing unsubscribe stays observer-only", () => {
+  const failing = createLiveBus({ failUnsubscribe: true });
+  const sink: unknown[] = [];
+  const registration = registerLiveCounters(
+    failing.api,
+    liveWriter(sink),
+    runtimeOptions("runtime-1"),
+  );
+
+  assert.doesNotThrow(() => registration.dispose());
+  assert.doesNotThrow(() => registration.dispose());
+
+  const next = createLiveBus();
+  const nextSink: unknown[] = [];
+  registerLiveCounters(
+    next.api,
+    liveWriter(nextSink),
+    runtimeOptions("runtime-2"),
+  );
+  next.emitSkill("/skill:council-mode");
+  assert.equal(nextSink.length, 1);
 });

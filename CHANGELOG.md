@@ -2,6 +2,21 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.2]
+
+### Fixed
+
+- A session runtime that Pi replaced can no longer leave a live registration
+  behind. Inspector's live counter registration is owned per runtime and
+  disposed when that runtime ends (`session_shutdown`, every reason), and a
+  registration owned by a replaced runtime is disposed instead of reused, so a
+  resumed session subscribes afresh. `A -> B -> A` therefore keeps counting
+  permission and skill telemetry instead of silently reporting nothing.
+- The read-boundary attempt memo is scoped to the session runtime as well, so a
+  session that failed its one bounded fold attempt before Pi replaced its
+  runtime gets a fresh attempt when it is resumed, while a healthy runtime still
+  folds at most once and never re-runs maintenance on every read.
+
 ## [0.13.1]
 
 ### Fixed

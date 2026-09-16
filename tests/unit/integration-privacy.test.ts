@@ -271,6 +271,8 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
     },
     {
       sessionId: "privacy-corpus",
+      root: "/inspector",
+      runtimeId: "runtime-privacy-corpus",
       inventoryNames: () => new Set(["council-mode"]),
       now: () => new Date("2026-09-11T10:00:00Z"),
     },

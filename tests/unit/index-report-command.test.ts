@@ -1702,10 +1702,12 @@ test("a repeated session_start for one session registers live observation exactl
     registerTracking(
       {
         on: (
-          _event: string,
+          event: string,
           registered: (event: unknown, context: unknown) => Promise<void>,
         ) => {
-          handler = registered;
+          // Pi registers several lifecycle handlers; the stub keys by event so a
+          // `session_shutdown` registration never replaces the start handler.
+          if (event === "session_start") handler = registered;
         },
         appendEntry: () => {},
       } as unknown as Parameters<typeof registerTracking>[0],
