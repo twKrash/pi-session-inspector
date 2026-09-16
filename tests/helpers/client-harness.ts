@@ -238,6 +238,23 @@ type StubTracking = {
   detach(removed: readonly StubElement[]): void;
 };
 
+/**
+ * One chart input the client handed the adapter. The client owns the projection
+ * — labels, series, axes, gaps — so a test can assert it without reaching into
+ * a live Chart instance.
+ */
+export type ChartInputRecord = {
+  ariaLabel: string;
+  labels: string[];
+  series: {
+    axis: string;
+    format: string;
+    key: string;
+    label: string;
+    values: (number | null)[];
+  }[];
+};
+
 /** One ordered observation of what the client did, not only what it rendered. */
 export type WebClientEvent =
   | { kind: "parse"; hash: string }
@@ -273,6 +290,8 @@ export type WebClientHarness = {
   events: WebClientEvent[];
   fetches(): { url: string; authorization: string }[];
   routeParses(): string[];
+  /** Every chart input the client projected, in the order it drew them. */
+  chartInputs(): ChartInputRecord[];
   start(): Promise<void>;
   /** Releases a deferred response; only meaningful with `deferFetch`. */
   releaseFetch(): void;
@@ -723,6 +742,32 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
   const namespace = context.SessionInspectorWeb as
     | { route?: { parse?: (hash: unknown, options?: unknown) => unknown } }
     | undefined;
+  // The chart namespace is a plain object the prelude installs, so recording the
+  // input it is handed observes the client's own projection rather than the
+  // drawing. The real adapter still runs, so the chart still has to construct.
+  const chartInputs: ChartInputRecord[] = [];
+  const chartNamespace = (
+    context.SessionInspectorWeb as
+      | {
+          chart?: {
+            createDailyChart?: (
+              canvas: unknown,
+              input: ChartInputRecord,
+            ) => unknown;
+          };
+        }
+      | undefined
+  )?.chart;
+  if (
+    chartNamespace !== undefined &&
+    typeof chartNamespace.createDailyChart === "function"
+  ) {
+    const create = chartNamespace.createDailyChart;
+    chartNamespace.createDailyChart = (canvas, input) => {
+      chartInputs.push(input);
+      return create(canvas, input);
+    };
+  }
   const routeParse = namespace?.route?.parse;
   if (typeof routeParse === "function" && namespace?.route !== undefined) {
     namespace.route.parse = (hash: unknown, options?: unknown) => {
@@ -783,6 +828,7 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
       events
         .filter((event) => event.kind === "parse")
         .map((event) => event.hash),
+    chartInputs: () => chartInputs,
     start,
     releaseFetch: () => {
       if (release === null) throw new Error("no deferred fetch");

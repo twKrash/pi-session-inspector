@@ -369,7 +369,7 @@ export const ENGLISH_CATALOG = {
   "sort.default": "Source order",
   "sort.name": "Name A–Z",
   "sort.reverse": "Reverse source order",
-  "chart.metric": "Chart metric",
+  "chart.metric": "Chart metrics",
   "chart.sessions": "Sessions",
   "chart.cost": "Cost",
   "chart.tokens": "Tokens",
@@ -377,9 +377,12 @@ export const ENGLISH_CATALOG = {
   "chart.tools": "Tool calls",
   "chart.empty": "No daily observations match the selected range.",
   "chart.note":
-    "{metric} per observed UTC day. Days without records are not counted as zero.",
+    "{metrics} per observed UTC day. A day that does not publish a metric is a gap in its line, never a zero.",
+  "chart.axes":
+    "Cost is drawn on the right axis; the count metrics share the left one.",
+  "chart.unavailable": "Unavailable in this range: {metrics}.",
   "chart.aria":
-    "Daily {metric} across {days} observed UTC days. Exact values are in the chart data table.",
+    "Daily {metrics} across {days} observed UTC days. Exact values are in the chart data table.",
   "chart.data": "View chart data",
   "table.source": "Source",
   "table.observation": "Observation",

@@ -29,7 +29,7 @@ right-click save is still the browser's own affordance.
 
 | Surface | What it shows |
 | --- | --- |
-| Overview | Native session usage and cost, generations, tool calls, and errors for the selected range, plus an evidence panel that keeps native, live/cooperative, and unavailable inputs apart |
+| Overview | Native session usage and cost, generations, tool calls, and errors for the selected range, a daily activity chart whose metrics the reader picks, plus an evidence panel that keeps native, live/cooperative, and unavailable inputs apart |
 | LLM | Generation-attributed model usage and cost for the range; the same tab's Agent execution tree carries the session's own native total |
 | Agent execution | The LLM tab's second subject: Tree and Table readings of the same subagent runs — nested topology, run containers, model, status, and partial child usage. Grouping nodes are presentation only (see [Agent execution](#agent-execution)) |
 | Tools | Calls with duration and per-row usage coverage; partial usage and partial duration are flagged, never averaged away |
