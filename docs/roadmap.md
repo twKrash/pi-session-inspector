@@ -11,9 +11,11 @@ and M8 (publication and release) are complete. `1.0.0` is published to npm as
 next recorded work; they gate nothing and are not required for the published
 release.
 
-**Post-1.0:** three follow-ups are recorded at the end of this document — MCP
-semantic integration, skill invocation evidence, and Pi native telemetry
-integration. None is a `1.0.0` release gate, and none blocks M8.
+**Post-1.0:** nine follow-ups are recorded at the end of this document — MCP
+semantic integration, skill invocation evidence, Pi native telemetry
+integration, push-based live updates, multi-metric chart selection, usage
+attribution, working tool/skill links, additional locales, and other
+harnesses. None is a release gate, and none blocks M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -1002,13 +1004,17 @@ explicitly documented.
 **Release:** a compatible RC hardening pass may bump the next patch version;
 publication remains part of M8.
 
-## Post-1.0 — Integration expansion and evidence follow-ups
+## Post-1.0 — product, platform, integration, and evidence follow-ups
 
 **Status:** Planned. **Depends on:** successful M8 / `1.0.0` publication.
 
 This milestone is explicitly **not** a `1.0.0` release gate. It collects
-product-facing follow-ups discovered during Pre-M8 hardening that are useful
-but do not justify expanding the qualified release-candidate scope.
+product-facing follow-ups discovered during Pre-M8 hardening plus candidate
+work raised after the `1.0.0` publication. Both halves follow the same rules:
+items 1–3 are integration/evidence follow-ups with a recorded research
+baseline, and items 4–9 are candidate product and platform work whose research
+question is still open. Nothing in this section is scheduled, and no item in it
+blocks a release.
 
 ### 1. MCP semantic integration
 
@@ -1201,47 +1207,14 @@ Inspector usage rules if that seam lands:
   stays `unsupported`/`unavailable` rather than approximated from private
   internals.
 
-### Acceptance
+### 4. Push-based live updates (WebSocket) — research required
 
-- None of the MCP, skill-attribution, or native-telemetry work is required for
-  `1.0.0`.
-- Post-1.0 changes preserve observer-only, local-only, bounded, redacted, and
-  deterministic behavior.
-- New semantic evidence is accepted only from a producer contract strong enough
-  to support historical replay and honest unavailable-vs-zero behavior.
-- No presentation-only heuristic becomes canonical evidence.
+**Status:** Research. **Depends on:** nothing; independent of the localhost
+transport that shipped in `0.10.0`.
 
-## Post-1.0 candidate backlog — product and platform expansion
-
-**Status:** Candidate work. **Not scheduled, and not a release gate.** Nothing in
-this section is committed to a release line; each item starts as research and
-only becomes a milestone once its research question is answered and its
-constraints are written down. Items appear in the order they were raised, not by
-priority.
-
-Rules that bind every item here:
-
-- Inspector stays observer-only and local-only; Pi's persisted data remains the
-  billing/source authority (invariant 1);
-- no runtime dependency, database, server, LLM step, or raw-content persistence
-  without an ADR;
-- no new unbounded or unredacted producer string enters Inspector WAL, reports,
-  or logs (invariant 3, ADR 0010);
-- unknown formats and unavailable seams degrade to `unsupported`/`unavailable`
-  instead of being guessed (invariant 8);
-- presentational additions must not change report DTO semantics: TUI, HTML, and
-  JSON keep consuming the same DTO (invariant 7);
-- localized copy is presentation only; canonical values, identifiers, and the
-  JSON report stay canonical.
-
-### 1. Push-based live updates (WebSocket) — research required
-
-**Question:** can Inspector push new evidence to an open client instead of the
-reader asking for it?
-
-Today the localhost UI fetches a full payload on load and on the explicit
-Refresh action (the `refresh` handler in `scripts/web/client.js`), and the server
-(`src/ui/server.ts`) reads Inspector's own store per request. Nothing watches the
+**Current state:** the localhost UI fetches a full payload on load and on the
+explicit Refresh action (the `refresh` handler in `scripts/web/client.js`), and
+`src/ui/server.ts` reads Inspector's own store per request. Nothing watches the
 WAL, so a reader watching a running session sees stale numbers until they
 refresh, and staying current costs one full payload per refresh.
 
@@ -1249,62 +1222,72 @@ Research questions:
 
 - where can a change signal honestly come from: an in-process event on the
   observer's write path, a filesystem watch on the exclusive WAL shard, or a
-  polling tail with an offset? Each candidate has to hold invariant 1 (Pi stays
-  the authority) and invariant 6 (one writer id owns one shard);
+  polling tail with an offset? Each candidate has to hold invariant 1 (Pi
+  remains the authority) and invariant 6 (one writer id owns one shard);
 - what is the bounded message shape? A push channel must not become a second
   report path: either it signals "something changed, refetch", or it carries the
   same DTO deltas the report path already produces;
 - how does this stay additive? The static HTML report has no server, so the
-  localhost UI gains push, the static report keeps its behavior, and the DTO
-  stays identical (invariant 7);
+  localhost UI gains push, the static report keeps its behaviour, and the DTO
+  stays identical;
 - what happens on reconnect, on multiple tabs, on a stale client, and on a
   session that stops writing;
 - transport: a WebSocket on the existing loopback server is the candidate, but
   it is a new protocol surface on a server that speaks bounded HTTP GETs today.
-  Compare it against Server-Sent Events (one-way, text-only, no framing
-  dependency) before committing to either.
+  Compare Server-Sent Events (one-way, text-only, no framing dependency) before
+  committing to either.
 
-Expected shape once research lands: an ADR for the transport and its lifetime,
-one bounded change notification, no new dependency unless the ADR justifies it,
-and the existing range/tab routes unchanged.
+Expected implementation shape:
 
-### 2. Multi-metric charts with metric selection
+- an ADR for the transport and its lifetime;
+- one bounded change notification;
+- no new dependency unless the ADR justifies it;
+- the existing range/tab routes unchanged.
 
-**Status:** partly supported already. `scripts/web/chart.ts` draws N series:
-each series carries its own `key`, `axis`, `format`, and palette entry, and the
-axis formatter is per-series, so a cost axis and a token axis can differ. What is
-missing is the projection and the control: the client projects exactly one series
-(the chart payload's `series` array in `scripts/web/client.js`), and no UI offers
-metric selection.
+Before merge:
 
-Work:
+1. the transport ADR is accepted;
+2. a test proves an unchanged payload is not re-sent;
+3. a `file://` report is verified unchanged.
+
+### 5. Multi-metric charts with metric selection
+
+**Status:** Partly supported. **Depends on:** nothing.
+
+**Current state:** `scripts/web/chart.ts` already draws N series — each series
+carries its own `key`, `axis`, `format`, and palette entry, and the axis
+formatter is per-series, so a cost axis and a token axis can already differ. What
+is missing is the projection and the control: the client projects exactly one
+series (the chart payload's `series` array in `scripts/web/client.js`), and no
+UI offers metric selection.
+
+Expected implementation shape:
 
 - project the additional series the DTO already carries (cost, tokens, and the
   other daily rows) instead of one;
-- add a metric selector to the chart panel: multi-select, with a documented
-  default (cost and tokens are the obvious pair);
-- state the axis rule when units differ — dual axes exist per series today, so
+- a metric selector on the chart panel: multi-select, with a documented default
+  (cost and tokens are the obvious pair);
+- a stated axis rule for differing units — dual axes exist per series today, so
   the decision is which metrics share an axis and how the legend says so;
 - `null` (unavailable) stays a gap and never becomes a zero, and an unavailable
   metric must not silently vanish from the selector;
-- keep the static report and the localhost UI on one DTO and one chart module.
+- one DTO and one chart module shared by the static report and the localhost UI.
 
-Definition of done: selecting two metrics renders two series with correct axes
-and tooltips, the selection survives a tab switch inside the session, and the
-JSON report output is unchanged unless a report deliberately adopts the
-selector.
+Before merge:
 
-### 3. Attributing tokens and cost to tools, skills, environment, and more
+1. selecting two metrics renders two series with correct axes and tooltips;
+2. the selection survives a tab switch inside the session;
+3. the JSON report output is unchanged unless a report deliberately adopts the
+   selector.
 
-**Question:** how much of a session's native usage can honestly be attributed to
-a dimension (tool, skill, environment, model, integration) without inventing
-precision?
+### 6. Attributing tokens and cost to tools, skills, environment, and more
 
-The binding constraint is invariant 4: native usage is counted once and every
-breakdown is a breakdown, never an additive parent total. Usage is aggregated per
-session/day/model today, and skill evidence is invocation-level only — see
-"Skill invocation evidence follow-up" above for why presentation-only signals
-cannot carry attribution.
+**Status:** Research. **Depends on:** item 2 above — attribution cannot precede
+the evidence it would attribute.
+
+**Current state:** usage is aggregated per session/day/model, and skill evidence
+is invocation-level only. Invariant 4 binds the result: native usage is counted
+once and every breakdown is a breakdown, never an additive parent total.
 
 Research questions:
 
@@ -1315,89 +1298,97 @@ Research questions:
   models (per-turn boundaries, per-message deltas, proportional shares) each need
   a stated accuracy claim, and the report must name the method instead of
   implying measurement;
-- the honest fallback for anything unattributable is an explicit
-  `unattributed` bucket, not a spread;
+- the honest fallback for anything unattributable is an explicit `unattributed`
+  bucket, not a spread;
 - privacy: attribution must not pull tool arguments, results, prompts, or file
   contents into Inspector state (invariant 3); dimension keys stay bounded and
   redacted like every other producer string.
 
-Expected shape: projection-level work with no new source of truth, a documented
-attribution method, per-dimension breakdown rows in the existing report DTO, and
-one visible statement of the method wherever a breakdown is shown.
+Expected implementation shape:
 
-### 4. Make the tool and skill link affordances navigate
+- projection-level work with no new source of truth;
+- a documented attribution method, stated visibly wherever a breakdown appears;
+- per-dimension breakdown rows in the existing report DTO.
 
-**Status:** defect to reproduce, then a design decision. Reported: rows in Tools
-and Skills present a link affordance that does nothing when clicked.
+### 7. Make the tool and skill link affordances navigate
 
-What the sources say today: the localhost client builds a real hash-route anchor
-only for entity kinds whose id the payload publishes (`entityLink`/`entityMark`
-in `scripts/web/client.js`), and every other kind falls back to a plain span — so
-an anchor that renders without a route cannot come from there; the static report
-(`src/ui/snapshot.ts`) emits no content anchors beyond the skip link. The
-reproduction, the surface, and the intended destination are therefore open.
+**Status:** Defect to reproduce, then a design decision. **Depends on:** nothing.
 
-Work:
+**Current state:** the localhost client builds a real hash-route anchor only for
+entity kinds whose id the payload publishes (`entityLink`/`entityMark` in
+`scripts/web/client.js`), and every other kind falls back to a plain span; the
+static report (`src/ui/snapshot.ts`) emits no content anchors beyond the skip
+link. An anchor that renders without a route therefore cannot come from either
+surface as written, which leaves the reproduction, the surface, and the intended
+destination open. Reported symptom: rows in Tools and Skills present a link
+affordance that does nothing when clicked.
 
-- reproduce with the surface named (static report opened from disk, localhost UI,
-  or the TUI) plus the element and section involved;
-- choose the destination on purpose. Two candidates exist: navigate to the
+Expected implementation shape:
+
+- the surface is named in the reproduction (static report opened from disk,
+  localhost UI, or the TUI) together with the element and section involved;
+- the destination is chosen on purpose. Two candidates exist: navigate to the
   entity's own subview/filter, which the client route already supports, or open a
   file path in the reader's editor or file manager;
 - opening a local path is constrained by the browser and must be designed for it:
   a page served from `http://127.0.0.1` cannot open local paths, so this needs an
   explicit loopback endpoint or an editor URL scheme, and either choice exposes
   paths and therefore needs privacy review;
-- an affordance that cannot lead anywhere must stop looking like a link; a
-  visibly non-interactive style is the fallback, not a dead anchor.
+- an affordance that cannot lead anywhere stops looking like a link; a visibly
+  non-interactive style is the fallback, not a dead anchor.
 
-Definition of done: every interactive-looking affordance either navigates, opens
-the intended target, or is visibly not a link — verified in the static report and
-the localhost UI, with a test covering the anchor's href for each entity kind
-that publishes an id.
+Before merge:
 
-### 5. Additional UI languages (German, Russian, Ukrainian) with a settings-backed preference
+1. every interactive-looking affordance either navigates, opens the intended
+   target, or is visibly not a link;
+2. verified in the static report and in the localhost UI;
+3. a test covers the anchor's `href` for each entity kind that publishes an id.
 
-**Status:** ready for a spec. UI copy is already centralized: one catalog per
-surface (`src/ui/i18n/catalog.ts`, `ENGLISH_CATALOG`) reached through the `t()`
-helper (`src/ui/i18n.ts`), read by the TUI, the localhost client, and the static
-report alike.
+### 8. Additional UI languages (German, Russian, Ukrainian)
 
-Work:
+**Status:** Ready for a spec. **Depends on:** nothing; the Inspector-owned
+settings schema already exists.
 
-- add a key to the Inspector-owned settings schema (`src/config/settings.ts`,
+**Current state:** UI copy is centralized in `src/ui/i18n/catalog.ts`
+(`ENGLISH_CATALOG`) behind the `t()` helper (`src/ui/i18n.ts`), and the TUI, the
+localhost client, and the static report all read their strings from it.
+
+Expected implementation shape:
+
+- a key in the Inspector-owned settings schema (`src/config/settings.ts`,
   ADR 0019): `language`, a closed enum, default `"en"`. The schema's existing
-  rules already cover the rest: an unknown key is ignored, a malformed document
-  degrades to defaults with a bounded diagnostic, and no new failure mode may
-  prevent startup;
-- add `de`, `ru`, and `uk` catalogs; a missing key falls back to English rather
-  than to the key name or an empty string;
-- decide how the preference reaches each surface: the localhost UI can carry it
+  rules cover the rest: an unknown key is ignored, a malformed document degrades
+  to defaults with a bounded diagnostic, and no new failure mode may prevent
+  startup;
+- `de`, `ru`, and `uk` catalogs; a missing key falls back to English rather than
+  to the key name or an empty string;
+- the preference reaches each surface deliberately: the localhost UI can carry it
   in the payload, the static report can bake it, and the TUI reads it directly;
-- decide what is never translated: canonical report values, entity ids, metric
-  and model identifiers, statuses that are part of the DTO contract, and the JSON
-  report;
-- keep layout honest: German and Ukrainian strings are longer than their English
-  counterparts, so the TUI's fixed-width columns and the report's tables need a
-  stated overflow rule;
-- the preference is not evidence: it never appears in the report DTO as
+- what is never translated is decided explicitly: canonical report values, entity
+  ids, metric and model identifiers, statuses that are part of the DTO contract,
+  and the JSON report;
+- a stated overflow rule for the TUI's fixed-width columns and the report's
+  tables, because German and Ukrainian strings are longer than their English
+  counterparts;
+- the preference is not evidence: it never enters the report DTO as
   usage-relevant data.
 
-Definition of done: switching `language` changes the TUI, the localhost UI, and
-the static report consistently; an unsupported value falls back to English with a
-bounded diagnostic; tests cover the fallback and one non-English catalog per
-surface.
+Before merge:
 
-### 6. Support for other harnesses (Claude Code, Codex, Hermes, others)
+1. switching `language` changes the TUI, the localhost UI, and the static report
+   consistently;
+2. an unsupported value falls back to English with a bounded diagnostic;
+3. tests cover the fallback and one non-English catalog per surface.
 
-**Question:** can Inspector observe another agent harness the way it observes Pi —
-from that harness's own persisted data — without weakening a single guarantee Pi
-enjoys?
+### 9. Support for other harnesses (Claude Code, Codex, Hermes, others)
 
-Today the invariant is unambiguous: Pi's persisted session data is the source
-authority, and `src/pi/adapter.ts` (`parseSessionJsonl()`) is the only producer of
-canonical entries. Anything Inspector cannot read honestly is reported as
-`unsupported` or `unavailable`.
+**Status:** Research and architecture spike. **Depends on:** nothing, but it is
+the largest item in this section.
+
+**Current state:** Pi's persisted session data is the source authority and
+`src/pi/adapter.ts` (`parseSessionJsonl()`) is the only producer of canonical
+entries. Anything Inspector cannot read honestly is reported `unsupported` or
+`unavailable`.
 
 Research questions:
 
@@ -1416,19 +1407,36 @@ Research questions:
 - packaging: harness support must not add a runtime dependency without an ADR, and
   the package has to stay installable where that harness is absent.
 
-Expected shape: extend the existing pattern — integrations are descriptor-driven
-and adapters translate a producer into evidence — to a *session source*
-dimension, with an ADR for the model, one adapter per harness carrying a
-documented stability contract, and honest `unsupported` behavior for the rest.
+Expected implementation shape:
 
-Definition of done: one non-Pi harness is read end-to-end from its own persisted
-data, with per-source usage authority, a report that names the source, a fixture
-matrix of sanitized samples, and no change to Pi-path behavior.
+- extend the existing pattern — integrations are descriptor-driven and adapters
+  translate a producer into evidence — to a *session source* dimension;
+- an ADR for the source model;
+- one adapter per harness with a documented stability contract;
+- honest `unsupported` behaviour for the rest.
 
-### Promotion criteria
+Before merge:
 
-An item leaves this backlog when its research questions are answered, its
-constraints are written into the spec or an ADR, and its work is small enough to
-enter `main` as independently mergeable pull requests. Nothing here changes the
-meaning of a released report field: a new dimension, source, or metric gets its
-own name and its own documented method before it gets a place in the DTO.
+1. one non-Pi harness is read end-to-end from its own persisted data;
+2. per-source usage authority holds, with the source named in the report;
+3. a fixture matrix of sanitized samples exists for that harness;
+4. Pi-path behaviour is unchanged.
+
+### Acceptance
+
+- None of the MCP, skill-attribution, or native-telemetry work is required for
+  `1.0.0`.
+- Post-1.0 changes preserve observer-only, local-only, bounded, redacted, and
+  deterministic behavior.
+- New semantic evidence is accepted only from a producer contract strong enough
+  to support historical replay and honest unavailable-vs-zero behavior.
+- No presentation-only heuristic becomes canonical evidence.
+- No item in this section adds a runtime dependency, a database, a server, an
+  LLM step, or raw-content persistence without an ADR.
+- Presentational work (locales, metric selection, link targets) does not change
+  report DTO semantics: TUI, HTML, and JSON keep consuming the same DTO.
+- An item leaves this section when its research questions are answered, its
+  constraints are written into the spec or an ADR, and its work is small enough
+  to enter `main` as independently mergeable pull requests. A new dimension,
+  source, or metric gets its own name and its own documented method before it
+  gets a place in the DTO.
