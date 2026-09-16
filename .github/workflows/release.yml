@@ -202,6 +202,11 @@ jobs:
           sha512sum --check SHA512SUMS
 
       - name: Publish, unless this version is already on the registry
+        env:
+          # npm's OIDC exchange swallows its own failures at this level, so a
+          # failed exchange surfaces only as ENEEDAUTH. Verbose keeps the
+          # registry's reason in the release log.
+          NPM_CONFIG_LOGLEVEL: verbose
         run: |
           set -eu
           name="$(node -p "require('./release-metadata.json').name")"
