@@ -160,7 +160,8 @@ export const ENGLISH_CATALOG = {
   "evidence.global.integrations":
     "Global report carries no integration observations",
   "evidence.global.errors": "Global report carries no error records",
-  "models.note": "Native usage grouped by provider and model.",
+  "models.note":
+    "Persisted generation usage grouped by provider and model. Tool results, compactions, and branch summaries carry no model attribution, so they stay in the session total and never in a model row.",
   "models.none": "No native generations recorded.",
   "tools.note":
     "Tokens and cost appear only when a matching tool result persisted usage.",
@@ -202,6 +203,10 @@ export const ENGLISH_CATALOG = {
   "agents.view.tree": "Tree",
   "agents.view.table": "Table",
   "agents.tree.session": "Primary session",
+  // The root's own scope: the session's persisted native usage, never the
+  // generation slice the model table shows and never a child-inclusive total.
+  "agents.tree.scope":
+    "Session total · persisted native usage for this range (generations, tool results, compactions, and branch summaries).",
   "agents.tree.container": "Run container",
   // Every container row reads the same, so the group ordinal is what tells two
   // of them apart (for a reader who cannot see which list they are in).
@@ -444,8 +449,9 @@ export const ENGLISH_CATALOG = {
   offline: "OFFLINE · EN",
   "brand.tagline": "Understand your agent.",
   "local.design": "Local by design",
-  "metric.child": "Child breakdown",
-  "metric.child.note": "breakdown only · never added",
+  "metric.child": "Observed child runs",
+  "metric.child.note":
+    "breakdown of the session's tool-result usage · never added",
   "coverage.title": "Coverage",
   "coverage.sessions":
     "{available} / {inspected} sessions · {unavailable} unavailable",

@@ -6,6 +6,14 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Fixed
 
+- The LLM tab names each usage scope, so its figures can no longer be read as
+  one total. Pi records a child agent's own usage on the parent's subagent tool
+  result, which makes the session root (all persisted native usage) larger than
+  the model table (generation usage only) by exactly the child figure; the model
+  table's note now states that scope, the session root carries its own "Session
+  total" line, and the child card states that its figure is a breakdown inside
+  the session's tool-result usage. No arithmetic changed: the root was, and
+  remains, the report's native usage, never `native + child`.
 - A session runtime that Pi replaced can no longer leave a live registration
   behind. Inspector's live counter registration is owned per runtime and
   disposed when that runtime ends (`session_shutdown`, every reason), and a

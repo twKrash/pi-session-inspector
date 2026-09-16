@@ -1158,6 +1158,7 @@ function agentHierarchy(
     `<div class="tree-main"><div class="tree-title">` +
     `<span class="tree-session">${text(catalog["agents.tree.session"])}</span>` +
     `</div><div class="tree-meta mono">${text(sessionFigures(range))}</div>` +
+    `<p class="tree-count">${text(catalog["agents.tree.scope"])}</p>` +
     sessionModelCaveat(range) +
     sessionModels(range, datable) +
     `</div></div>` +
