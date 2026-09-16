@@ -408,7 +408,9 @@ test("mcp folds a live status snapshot into presence, never a counter", () => {
       flush: async () => {},
     },
     {
+      root: "/inspector",
       sessionId: "mcp-live-session",
+      runtimeId: "runtime-mcp-live",
       inventoryNames: () => new Set<string>(),
       now: () => new Date("2026-09-15T10:00:00Z"),
       markPresence: (integration) => observed.push(integration),
