@@ -84,6 +84,18 @@
     value === null || value === undefined
       ? COPY["evidence.unavailable"]
       : number(value);
+  /**
+   * One value a row may fail to carry. `null` is its only honest projection: a
+   * gap in a line, and Unavailable in a table — never `NaN`, and never a
+   * formatted figure, which is how `$0.00` or `< $0.0001` would otherwise be
+   * invented for a value the row never held.
+   */
+  const chartPoint = (value) =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  const publishedCell = (value, render) => {
+    const point = chartPoint(value);
+    return point === null ? COPY["evidence.unavailable"] : render(point);
+  };
   const badge = (label, tone) =>
     el("span", "badge " + (tone || "neutral"), label);
   const assign = (base, extra) => {
@@ -766,31 +778,31 @@
       },
       {
         header: COPY["table.sessions"],
-        cell: (row) => number(row.sessions),
+        cell: (row) => publishedCell(row.sessions, number),
         cls: "num",
       },
       {
         header: COPY["table.tokens"],
-        cell: (row) => number(row.totalTokens),
+        cell: (row) => publishedCell(row.totalTokens, number),
         cls: "num",
       },
       {
         header: COPY["table.cost"],
-        cell: (row) => money(row.cost),
+        cell: (row) => publishedCell(row.cost, money),
         cls: "num",
       },
     ];
     if (metrics.indexOf("generations") >= 0) {
       columns.push({
         header: COPY["table.generations"],
-        cell: (row) => number(row.generations),
+        cell: (row) => publishedCell(row.generations, number),
         cls: "num",
       });
     }
     if (metrics.indexOf("tools") >= 0) {
       columns.push({
         header: COPY["table.tools"],
-        cell: (row) => number(row.tools),
+        cell: (row) => publishedCell(row.tools, number),
         cls: "num",
       });
     }
@@ -878,6 +890,13 @@
   };
   const chartFormat = (name) => (name === "cost" ? "cost" : "number");
   const chartLabel = (name) => COPY["chart." + name];
+  /**
+   * Money and counts do not share a scale, so a chart of more than one metric
+   * splits them: `cost` takes the right axis and the count metrics share the
+   * left one. A chart of a single metric splits nothing and draws on the left
+   * axis, which is the rendering a lone metric has always had.
+   */
+  const chartAxis = (name, split) => (split && name === "cost" ? "y1" : "y");
   const CHART_METRICS = ["sessions", "cost", "tokens", "generations", "tools"];
   /**
    * The global aggregate's daily rows publish their date, session count and
@@ -886,42 +905,95 @@
    * value the selected row list does not publish is never charted as a zero.
    */
   const GLOBAL_CHART_METRICS = ["sessions", "cost", "tokens"];
+  /**
+   * What a chart shows before the reader chooses otherwise: the pair whose units
+   * differ, so the default already states the axis rule. A vocabulary that
+   * carries neither falls back to its own first metric.
+   */
+  const DEFAULT_CHART_METRICS = ["cost", "tokens"];
+  /** The vocabulary of the chart now on screen, for its picker's clicks. */
+  let chartVocabulary = [];
 
   /**
-   * One chart over the published daily rows, drawn by the bundled adapter. The
-   * caller has already decided that every point is a published value and that a
-   * row without the metric is Unavailable rather than a zero; the adapter is
-   * handed labels and values in the DTO's own order and owns no range,
-   * aggregation, or verdict. The exact-value table below stays the accessible
-   * representation, and a browser that cannot give us a canvas keeps that table
-   * and loses only the drawing.
+   * The metrics this chart draws: the reader's remembered choice for this view,
+   * narrowed to what the view's rows publish, and the default when nothing is
+   * remembered. A metric the rows cannot fill is still offered and selected — it
+   * is stated as Unavailable rather than dropped from the picker.
+   */
+  const selectedMetrics = (metrics, remembered = activeSettings().metrics) => {
+    const chosen = Array.isArray(remembered)
+      ? metrics.filter((name) => remembered.indexOf(name) >= 0)
+      : [];
+    if (chosen.length > 0) return chosen;
+    const preferred = metrics.filter(
+      (name) => DEFAULT_CHART_METRICS.indexOf(name) >= 0,
+    );
+    return preferred.length === 0 ? metrics.slice(0, 1) : preferred;
+  };
+
+  /**
+   * The metric picker: one pressed toggle per selectable metric, in vocabulary
+   * order. The selection is this view's own browser state — never a report
+   * value, never written to storage — and the last pressed metric cannot be
+   * turned off, because a chart of nothing is not a state this view offers.
+   */
+  const metricPicker = (metrics, chosen) => {
+    const picker = el("span", "metric-picker");
+    picker.setAttribute("role", "group");
+    picker.setAttribute("aria-label", COPY["chart.metric"]);
+    metrics.forEach((name) => {
+      const toggle = el("button", "metric-toggle", chartLabel(name));
+      toggle.dataset.metric = name;
+      toggle.setAttribute("aria-pressed", String(chosen.indexOf(name) >= 0));
+      picker.append(toggle);
+    });
+    return picker;
+  };
+
+  /**
+   * One chart over the published daily rows, drawn by the bundled adapter, with
+   * the reader's own metric selection. The caller decided which metrics the
+   * view's rows publish; this section projects them, assigns the axes from their
+   * units, and hands the adapter labels and values in the DTO's own order. A row
+   * that does not publish a metric is a `null` point — a gap in that line and
+   * Unavailable in the table below — and never a zero; a selected metric the
+   * rows cannot fill at all is named as Unavailable and adds no empty series.
+   * The exact-value table stays the accessible representation, and a browser
+   * that cannot give us a canvas keeps that table and loses only the drawing.
    */
   const chartSection = (rows, metrics) => {
     const section = card(COPY["panel.daily"], rangeText());
-    const select = document.createElement("select");
-    select.id = "chart-metric";
-    select.setAttribute("aria-label", COPY["chart.metric"]);
-    const remembered = activeSettings().metric;
-    const metricName =
-      metrics.indexOf(remembered) >= 0 ? remembered : metrics[0];
-    metrics.forEach((name) => {
-      const option = el("option", "", chartLabel(name));
-      option.value = name;
-      option.selected = metricName === name;
-      select.append(option);
-    });
-    section.querySelector(".panel-head").append(select);
+    const chosen = selectedMetrics(metrics);
+    chartVocabulary = metrics;
+    section.querySelector(".panel-head").append(metricPicker(metrics, chosen));
     if (rows.length === 0) {
       section.append(el("div", "chart-note", COPY["chart.empty"]));
       return section;
     }
-    // Every point is a published value: a row without this metric is a state the
-    // chart states as Unavailable rather than a zero it never read.
-    const values = rows.map((row) => chartValue(row, metricName));
-    if (values.some((value) => Number.isFinite(value) === false)) {
+    // One series per selected metric: a row that does not publish the metric is
+    // a gap in that line, never a zero it never read.
+    const split = chosen.length > 1;
+    const unavailable = [];
+    const series = [];
+    chosen.forEach((name) => {
+      const values = rows.map((row) => chartPoint(chartValue(row, name)));
+      if (values.every((point) => point === null)) {
+        unavailable.push(chartLabel(name));
+        return;
+      }
+      series.push({
+        axis: chartAxis(name, split),
+        format: chartFormat(name),
+        key: name,
+        label: chartLabel(name),
+        values: values,
+      });
+    });
+    if (series.length === 0) {
       section.append(el("div", "chart-note", COPY["evidence.unavailable"]));
       return section;
     }
+    const drawn = series.map((entry) => entry.label).join(", ");
     const figure = el("div", "chart");
     const chartModule = web.chart;
     const canvas = document.createElement("canvas");
@@ -938,22 +1010,11 @@
       pendingChart = {
         canvas: canvas,
         input: {
-          ariaLabel: tr("chart.aria", {
-            days: rows.length,
-            metric: chartLabel(metricName),
-          }),
+          ariaLabel: tr("chart.aria", { days: rows.length, metrics: drawn }),
           format: (kind, value) =>
             kind === "cost" ? money(value) : number(value),
           labels: rows.map((row) => row.date),
-          series: [
-            {
-              axis: "y",
-              format: chartFormat(metricName),
-              key: metricName,
-              label: chartLabel(metricName),
-              values: values,
-            },
-          ],
+          series: series,
           theme: chartModule.chartTheme(isDarkTheme()),
         },
       };
@@ -967,12 +1028,20 @@
     );
     section.append(
       figure,
-      el(
-        "div",
-        "chart-note",
-        tr("chart.note", { metric: chartLabel(metricName) }),
-      ),
+      el("div", "chart-note", tr("chart.note", { metrics: drawn })),
     );
+    if (split) {
+      section.append(el("div", "chart-note", COPY["chart.axes"]));
+    }
+    if (unavailable.length > 0) {
+      section.append(
+        el(
+          "div",
+          "chart-note",
+          tr("chart.unavailable", { metrics: unavailable.join(", ") }),
+        ),
+      );
+    }
     const details = document.createElement("details");
     details.append(el("summary", "", COPY["chart.data"]));
     const columns = dailyColumns(metrics);
@@ -3333,6 +3402,22 @@
       setSetting(data.filter, activeSettings()[data.filter] === false);
       return;
     }
+    if (data.metric !== undefined) {
+      // The chart's metric selection is this view's own state too. A metric that
+      // is not selected joins the selection in vocabulary order, so the series
+      // order is the order the picker itself states.
+      const name = data.metric;
+      const chosen = selectedMetrics(chartVocabulary);
+      const next =
+        chosen.indexOf(name) >= 0
+          ? chosen.filter((other) => other !== name)
+          : chartVocabulary.filter(
+              (other) => chosen.indexOf(other) >= 0 || other === name,
+            );
+      // The chart keeps at least one series: the last pressed metric stays on.
+      if (next.length > 0) setSetting("metrics", next);
+      return;
+    }
     if (data.agentsView !== undefined) {
       navigate(
         routeFor({
@@ -3429,9 +3514,7 @@
       navigate(
         withTable({ sort: target.value === "default" ? "" : target.value }),
       );
-      return;
     }
-    if (target.id === "chart-metric") setSetting("metric", target.value);
   };
 
   const wire = () => {

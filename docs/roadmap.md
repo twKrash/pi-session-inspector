@@ -15,8 +15,9 @@ recorded work; they gate nothing and are not required for the published
 release. The post-1.0 MCP semantic integration shipped in `1.1.0`.
 
 **Post-1.0:** nine follow-ups are recorded at the end of this document — MCP
-semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native telemetry
-integration, push-based live updates, multi-metric chart selection, usage
+semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native
+telemetry integration, push-based live updates, multi-metric chart selection
+(implemented, unreleased), usage
 attribution, working tool/skill links, additional locales, and other
 harnesses. None is a release gate, and none blocks M8.
 
@@ -1263,33 +1264,60 @@ Before merge:
 
 ### 5. Multi-metric charts with metric selection
 
-**Status:** Partly supported. **Depends on:** nothing.
+**Status:** Implemented in source, unreleased. The next release carries it;
+`1.1.0` does not.
 
 **Current state:** `scripts/web/chart.ts` already draws N series — each series
 carries its own `key`, `axis`, `format`, and palette entry, and the axis
-formatter is per-series, so a cost axis and a token axis can already differ. What
-is missing is the projection and the control: the client projects exactly one
-series (the chart payload's `series` array in `scripts/web/client.js`), and no
-UI offers metric selection.
+formatter is per-series, so a cost axis and a token axis can already differ. The
+client now projects one series per selected metric and offers a picker for the
+selection; before that it projected exactly one series and no UI offered metric
+selection.
 
-Expected implementation shape:
+Decisions this item had to make:
 
-- project the additional series the DTO already carries (cost, tokens, and the
-  other daily rows) instead of one;
-- a metric selector on the chart panel: multi-select, with a documented default
-  (cost and tokens are the obvious pair);
-- a stated axis rule for differing units — dual axes exist per series today, so
-  the decision is which metrics share an axis and how the legend says so;
-- `null` (unavailable) stays a gap and never becomes a zero, and an unavailable
-  metric must not silently vanish from the selector;
-- one DTO and one chart module shared by the static report and the localhost UI.
+- the picker is a pressed-toggle group (`button.metric-toggle`), not a
+  multi-select `<select>`: a modifier-key list is not a control a report should
+  require, and the client's availability filters already use this pattern. The
+  selection is this view's own browser state, remembered per view, so it
+  survives a tab switch and writes no storage;
+- the default pair is `cost` + `tokens`, which is the pair whose units differ, so
+  the axis rule is visible before the reader chooses anything;
+- the axis rule: a chart of more than one metric splits by unit — `cost` on the
+  right axis, the count metrics on the left one — and a chart of a single metric
+  draws on the left axis whatever it is, which is the rendering a lone metric has
+  always had. The panel states the rule in one line; the legend and the tooltips
+  carry one entry per series, each with its own value formatter;
+- `null` stays a gap. A day that does not publish a metric is a `null` point in
+  that line, and the exact-value table states `Unavailable` for that cell rather
+  than formatting it — `formatCost` would otherwise have printed `< $0.0001` for
+  a cost the row never held;
+- a selected metric the rows cannot fill is named (`Unavailable in this range:
+  …`) and stays selected, so an empty metric is distinguishable from one that was
+  never picked. A chart whose every selected metric is unavailable still draws
+  nothing and keeps the earlier single `Unavailable` panel;
+- the JSON report is unchanged: the picker is browser state, never a DTO field,
+  and the last pressed metric cannot be turned off because a chart of nothing is
+  not a state the view offers.
 
-Before merge:
+Before-merge items (all closed):
 
-1. selecting two metrics renders two series with correct axes and tooltips;
-2. the selection survives a tab switch inside the session;
-3. the JSON report output is unchanged unless a report deliberately adopts the
-   selector.
+1. selecting a second metric renders two (then three) series with the axes above
+   and per-series formatters, asserted on the client's own projected chart input
+   through the client harness (`chartInputs()`);
+2. the selection survives a tab switch inside the session, and the last pressed
+   metric stays pressed;
+3. JSON output is unchanged. The change is `scripts/web/client.js` plus the
+   catalog and stylesheet it reads; `scripts/web/chart.ts` and every report DTO
+   are untouched.
+
+The shipped asset changed, so the accepted browser regression baseline was
+re-recorded (`benchmark/baselines/browser.json`): asset 264,873 → 282,367 bytes
+(gzip 88,537 → 93,821) with the new asset SHA-256, and
+`npm run benchmark:browser:check` passes against the new figures with the behavior
+invariants unchanged — one authorized fetch, no token in URL or storage, no
+storage writes, exactly one initial render, a rendered chart, and one render per
+route change.
 
 ### 6. Attributing tokens and cost to tools, skills, environment, and more
 

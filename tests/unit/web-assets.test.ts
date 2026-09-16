@@ -2284,14 +2284,37 @@ test("the global aggregate renders the DTO's own totals and inventory", async ()
 // client.js: the chart and the table read the section's own daily rows
 // ---------------------------------------------------------------------------
 
-/** The chart metric select of the rendered view. */
-function chartSelect(harness: Harness): StubElement {
-  const select = harness
-    .element("view")
-    .querySelectorAll("select")
-    .find((node) => node.id === "chart-metric");
-  if (select === undefined) throw new Error("no chart metric select");
-  return select;
+/** The chart's metric toggles, in vocabulary order. */
+function metricToggles(harness: Harness): StubElement[] {
+  return harness.element("view").querySelectorAll("button.metric-toggle");
+}
+
+/** Every metric the picker offers, in vocabulary order. */
+function offeredMetrics(harness: Harness): (string | undefined)[] {
+  return metricToggles(harness).map((toggle) => toggle.dataset.metric);
+}
+
+/** The pressed metrics, in vocabulary order. */
+function pressedMetrics(harness: Harness): (string | undefined)[] {
+  return metricToggles(harness)
+    .filter((toggle) => toggle.getAttribute("aria-pressed") === "true")
+    .map((toggle) => toggle.dataset.metric);
+}
+
+/** One toggle, by the metric it selects. */
+function metricToggle(harness: Harness, name: string): StubElement {
+  const toggle = metricToggles(harness).find(
+    (node) => node.dataset.metric === name,
+  );
+  if (toggle === undefined) throw new Error(`no chart metric toggle: ${name}`);
+  return toggle;
+}
+
+/** The chart the client last projected: its labels, series, axes, and gaps. */
+function lastChart(harness: Harness) {
+  const input = harness.chartInputs().at(-1);
+  if (input === undefined) throw new Error("the client projected no chart");
+  return input;
 }
 
 /** The chart data table's headers, in render order. */
@@ -2301,21 +2324,34 @@ function chartDataHeaders(harness: Harness): (string | undefined)[] {
   return details.querySelectorAll("th").map((header) => header.textContent);
 }
 
+/** One data row of the chart's exact-value table, as its cells read. */
+function chartDataRow(harness: Harness, index: number) {
+  const details = harness.element("view").querySelectorAll("details")[0];
+  if (details === undefined) throw new Error("no chart data table");
+  return details
+    .querySelectorAll("tr")
+    [index]?.querySelectorAll("td")
+    .map((cell) => cell.textContent);
+}
+
 test("the global chart offers only the metrics its daily rows publish", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
     hash: "#/global/overview",
   });
   await harness.start();
-  const select = chartSelect(harness);
+  assert.deepEqual(plain(offeredMetrics(harness)), [
+    "sessions",
+    "cost",
+    "tokens",
+  ]);
   assert.deepEqual(
-    select.querySelectorAll("option").map((option) => option.value),
-    ["sessions", "cost", "tokens"],
-  );
-  assert.deepEqual(
-    select.querySelectorAll("option").map((option) => option.textContent),
+    plain(metricToggles(harness).map((toggle) => toggle.textContent)),
     ["Sessions", "Cost", "Tokens"],
   );
+  // The default is the pair whose units differ, so the axis rule is what the
+  // reader sees before choosing anything.
+  assert.deepEqual(plain(pressedMetrics(harness)), ["cost", "tokens"]);
   // One column per published field: a global daily row carries no generation or
   // tool count, so the table has no cell to fill with a fabricated zero.
   assert.deepEqual(chartDataHeaders(harness), [
@@ -2324,33 +2360,30 @@ test("the global chart offers only the metrics its daily rows publish", async ()
     "Tokens",
     "Cost (USD)",
   ]);
-  const rows = harness
-    .element("view")
-    .querySelectorAll("details")[0] as StubElement;
-  assert.deepEqual(
-    rows
-      .querySelectorAll("tr")[1]
-      ?.querySelectorAll("td")
-      .map((cell) => cell.textContent),
-    ["2026-02-01", "1", "400", "$0.08"],
-  );
+  assert.deepEqual(chartDataRow(harness, 1), [
+    "2026-02-01",
+    "1",
+    "400",
+    "$0.08",
+  ]);
   const rendered = harness.texts(harness.element("view")).join(" ");
   assert.equal(rendered.includes("NaN"), false);
   assert.equal(rendered.includes("undefined"), false);
 });
 
-test("a session view still charts every metric its own daily rows publish", async () => {
+test("a session view offers every metric its own daily rows publish", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
     hash: "#/current/overview?scope=tree",
   });
   await harness.start();
-  assert.deepEqual(
-    chartSelect(harness)
-      .querySelectorAll("option")
-      .map((option) => option.value),
-    ["sessions", "cost", "tokens", "generations", "tools"],
-  );
+  assert.deepEqual(plain(offeredMetrics(harness)), [
+    "sessions",
+    "cost",
+    "tokens",
+    "generations",
+    "tools",
+  ]);
   assert.deepEqual(chartDataHeaders(harness), [
     "Date",
     "Sessions",
@@ -2361,19 +2394,177 @@ test("a session view still charts every metric its own daily rows publish", asyn
   ]);
 });
 
-test("a chart row without the selected metric is unavailable, never a zero", async () => {
+test("a second metric adds a series, and only cost changes axis", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/overview?scope=tree",
+  });
+  await harness.start();
+  const pair = lastChart(harness);
+  assert.deepEqual(plain(pair.series.map((series) => series.key)), [
+    "cost",
+    "tokens",
+  ]);
+  // Money and counts do not share a scale: cost takes the right axis, counts the
+  // left one, and each series keeps its own value formatter.
+  assert.deepEqual(plain(pair.series.map((series) => series.axis)), [
+    "y1",
+    "y",
+  ]);
+  assert.deepEqual(plain(pair.series.map((series) => series.format)), [
+    "cost",
+    "number",
+  ]);
+  assert.deepEqual(plain(pair.series.map((series) => series.values)), [
+    [0.08, 0.16],
+    [400, 800],
+  ]);
+  assert.deepEqual(plain(pair.labels), ["2026-02-01", "2026-02-02"]);
+  assert.match(pair.ariaLabel, /Cost, Tokens/);
+
+  harness.click(metricToggle(harness, "tools"));
+  const three = lastChart(harness);
+  // The added metric joins in vocabulary order, the order the picker states.
+  assert.deepEqual(plain(three.series.map((series) => series.key)), [
+    "cost",
+    "tokens",
+    "tools",
+  ]);
+  assert.deepEqual(plain(three.series.map((series) => series.axis)), [
+    "y1",
+    "y",
+    "y",
+  ]);
+  assert.deepEqual(plain(pressedMetrics(harness)), ["cost", "tokens", "tools"]);
+});
+
+test("a lone metric draws on the left axis and states no axis rule", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/overview?scope=tree",
+  });
+  await harness.start();
+  harness.click(metricToggle(harness, "tokens"));
+  const lone = lastChart(harness);
+  assert.deepEqual(plain(lone.series.map((series) => series.key)), ["cost"]);
+  assert.deepEqual(plain(lone.series.map((series) => series.axis)), ["y"]);
+  assert.deepEqual(plain(pressedMetrics(harness)), ["cost"]);
+  assert.equal(
+    harness.texts(harness.element("view")).join(" ").includes("right axis"),
+    false,
+  );
+});
+
+test("the last pressed metric cannot be turned off", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/overview?scope=tree",
+  });
+  await harness.start();
+  harness.click(metricToggle(harness, "tokens"));
+  assert.deepEqual(plain(pressedMetrics(harness)), ["cost"]);
+  // A chart of nothing is not a state this view offers: the last toggle stays on.
+  harness.click(metricToggle(harness, "cost"));
+  assert.deepEqual(plain(pressedMetrics(harness)), ["cost"]);
+  assert.deepEqual(
+    plain(lastChart(harness).series.map((series) => series.key)),
+    ["cost"],
+  );
+});
+
+test("the metric selection survives a tab switch inside the session", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/overview?scope=tree",
+  });
+  await harness.start();
+  harness.click(metricToggle(harness, "tools"));
+  assert.deepEqual(plain(pressedMetrics(harness)), ["cost", "tokens", "tools"]);
+  harness.click(tabLink(harness, "llm"));
+  harness.click(tabLink(harness, "overview"));
+  assert.deepEqual(plain(pressedMetrics(harness)), ["cost", "tokens", "tools"]);
+  assert.deepEqual(
+    plain(lastChart(harness).series.map((series) => series.key)),
+    ["cost", "tokens", "tools"],
+  );
+});
+
+test("a day that does not publish a metric is a gap, never a zero", async () => {
   const snapshot = uiSnapshot();
   const day = snapshot.global.daily[0];
   if (day === undefined) throw new Error("fixture must carry global days");
-  delete (day as { sessions?: number }).sessions;
+  delete (day as { cost?: number }).cost;
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/global/overview",
+  });
+  await harness.start();
+  const input = lastChart(harness);
+  const cost = input.series.find((series) => series.key === "cost");
+  // The gap is a `null` point, and the metric that does carry a value still
+  // draws its own.
+  assert.deepEqual(plain(cost?.values), [null, 0.16]);
+  assert.deepEqual(
+    plain(input.series.find((series) => series.key === "tokens")?.values),
+    [400, 800],
+  );
+  // Nor does the table invent a figure for the value the row never held: no
+  // `$0.00` for a cost, and no bound such as `< $0.0001` either.
+  assert.deepEqual(chartDataRow(harness, 1), [
+    "2026-02-01",
+    "1",
+    "400",
+    "Unavailable",
+  ]);
+  const rendered = harness.texts(harness.element("view")).join(" ");
+  assert.equal(rendered.includes("NaN"), false);
+  assert.equal(rendered.includes("$0.00"), false);
+});
+
+test("a selected metric the rows cannot fill is stated, not dropped", async () => {
+  const snapshot = uiSnapshot();
+  const rows = snapshot.current.tree.range?.daily ?? [];
+  if (rows.length === 0) throw new Error("fixture must carry session days");
+  rows.forEach((row) => {
+    delete (row as { generations?: number }).generations;
+  });
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/overview?scope=tree",
+  });
+  await harness.start();
+  harness.click(metricToggle(harness, "generations"));
+  // The toggle stays pressed and the metric is named, so the reader can tell an
+  // empty metric from one that was never selected.
+  assert.deepEqual(plain(pressedMetrics(harness)), [
+    "cost",
+    "tokens",
+    "generations",
+  ]);
+  assert.deepEqual(
+    plain(lastChart(harness).series.map((series) => series.key)),
+    ["cost", "tokens"],
+  );
+  assert.match(
+    harness.texts(harness.element("view")).join(" "),
+    /Unavailable in this range: Generations/,
+  );
+});
+
+test("a chart whose every selected metric is unavailable draws nothing", async () => {
+  const snapshot = uiSnapshot();
+  snapshot.global.daily.forEach((day) => {
+    delete (day as { cost?: number }).cost;
+    delete (day as { totalTokens?: number }).totalTokens;
+  });
   const harness = createWebClient({
     responses: [snapshot],
     hash: "#/global/overview",
   });
   await harness.start();
   const view = harness.element("view");
-  // Nothing is plotted and no cell is written for a value the row never had.
-  assert.equal(view.querySelectorAll("polyline").length, 0);
+  // Nothing is plotted and no cell is written for a value the rows never had.
+  assert.equal(harness.chartInputs().length, 0);
   assert.equal(view.querySelectorAll("details").length, 0);
   assert.equal(harness.texts(view).join(" ").includes("NaN"), false);
 });

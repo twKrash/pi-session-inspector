@@ -386,7 +386,7 @@ function rangeDates(resolved: RangeMetadata["resolved"]): string {
 }
 
 const DAILY_NOTE = t("chart.note", {
-  metric: t("chart.tokens"),
+  metrics: t("chart.tokens"),
 });
 
 // ---------------------------------------------------------------------------
