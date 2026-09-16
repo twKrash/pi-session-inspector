@@ -1,17 +1,20 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `0.13.3`
+**Current release:** `1.0.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.8, and the integration-architecture/configuration/debug
-milestone (see below) are complete. M8 is not started.
+milestone (see below) are complete, including the Pre-M8.7 RC qualification of
+the `1.0.0` candidate. M8 is not started.
 
-**Next gate:** Pre-M8.7 RC qualification — one clean, immutable release
-candidate, evidenced by its own package hash.
+**Next gate:** M8 publication — publish the accepted `1.0.0` candidate
+(`d5bcfeb`, tarball `sha512` recorded in the
+[RC evidence package](release/1.0.0-rc-evidence.md)) and create the `v1.0.0`
+tag and release on that commit.
 
 **Post-1.0:** three follow-ups are recorded at the end of this document — MCP
 semantic integration, skill invocation evidence, and Pi native telemetry
-integration. None is a `1.0.0` release gate, and none blocks M8 or Pre-M8.7.
+integration. None is a `1.0.0` release gate, and none blocks M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -87,9 +90,11 @@ by the explicitly named post-M8 cleanup tail.
 
 ## M8 — hardening and release
 
-**Status:** Planned. M8 starts only after all Pre-M8 readiness sub-milestones
-pass their acceptance gates. Successful publication is the planned **`1.0.0`**
-release unless a deliberate SemVer decision changes that before publication.
+**Status:** Next gate. All Pre-M8 readiness sub-milestones have passed their
+acceptance gates, and the accepted `1.0.0` candidate is named in the
+[RC evidence package](release/1.0.0-rc-evidence.md). Successful publication is
+the planned **`1.0.0`** release unless a deliberate SemVer decision changes that
+before publication.
 
 M8 consumes the immutable release-candidate evidence package from Pre-M8.7. It
 must not silently repeat the entire qualification suite under a different name.
@@ -762,7 +767,17 @@ persisted `durationMs: 0`.
 
 ### Pre-M8.7 — RC hardening and package audit
 
-**Status:** Planned. **Depends on:** Pre-M8.1–Pre-M8.6 and Pre-M8.8.
+**Status:** Complete. **Depends on:** Pre-M8.1–Pre-M8.6 and Pre-M8.8.
+
+**Evidence:** [1.0.0 RC evidence package](release/1.0.0-rc-evidence.md) —
+release commit `d5bcfeb`, package version `1.0.0`, tarball
+`pi-session-inspector-1.0.0.tgz` (`sha512 e25d63ca…`), qualified from a clean
+checkout cloned from the public repository. The owner-verified manual
+browser/TUI/privacy matrix and the WSL2 case passed. Two target-SLO variances
+were accepted for the 1.0 baseline: the 10k-record HTML size ceiling was revised
+from `< 5 MiB` to `< 10 MiB`, and the warm/cold replay and HTML render times are
+accepted with their absolute SLOs unchanged. Hard regression gates stay disabled
+with two accepted baselines recorded; enabling them is a post-1.0 follow-up.
 
 Produce a release-candidate evidence package before M8 publication work. This
 is the final readiness gate, not a license to skip the smaller preceding
