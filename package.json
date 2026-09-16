@@ -1,6 +1,6 @@
 {
   "name": "@twkrash/pi-session-inspector",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Deterministic local-only session analytics for Pi",
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,7 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "image": "https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-current-dark.png"
+    "image": "https://raw.githubusercontent.com/twKrash/pi-session-inspector/main/docs/images/overview-current-dark.png"
   },
   "files": [
     "src",

@@ -1,24 +1,36 @@
 # README images
 
-The root `README.md` embeds two screenshots as **GitHub release assets**, not as
-repository files. No PNG is tracked here, so the repository and the npm tarball
-carry no binary image bytes.
+The root `README.md` embeds two screenshots as **GitHub release assets**. One
+extra copy is tracked in this directory for the package gallery, because the two
+hosts differ in how they serve bytes:
 
-| File | Subject | Size |
+| URL | `Content-Type` | Notes |
 | --- | --- | --- |
-| `overview-current-dark.png` | Overview tab of a current session, dark theme | 2541×1269, ~100 kB |
-| `overview-global-light.png` | Overview tab of the global report, light theme | 2540×1268, ~95 kB |
+| `github.com/…/releases/download/v0.13.3/…png` | `application/octet-stream`, `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff` | fine for `<img>` in a browser, which still sniffs; a strict consumer may refuse it |
+| `raw.githubusercontent.com/…/main/docs/images/…png` | `image/png` | what `pi.image` uses, so the [Pi package gallery](https://pi.dev/packages) can render the preview |
 
-Both are attached to the [`v0.13.3` release](https://github.com/twKrash/pi-session-inspector/releases/tag/v0.13.3)
-and referenced by absolute URL:
+| File | Subject | Where it lives |
+| --- | --- | --- |
+| `overview-current-dark.png` | Overview tab of a current session, dark theme | release asset **and** tracked here (gallery preview) |
+| `overview-global-light.png` | Overview tab of the global report, light theme | release asset only |
+
+README URLs:
 
 ```text
 https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-current-dark.png
 https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-global-light.png
 ```
 
+Gallery URL (`pi.image` in `package.json`):
+
+```text
+https://raw.githubusercontent.com/twKrash/pi-session-inspector/main/docs/images/overview-current-dark.png
+```
+
 `docs/images/*.png` is ignored by `.gitignore` so a local capture can never be
-committed by accident. Only this file is tracked in this directory.
+committed by accident; `overview-current-dark.png` is un-ignored deliberately.
+Neither copy ships in the npm tarball, whose `files` allowlist covers `src` and
+the root documents only.
 
 ## Provenance
 
@@ -37,12 +49,16 @@ markdown edit is needed:
 gh release upload v0.13.3 path/to/overview-current-dark.png --clobber
 ```
 
-Prefix that command with `env -u GH_TOKEN -u GITHUB_TOKEN` if you want to
-confirm the asset is readable without authentication; a public release asset
-answers an anonymous `GET`.
+Update the tracked gallery copy as well, or the two URLs drift apart:
 
 ```sh
-env -u GH_TOKEN -u GITHUB_TOKEN curl -sIL -o /dev/null -w '%{http_code}\n' \
+cp path/to/overview-current-dark.png docs/images/overview-current-dark.png
+```
+
+Both hosts answer an anonymous `GET`, so the check below needs no credentials:
+
+```sh
+env -u GH_TOKEN -u GITHUB_TOKEN curl -sIL -o /dev/null -w '%{http_code} %{content_type}\n' \
   https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-current-dark.png
 ```
 

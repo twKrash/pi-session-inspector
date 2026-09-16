@@ -2,6 +2,16 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3]
+
+### Changed
+
+- `pi.image` now points at a repository copy of the gallery preview served by
+  `raw.githubusercontent.com`. GitHub serves release assets as an attachment
+  with `application/octet-stream` and `x-content-type-options: nosniff`, which a
+  strict consumer can refuse to render; the tracked copy is served as
+  `image/png`.
+
 ## [1.0.2]
 
 ### Added

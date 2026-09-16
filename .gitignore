@@ -17,5 +17,7 @@ coverage/
 .tmp/
 .cache/
 
-# README screenshots are GitHub release assets (docs/images/README.md), never tracked
+# Screenshots are GitHub release assets (docs/images/README.md), except the
+# gallery preview, which needs a URL serving a real image content type.
 docs/images/*.png
+!docs/images/overview-current-dark.png
