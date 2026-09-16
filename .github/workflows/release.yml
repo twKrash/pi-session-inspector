@@ -296,8 +296,7 @@ jobs:
             exit 0
           fi
           gh release create "$TAG" \
+            ./*.tgz release-metadata.json \
             --verify-tag \
             --title "${TAG#v}" \
-            --notes-file notes.md \
-            --attach ./*.tgz \
-            --attach release-metadata.json
+            --notes-file notes.md
