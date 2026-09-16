@@ -13,14 +13,15 @@ current release; it adds the multi-metric chart selection.
 **Next gate:** none for `1.0.0`. The post-1.0 follow-ups below are the next
 recorded work; they gate nothing and are not required for the published
 release. MCP semantic integration shipped in `1.1.0` and multi-metric chart
-selection in `1.2.0`.
+selection in `1.2.0`. The maintenance and hardening backlog recorded after that
+release is unscheduled too: it blocks nothing and carries no version.
 
-**Post-1.0:** nine follow-ups are recorded at the end of this document — MCP
+**Post-1.0:** ten follow-ups are recorded at the end of this document — MCP
 semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native
 telemetry integration, push-based live updates, multi-metric chart selection
-(shipped in `1.2.0`), usage
-attribution, working tool/skill links, additional locales, and other
-harnesses. None is a release gate, and none blocks M8.
+(shipped in `1.2.0`), usage attribution, working tool/skill links, additional
+locales, other harnesses, and the loading state with a first-paint theme. None is
+a release gate, and none blocks M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -1017,7 +1018,7 @@ This milestone is explicitly **not** a `1.0.0` release gate. It collects
 product-facing follow-ups discovered during Pre-M8 hardening plus candidate
 work raised after the `1.0.0` publication. Both halves follow the same rules:
 items 1–3 are integration/evidence follow-ups with a recorded research
-baseline, and items 4–9 are candidate product and platform work whose research
+baseline, and items 4–10 are candidate product and platform work whose research
 question is still open. Nothing in this section is scheduled, and no item in it
 blocks a release.
 
@@ -1461,6 +1462,91 @@ Before merge:
 3. a fixture matrix of sanitized samples exists for that harness;
 4. Pi-path behaviour is unchanged.
 
+**Research input: Claude Code as the first candidate.** An external
+architectural review proposed Claude Code as the plausible first non-Pi source:
+its sessions are local JSONL with parent-linked records, model and usage data,
+tool calls and results, and sidecar subagent transcripts. These are leads from
+that review, **not accepted source contracts** — nothing about the shape or
+stability of that format has been verified here. The useful part is the pipeline
+shape, not a commitment to a harness:
+
+```text
+harness/session source → source adapter → canonical model
+                      → reports / L2 projection → JSON, HTML, TUI
+```
+
+**Prerequisite before choosing Claude Code as the first implementation.** Run a
+dedicated source investigation and record it as a research document; adopt a
+source model only through an ADR. The investigation must establish:
+
+- persisted session location, schema, and version-drift behaviour;
+- record identity, parent linkage, rewind/branch semantics, and active ancestry;
+- per-metric evidence authority: `native`, `inferred`, or `unavailable`;
+- compaction behaviour and which evidence survives it;
+- subagent persistence, parent linkage, and the availability of status, model,
+  and usage;
+- lifecycle hooks, and whether they carry evidence the persisted data does not;
+- privacy and redaction implications of the second format;
+- the mapping onto the existing canonical model;
+- which Pi-specific concepts need a source-specific replacement.
+
+Known caveats that must survive that investigation:
+
+- cost may have to be derived rather than read as native, which is a different
+  evidence class and must be named as such wherever it appears;
+- there is no Pi tracking-marker equivalent, so active-scope semantics need a
+  source-specific anchor instead of a reused marker;
+- compaction usage may stay `unavailable`, and subagent evidence comes from a
+  different persisted source than Pi's tool results;
+- the in-Pi TUI and the Pi inventory semantics do not port to another harness.
+
+The progression is deliberate, and no stage may be skipped:
+
+```text
+preliminary lead → dedicated research document → source-model ADR
+                 → implementation plan → code
+```
+
+No CLI/bin surface, no lifecycle hooks, no adapter, and no implementation task is
+added for a harness that has not passed the investigation above.
+
+### 10. Loading state and first-paint theme
+
+**Status:** Ready for a spec. **Depends on:** nothing. Distinct from item 4:
+push decides when data arrives, this decides what the reader sees while it has
+not arrived yet.
+
+**Current state:** `src/ui/web/shell.html` carries one hidden `#loading` line
+("Loading report…") that `setLoading()` in `scripts/web/client.js` toggles, so a
+cold load shows a single sentence where the report will be. Theme is
+browser-local: a click toggles `theme-dark` on `body` and nothing is persisted —
+the browser regression asserts zero storage writes — while
+`src/config/settings.ts` already resolves `theme` with `CLI option >
+settings.json > product default` precedence and reports its `themeSource`. The
+interactive server serves the shell untinted, so the first paint is always the
+product default: the reader sees the other theme until the data lands, and the
+click is lost on reload.
+
+Expected implementation shape:
+
+- a loading window that states what is loading and keeps the shell navigable,
+  reusing the existing live-region vocabulary instead of a spinner-only screen;
+- the resolved theme reaches the first paint — server-rendered into the shell, or
+  applied by the earliest asset the shell already loads — so showing the reader
+  their own theme needs no data fetch;
+- the browser-local toggle keeps meaning the current document, and delivering the
+  resolved preference must not become a URL, a route, or a report field;
+- no new asset, no runtime module loading, no CSP change, and no change to the
+  three-file asset contract.
+
+Before merge:
+
+1. a cold load paints the resolved theme before any report data arrives;
+2. the loading window is asserted through the client harness — visible while a
+   response is deferred, gone after the render, and announced once;
+3. a reload paints the resolved preference again with the storage-write
+   assertion still empty.
+
 ### Acceptance
 
 - None of the MCP, skill-attribution, or native-telemetry work is required for
@@ -1479,3 +1565,96 @@ Before merge:
   to enter `main` as independently mergeable pull requests. A new dimension,
   source, or metric gets its own name and its own documented method before it
   gets a place in the DTO.
+
+## Maintenance and hardening backlog
+
+**Status:** Recorded, unscheduled. **Depends on:** nothing. No item here is a
+release gate and none is required for the published `1.2.0`.
+
+An external architectural/code review of `main` after `1.2.0` produced the
+findings below. Each one was checked against the tree before it was recorded, and
+findings already covered by an existing item are cross-referenced rather than
+restated. The review's praise is not repeated here, because praise is not work.
+Nothing below weakens the observer-only, privacy, determinism, or lifecycle
+invariants.
+
+### Immediate — confirmed defect: macOS parent-session containment
+
+`src/pi/parent-session.ts` mixes a canonical root with a lexical candidate: it
+canonicalizes `realpath(sessionRoot)` into `approvedRoot` and then tests
+containment with `relative(approvedRoot, resolve(parentPath))`. On macOS `/var`
+commonly resolves to `/private/var`, so a parent transcript under the same
+physical root can be judged outside it and the child is reported `unavailable`
+instead of linked. The failure is platform-specific and silent, and it is a
+defect rather than a style concern.
+
+Fix direction:
+
+- do lexical containment with `resolve()` on both root and candidate;
+- do canonical containment separately with `realpath()` on both;
+- keep the existing component walk and its symlink rejection unchanged;
+- add regression coverage for the canonical/lexical divergence;
+- add macOS CI coverage so this class of platform bug is caught here rather than
+  by a reader on that platform.
+
+### Near term — duplication with one semantic owner
+
+- `roundCost()` exists as six byte-identical private copies — `core/canonical.ts`,
+  `core/reports.ts`, `core/reduce.ts`, `integrations/subagents.ts`,
+  `ui/report-projection.ts`, `ui/ui-projection.ts`. They encode one accounting
+  semantic (the retained-precision cost rounding), so one shared home keeps the
+  rule from drifting between layers or projections.
+- `integrations/subagents.ts` does **not** duplicate the ID digest: the helper
+  `opaqueSubagentId()` is the single producer. What is duplicated is the
+  resolution around it — the six-line "own run id, else the aggregate run id plus
+  `#index`" fallback appears for both `results[]` and
+  `workflowChildren.children[]`. Consolidate the expression, not the digest.
+- Record guards named `isRecord` exist with three distinct semantics: a
+  non-array record (`core/canonical.ts`, `core/retained-aggregates.ts`), a loose
+  object that admits arrays (`core/reduce.ts`, `core/live-counter-fold.ts`,
+  `integrations/adapters/shared.ts`, `pi/adapter.ts`, `pi/scope.ts`), and a
+  plain-prototype record (`storage/recovery.ts`). Only identical predicates may
+  be merged; the distinctions are deliberate and stay visible.
+
+### Medium term — maintenance and investigation
+
+- **Composition root.** `src/index.ts` owns several unrelated responsibilities —
+  command handling, runtime/session state, evidence assembly, and UI/server
+  composition. Prefer incremental extraction of those boundaries over a rewrite,
+  preserving every lifecycle semantic and the existing dependency-cruiser edges.
+- **`liveSessions` lifecycle.** The process-global `Map` in `src/index.ts` has no
+  eviction path — nothing deletes an entry. Establish ownership first (per
+  session, per runtime, or per process), then choose a cap or retention rule.
+  This is an investigation, not a scheduled change.
+- **Authored browser sources.** The authored sources under `scripts/web/` are
+  plain JavaScript and sit outside `tsc` — `tsconfig.json` includes
+  `scripts/**/*.ts` only — so the route, range, and client logic is untyped.
+  Prefer migrating it to TypeScript through the existing esbuild pipeline over
+  adding a large JSDoc layer, with shipped behavior, the three-file asset
+  contract, and the deterministic build unchanged.
+- **Observer failure visibility.** Many observer failure paths swallow their
+  errors to preserve the "never break Pi" rule, and only a few surface a bounded
+  reason through the debug log. Extend bounded failure reasons into debug mode
+  only — event code, phase, and a `redactBoundedText`-sanitized reason. Raw
+  exceptions, paths, producer payloads, prompts, and credentials must not reach
+  the log, and the privacy model does not change to make the output nicer.
+- **Test hardening.** No coverage tooling exists (`test` and `test:invariants`
+  only). Add informational coverage first, with no percentage gate. Add one more
+  Pi persisted-format version or an explicit format-drift fixture. The
+  hand-rolled browser harness has known limits: record that as a testing risk
+  rather than prescribing a replacement, and do not make process or
+  version-string assertions more brittle.
+- **Documentation.** Contributor-facing documentation is dense and this roadmap
+  has accumulated implementation history. Shorter onboarding, and a roadmap that
+  keeps to current and planned work with durable decisions in ADRs and specs, is
+  a reasonable future cleanup; no historical material is deleted for it.
+
+### Later — research
+
+- Other harnesses stay item 9 above. The external review's Claude Code
+  observation is recorded there rather than as a parallel initiative.
+
+**Not recorded on purpose:** reviewer style preferences, module size treated as
+a defect by itself, an arbitrary coverage percentage gate, replacing the browser
+harness, merging record guards whose semantics differ, and rewriting historical
+1.x roadmap material.
