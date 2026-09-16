@@ -72,5 +72,8 @@
   "dependencies": {
     "chart.js": "4.5.1",
     "i18next": "26.4.2"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

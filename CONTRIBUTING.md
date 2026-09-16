@@ -62,22 +62,35 @@ format.
    version, tarball name, file count, and hashes in the evidence package under
    `docs/release/`.
 3. Tag the release commit `v<version>` and push the tag.
-   `.github/workflows/release.yml` then publishes that artifact to npm and
-   creates the GitHub release. It refuses a tag that disagrees with
-   `package.json`, a version with no `CHANGELOG` section, and a version that is
-   already on the registry.
-4. Verify the registry's `dist.integrity` and `dist.shasum` against the
-   qualified hashes, then install the published package and exercise
-   `/session-ins` from it.
+   `.github/workflows/release.yml` runs three jobs:
+   - `qualify` — refuses a tag that disagrees with `package.json` or a version
+     with no `CHANGELOG` section, runs the gate suite, packs the tarball,
+     records its SHA-1, SHA-512 and `release-metadata.json`, inspects the packed
+     contents, and uploads the artifact.
+   - `publish` — runs in the `npm-publish` environment with `id-token: write`
+     only. It downloads that exact tarball, re-verifies both checksums, obtains
+     a short-lived npm credential by exchanging the job's GitHub OIDC token
+     (no repository secret exists), publishes with `--access public
+     --provenance`, and then compares the registry's `dist.shasum` and
+     `dist.integrity` with the packed file.
+   - `release` — creates the GitHub release from the CHANGELOG section, with the
+     tarball and `release-metadata.json` attached.
 
-The publish step needs npm's trusted publisher configured for this repository
-and this workflow file. Until that exists the workflow fails at publish, and a
-release is published by hand:
+   The npm trusted publisher configuration must name this repository, this
+   workflow file (`release.yml`), and the `npm-publish` environment; that triple
+   is what npm checks before it hands over the publish credential.
+4. Verify the registry's `dist.integrity` and `dist.shasum`, then install the
+   published package and exercise `/session-ins` from it.
+
+If the workflow cannot run (no tag, or trusted publishing unavailable), a
+release is published by hand from a clean checkout:
 
 ```bash
 npm pack
 npm publish <tarball> --access public   # scoped packages: never publish restricted
 ```
+
+`publishConfig.access` in `package.json` keeps that from being forgotten.
 
 Published contents are immutable. If the wrong bytes ship, deprecate that
 version and publish a corrected one; do not rely on unpublishing.
