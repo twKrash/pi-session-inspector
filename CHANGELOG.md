@@ -2,6 +2,23 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0]
+
+### Added
+
+- `mcp` semantic integration for `pi-mcp-adapter`: the report gains one `mcp`
+  row with `toolApprovals`, `iframeApprovals`, and `iframeDenials` counters read
+  from the versioned `mcp-approval-v1` session entries, plus presence evidence
+  from the `pi-mcp-adapter/status/v1` runtime snapshot. Server names, tool names,
+  and approval hashes are validated in place and discarded, and the runtime
+  snapshot stays a presence sighting rather than an activity counter.
+
+### Changed
+
+- The README integration matrix and `docs/integrations.md` describe the `mcp`
+  integration, and the integration-authoring checklist now names the adapter
+  re-export line next to the registration line.
+
 ## [1.0.3]
 
 ### Changed

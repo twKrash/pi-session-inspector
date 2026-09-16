@@ -1,21 +1,21 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.0.3`
+**Current release:** `1.1.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
 and M8 (publication and release) are complete. `1.0.0` is published to npm as
 `@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`. The `1.0.x`
 patch line has continued past it — `1.0.1` through `1.0.3` are published the same
-way, and `1.0.3` is the current release.
+way, and `1.1.0` is the current release; it adds the post-1.0 `mcp` semantic
+integration.
 
 **Next gate:** none for `1.0.0`. The post-1.0 follow-ups below are the next
 recorded work; they gate nothing and are not required for the published
-release. MCP semantic integration is implemented in source and unreleased:
-`1.0.3` does not carry it.
+release. The post-1.0 MCP semantic integration shipped in `1.1.0`.
 
 **Post-1.0:** nine follow-ups are recorded at the end of this document — MCP
-semantic integration (implemented, awaiting release), skill invocation evidence, Pi native telemetry
+semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native telemetry
 integration, push-based live updates, multi-metric chart selection, usage
 attribution, working tool/skill links, additional locales, and other
 harnesses. None is a release gate, and none blocks M8.
@@ -1021,10 +1021,9 @@ blocks a release.
 
 ### 1. MCP semantic integration
 
-**Status:** Implemented in source, unreleased. The `pi-mcp-adapter` integration
-proven during the integration-authoring architecture spike was squashed onto
-post-1.0 `main` as `8cdd19d` on `feat/post1.0-mcp-integration`. The current
-release `1.0.3` does not carry it; the next minor release does.
+**Status:** Complete in `1.1.0`. The `pi-mcp-adapter` integration proven during
+the integration-authoring architecture spike was squashed onto post-1.0 `main`
+as `8cdd19d` on `feat/post1.0-mcp-integration`.
 
 **Implementation record.** The spike branch `spike/mcp-integration` (pushed to
 `origin`) and its head commit remain the durable research record: exact producer

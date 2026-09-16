@@ -7,9 +7,9 @@ bounded live and cooperative evidence when a producer publishes some. There is
 no LLM analytics step, no cloud service, and no daemon: nothing leaves the
 machine and no model call is spent on analysis.
 
-> **Status `1.0.3`:** current-session, history, global, ledger, localhost UI,
-> in-Pi TUI, immutable HTML snapshots, and deterministic JSON reports are
-> available.
+> **Status `1.1.0`:** current-session, history, global, ledger, localhost UI,
+> in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, and the `mcp`
+> semantic integration are available.
 
 ## Screenshots
 
