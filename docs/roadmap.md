@@ -9,12 +9,13 @@ and M8 (publication and release) are complete. `1.0.0` is published to npm as
 patch line has continued past it — `1.0.1` through `1.0.3` are published the same
 way, and `1.0.3` is the current release.
 
-**Next gate:** none for `1.0.0`. The three post-1.0 follow-ups below are the
-next recorded work; they gate nothing and are not required for the published
-release.
+**Next gate:** none for `1.0.0`. The post-1.0 follow-ups below are the next
+recorded work; they gate nothing and are not required for the published
+release. MCP semantic integration is implemented in source and unreleased:
+`1.0.3` does not carry it.
 
 **Post-1.0:** nine follow-ups are recorded at the end of this document — MCP
-semantic integration, skill invocation evidence, Pi native telemetry
+semantic integration (implemented, awaiting release), skill invocation evidence, Pi native telemetry
 integration, push-based live updates, multi-metric chart selection, usage
 attribution, working tool/skill links, additional locales, and other
 harnesses. None is a release gate, and none blocks M8.
@@ -1020,16 +1021,18 @@ blocks a release.
 
 ### 1. MCP semantic integration
 
-Validate and ship the `pi-mcp-adapter` integration proven during the
-integration-authoring architecture spike.
+**Status:** Implemented in source, unreleased. The `pi-mcp-adapter` integration
+proven during the integration-authoring architecture spike was squashed onto
+post-1.0 `main` as `8cdd19d` on `feat/post1.0-mcp-integration`. The current
+release `1.0.3` does not carry it; the next minor release does.
 
-**Parked work.** The spike implementation is committed on branch
-`spike/mcp-integration` (pushed to `origin`); `git worktree list` shows the
-parked worktree created for it. That branch is the continuation point and its
-head commit is the durable research record: exact producer contract, files and
-lines changed, the architecture measurement, the negative-control result, and
-the verification evidence behind this baseline. It stays unmerged while this
-section's before-merge items are unmet.
+**Implementation record.** The spike branch `spike/mcp-integration` (pushed to
+`origin`) and its head commit remain the durable research record: exact producer
+contract, files and lines changed, the architecture measurement, the
+negative-control result, and the verification evidence behind this baseline. The
+shipped change is one adapter (`src/integrations/adapters/mcp.ts`), two
+registration lines, focused tests, and the `docs/integrations.md` and README
+matrix rows.
 
 Research baseline:
 
@@ -1049,20 +1052,27 @@ Expected implementation shape:
 - one `mcp` integration adapter;
 - registration in the integration composition root;
 - focused tests;
-- `docs/integrations.md` update;
+- `docs/integrations.md` and README matrix updates;
 - no MCP-server-specific integrations;
 - no core/report/UI integration-key lists;
 - no parsing of arbitrary MCP arguments, results, prompts, or errors.
 
-Before merge:
+Before-merge items (all closed):
 
-1. repeat the producer-contract review against the version actually targeted by
-   the post-1.0 release;
-2. remove remaining test-side hard-coded integration-count/order mirrors where
-   they are only mechanical table-size assertions;
-3. review whether the adapters barrel is useful or merely creates a second
-   registration edit;
-4. run focused privacy/dedup/status review and the normal verification suite.
+1. the producer-contract review was repeated against `pi-mcp-adapter 2.34.0`,
+   the version the next release targets: the status channel and snapshot
+   version, the `mcp-approval-v1` tool/iframe record shapes, the exact key
+   lists, and the SHA-256 hex rule all match the adapter's readers;
+2. the mechanical integration-count mirrors were replaced by the declaration
+   itself (`reportIntegrations(integrations).length`);
+3. the adapters barrel review concluded *keep*: it is the single import seam for
+   the composition root and the adapter test, so removing it would trade one
+   re-export line for explicit imports in two files. Every site that described
+   registration as one line now names the re-export line as well (README,
+   `docs/integrations.md`, ADR 0019, the composition-root comment);
+4. the privacy/dedup/status review and the verification suite were run: 1000
+   production tests, 35 invariants, typecheck, lint, format, dependency rules,
+   `knip`, `publint --strict`, and `build:web:check` all pass.
 
 Architecture acceptance:
 

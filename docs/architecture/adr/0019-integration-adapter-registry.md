@@ -192,7 +192,7 @@ Instrumentation sits at the subsystem boundaries (the loops above) and on the to
 
 ## Consequences
 
-- Adding an ordinary integration is one definition file, one line in `src/integrations/index.ts`, focused tests, and one `docs/integrations.md` matrix row — with no edits to reports, retention, canonical projection, generic telemetry folding, observation defaults, or UI integration lists.
+- Adding an ordinary integration is one definition file, one re-export line in `src/integrations/adapters/index.ts`, one line in `src/integrations/index.ts`, focused tests, and one `docs/integrations.md` matrix row — with no edits to reports, retention, canonical projection, generic telemetry folding, observation defaults, or UI integration lists.
 - Generic machinery shrinks: no registry object, no derived key tables, no numeric order, no duplicate configuration.
 - Presence/evidence semantics, privacy rules, determinism, retention behavior, and the settings/debug boundaries above are unchanged.
 - One integration failing cannot break another; live registrations are disposed exactly once; reasons stay bounded and closed.

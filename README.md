@@ -107,6 +107,7 @@ Shipped integrations ([full contract](docs/integrations.md)):
 | `permission` | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors` |
 | `subagents` | persisted native subagent tool results | Rich run and activity evidence in the Agents view; the row itself declares no counters |
 | `lens` | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls | `calls` |
+| `mcp` | `pi-mcp-adapter` `mcp-approval-v1` entries, re-validated against the declared shape, plus its `pi-mcp-adapter/status/v1` runtime snapshot | `toolApprovals`, `iframeApprovals`, `iframeDenials`; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
 
 Presence and evidence are independent claims. `Present / Unavailable` means the
 integration is installed but produced no observable evidence in the tracked
@@ -239,6 +240,7 @@ Adding an ordinary semantic integration should require approximately:
 
 ```text
 one adapter/definition file
+one re-export line in src/integrations/adapters/index.ts
 one registration line in src/integrations/index.ts
 focused tests for its mapping
 one row in the integrations matrix

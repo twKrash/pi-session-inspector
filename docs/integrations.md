@@ -1,6 +1,6 @@
 # Integrations
 
-An **integration** is a known semantic protocol: Inspector understands the evidence that producer writes and turns it into bounded, reportable facts. Adding one is meant to be boring — a descriptor, one registration line, focused tests, and a row in the matrix below.
+An **integration** is a known semantic protocol: Inspector understands the evidence that producer writes and turns it into bounded, reportable facts. Adding one is meant to be boring — a descriptor, one re-export line, one registration line, focused tests, and a row in the matrix below.
 
 - Composition root: [`src/integrations/index.ts`](../src/integrations/index.ts) — the one place that declares which integrations Inspector supports, in report order.
 - Contract: [`src/integrations/contract.ts`](../src/integrations/contract.ts) — the descriptor and its optional typed hooks.
