@@ -18,9 +18,11 @@ on:
 permissions:
   contents: read
 
-# Never cancel a release mid-flight, and never run two for the same tag.
+# Never cancel a release mid-flight, and never run two for the same tag. The key
+# is the tag name, so a tag push and a workflow_dispatch for the same release
+# share one queue instead of racing each other.
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref }}
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -69,8 +71,17 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.x
+          node-version: 22.22.1
           cache: npm
+
+      # The artifact's bytes are produced here, so the toolchain that packs them
+      # is pinned rather than inherited from the runner image. `publish` pins the
+      # same two versions.
+      - name: Use the pinned toolchain
+        run: |
+          npm install --global npm@11.19.1
+          node --version
+          npm --version
 
       - run: npm ci
 
@@ -186,10 +197,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.x
+          node-version: 22.22.1
 
       # Pinned deliberately: trusted publishing needs npm 11.5.1 or newer, and a
-      # floating `npm@latest` would silently change what packs and publishes.
+      # floating `npm@latest` would silently change what packs and publishes. The
+      # artifact itself is never repacked here: this job publishes the exact
+      # `.tgz` that `qualify` produced and verified.
       - name: Use the pinned npm that exchanges the OIDC token
         run: |
           npm install --global npm@11.19.1
@@ -285,7 +298,70 @@ jobs:
         with:
           name: npm-package
 
+      - name: Check whether this tag already has a release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.qualify.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "exists=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      # An existing release is never overwritten. It is accepted only when it
+      # still targets this tag and carries the exact assets the qualification job
+      # produced; anything else fails the run for a human to look at.
+      - name: Verify the existing release matches the qualified artifact
+        if: steps.existing.outputs.exists == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.qualify.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          release_tag="$(gh release view "$TAG" --repo "$REPO" --json tagName --jq .tagName)"
+          tarball="$(ls ./*.tgz)"
+          tarball_name="$(basename "$tarball")"
+          if [ "$release_tag" != "$TAG" ]; then
+            echo "::error::release $TAG reports tag '$release_tag'"
+            exit 1
+          fi
+          gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' > assets.txt
+          for name in "$tarball_name" release-metadata.json; do
+            if ! grep -qxF "$name" assets.txt; then
+              echo "::error::release $TAG is missing asset $name"
+              exit 1
+            fi
+          done
+          rm -rf existing && mkdir existing
+          gh release download "$TAG" --repo "$REPO" --dir existing
+          qualified_sha1="$(cut -d' ' -f1 SHA1SUMS)"
+          qualified_sha512="$(cut -d' ' -f1 SHA512SUMS)"
+          released_sha1="$(sha1sum "existing/$tarball_name" | cut -d' ' -f1)"
+          released_sha512="$(sha512sum "existing/$tarball_name" | cut -d' ' -f1)"
+          if [ "$qualified_sha1" != "$released_sha1" ] || [ "$qualified_sha512" != "$released_sha512" ]; then
+            echo "::error::release $TAG carries a tarball that differs from the qualified artifact"
+            echo "::error::qualified sha1=$qualified_sha1 released sha1=$released_sha1"
+            exit 1
+          fi
+          if ! diff -q release-metadata.json existing/release-metadata.json >/dev/null; then
+            echo "::error::release $TAG carries different release metadata"
+            exit 1
+          fi
+          {
+            echo "### Existing release verified"
+            echo '```'
+            echo "tag: $release_tag"
+            echo "asset: $tarball_name sha1=$released_sha1"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Create the GitHub release for the tag
+        if: steps.existing.outputs.exists == 'no'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.qualify.outputs.tag }}
@@ -294,10 +370,6 @@ jobs:
           set -eu
           # No checkout in this job: name the repository instead of relying on a
           # local git remote.
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            echo "release $TAG already exists; leaving it in place"
-            exit 0
-          fi
           gh release create "$TAG" \
             ./*.tgz release-metadata.json \
             --repo "$REPO" \

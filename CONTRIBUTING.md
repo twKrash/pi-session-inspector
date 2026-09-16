@@ -74,13 +74,36 @@ format.
      --provenance`, and then compares the registry's `dist.shasum` and
      `dist.integrity` with the packed file.
    - `release` — creates the GitHub release from the CHANGELOG section, with the
-     tarball and `release-metadata.json` attached.
+     tarball and `release-metadata.json` attached. An existing release is never
+     overwritten: it is accepted only if it targets this tag, carries both
+     expected assets, and its tarball and metadata match the qualified artifact.
 
    The npm trusted publisher configuration must name this repository, this
    workflow file (`release.yml`), and the `npm-publish` environment; that triple
    is what npm checks before it hands over the publish credential.
 4. Verify the registry's `dist.integrity` and `dist.shasum`, then install the
    published package and exercise `/session-ins` from it.
+
+### Pipeline notes from the `1.0.1` release
+
+- **The trusted publisher fields must match the OIDC claims exactly.** Owner
+  (`twKrash`), repository **name only** (`pi-session-inspector`), workflow file
+  (`release.yml`), environment (`npm-publish`). The form has a separate owner
+  field, so repeating the owner inside the repository box binds a repository
+  that does not exist, and npm then answers `OIDC token exchange error -
+  package not found` for an otherwise valid token. The `publish` job prints the
+  claims npm sees, so a mismatch is a direct comparison.
+- **A successful publish is not immediately readable.** The registry's read path
+  can lag, so verification retries for up to a minute before it compares
+  `dist.shasum` and `dist.integrity` with the packed file, and fails loudly if
+  they disagree.
+- **Archives are content-reproducible, not byte-reproducible.** Two environments
+  packing the same commit produce the same entries with identical contents and
+  tar metadata but a different gzip stream, so their hashes differ. Integrity is
+  therefore compared against the artifact the qualification job built and
+  uploaded, never against a tarball repacked elsewhere.
+- **The packing toolchain is pinned** (Node `22.22.1`, npm `11.19.1`) in
+  `qualify`, and `publish` never repacks: it publishes that exact `.tgz`.
 
 If the workflow cannot run (no tag, or trusted publishing unavailable), a
 release is published by hand from a clean checkout:
