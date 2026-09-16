@@ -96,6 +96,12 @@ release commit `e907d95`; the registry's `dist.shasum` and `dist.integrity`
 match the qualified candidate, and the published artifact was installed from the
 registry and exercised. The steps below are the procedure that was followed.
 
+Post-release hardening adds what this milestone could not assume: continuous
+integration (`.github/workflows/ci.yml`, two required jobs plus a next-major Node
+job), a tag-triggered publish workflow (`.github/workflows/release.yml`), and
+branch protection on `main` requiring a pull request, one approval, and the
+`quality` and `test` checks.
+
 M8 consumes the immutable release-candidate evidence package from Pre-M8.7. It
 must not silently repeat the entire qualification suite under a different name.
 M8 owns final candidate verification and publication:

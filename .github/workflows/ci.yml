@@ -47,3 +47,20 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:invariants
+
+  # The declared floor is "anything from 22.19.0 on", so the next major is
+  # watched too. It reports on the run but is not a required check, so a future
+  # Node breakage surfaces without blocking a pull request on it.
+  test-next:
+    name: test (node 24.x)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:invariants
