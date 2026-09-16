@@ -4,8 +4,18 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [0.13.3]
 
+### Added
+
+- The in-Pi TUI now bounds long tab content to 12 rendered lines per page and
+  supports `↑` / `↓` page navigation. Tab and scope changes return to the first
+  page, while short views remain unchanged and show no pagination noise.
+
 ### Fixed
 
+- Agent rows in the TUI now use the same semantic parent verdicts as the
+  browser/snapshot projection instead of exposing producer parent IDs.
+- Agent usage coverage is explicit in the TUI, and an empty ledger is reported
+  as an observed empty result rather than unavailable evidence.
 - A missing Inspector `wal/` directory is no longer indistinguishable from a
   healthy empty store when a valid checkpoint still declares retained WAL
   cursors: recovery reports the bounded `wal-directory-missing` code in

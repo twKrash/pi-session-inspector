@@ -7,6 +7,8 @@ import {
 } from "@earendil-works/pi-tui";
 import { cacheHitPercent } from "../core/reports.ts";
 import { buildLedger } from "../core/ledger.ts";
+import { sessionView } from "./report-projection.ts";
+import { agentParentVerdicts, type UiAgentParent } from "./ui-projection.ts";
 import {
   CURRENT_TABS,
   reduceCurrentTui,
@@ -16,6 +18,12 @@ import {
 } from "./current.ts";
 
 const WIDE_TABS_WIDTH = 87;
+/**
+ * Content lines rendered at once. The cursor moves by page over rendered lines,
+ * never over logical entities, so one entity can never straddle a boundary in
+ * the rendered output; header, tabs, scope and help stay outside the slice.
+ */
+const CONTENT_PAGE_LINES = 12;
 
 /** Availability copy shared by the inventory tabs; never an activity claim. */
 const INVENTORY_NOT_INVOCATIONS =
@@ -53,8 +61,9 @@ export function createCurrentTuiComponent({
   done: () => void;
 }): CurrentTuiComponent {
   let currentModel = model;
-  let state: CurrentTuiState = { tab: initialTab, scope: model.scope };
+  let state: CurrentTuiState = { tab: initialTab, scope: model.scope, page: 0 };
   let ledger: ReturnType<typeof buildLedger> | undefined;
+  let agentRows: ReturnType<typeof agentParentVerdicts> | undefined;
   let latestScopeReload = 0;
 
   function update(action: Parameters<typeof reduceCurrentTui>[1]): void {
@@ -69,6 +78,7 @@ export function createCurrentTuiComponent({
       if (requestId !== latestScopeReload || !nextModel) return;
       currentModel = nextModel;
       ledger = undefined;
+      agentRows = undefined;
       update({ type: "set-scope", scope });
     } catch {
       // TUI loading failures leave the current report visible.
@@ -86,6 +96,10 @@ export function createCurrentTuiComponent({
         update({ type: "previous-tab" });
       } else if (matchesKey(data, Key.right)) {
         update({ type: "next-tab" });
+      } else if (matchesKey(data, Key.down)) {
+        update({ type: "next-page", pageCount: contentPageCount() });
+      } else if (matchesKey(data, Key.up)) {
+        update({ type: "previous-page" });
       } else if (matchesKey(data, "a")) {
         void reloadScope("active");
       } else if (matchesKey(data, "t")) {
@@ -93,19 +107,44 @@ export function createCurrentTuiComponent({
       }
     },
     render(width): string[] {
+      const content = renderContent(state.tab);
+      const pageCount = pageCountOf(content.length);
+      // A page can only outlive its content if the content shrank; clamping
+      // here keeps the view bounded without a second source of page state.
+      const page = Math.min(state.page, pageCount - 1);
+      const start = page * CONTENT_PAGE_LINES;
       const lines = [
         theme.fg("accent", "Pi Session Inspector"),
         `Scope: ${state.scope === "active" ? "Active" : "Tree"}`,
         ...renderTabs(width, state.tab),
         "",
-        ...renderContent(state.tab),
+        ...content.slice(start, start + CONTENT_PAGE_LINES),
         "",
-        theme.fg("dim", "←/→ tabs  a active  t tree  q quit"),
+        ...(pageCount === 1
+          ? []
+          : [
+              `Page ${page + 1}/${pageCount} · lines ${start + 1}–${Math.min(start + CONTENT_PAGE_LINES, content.length)} of ${content.length}`,
+            ]),
+        theme.fg(
+          "dim",
+          pageCount === 1
+            ? "←/→ tabs  a active  t tree  q quit"
+            : "←/→ tabs  ↑/↓ page  a active  t tree  q quit",
+        ),
       ];
 
       return lines.map((line) => truncateToWidth(line, Math.max(0, width), ""));
     },
   };
+
+  /** Pages the current tab's rendered content, never its logical entities. */
+  function pageCountOf(contentLines: number): number {
+    return Math.max(1, Math.ceil(contentLines / CONTENT_PAGE_LINES));
+  }
+
+  function contentPageCount(): number {
+    return pageCountOf(renderContent(state.tab).length);
+  }
 
   function renderContent(tab: CurrentTab): string[] {
     switch (tab) {
@@ -169,7 +208,9 @@ export function createCurrentTuiComponent({
   }
 
   function renderLedger(items: ReturnType<typeof buildLedger>): string[] {
-    if (items.length === 0) return ["Unavailable"];
+    // An ordered report with nothing to order is an observed zero, never
+    // missing evidence; this is the HTML renderer's own empty-ledger copy.
+    if (items.length === 0) return ["No persisted records to order."];
     return [
       `Ledger events: ${items.length}`,
       ...items.map(
@@ -268,7 +309,7 @@ export function createCurrentTuiComponent({
 
   function renderAgents(): string[] {
     const lines = renderAgentActivity();
-    const agents = currentModel.report.agents;
+    const agents = agentVerdicts();
     if (agents.length === 0) {
       // Native activity alone keeps the tab non-empty; otherwise the tab states
       // that no rich run evidence exists at all.
@@ -278,16 +319,15 @@ export function createCurrentTuiComponent({
     }
     return [
       ...lines,
+      ...renderChildRunSummary(),
       ...agents.flatMap((agent) => [
         `Agent: ${agent.id}`,
-        `Parent: ${agent.parentId ?? "Unavailable"}`,
-        ...(agent.agent === undefined ? [] : [`Label: ${agent.agent}`]),
+        parentLabel(agent.parent),
+        ...(agent.agent == null ? [] : [`Label: ${agent.agent}`]),
         `Status: ${agent.status}`,
-        ...(agent.artifacts === undefined
-          ? []
-          : [`Artifacts: ${agent.artifacts}`]),
+        ...(agent.artifacts == null ? [] : [`Artifacts: ${agent.artifacts}`]),
         `Evidence: ${agent.confidence}`,
-        ...(agent.usage === undefined
+        ...(agent.usage == null
           ? []
           : [
               `Tokens: ${agent.usage.totalTokens}`,
@@ -295,6 +335,34 @@ export function createCurrentTuiComponent({
               "Child usage is a breakdown only; never added to session totals.",
             ]),
       ]),
+    ];
+  }
+
+  /**
+   * L2's own parent verdicts for the report's full row set. The rows pass
+   * through the same normalizer the browser and snapshot use, so the TUI never
+   * classifies a parent itself and never renders a raw run identity as one.
+   * The TUI selects no subrange, so every parent this report carries is
+   * `in-range` and `outside-range` cannot arise here.
+   */
+  function agentVerdicts(): ReturnType<typeof agentParentVerdicts> {
+    if (agentRows === undefined) {
+      const rows = sessionView(currentModel.report).agents;
+      agentRows = agentParentVerdicts(rows, rows);
+    }
+    return agentRows;
+  }
+
+  /**
+   * The child-run count and how many of those runs reported usage. Runs
+   * without usage are absent evidence, so the fraction is what keeps a partial
+   * set from reading as a complete one; it is never added to a session total.
+   */
+  function renderChildRunSummary(): string[] {
+    const usage = currentModel.report.agentUsage;
+    if (usage.runsTotal === 0) return [];
+    return [
+      `Child runs: ${usage.runsTotal}  usage reported by ${usage.runsWithUsage} of ${usage.runsTotal}`,
     ];
   }
 
@@ -349,6 +417,27 @@ export function createCurrentTuiComponent({
           `Source: ${source.sourceLabel}  Scope: ${source.scope}  Origin: ${source.origin}  commands: ${source.commands}  skills: ${source.skills}  prompts: ${source.prompts}  tools: ${source.tools}`,
       ),
     ];
+  }
+}
+
+/**
+ * The parent cell of one run, worded from L2's published verdict rather than
+ * from a raw run identity. Three of these are the browser's own strings; the
+ * `in-range` case has no browser equivalent because the browser turns it into a
+ * link to the parent row, which a TUI without drill-down cannot offer.
+ */
+function parentLabel(parent: UiAgentParent): string {
+  switch (parent) {
+    case "none":
+      return "Parent: none";
+    case "in-range":
+      return "Parent: run in this report";
+    case "outside-range":
+      return "Parent: outside selected scope";
+    case "orchestration-run":
+      return "Parent: orchestration run";
+    case "unknown":
+      return "Parent: Unavailable";
   }
 }
 

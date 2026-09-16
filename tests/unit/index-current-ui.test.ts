@@ -951,6 +951,7 @@ test("loads auto-discovered subagent runs for active and tree scopes through the
   registerCommand(handlerRef);
   let toggleTree: (() => void) | undefined;
   let rendered: (() => string[]) | undefined;
+  let keypress: ((data: string) => void) | undefined;
   assert.ok(handlerRef.current);
   await handlerRef.current("tui", {
     mode: "tui",
@@ -969,6 +970,9 @@ test("loads auto-discovered subagent runs for active and tree scopes through the
         );
         for (let index = 0; index < 4; index++)
           component.handleInput?.("\u001B[C");
+        // The Agents tab renders 24 content lines for this fixture, so the run
+        // evidence is on the second page of the bounded content viewport.
+        component.handleInput?.("\u001B[B");
         assert.ok(
           component
             .render(120)
@@ -976,6 +980,7 @@ test("loads auto-discovered subagent runs for active and tree scopes through the
         );
         toggleTree = () => component.handleInput?.("t");
         rendered = () => component.render(120);
+        keypress = (data: string) => component.handleInput?.(data);
       },
     },
   } as unknown as ExtensionCommandContext);
@@ -983,6 +988,9 @@ test("loads auto-discovered subagent runs for active and tree scopes through the
   assert.ok(toggleTree);
   toggleTree();
   await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  // A scope reload resets the content page, so the tree report's run evidence
+  // is reached the same way the active report's was.
+  keypress?.("\u001B[B");
   assert.ok(
     rendered?.().some((line) => line.includes("Evidence: cooperative")),
   );
