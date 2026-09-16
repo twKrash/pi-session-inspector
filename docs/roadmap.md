@@ -1067,9 +1067,64 @@ Any implementation that broadens `skills.invocationCount` /
 `SkillRow.explicitInvocations` must review and update their semantic naming and
 documentation rather than silently changing the meaning of "explicit".
 
+### 3. Pi native telemetry integration
+
+Evaluate Pi's native telemetry contracts as a live timing/lifecycle evidence
+source. Inspected 2026-09-16 against pinned
+`@earendil-works/pi-coding-agent 0.85.1` (nested `pi-telemetry`,
+`pi-agent-core`, `pi-ai` at the same version) and upstream `main` HEAD
+`6671c60`.
+
+Current status:
+
+- schemas exist: `@earendil-works/pi-telemetry` owns the vendor-neutral
+  `TelemetryContext`/`TelemetrySpan` contract, and `pi-agent-core` declares
+  `AI_TELEMETRY_SCHEMA` (`pi.ai.request`) plus `HARNESS_TELEMETRY_SCHEMA`
+  (`pi.harness.*` and `pi.session.write`);
+- the stock coding-agent does not emit them: the CLI never constructs or
+  accepts a `TelemetryContext`, and the normal `AgentSession`/`Agent` path does
+  not use the harness (harness imports exist only under `experimental/`). The
+  pinned dependency tree has exactly one span start site, `pi.harness.hook`,
+  and with no context every span resolves to `NOOP_TELEMETRY_CONTEXT`;
+- no extension injection/subscription seam exists: `ExtensionAPI`,
+  `ExtensionContext`, `ResourceLoader`, and the AgentSession runtime services
+  expose no telemetry, and the process-local `EventBus` carries no spans;
+- `pi-ai` only forwards `telemetryContext` into provider request options and
+  owns no schema.
+
+Upstream dependency (all three are required; none exists today):
+
+1. instrument the coding-agent path so the declared spans are actually started
+   (at minimum `pi.ai.request` around provider calls);
+2. accept a `TelemetryContext` at the SDK/host boundary (for example
+   `CreateAgentSessionOptions.telemetryContext`, defaulting to the no-op
+   context) and thread it to `pi-ai` and the harness;
+3. expose one bounded completed-span observer to extensions (span name,
+   schema-declared non-sensitive attributes, status), reusing
+   `ExtensionAPI.on` rather than a new transport or a backend object.
+
+Inspector usage rules if that seam lands:
+
+- telemetry enriches timing/lifecycle evidence only (provider attempt
+  boundaries, streaming latency, operation identity/recovery, terminal
+  outcome); it never replaces persisted Pi facts;
+- persisted Pi JSONL remains the usage/cost authority; telemetry usage is at
+  most a cross-check for requests that persisted no assistant entry, counted
+  once and never additive to native usage;
+- only schema-declared, non-`sensitive` attributes may reach Inspector WAL or
+  reports; prompts, completions, tool arguments/results, file contents,
+  provider payloads, headers, credentials, and free-form error text stay out;
+- high-cardinality `pi.*` identifiers (session, response, operation) are
+  bounded or hashed, never stored raw;
+- no monkey-patching, Pi-internal wrapping, `createAgentSession` replacement,
+  or upstream modification is accepted; with no public seam the integration
+  stays `unsupported`/`unavailable` rather than approximated from private
+  internals.
+
 ### Acceptance
 
-- Neither MCP nor skill-attribution work is required for `1.0.0`.
+- None of the MCP, skill-attribution, or native-telemetry work is required for
+  `1.0.0`.
 - Post-1.0 changes preserve observer-only, local-only, bounded, redacted, and
   deterministic behavior.
 - New semantic evidence is accepted only from a producer contract strong enough
