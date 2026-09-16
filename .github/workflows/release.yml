@@ -249,12 +249,25 @@ jobs:
           version="$(node -p "require('./release-metadata.json').version")"
           local_sha1="$(cut -d' ' -f1 SHA1SUMS)"
           local_integrity="sha512-$(openssl dgst -sha512 -binary ./*.tgz | openssl base64 -A)"
-          remote_sha1="$(npm view "$name@$version" dist.shasum)"
-          remote_integrity="$(npm view "$name@$version" dist.integrity)"
+          # A successful publish is not immediately visible on the registry's
+          # read path, so the first read after it can still answer 404.
+          remote_sha1=""
+          remote_integrity=""
+          for attempt in $(seq 1 12); do
+            remote_sha1="$(npm view "$name@$version" dist.shasum 2>/dev/null || true)"
+            remote_integrity="$(npm view "$name@$version" dist.integrity 2>/dev/null || true)"
+            if [ -n "$remote_sha1" ] && [ -n "$remote_integrity" ]; then break; fi
+            echo "attempt $attempt: $name@$version is not readable yet; retrying in 5s"
+            sleep 5
+          done
           echo "local  sha1=$local_sha1"        | tee -a "$GITHUB_STEP_SUMMARY"
           echo "remote sha1=$remote_sha1"       | tee -a "$GITHUB_STEP_SUMMARY"
           echo "local  integrity=$local_integrity"  | tee -a "$GITHUB_STEP_SUMMARY"
           echo "remote integrity=$remote_integrity" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -z "$remote_sha1" ] || [ -z "$remote_integrity" ]; then
+            echo "::error::$name@$version is still not readable from the registry"
+            exit 1
+          fi
           if [ "$local_sha1" != "$remote_sha1" ] || [ "$local_integrity" != "$remote_integrity" ]; then
             echo "::error::registry contents differ from the qualified artifact"
             exit 1
