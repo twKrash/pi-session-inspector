@@ -9,6 +9,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import registerSessionInspector from "../../src/index.ts";
+import { reportIntegrations } from "../../src/integrations/catalog.ts";
+import { integrations } from "../../src/integrations/index.ts";
 import { validateTelemetry } from "../../src/pi/telemetry.ts";
 import { createWalWriter } from "../../src/storage/wal.ts";
 
@@ -525,7 +527,11 @@ test("one sanitized UAT session projects its whole integration matrix", async ()
 
     // 12: filtering is a view concern — the DTO still publishes every declared
     // row, so a hidden row keeps its evidence and no missing figure becomes 0.
-    assert.equal(report.integrations?.length, 7);
+    // The count comes from the declaration, not a table-size mirror.
+    assert.equal(
+      report.integrations?.length,
+      reportIntegrations(integrations).length,
+    );
   } finally {
     await fixture.close();
   }

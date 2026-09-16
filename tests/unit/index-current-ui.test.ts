@@ -16,6 +16,8 @@ import registerSessionInspector, {
   readLiveTimings,
   registerTracking,
 } from "../../src/index.ts";
+import { reportIntegrations } from "../../src/integrations/catalog.ts";
+import { integrations } from "../../src/integrations/index.ts";
 import { renderJson } from "../../src/ui/json.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { renderSnapshot } from "../../src/ui/snapshot.ts";
@@ -1683,7 +1685,10 @@ test("current report projects L1 retained aggregates and presence from supplied 
     walRecords,
   });
 
-  assert.equal(model?.report.integrations.length, 7);
+  assert.equal(
+    model?.report.integrations.length,
+    reportIntegrations(integrations).length,
+  );
   const permission = model?.report.integrations.find(
     (row) => row.integration === "permission",
   );
@@ -1795,7 +1800,10 @@ test("production command folds checkpoint and WAL counters with durable permissi
     allowed: 1,
     denied: 1,
   });
-  assert.equal(exported.integrations.length, 7);
+  assert.equal(
+    exported.integrations.length,
+    reportIntegrations(integrations).length,
+  );
   assert.equal(await readFile(checkpointFile, "utf8"), checkpointBytes);
 });
 

@@ -1,6 +1,6 @@
 # Integrations
 
-An **integration** is a known semantic protocol: Inspector understands the evidence that producer writes and turns it into bounded, reportable facts. Adding one is meant to be boring — a descriptor, one registration line, focused tests, and a row in the matrix below.
+An **integration** is a known semantic protocol: Inspector understands the evidence that producer writes and turns it into bounded, reportable facts. Adding one is meant to be boring — a descriptor, one re-export line, one registration line, focused tests, and a row in the matrix below.
 
 - Composition root: [`src/integrations/index.ts`](../src/integrations/index.ts) — the one place that declares which integrations Inspector supports, in report order.
 - Contract: [`src/integrations/contract.ts`](../src/integrations/contract.ts) — the descriptor and its optional typed hooks.
@@ -18,6 +18,7 @@ An **integration** is a known semantic protocol: Inspector understands the evide
 | `permission` | generic observed live/durable `permissions:ready` sighting | — | yes: `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | no | `decisions`, `allowed`, `denied`, `prompts`, `promptToolCall`, `promptSkillInput`, `promptSkillRead`, `gateErrors` |
 | `subagents` | native `subagent`, `subagent_wait`, `subagent_supervisor` tools | persisted tool results (`details.results[]` / `details.completions[]`) | no | yes: runs and native subagent activity reach the Agents view | The integration row declares **no counters**; its schema is intentionally empty |
 | `lens` | any listed tool named `lens`, or starting with `lens_`, `pi_lens_`, `lsp_`, `ast_grep_` | tool calls matching that same vocabulary | no | no | `calls` |
+| `mcp` | adapter tool vocabulary: `mcp`, `mcpScript`, or `mcp__<server>` proxies | `mcp-approval-v1` session entries, re-validated against the declared shape | yes: `pi-mcp-adapter/status/v1` | no | `toolApprovals`, `iframeApprovals`, `iframeDenials`; the runtime status snapshot is a presence sighting, never a counter, and server/tool names plus hashes are never retained |
 | `mode` (legacy) | — | — | — | — | Validates historical rows and counters only; never a report row, presence entry, or hook |
 
 Evidence states: `supported` (evidence observed and parsed), `unavailable` (the integration may be installed but produced no observable evidence), `unsupported` (evidence exists but its shape or version is not understood).
@@ -108,7 +109,7 @@ Every subsystem fault-isolates per integration: one integration throwing degrade
 
 - **Integration adapter** — Inspector understands a specific semantic protocol or evidence format. It has a key, versioned counters, and usually a presence signal.
 - **Skill** — a dynamically discovered generic resource. Inspector inventories skills and counts `/skill:<name>` invocations with generic infrastructure; no integration entry is needed, and one should not be added just because a skill exists.
-- **Tool / MCP server** — normally a tool or a tool source. Tool names participate in an integration's presence vocabulary when that is meaningful, but there is no integration per MCP server; add one only when the server has a real semantic telemetry contract (a versioned evidence envelope Inspector can interpret).
+- **Tool / MCP server** — normally a tool or a tool source. Tool names participate in an integration's presence vocabulary when that is meaningful, but there is no integration per MCP server; add one only when the server has a real semantic telemetry contract (a versioned evidence envelope Inspector can interpret). `mcp` is the one current example: it is the `pi-mcp-adapter` protocol, not a row per connected server — its versioned approval entry and status event are the contract, and no server identity is retained.
 - **Specialized skill observer** — the exception: when a skill intentionally exposes richer structured telemetry, give it a hook (or an integration) then, with its own versioned contract.
 
 Graphify is therefore an ordinary discovered skill: inventory plus `/skill:graphify` invocation counting. It would only get specialized treatment if Inspector deliberately consumed structured Graphify-specific telemetry.
