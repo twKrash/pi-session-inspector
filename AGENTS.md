@@ -18,6 +18,8 @@ Read [research](docs/research/pi-ecosystem.md), [spec](docs/specs/pi-session-ins
 
 Run focused tests, typecheck, lint, and `npm pack --dry-run` for packaging changes. Add/update sanitized fixtures for replay, recovery, privacy, and integration changes. Update spec/ADR for architecture boundary changes.
 
+A version bump updates every current-release statement in the same commit — `package.json`, both `package-lock.json` root `version` fields, a new `CHANGELOG.md` section, the `README.md` status line, the `docs/roadmap.md` `**Current release:**` line, and `RELEASE_VERSION` in `tests/unit/package-contract.test.ts`. `tests/unit/release-version-consistency.test.ts` fails when any of them disagrees with `package.json`; fix the statement, never the assertion. Stale wording elsewhere (a completed-milestone record, an evidence package, a historical changelog entry) stays as written.
+
 ## Change delivery
 
 Prefer small, independently mergeable pull requests.

@@ -56,7 +56,13 @@ format.
 
 1. Give `CHANGELOG.md` a section for the new version and set that version in
    `package.json` and both `package-lock.json` root fields — one commit, nothing
-   else, so the artifact stays identifiable.
+   else, so the artifact stays identifiable. The same commit updates every other
+   current-release statement: the `README.md` status line, the
+   `docs/roadmap.md` `**Current release:**` line, and `RELEASE_VERSION` in
+   `tests/unit/package-contract.test.ts`. `npm test` fails when one of them
+   disagrees with `package.json`, so a half-finished bump cannot reach `main`.
+   Wording that records history — a completed-milestone entry, an evidence
+   package, an older changelog section — is never rewritten.
 2. Qualify that commit from a clean checkout: the gate suite, a real
    `npm pack`, a tarball audit, and a clean-machine install. Record the commit,
    version, tarball name, file count, and hashes in the evidence package under
