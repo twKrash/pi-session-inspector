@@ -137,6 +137,25 @@ core/{reports,canonical,retained-aggregates}, ui/*
 
 Adapters may import the contract and their own helpers, never a subsystem, report, UI module, or the composition root. `integrations/index.ts` imports the catalog and the adapters only — it imports no subsystem, so no cycle exists. `dependency-cruiser` enforces the direction.
 
+#### Layer boundaries across `core`, `pi`, and `storage`
+
+```text
+core      — semantic contracts, canonical model, reduction, report projection
+pi        — Pi adapter / L0 source reading, parsing, and lifecycle wiring
+storage   — Inspector-owned persistence: WAL, checkpoint, inventory snapshot, lease, retention
+```
+
+| Direction | Status |
+| --- | --- |
+| `core → integrations` | allowed: catalog/contract lookups (this ADR) |
+| `core → pi`, `core → storage` | type-only allowed; the single runtime edge is `core/canonical.ts → pi/scope.ts`, a pure I/O-free scope rule (ADR 0006/0016 semantics). Moving it into `core/` is the trivial follow-up if a zero-exception boundary is wanted. |
+| `pi → storage` | sanctioned: the Pi adapter (L0) reads Inspector-owned sources (ADR 0016) |
+| `storage → pi` | forbidden at runtime except `pi/telemetry.ts` (producer envelope validation on the single WAL write/recovery path) and `pi/sessions.ts` (marker/scope reading used by maintenance); type-only imports such as the `TrackingStorage` port stay allowed |
+| `integrations → pi`/`storage` | forbidden at runtime: integrations interpret payloads handed to them by L0/L1 |
+| `integrations → core/{canonical,reports,reduce,retained-aggregates}`, `ui`, `commands`, `src/index.ts` | forbidden: those are consumers, not inputs |
+
+The dependency graph intentionally retains one directory-level SCC spanning `core`, `integrations`, `pi`, and `storage`. It contains no file-level cycle and every edge is one of the sanctioned directions above; breaking it would require speculative restructuring (an injected validation/source provider), so it is not treated as a release blocker. `dependency-cruiser` enforces the permitted edges, not the absence of the SCC.
+
 ### Settings precedence
 
 The Inspector gains one authoritative settings loader for `<agentDir>/session-inspector/settings.json` (the Pi `getAgentDir()` convention; the versioned data root stays `session-inspector/v1`). The schema is intentionally small:
