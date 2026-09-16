@@ -29,6 +29,15 @@ jobs:
           node-version: 22.x
           cache: npm
 
+      # Trusted publishing exchanges a GitHub OIDC token for a short-lived
+      # credential, which needs npm 11.5.1 or newer; the Node 22 image ships
+      # npm 10. Without this the publish step falls back to looking for a
+      # token and fails with ENEEDAUTH.
+      - name: Use an npm that can exchange the OIDC token
+        run: |
+          npm install --global npm@^11.5.1
+          npm --version
+
       - name: Refuse a tag that disagrees with the package version
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
