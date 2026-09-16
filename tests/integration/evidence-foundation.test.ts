@@ -266,6 +266,8 @@ function adapterEnvelopes(): LiveEnvelopes {
     },
     {
       sessionId: SESSION_ID,
+      root: "/inspector",
+      runtimeId: "runtime-adapter-envelopes",
       inventoryNames: () => new Set(["fixture-mode", "other-mode"]),
       now: () => new Date("2026-09-12T07:00:02.000Z"),
     },

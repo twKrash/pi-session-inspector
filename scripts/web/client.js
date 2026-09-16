@@ -2007,6 +2007,9 @@
     }
     main.append(title);
     main.append(el("div", "tree-meta mono", sessionSummary(meta)));
+    // The root's own scope, so the figures above it can never be read as the
+    // model table's generation slice with the child card added on top.
+    main.append(el("div", "tree-count", COPY["agents.tree.scope"]));
     const caveat = sessionModelCaveat(meta);
     if (caveat !== "") main.append(el("div", "tree-count", caveat));
     if (meta.models.length > 0) {

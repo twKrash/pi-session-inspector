@@ -1,16 +1,19 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `0.13.1`
+**Current release:** `1.0.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
-Pre-M8.1–Pre-M8.6, and the integration-architecture/configuration/debug
-milestone (see below) are complete. M8 is not started.
+Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
+and M8 (publication and release) are complete. `1.0.0` is published to npm as
+`@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`.
 
-**Next gate:** complete Pre-M8.7 before starting M8.
+**Next gate:** none for `1.0.0`. The three post-1.0 follow-ups below are the
+next recorded work; they gate nothing and are not required for the published
+release.
 
-**Post-1.0:** one planned follow-up milestone (integration expansion and skill
-invocation evidence) is recorded at the end of this document. Neither item is a
-`1.0.0` release gate and neither blocks M8 or Pre-M8.7.
+**Post-1.0:** three follow-ups are recorded at the end of this document — MCP
+semantic integration, skill invocation evidence, and Pi native telemetry
+integration. None is a `1.0.0` release gate, and none blocks M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -83,12 +86,21 @@ by the explicitly named post-M8 cleanup tail.
 | Evidence coverage and resource inventory | Complete in `0.7.0` | [CHANGELOG](../CHANGELOG.md#070) |
 | Evidence foundation and canonical session model | Complete in `0.8.0` | [ADR 0016](architecture/adr/0016-evidence-foundation-and-canonical-session-model.md) |
 | Report semantics, diagnostics, and navigation | Complete in `0.9.0` | [ADR 0017](architecture/adr/0017-report-coverage-attribution-and-navigation.md) |
+| M8 — hardening and release | Complete in `1.0.0` | [1.0.0 RC evidence package](release/1.0.0-rc-evidence.md) |
 
 ## M8 — hardening and release
 
-**Status:** Planned. M8 starts only after all Pre-M8 readiness sub-milestones
-pass their acceptance gates. Successful publication is the planned **`1.0.0`**
-release unless a deliberate SemVer decision changes that before publication.
+**Status:** Complete. `1.0.0` was published to npm as
+`@twkrash/pi-session-inspector@1.0.0` and released on GitHub as `v1.0.0` on the
+release commit `e907d95`; the registry's `dist.shasum` and `dist.integrity`
+match the qualified candidate, and the published artifact was installed from the
+registry and exercised. The steps below are the procedure that was followed.
+
+Post-release hardening adds what this milestone could not assume: continuous
+integration (`.github/workflows/ci.yml`, two required jobs plus a next-major Node
+job), a tag-triggered publish workflow (`.github/workflows/release.yml`), and
+branch protection on `main` requiring a pull request, one approval, and the
+`quality` and `test` checks.
 
 M8 consumes the immutable release-candidate evidence package from Pre-M8.7. It
 must not silently repeat the entire qualification suite under a different name.
@@ -761,7 +773,21 @@ persisted `durationMs: 0`.
 
 ### Pre-M8.7 — RC hardening and package audit
 
-**Status:** Planned. **Depends on:** Pre-M8.1–Pre-M8.6.
+**Status:** Complete. **Depends on:** Pre-M8.1–Pre-M8.6 and Pre-M8.8.
+
+**Evidence:** [1.0.0 RC evidence package](release/1.0.0-rc-evidence.md) —
+release commit `e907d95`, npm name `@twkrash/pi-session-inspector`, package
+version `1.0.0`, tarball `twkrash-pi-session-inspector-1.0.0.tgz`
+(`sha512 15d96839…`), qualified from a clean checkout cloned from the public
+repository. The artifact is the replacement for the original candidate, which
+was superseded before publication because the unscoped npm name belongs to
+another publisher: only the npm coordinate changed, never the source. The
+owner-verified manual browser/TUI/privacy matrix and the WSL2 case passed. Two
+target-SLO variances were accepted for the 1.0 baseline: the 10k-record HTML
+size ceiling was revised from `< 5 MiB` to `< 10 MiB`, and the warm/cold replay
+and HTML render times are accepted with their absolute SLOs unchanged. Hard
+regression gates stay disabled with two accepted baselines recorded; enabling
+them is a post-1.0 follow-up.
 
 Produce a release-candidate evidence package before M8 publication work. This
 is the final readiness gate, not a license to skip the smaller preceding
@@ -813,6 +839,9 @@ reviews.
 
 ### Pre-M8.8 — Production hardening and review follow-ups
 
+**Status:** Complete. **Evidence:** each item below carries its own outcome
+record — the release or commit that closed it.
+
 Address release-blocking defects, high-risk validation gaps, and actionable
 review findings before the public release. This milestone must leave the
 production paths validated and the remaining non-blocking technical debt
@@ -844,6 +873,19 @@ explicitly documented.
    - Production-path lifecycle UAT passes.
    - Any failure is release-blocking.
 
+   **Outcome: Complete.** Runtime-owned live registration with disposal on
+   every `session_shutdown` reason, `A → B → A` reactivation, and the
+   runtime-scoped read-boundary attempt memo (`0.13.2`; `9109934`;
+   `tests/integration/lifecycle-reactivation.test.ts`). The real-session UAT
+   covered `/new`, `/resume`, and `/reload`, and killed the pre-fix mutant
+   (owner-reported; not reproducible from the repository).
+
+   **Bounded validation limitation:** `/fork` is exercised by the lifecycle
+   integration test's reason matrix — `session_shutdown` runs for `new`,
+   `resume`, `fork`, `reload`, and `quit` — but it was not exercised in the
+   real UAT, because Pi requires a saved assistant turn. That is a validation
+   limitation, not an open defect.
+
 2. High-risk storage and recovery validation
 
    Highest-consequence modules:
@@ -869,14 +911,24 @@ explicitly documented.
    - No known path can silently double-count, lose retained evidence, or delete
      data outside the documented retention contract.
 
+   **Outcome: Complete.** `0.13.3` and `a5dddf0`: interrupted
+   recovery/publication replays identically and folds each record once, atomic
+   checkpoint replacement exposes the previous or the new complete checkpoint
+   and never a partial one, a dropped seal and a seal/cursor regression are
+   rejected, a missing WAL directory reports the bounded
+   `wal-directory-missing` diagnostic, a WAL shorter than a sealed cursor is
+   accepted without rewinding or inventing records, and ADR 0005 states the
+   process-crash-only durability scope.
+
 3. P2 — Tighten architectural layering
 
-   - The directory-level dependency graph currently contains an SCC spanning
+   Finding:
+   - The directory-level dependency graph contains an SCC spanning
      `core`, `integrations`, `pi`, and `storage`.
-   - There is no file-level import cycle; `npm run depcruise` currently reports
+   - There is no file-level import cycle; `npm run depcruise` reports
      0 errors.
-   - Treat this as a maintainability concern rather than an immediate release
-     blocker.
+   - This was classified as a maintainability concern rather than an immediate
+     release blocker.
 
    Required work:
    - Define explicit allowed dependency directions between architectural layers.
@@ -888,6 +940,18 @@ explicitly documented.
    - Layer boundaries are machine-checkable.
    - Any intentionally retained exceptions are documented.
    - `npm run depcruise` remains clean.
+
+   **Outcome: Complete.** `.dependency-cruiser.cjs` pins the permitted layer
+   edges — `3d31a3b` added `core-not-to-pi-and-storage-runtime`,
+   `storage-not-to-pi-implementation`, `integrations-not-to-canonical-owners`,
+   and `integrations-not-to-pi-or-storage` beside the loader, adapter, and
+   renderer rules — and the cruise reports 0 errors and no circular
+   relationship, so no file-level cycle exists. The one directory-level SCC
+   spanning `core`, `integrations`, `pi`, and `storage` is a documented
+   exception: `core -> integrations` registry/contract lookups are sanctioned
+   by ADR 0019 and the `pi <-> storage` pair is the composition seam. Breaking
+   the SCC would require speculative restructuring, so no release-blocking
+   layering issue remains.
 
 4. P2 — Eliminate competing report projection paths
 
@@ -911,6 +975,18 @@ explicitly documented.
    - Legacy compatibility paths cannot silently become an alternative source
      of truth.
 
+   **Outcome: Complete by isolation, not deletion.** Production report callers
+   are exactly the canonical loaders `src/ui/load-current.ts` and
+   `src/ui/load-history.ts`, and
+   `tests/unit/report-projection-authority.test.ts` fails if another appears
+   (`7931484`, `20eff93`). The guard is reference-based — it resolves
+   TypeScript symbols rather than matching source text — so an aliased or
+   re-exported caller is still caught. `ReducedSession` remains a compatibility
+   surface for pre-0.8 reducer-shaped fixtures and the benchmark harness: test
+   and benchmark input only, with `toSessionReport` documenting that it must
+   never become a report authority again. `ReducedSession` itself was not
+   removed.
+
 5. Low — Dependency hygiene
 
    - Verify whether `publint` is used by build, packaging, CI, or release
@@ -918,6 +994,10 @@ explicitly documented.
      `npm run publint` script, so `knip` and the pre-commit hook pass.)
    - If it is tooling-only, move it to `devDependencies`.
    - Remove it if unused.
+
+   **Outcome: Complete.** `publint` is pinned dev tooling (`0.3.24`) behind
+   `npm run publint`; `knip`, `depcruise`, `format:check`, and the package
+   checks are green.
 
 **Release:** a compatible RC hardening pass may bump the next patch version;
 publication remains part of M8.
@@ -934,6 +1014,14 @@ but do not justify expanding the qualified release-candidate scope.
 
 Validate and ship the `pi-mcp-adapter` integration proven during the
 integration-authoring architecture spike.
+
+**Parked work.** The spike implementation is committed on branch
+`spike/mcp-integration` (pushed to `origin`); `git worktree list` shows the
+parked worktree created for it. That branch is the continuation point and its
+head commit is the durable research record: exact producer contract, files and
+lines changed, the architecture measurement, the negative-control result, and
+the verification evidence behind this baseline. It stays unmerged while this
+section's before-merge items are unmet.
 
 Research baseline:
 
@@ -1059,9 +1147,64 @@ Any implementation that broadens `skills.invocationCount` /
 `SkillRow.explicitInvocations` must review and update their semantic naming and
 documentation rather than silently changing the meaning of "explicit".
 
+### 3. Pi native telemetry integration
+
+Evaluate Pi's native telemetry contracts as a live timing/lifecycle evidence
+source. Inspected 2026-09-16 against pinned
+`@earendil-works/pi-coding-agent 0.85.1` (nested `pi-telemetry`,
+`pi-agent-core`, `pi-ai` at the same version) and upstream `main` HEAD
+`6671c60`.
+
+Current status:
+
+- schemas exist: `@earendil-works/pi-telemetry` owns the vendor-neutral
+  `TelemetryContext`/`TelemetrySpan` contract, and `pi-agent-core` declares
+  `AI_TELEMETRY_SCHEMA` (`pi.ai.request`) plus `HARNESS_TELEMETRY_SCHEMA`
+  (`pi.harness.*` and `pi.session.write`);
+- the stock coding-agent does not emit them: the CLI never constructs or
+  accepts a `TelemetryContext`, and the normal `AgentSession`/`Agent` path does
+  not use the harness (harness imports exist only under `experimental/`). The
+  pinned dependency tree has exactly one span start site, `pi.harness.hook`,
+  and with no context every span resolves to `NOOP_TELEMETRY_CONTEXT`;
+- no extension injection/subscription seam exists: `ExtensionAPI`,
+  `ExtensionContext`, `ResourceLoader`, and the AgentSession runtime services
+  expose no telemetry, and the process-local `EventBus` carries no spans;
+- `pi-ai` only forwards `telemetryContext` into provider request options and
+  owns no schema.
+
+Upstream dependency (all three are required; none exists today):
+
+1. instrument the coding-agent path so the declared spans are actually started
+   (at minimum `pi.ai.request` around provider calls);
+2. accept a `TelemetryContext` at the SDK/host boundary (for example
+   `CreateAgentSessionOptions.telemetryContext`, defaulting to the no-op
+   context) and thread it to `pi-ai` and the harness;
+3. expose one bounded completed-span observer to extensions (span name,
+   schema-declared non-sensitive attributes, status), reusing
+   `ExtensionAPI.on` rather than a new transport or a backend object.
+
+Inspector usage rules if that seam lands:
+
+- telemetry enriches timing/lifecycle evidence only (provider attempt
+  boundaries, streaming latency, operation identity/recovery, terminal
+  outcome); it never replaces persisted Pi facts;
+- persisted Pi JSONL remains the usage/cost authority; telemetry usage is at
+  most a cross-check for requests that persisted no assistant entry, counted
+  once and never additive to native usage;
+- only schema-declared, non-`sensitive` attributes may reach Inspector WAL or
+  reports; prompts, completions, tool arguments/results, file contents,
+  provider payloads, headers, credentials, and free-form error text stay out;
+- high-cardinality `pi.*` identifiers (session, response, operation) are
+  bounded or hashed, never stored raw;
+- no monkey-patching, Pi-internal wrapping, `createAgentSession` replacement,
+  or upstream modification is accepted; with no public seam the integration
+  stays `unsupported`/`unavailable` rather than approximated from private
+  internals.
+
 ### Acceptance
 
-- Neither MCP nor skill-attribution work is required for `1.0.0`.
+- None of the MCP, skill-attribution, or native-telemetry work is required for
+  `1.0.0`.
 - Post-1.0 changes preserve observer-only, local-only, bounded, redacted, and
   deterministic behavior.
 - New semantic evidence is accepted only from a producer contract strong enough

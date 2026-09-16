@@ -4,13 +4,18 @@ import { test } from "node:test";
 
 import * as fc from "fast-check";
 
+import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
   buildCanonicalSession,
   type CanonicalSessionBuildResult,
 } from "../../src/core/canonical.ts";
+import { toSessionReport } from "../../src/core/reports.ts";
+import { CAPABILITIES, type CurrentView } from "../../src/ui/bundle.ts";
 import { type DailyContribution, buildDailyRows } from "../../src/ui/daily.ts";
+import { sessionDatedUsage } from "../../src/ui/dated-usage.ts";
 import { shiftUtcDay, type RangeIntent } from "../../src/ui/range.ts";
+import { projectCurrentView } from "../../src/ui/ui-projection.ts";
 import {
   assertGeneratedRangeProjection,
   assertRangeRoundTrip,
@@ -112,6 +117,16 @@ const validRangeArb: fc.Arbitrary<RangeIntent> = fc
 
 const SANITIZED_SOURCE = readFileSync(
   new URL("../fixtures/pi/0.85.1/mixed-usage.jsonl", import.meta.url),
+  "utf8",
+);
+
+/**
+ * The sanitized session whose subagent result publishes child usage, so the
+ * usage-scope invariant below is exercised where an added child figure would
+ * actually change the root.
+ */
+const CHILD_USAGE_SOURCE = readFileSync(
+  new URL("../fixtures/pi/0.85.1/uat-session.jsonl", import.meta.url),
   "utf8",
 );
 
@@ -241,3 +256,84 @@ test("property diagnostics redact counterexamples", () => {
     },
   );
 });
+
+/**
+ * The usage-scope contract of the LLM tab, as an invariant over the real
+ * pipeline: the tree root's "Primary session" figures are the report's own
+ * native usage, the model table is exactly its generation slice, and the child
+ * breakdown can never exceed the tool-result slice of the same total. A renderer
+ * or projection that added child usage to the root breaks the first assertion,
+ * which is why the fixture that publishes child usage is part of this test.
+ */
+for (const [name, source, expectChild] of [
+  ["mixed usage", SANITIZED_SOURCE, false],
+  ["published child usage", CHILD_USAGE_SOURCE, true],
+] as const) {
+  test(`invariant: the session root is the report's native usage (${name})`, () => {
+    const parsed = parseSessionJsonl(source);
+    const canonical = buildCanonicalSession({
+      parsed,
+      scope: "tree",
+      leafId: null,
+      evidence: { atomic: [], folded: [] },
+      // The child breakdown is cooperative evidence from the persisted
+      // publication, exactly as the production loader supplies it.
+      subagents: readSubagentEvidence(parsed.entries, parsed.id ?? ""),
+    });
+    assert.equal(canonical.state, "ready");
+    if (canonical.state !== "ready") throw new Error("unreachable");
+    const session = canonical.session;
+    const report = toSessionReport(session);
+    const usage = report.usage;
+    assert.ok(usage, "the sanitized fixture must publish native usage");
+    const dated = sessionDatedUsage(session);
+    const daily = buildDailyRows([
+      {
+        sessionId: report.sessionId,
+        rows: dated.dates,
+        truncated: dated.truncated,
+      },
+    ]);
+    const view: CurrentView = {
+      availability: "available",
+      report,
+      capabilities: CAPABILITIES.current,
+      daily: daily.rows,
+      dailyTruncated: daily.truncated,
+      datedModels: dated.models,
+      modelsTruncated: dated.modelsTruncated,
+    };
+    const projection = projectCurrentView(view, "tree");
+    const range = projection.range;
+    assert.ok(range, "the fixture must resolve a range");
+
+    assert.equal(range.totals.totalTokens, usage.totalTokens);
+    assert.equal(range.totals.cost, usage.cost);
+
+    const composition = report.usageComposition;
+    assert.ok(composition, "the fixture must publish a composition");
+    const generationTokens = range.models.reduce(
+      (total, row) => total + row.totalTokens,
+      0,
+    );
+    assert.equal(generationTokens, composition.generations.totalTokens);
+    assert.ok(
+      generationTokens <= range.totals.totalTokens,
+      "the generation slice can never exceed the session total",
+    );
+    const childTokens = range.childUsage.totalTokens;
+    if (expectChild) {
+      assert.notEqual(
+        childTokens,
+        null,
+        "this fixture must publish child usage for the invariant to bite",
+      );
+    }
+    if (childTokens !== null) {
+      assert.ok(
+        childTokens <= composition.toolResults.totalTokens,
+        "child usage is a breakdown inside the tool-result slice",
+      );
+    }
+  });
+}

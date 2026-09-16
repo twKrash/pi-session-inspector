@@ -19,12 +19,20 @@ export type CurrentTab = (typeof CURRENT_TABS)[number];
 export type CurrentTuiState = {
   tab: CurrentTab;
   scope: Scope;
+  /**
+   * The rendered content page. Presentation only: it never reaches the report
+   * model, and a page boundary is computed from rendered lines rather than
+   * from logical entities.
+   */
+  page: number;
 };
 
 export type CurrentTuiAction =
   | { type: "next-tab" }
   | { type: "previous-tab" }
-  | { type: "set-scope"; scope: Scope };
+  | { type: "set-scope"; scope: Scope }
+  | { type: "next-page"; pageCount: number }
+  | { type: "previous-page" };
 
 export type CurrentTuiModel = {
   report: SessionReport;
@@ -63,12 +71,20 @@ export function reduceCurrentTui(
   action: CurrentTuiAction,
 ): CurrentTuiState {
   switch (action.type) {
+    // A new tab and a new scope are new content, so the page restarts.
     case "next-tab":
-      return { ...state, tab: moveTab(state.tab, 1) };
+      return { ...state, tab: moveTab(state.tab, 1), page: 0 };
     case "previous-tab":
-      return { ...state, tab: moveTab(state.tab, -1) };
+      return { ...state, tab: moveTab(state.tab, -1), page: 0 };
     case "set-scope":
-      return { ...state, scope: action.scope };
+      return { ...state, scope: action.scope, page: 0 };
+    case "next-page":
+      return {
+        ...state,
+        page: Math.min(state.page + 1, Math.max(0, action.pageCount - 1)),
+      };
+    case "previous-page":
+      return { ...state, page: Math.max(0, state.page - 1) };
   }
 }
 

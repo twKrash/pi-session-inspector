@@ -52,7 +52,7 @@ const report: SessionReport = {
   evidenceHealth: unavailableEvidenceHealth(),
 };
 
-const initial: CurrentTuiState = { tab: "overview", scope: "active" };
+const initial: CurrentTuiState = { tab: "overview", scope: "active", page: 0 };
 
 test("keeps the complete fixed current-session tab set", () => {
   assert.deepEqual(CURRENT_TABS, [
@@ -81,6 +81,41 @@ test("moves tabs within the fixed range and changes valid scope", () => {
   assert.equal(
     reduceCurrentTui(initial, { type: "set-scope", scope: "tree" }).scope,
     "tree",
+  );
+});
+
+test("pages the content within its own bounds", () => {
+  const second = reduceCurrentTui(
+    { ...initial, page: 1 },
+    { type: "next-page", pageCount: 2 },
+  );
+  assert.equal(second.page, 1);
+
+  const first = reduceCurrentTui(initial, { type: "previous-page" });
+  assert.equal(first.page, 0);
+
+  assert.equal(
+    reduceCurrentTui(
+      { ...initial, page: 3 },
+      { type: "next-page", pageCount: 3 },
+    ).page,
+    2,
+  );
+  // A page count that shrank below the current page cannot strand the view.
+  assert.equal(
+    reduceCurrentTui({ ...initial, page: 4 }, { type: "previous-page" }).page,
+    3,
+  );
+});
+
+test("returns to the first page when the content is replaced", () => {
+  const paged = { ...initial, page: 3 };
+
+  assert.equal(reduceCurrentTui(paged, { type: "next-tab" }).page, 0);
+  assert.equal(reduceCurrentTui(paged, { type: "previous-tab" }).page, 0);
+  assert.equal(
+    reduceCurrentTui(paged, { type: "set-scope", scope: "tree" }).page,
+    0,
   );
 });
 

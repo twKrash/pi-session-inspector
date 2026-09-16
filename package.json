@@ -1,6 +1,6 @@
 {
-  "name": "pi-session-inspector",
-  "version": "0.13.1",
+  "name": "@twkrash/pi-session-inspector",
+  "version": "1.0.0",
   "description": "Deterministic local-only session analytics for Pi",
   "type": "module",
   "license": "MIT",

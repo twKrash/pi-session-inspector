@@ -363,12 +363,24 @@ export function cacheHitPercent(usage: Usage | undefined): number | undefined {
   return Math.round((usage.cacheReadTokens / denominator) * 1_000) / 10;
 }
 
+/**
+ * Projects the report DTO from either accepted input shape.
+ *
+ * Production always passes the L1 `CanonicalSession`: `src/ui/load-current.ts`
+ * and `src/ui/load-history.ts` are the only production callers, and
+ * `tests/unit/report-projection-authority.test.ts` fails if another appears.
+ * The `ReducedSession` branch is retained only as a non-production
+ * compatibility surface for pre-0.8 reducer-shaped fixtures and the benchmark
+ * harness: it rebuilds no canonical health, joins, or retained aggregates, so
+ * it must never become a report authority again.
+ */
 export function toSessionReport(
   source: ReducedSession | CanonicalSession,
   evidence: SessionReportEvidence = {},
   options: SessionReportOptions = {},
 ): SessionReport {
   const list = options.integrations ?? integrations;
+  // `undefined` selects the non-production ReducedSession branch documented above.
   const canonical = isCanonicalSession(source) ? source : undefined;
   const generations = source.generations;
   const sourceTools = source.tools;

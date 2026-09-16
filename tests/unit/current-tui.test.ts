@@ -13,6 +13,7 @@ import {
   type CurrentTab,
   type CurrentTuiModel,
 } from "../../src/ui/current.ts";
+import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 
 const report: SessionReport = {
   sessionId: "session-1",
@@ -75,6 +76,45 @@ function renderTab(
     requestRender: () => {},
     done: () => {},
   }).render(width);
+}
+
+/**
+ * A tools tab with `count` rows: one header line plus one line per call, so a
+ * fixture's content length is `count + 1` and the page arithmetic is explicit.
+ */
+function toolsModel(count: number): CurrentTuiModel {
+  return modelWith({
+    tools: Array.from({ length: count }, (_, index) => ({
+      id: `tool-${index + 1}`,
+      timestamp: "2026-09-16T10:00:00Z",
+      name: `tool-${index + 1}`,
+      status: "succeeded" as const,
+    })),
+  });
+}
+
+/** One component instance, so key handling and rendering share one state. */
+function componentWith(model: CurrentTuiModel, tab: CurrentTab = "tools") {
+  return createCurrentTuiComponent({
+    model,
+    load: async (scope) => createCurrentTuiModel(model.report, scope),
+    theme,
+    initialTab: tab,
+    requestRender: () => {},
+    done: () => {},
+  });
+}
+
+const KEY_DOWN = "\u001B[B";
+const KEY_UP = "\u001B[A";
+const KEY_RIGHT = "\u001B[C";
+const KEY_LEFT = "\u001B[D";
+
+/** Every rendered content line, in page order, ignoring the fixed chrome. */
+function contentLines(lines: readonly string[]): string[] {
+  return lines.filter(
+    (line) => line.startsWith("Tool: ") || line.startsWith("Tools: "),
+  );
 }
 
 test("shows cache hit percentage and native compaction count in Overview", () => {
@@ -230,11 +270,15 @@ test("states the skills inventory count, never the activity-inflated row count",
       count: 2,
     },
   });
-  const lines = renderTab(counted, "skills");
+  const component = componentWith(counted, "skills");
+  const lines = component.render(120);
   const rendered = lines.join("\n");
   assert.match(rendered, /Skills: 2/);
   assert.equal(/Skills: 3/.test(rendered), false);
-  assert.match(rendered, /retired-mode/);
+  // The counted name is the third row, so it is on the second content page
+  // now that the view renders a bounded page of lines.
+  component.handleInput(KEY_DOWN);
+  assert.match(component.render(120).join("\n"), /retired-mode/);
 
   // A supported inventory whose count is unknown states Unavailable rather
   // than falling back to the rows it renders.
@@ -552,9 +596,12 @@ test("renders bounded agent and integration evidence", () => {
 
   for (let index = 0; index < 4; index++) component.handleInput("\u001B[C");
   const renderedAgents = component.render(120).join("\n");
-  assert.ok(renderedAgents.includes("parent-run"));
   assert.ok(renderedAgents.includes("child-run"));
   assert.ok(renderedAgents.includes("Cost: 3"));
+  // `parent-run` is not an Inspector-owned run identity, so L2's verdict is
+  // `unknown`: the parent cell states Unavailable and never echoes the value.
+  assert.ok(renderedAgents.includes(ENGLISH_CATALOG["agents.parentUnknown"]));
+  assert.ok(!renderedAgents.includes("parent-run"));
 
   component.handleInput("\u001B[C");
   component.handleInput("\u001B[C");
@@ -632,4 +679,226 @@ test("keeps every rendered line within 20 columns on every tab", () => {
     assert.ok(component.render(20).every((line) => visibleWidth(line) <= 20));
     component.handleInput("\u001B[C");
   }
+});
+
+test("does not paginate content that fits one page", () => {
+  const lines = componentWith(toolsModel(5)).render(120);
+
+  assert.ok(!lines.some((line) => line.startsWith("Page ")));
+  assert.ok(lines.some((line) => line.startsWith("Tool: tool-5 ")));
+  assert.equal(contentLines(lines).length, 6);
+});
+
+test("bounds the first page of content longer than one page", () => {
+  const lines = componentWith(toolsModel(13)).render(120);
+
+  assert.ok(lines.includes("Page 1/2 · lines 1–12 of 14"));
+  assert.equal(contentLines(lines).length, 12);
+  assert.ok(lines.some((line) => line.startsWith("Tool: tool-11 ")));
+  assert.ok(!lines.some((line) => line.startsWith("Tool: tool-12 ")));
+});
+
+test("Down advances the content page and Up returns", () => {
+  const component = componentWith(toolsModel(13));
+
+  component.handleInput(KEY_DOWN);
+  const second = component.render(120);
+  assert.ok(second.includes("Page 2/2 · lines 13–14 of 14"));
+  assert.ok(second.some((line) => line.startsWith("Tool: tool-12 ")));
+  assert.ok(second.some((line) => line.startsWith("Tool: tool-13 ")));
+  assert.ok(!second.some((line) => line.startsWith("Tool: tool-1 ")));
+
+  component.handleInput(KEY_UP);
+  assert.ok(component.render(120).includes("Page 1/2 · lines 1–12 of 14"));
+});
+
+test("cannot page before the first or after the last page", () => {
+  const component = componentWith(toolsModel(13));
+
+  component.handleInput(KEY_UP);
+  assert.ok(component.render(120).includes("Page 1/2 · lines 1–12 of 14"));
+
+  for (let index = 0; index < 4; index++) component.handleInput(KEY_DOWN);
+  assert.ok(component.render(120).includes("Page 2/2 · lines 13–14 of 14"));
+});
+
+test("switching tabs resets the content page", () => {
+  const component = componentWith(toolsModel(13));
+
+  component.handleInput(KEY_DOWN);
+  assert.ok(component.render(120).includes("Page 2/2 · lines 13–14 of 14"));
+
+  component.handleInput(KEY_RIGHT);
+  assert.ok(!component.render(120).some((line) => line.startsWith("Page ")));
+
+  component.handleInput(KEY_LEFT);
+  assert.ok(component.render(120).includes("Page 1/2 · lines 1–12 of 14"));
+});
+
+test("changing scope resets the content page", async () => {
+  const component = componentWith(toolsModel(13));
+
+  component.handleInput(KEY_DOWN);
+  assert.ok(component.render(120).includes("Page 2/2 · lines 13–14 of 14"));
+
+  component.handleInput("t");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const tree = component.render(120);
+  assert.ok(tree.some((line) => line.includes("Scope: Tree")));
+  assert.ok(tree.includes("Page 1/2 · lines 1–12 of 14"));
+});
+
+test("reaches every content line exactly once across pages", () => {
+  const component = componentWith(toolsModel(13));
+  const seen: string[] = [];
+
+  seen.push(...contentLines(component.render(120)));
+  component.handleInput(KEY_DOWN);
+  seen.push(...contentLines(component.render(120)));
+
+  assert.deepEqual(seen, [
+    "Tools: 13",
+    ...Array.from(
+      { length: 13 },
+      (_, index) =>
+        `Tool: tool-${index + 1}  Source: Unavailable  Status: succeeded`,
+    ),
+  ]);
+});
+
+const MALFORMED_PARENT_RUN = "parent-run";
+const OPAQUE_ROW_ID = `subagent-${"a".repeat(64)}`;
+
+/** One agent row with the given id and optional parent identity. */
+function agentRow(
+  id: string,
+  parentId?: string,
+): SessionReport["agents"][number] {
+  return {
+    id,
+    ...(parentId === undefined ? {} : { parentId }),
+    status: "succeeded",
+    confidence: "cooperative",
+  };
+}
+
+/** Every line with `prefix` across `pages` content pages of one tab. */
+function linesAcrossPages(
+  component: ReturnType<typeof componentWith>,
+  pages: number,
+  prefix: string,
+): string[] {
+  const collected: string[] = [];
+  for (let page = 0; page < pages; page++) {
+    if (page > 0) component.handleInput(KEY_DOWN);
+    collected.push(
+      ...component.render(120).filter((line) => line.startsWith(prefix)),
+    );
+  }
+  return collected;
+}
+
+test("renders the semantic parent verdict instead of a raw run id", () => {
+  const component = componentWith(
+    modelWith({
+      agents: [
+        agentRow(OPAQUE_ROW_ID),
+        agentRow("run-with-malformed-parent", MALFORMED_PARENT_RUN),
+        agentRow("run-in-container", `subagent-${"b".repeat(64)}`),
+        agentRow("run-with-report-parent", OPAQUE_ROW_ID),
+      ],
+      agentEvidence: "supported",
+      agentUsage: { runsTotal: 4, runsWithUsage: 0 },
+    }),
+    "agents",
+  );
+  // Four runs render more than one page of lines, so the cells are collected
+  // from every page: pagination must not drop a verdict.
+  const parentCells = linesAcrossPages(component, 2, "Parent: ");
+  assert.equal(parentCells.length, 4);
+
+  const rendered = parentCells.join("\n");
+  assert.ok(rendered.includes(ENGLISH_CATALOG["agents.parentNone"]));
+  assert.ok(rendered.includes(ENGLISH_CATALOG["agents.parentUnknown"]));
+  assert.ok(
+    rendered.includes(ENGLISH_CATALOG["agents.parentOrchestrationRun"]),
+  );
+  assert.ok(rendered.includes("Parent: run in this report"));
+
+  for (const cell of parentCells) {
+    assert.ok(!cell.includes("subagent-"), `raw run id leaked: ${cell}`);
+    assert.ok(!cell.includes(MALFORMED_PARENT_RUN));
+  }
+});
+
+test("keeps unavailable distinct from an observed zero", () => {
+  const unavailable = renderTab(
+    modelWith({ usage: undefined }),
+    "overview",
+  ).join("\n");
+  assert.match(unavailable, /Usage: unavailable/);
+  assert.ok(!unavailable.includes("Total tokens: 0"));
+
+  const zero = renderTab(
+    modelWith({ usage: { totalTokens: 0, cost: 0 } }),
+    "overview",
+  ).join("\n");
+  assert.match(zero, /Total tokens: 0/);
+  assert.match(zero, /Cost: 0/);
+
+  const runWithoutUsage = renderTab(
+    modelWith({
+      agents: [agentRow("run-a")],
+      agentEvidence: "supported",
+      agentUsage: { runsTotal: 1, runsWithUsage: 0 },
+    }),
+    "agents",
+  ).join("\n");
+  assert.ok(!runWithoutUsage.includes("Tokens: 0"));
+  assert.ok(!runWithoutUsage.includes("Cost: 0"));
+});
+
+test("keeps partial child-run usage visible", () => {
+  const withUsage = {
+    ...agentRow("run-a"),
+    usage: { totalTokens: 20, cost: 3 },
+  };
+  const rendered = renderTab(
+    modelWith({
+      agents: [withUsage, agentRow("run-b"), agentRow("run-c")],
+      agentEvidence: "supported",
+      agentUsage: { runsTotal: 3, runsWithUsage: 1 },
+    }),
+    "agents",
+  ).join("\n");
+
+  assert.match(rendered, /usage reported by 1 of 3/);
+});
+
+test("keeps child usage wording non-additive", () => {
+  const withUsage = {
+    ...agentRow("run-a"),
+    usage: { totalTokens: 20, cost: 3 },
+  };
+  const lines = renderTab(
+    modelWith({
+      agents: [withUsage],
+      agentEvidence: "supported",
+      agentUsage: { runsTotal: 1, runsWithUsage: 1 },
+    }),
+    "agents",
+  );
+  const rendered = lines.join("\n");
+
+  assert.match(rendered, /breakdown only; never added to session totals/);
+  const summary = lines.filter((line) => line.startsWith("Child runs: "));
+  assert.equal(summary.length, 1);
+  for (const line of summary) assert.ok(!/total/i.test(line));
+});
+
+test("states an empty ledger as no records rather than unavailable", () => {
+  const rendered = renderTab(modelWith({}), "ledger").join("\n");
+
+  assert.ok(rendered.includes(ENGLISH_CATALOG["empty.ledger"]));
+  assert.ok(!rendered.includes("Unavailable"));
 });

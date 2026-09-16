@@ -25,7 +25,9 @@ import {
 import type { InventorySnapshot } from "./integrations/inventory.ts";
 import {
   type LiveCounterApi,
+  type LiveCounterRegistration,
   type LiveCounterWriter,
+  liveCounterIdentity,
   registerLiveCounters as registerLiveCounterProducers,
 } from "./integrations/live-counters.ts";
 import { readPresence } from "./integrations/presence.ts";
@@ -56,6 +58,7 @@ import {
 import {
   readSessionInventory,
   refreshSessionInventory,
+  registerSessionShutdown,
   registerSessionStartTracking,
 } from "./pi/session-start.ts";
 import { setupSessionWal } from "./pi/session-wal.ts";
@@ -106,6 +109,8 @@ type SessionWalSetup = (input: {
   sessionId: string;
   sessionFile: string;
   api: unknown;
+  /** Identity of the runtime that owns the setup being performed. */
+  runtimeId: string;
 }) => Promise<void>;
 
 const description = "Open Pi Session Inspector reports";
@@ -190,6 +195,83 @@ function rememberInventory(
   state.inventoryObservedAt = observedAt;
   state.inventoryNames = new Set(bounded.skills.map((skill) => skill.name));
   liveInventoryScope = scope;
+}
+
+/**
+ * Live counter registrations owned by one session runtime, keyed by that
+ * runtime's identity. Pi replaces a session runtime (and removes its listeners)
+ * while this module stays cached, so ownership is per runtime and released in
+ * `session_shutdown`: a registration can only ever be reused by the runtime
+ * that created it (see ADR 0014).
+ */
+const runtimeLiveCounters = new Map<
+  string,
+  Map<string, LiveCounterRegistration>
+>();
+
+/**
+ * Runtimes whose `session_shutdown` already ran. Pi ends a runtime while a
+ * detached `session_start` pass may still be attaching listeners, and a
+ * registration that arrives afterwards must be dropped rather than owned or
+ * installed: it would supersede a live runtime's registration (silently losing
+ * that runtime's telemetry) and its own listeners no longer exist. Bounded like
+ * the fold-boundary memo: the oldest id is forgotten at the cap.
+ */
+const endedRuntimes = new Set<string>();
+const MAX_ENDED_RUNTIMES = 64;
+
+function markRuntimeEnded(runtimeId: string): void {
+  if (endedRuntimes.size >= MAX_ENDED_RUNTIMES) {
+    const oldest = endedRuntimes.values().next().value;
+    if (oldest !== undefined) endedRuntimes.delete(oldest);
+  }
+  endedRuntimes.add(runtimeId);
+}
+
+/** Whether the runtime's `session_shutdown` already ran. */
+function runtimeEnded(runtimeId: string): boolean {
+  return endedRuntimes.has(runtimeId);
+}
+
+function ownRuntimeLiveRegistration(input: {
+  runtimeId: string;
+  root: string;
+  sessionId: string;
+  registration: LiveCounterRegistration;
+}): void {
+  if (runtimeEnded(input.runtimeId)) {
+    // The runtime ended while this registration was being built.
+    try {
+      input.registration.dispose();
+    } catch {
+      // Disposal failures are observer-only.
+    }
+    return;
+  }
+  let owned = runtimeLiveCounters.get(input.runtimeId);
+  if (owned === undefined) {
+    owned = new Map<string, LiveCounterRegistration>();
+    runtimeLiveCounters.set(input.runtimeId, owned);
+  }
+  owned.set(
+    liveCounterIdentity(input.root, input.sessionId),
+    input.registration,
+  );
+}
+
+/** Disposes every registration a runtime owns; idempotent and observer-only. */
+function disposeRuntimeLiveCounters(runtimeId: string): void {
+  markRuntimeEnded(runtimeId);
+  const owned = runtimeLiveCounters.get(runtimeId);
+  if (owned === undefined) return;
+  runtimeLiveCounters.delete(runtimeId);
+  for (const registration of owned.values()) {
+    try {
+      registration.dispose();
+    } catch {
+      // Disposal failures are observer-only.
+    }
+  }
 }
 
 /** Flushes live evidence before a report read; failures never affect Pi. */
@@ -331,10 +413,17 @@ export function registerTracking(
     track,
     setupSessionWal: setup,
     schedule = scheduleProductionMaintenance,
+    runtimeId = randomUUID(),
   }: {
     agentDir: string;
     track: SessionTracker;
     setupSessionWal: SessionWalSetup;
+    /**
+     * Identity of this session runtime. Pi re-runs this registration for every
+     * session runtime while the module stays cached, so the id separates the
+     * runtime that owns a live registration from the one it replaced.
+     */
+    runtimeId?: string;
     schedule?(input: {
       root: string;
       sessionId: string;
@@ -397,12 +486,19 @@ export function registerTracking(
             sessionId: input.sessionId,
             sessionFile: input.sessionFile,
             api,
+            runtimeId,
           });
         }
       }
       return tracked;
     },
   );
+  // The runtime ends with `session_shutdown` (quit, reload, new, resume, or
+  // fork); disposal here is what keeps a replaced runtime's inert registration
+  // out of the runtime that replaces it.
+  registerSessionShutdown(api, () => {
+    disposeRuntimeLiveCounters(runtimeId);
+  });
 }
 
 function scheduleProductionMaintenance({
@@ -441,6 +537,7 @@ function setupProductionSessionWal(input: {
   sessionId: string;
   sessionFile: string;
   api: unknown;
+  runtimeId: string;
 }): Promise<void> {
   return setupSessionWal(input, {
     createWriter: async ({ root, onSegmentRotation }) => {
@@ -468,11 +565,19 @@ function setupProductionSessionWal(input: {
       );
     },
     registerLiveCounters: (api, writer, context) => {
-      registerLiveCounterProducers(
+      // A registration arriving after this runtime ended is dropped: its
+      // listeners are gone, and installing it would supersede the live runtime
+      // that already took over this session.
+      if (runtimeEnded(input.runtimeId)) return;
+      const registration = registerLiveCounterProducers(
         api as LiveCounterApi,
         writer as LiveCounterWriter,
         {
+          root: input.root,
           sessionId: context.sessionId,
+          // The runtime that owns this registration; a later runtime disposes
+          // it instead of reusing listeners Pi already removed.
+          runtimeId: input.runtimeId,
           inventoryNames: context.inventoryNames,
           now: () => new Date(),
           // A live sighting is presence evidence for this process; the
@@ -484,6 +589,14 @@ function setupProductionSessionWal(input: {
           },
         },
       );
+      // This runtime owns the registration until `session_shutdown` releases
+      // it, so the returned disposer is never discarded.
+      ownRuntimeLiveRegistration({
+        runtimeId: input.runtimeId,
+        root: input.root,
+        sessionId: context.sessionId,
+        registration,
+      });
     },
     readInventoryNames: () => liveSession(input.sessionId).inventoryNames,
     scheduleMaintenance: scheduleProductionMaintenance,
@@ -494,9 +607,11 @@ function setupProductionSessionWal(input: {
  * Sessions this process already gave a fold-boundary attempt, keyed by the
  * Inspector root as well as the session id: the same id can name a session in
  * another root (a different agent directory), and one root's attempt must never
- * suppress another's. Bounded: a process observes a handful of sessions, and a
- * session that cannot be folded (untracked, or a maintenance failure) must not
- * be retried on every read.
+ * suppress another's. The runtime identity is part of the key too: a session
+ * resumed by a later runtime gets its own bounded attempt instead of inheriting
+ * the replaced runtime's failed one. Bounded: a process observes a handful of
+ * sessions and runtimes, and a session that cannot be folded (untracked, or a
+ * maintenance failure) must not be retried on every read.
  */
 const foldBoundaryAttempts = new Set<string>();
 const MAX_FOLD_BOUNDARY_ATTEMPTS = 64;
@@ -513,10 +628,12 @@ async function ensureFoldBoundary(input: {
   root: string;
   sessionId: string;
   sessionFile: string | undefined;
+  /** Identity of the runtime performing the read (see ADR 0014). */
+  runtimeId: string;
 }): Promise<void> {
   const { root, sessionFile, sessionId } = input;
   if (sessionFile === undefined) return;
-  const attemptKey = `${root}\u0000${sessionId}`;
+  const attemptKey = `${input.runtimeId}\u0000${root}\u0000${sessionId}`;
   if (foldBoundaryAttempts.has(attemptKey)) return;
   // Bounded memory that still attempts every session once: at the cap the
   // oldest attempt is forgotten, so a long-lived process keeps folding new
@@ -606,6 +723,8 @@ async function readSessionEvidence(input: {
   sessionId: string | undefined;
   /** The Pi session file this read belongs to; `undefined` skips the boundary pass. */
   sessionFile?: string | undefined;
+  /** Identity of the runtime performing the read. */
+  runtimeId: string;
 }): Promise<SessionEvidenceRead | undefined> {
   if (input.sessionId === undefined) return undefined;
   try {
@@ -626,6 +745,7 @@ async function readSessionEvidence(input: {
         root: input.root,
         sessionId: input.sessionId,
         sessionFile: input.sessionFile,
+        runtimeId: input.runtimeId,
       });
       checkpoint = await readCheckpoint({ directory });
     }
@@ -1021,6 +1141,7 @@ async function startInspectorUi(
   command: Extract<InspectorCommand, { kind: "report" }>,
   root: string,
   config: ResolvedConfig,
+  runtimeId: string,
 ): Promise<void> {
   try {
     // Loaded only for `ui`: the server module owns the browser assets, so no
@@ -1031,6 +1152,7 @@ async function startInspectorUi(
         api: pi,
         sessionManager: ctx.sessionManager,
         root,
+        runtimeId,
         // The initial theme is resolved configuration, never browser-local
         // state: an in-page toggle stays ephemeral (ADR 0019).
         theme: config.theme,
@@ -1067,8 +1189,10 @@ function createUiServerContext(input: {
   root: string;
   theme: "light" | "dark";
   initialScope: Scope;
+  /** Identity of the runtime that owns this server's reads. */
+  runtimeId: string;
 }): InspectorServerContext {
-  const { api, root, sessionManager } = input;
+  const { api, root, sessionManager, runtimeId } = input;
   // Rebuilt per read so each history/global read gets its own maintenance seam.
   const historyRead = () => ({
     root,
@@ -1092,6 +1216,7 @@ function createUiServerContext(input: {
         root,
         sessionId,
         sessionFile,
+        runtimeId,
       });
       // One bundle load serves the whole request: both current views, history
       // and global, each read from the values captured above.
@@ -1142,10 +1267,17 @@ function createUiServerContext(input: {
 }
 
 export default function registerSessionInspector(pi: ExtensionAPI): void {
+  // One identity per session runtime: Pi re-runs this factory for every
+  // replacement while the module stays cached, so live registrations and the
+  // read-boundary memo are scoped to the runtime that owns them (ADR 0014).
+  const runtimeId = randomUUID();
+  // SAFETY: Pi's ExtensionAPI carries the wider lifecycle overload set; the
+  // structural subset below is the only surface this module uses.
   registerTracking(pi as unknown as SessionStartTrackingApi, {
     agentDir: getAgentDir(),
     track: trackPiSession,
     setupSessionWal: setupProductionSessionWal,
+    runtimeId,
   });
 
   try {
@@ -1221,7 +1353,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             },
           });
           if (command.mode === "ui") {
-            await startInspectorUi(ctx, pi, command, root, config);
+            await startInspectorUi(ctx, pi, command, root, config, runtimeId);
             return;
           }
           // Flush live evidence before any report read so no observed event is
@@ -1237,6 +1369,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                   root,
                   sessionId: readSessionId(sessionManager),
                   sessionFile,
+                  runtimeId,
                 })
               : undefined;
           // One read serves both the L0 evidence bundle and the existing

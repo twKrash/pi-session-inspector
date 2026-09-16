@@ -14,20 +14,29 @@ type InventoryApi = {
 };
 
 /** Structural subset of the public Pi API used to start Inspector tracking. */
-type SessionStartApi = {
-  on(
-    event: "session_start",
-    handler: (
-      event: unknown,
-      context: {
-        sessionManager: {
-          getSessionId(): string;
-          getSessionFile(): string | undefined;
-          getSessionDir(): string;
-        };
-      },
-    ) => Promise<void>,
-  ): void;
+type SessionStartHandler = (
+  event: unknown,
+  context: {
+    sessionManager: {
+      getSessionId(): string;
+      getSessionFile(): string | undefined;
+      getSessionDir(): string;
+    };
+  },
+) => Promise<void>;
+
+/**
+ * Structural subset of the public Pi API used for session lifecycle tracking.
+ * Pi emits `session_shutdown` for the outgoing extension runtime before it
+ * reloads and rebinds extensions for the replacement session, so it is the
+ * runtime-termination signal for every reason (`quit`, `reload`, `new`,
+ * `resume`, `fork`).
+ */
+type SessionTrackingApi = {
+  on: {
+    (event: "session_start", handler: SessionStartHandler): void;
+    (event: "session_shutdown", handler: (event: unknown) => void): void;
+  };
   appendEntry(type: string, data: unknown): void;
 } & InventoryApi;
 
@@ -98,7 +107,7 @@ export async function refreshSessionInventory({
 
 /** Registers best-effort tracking when Pi starts a session. */
 export function registerSessionStartTracking(
-  api: SessionStartApi,
+  api: SessionTrackingApi,
   root: string,
   track: SessionTracker,
 ): void {
@@ -157,5 +166,23 @@ export function registerSessionStartTracking(
     });
   } catch {
     // Registration is best-effort and must never alter Pi execution.
+  }
+}
+
+/**
+ * Registers best-effort cleanup for the end of the current session runtime.
+ * `session_shutdown` is emitted for the outgoing extension runtime before Pi
+ * reloads and rebinds extensions, so it is where a runtime gives up the live
+ * registrations it owns; without it a replacement runtime could inherit an
+ * inert registration whose listeners Pi already removed.
+ */
+export function registerSessionShutdown(
+  api: SessionTrackingApi,
+  handler: (event: unknown) => void,
+): void {
+  try {
+    api.on("session_shutdown", handler);
+  } catch {
+    // Lifecycle observation is best-effort and must never alter Pi execution.
   }
 }

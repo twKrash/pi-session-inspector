@@ -214,9 +214,20 @@ module.exports = {
     },
 
     // Verified architecture boundaries. These rules intentionally avoid the
-    // documented loader/composition seams: core has a few bounded type/runtime
-    // dependencies on L0 contracts, and ui/load-current.ts plus
-    // ui/load-history.ts are the approved source-reading loaders.
+    // documented loader/composition seams: core has a few bounded type
+    // dependencies on L0 contracts plus one sanctioned runtime scope rule,
+    // and ui/load-current.ts plus ui/load-history.ts are the approved
+    // source-reading loaders.
+    //
+    // The directory-level graph deliberately keeps one SCC spanning core,
+    // integrations, pi, and storage. That SCC is not a release bug: it has no
+    // file-level cycle, `core -> integrations` registry/contract lookups are
+    // sanctioned by ADR 0019, and the `pi <-> storage` pair is the documented
+    // composition seam (the Pi adapter reads Inspector-owned sources; storage
+    // is Inspector persistence). The rules below pin the permitted *edges* of
+    // that SCC so drift fails the cruise instead of silently redrawing the
+    // graph. Breaking the SCC itself would require speculative restructuring
+    // (an injected validation/source provider) and is out of scope.
     {
       name: 'core-not-to-ui',
       severity: 'error',
@@ -239,6 +250,23 @@ module.exports = {
       },
       to: {
         path: '^(?:node:)?(?:fs|path|child_process)(?:/|$)'
+      }
+    },
+    {
+      name: 'core-not-to-pi-and-storage-runtime',
+      severity: 'error',
+      comment:
+        'Core owns semantic contracts and reduction logic; it must not depend on runtime/platform/storage implementations. ' +
+        'Type-only imports into pi/ and storage/ (parsed adapter shapes, checkpoint/history evidence DTOs) are allowed: they erase at compile time. ' +
+        'One runtime exception exists: core/canonical.ts imports resolveScope from pi/scope.ts. That module is a pure, I/O-free scope rule over already-parsed Pi graph data (ADR 0006/0016 own its semantics), so it is accepted as a file-location artifact rather than an implementation dependency. ' +
+        'If a zero-exception boundary is wanted later, the trivial follow-up is moving that pure function into core/ and keeping pi/scope.ts as a thin re-export.',
+      from: {
+        path: '^src/core/'
+      },
+      to: {
+        path: '^src/(?:pi|storage)/',
+        pathNot: '^src/pi/scope[.]ts$',
+        dependencyTypesNot: ['type-only', 'type-import']
       }
     },
     {
@@ -283,6 +311,22 @@ module.exports = {
       }
     },
     {
+      name: 'storage-not-to-pi-implementation',
+      severity: 'error',
+      comment:
+        'Chosen direction across the pi/storage seam: the Pi adapter (L0) reads Inspector-owned storage, not the other way around. ' +
+        'Storage must not reach into the Pi adapter layer, with two sanctioned pure helpers: pi/telemetry.ts (producer telemetry envelope validation used by the WAL write/recovery path, the single validation path of the v1 spec) and pi/sessions.ts (Pi marker/scope reading used by maintenance, which ADR 0016 sanctions as a composition-root/maintenance caller). ' +
+        'Type-only imports such as storage/tracking.ts -> pi/tracking.ts (the TrackingStorage port) remain allowed. Any new storage -> pi runtime edge must be inverted or raised in an ADR.',
+      from: {
+        path: '^src/storage/'
+      },
+      to: {
+        path: '^src/pi/',
+        pathNot: '^src/pi/(?:telemetry|sessions)[.]ts$',
+        dependencyTypesNot: ['type-only', 'type-import']
+      }
+    },
+    {
       name: 'current-loader-not-to-reducer',
       severity: 'error',
       comment:
@@ -311,12 +355,38 @@ module.exports = {
       name: 'integration-catalog-not-to-consumers',
       severity: 'error',
       comment:
-        'The integration catalog owns validation and lookup only (ADR 0019); importing a consumer back would invert the direction and turn it into orchestration.',
+        'The integration catalog and contract own validation, lookup, and types only (ADR 0019); importing a consumer back would invert the direction and turn them into orchestration.',
       from: {
-        path: '^src/integrations/(?:catalog|index)[.]ts$'
+        path: '^src/integrations/(?:catalog|contract|index)[.]ts$'
       },
       to: {
         path: '^(?:src/(?:core/(?:reports|canonical|reduce)|ui|commands)|src/index[.]ts$)',
+        dependencyTypesNot: ['type-only', 'type-import']
+      }
+    },
+    {
+      name: 'integrations-not-to-canonical-owners',
+      severity: 'error',
+      comment:
+        'Every integration definition (adapters, catalog, contract, and the subsystem loops) feeds the canonical/report owners (ADR 0019, ADR 0016). Importing core/canonical, core/reports, core/reduce, or core/retained-aggregates back would invert the direction and re-create the file-level cycle the current graph avoids. Type-only imports stay allowed.',
+      from: {
+        path: '^src/integrations/'
+      },
+      to: {
+        path: '^src/core/(?:canonical|reports|reduce|retained-aggregates)[.]ts$',
+        dependencyTypesNot: ['type-only', 'type-import']
+      }
+    },
+    {
+      name: 'integrations-not-to-pi-or-storage',
+      severity: 'error',
+      comment:
+        'Integration adapters interpret producer protocol payloads handed to them by L0/L1 (ADR 0019); they must not read Pi session sources or Inspector persistence themselves. The integration layer today has zero pi/storage edges and this rule keeps it that way; a real need must be routed through a core contract or the composition root. Type-only imports stay allowed.',
+      from: {
+        path: '^src/integrations/'
+      },
+      to: {
+        path: '^src/(?:pi|storage)/',
         dependencyTypesNot: ['type-only', 'type-import']
       }
     },

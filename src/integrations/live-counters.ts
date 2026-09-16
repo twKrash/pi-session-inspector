@@ -74,27 +74,66 @@ export type LiveCounterRegistration = {
   dispose(): void;
 };
 
+type ActiveRegistration = {
+  /** The runtime that owns this registration; it can never serve another. */
+  runtimeId: string;
+  registration: LiveCounterRegistration;
+};
+
 /**
- * Exactly one live registration per session. A repeated `session_start` for a
- * session that already has listeners returns the existing registration instead
- * of attaching a second set, which would append every event twice and double
- * the cursor-fold counters.
+ * Exactly one live registration per session identity (root plus session) per
+ * runtime. Two rules together keep a replaced runtime from poisoning the next
+ * one: a repeated `session_start` inside the same runtime returns the existing
+ * registration instead of attaching a second listener set (which would append
+ * every event twice and double the cursor-fold counters), and a registration
+ * owned by a different runtime is disposed rather than returned, because Pi
+ * removed that runtime's listeners when it replaced the runtime.
  */
-const activeRegistrations = new Map<string, LiveCounterRegistration>();
+const activeRegistrations = new Map<string, ActiveRegistration>();
+
+function registrationKey(root: string, sessionId: string): string {
+  return `${root}\u0000${sessionId}`;
+}
+
+/**
+ * The identity a live registration and its runtime ownership share: the
+ * Inspector root plus the session id, so the same session id under two roots
+ * never collides. Exported so a runtime-scoped owner keys its own state
+ * identically instead of re-deriving the format.
+ */
+export function liveCounterIdentity(root: string, sessionId: string): string {
+  return registrationKey(root, sessionId);
+}
 
 export function registerLiveCounters(
   api: LiveCounterApi,
   writer: LiveCounterWriter,
   options: {
+    /** Inspector root; part of the identity so two roots never collide. */
+    root: string;
     sessionId: string;
+    /** Identity of the session runtime that owns the registration. */
+    runtimeId: string;
     inventoryNames(): ReadonlySet<string>;
     now(): Date;
     /** Records an integration observed live in this process (presence only). */
     markPresence?(integration: string): void;
   },
 ): LiveCounterRegistration {
-  const existing = activeRegistrations.get(options.sessionId);
-  if (existing !== undefined) return existing;
+  const key = registrationKey(options.root, options.sessionId);
+  const existing = activeRegistrations.get(key);
+  if (existing !== undefined) {
+    if (existing.runtimeId === options.runtimeId) return existing.registration;
+    // A registration owned by a replaced runtime holds listeners Pi already
+    // removed, so it is disposed instead of reused and this runtime registers
+    // its own set.
+    activeRegistrations.delete(key);
+    try {
+      existing.registration.dispose();
+    } catch {
+      // Disposal failures are observer-only.
+    }
+  }
 
   const append = (envelope: unknown): void => {
     try {
@@ -159,11 +198,11 @@ export function registerLiveCounters(
           // Disposal failures are observer-only.
         }
       }
-      if (activeRegistrations.get(options.sessionId) === registration) {
-        activeRegistrations.delete(options.sessionId);
+      if (activeRegistrations.get(key)?.registration === registration) {
+        activeRegistrations.delete(key);
       }
     },
   };
-  activeRegistrations.set(options.sessionId, registration);
+  activeRegistrations.set(key, { runtimeId: options.runtimeId, registration });
   return registration;
 }

@@ -2,6 +2,75 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0]
+
+First public release. Only `0.1.0` was ever published, so the `0.13.x` sections
+below are the pre-release development record and every change they describe is
+included here.
+
+### Added
+
+- The in-Pi TUI now bounds long tab content to 12 rendered lines per page and
+  supports `↑` / `↓` page navigation. Tab and scope changes return to the first
+  page, while short views remain unchanged and show no pagination noise.
+
+### Fixed
+
+- Agent rows in the TUI now use the same semantic parent verdicts as the
+  browser/snapshot projection instead of exposing producer parent IDs.
+- Agent usage coverage is explicit in the TUI, and an empty ledger is reported
+  as an observed empty result rather than unavailable evidence.
+
+## [0.13.3]
+
+### Fixed
+
+- A missing Inspector `wal/` directory is no longer indistinguishable from a
+  healthy empty store when a valid checkpoint still declares retained WAL
+  cursors: recovery reports the bounded `wal-directory-missing` code in
+  `RecoveryResult.diagnostics` (never a fabricated record, cursor, or
+  aggregate), while a never-initialized store, which declares nothing, stays
+  healthy empty. Availability, cursors, records, and folded counters are
+  unchanged in both cases, and recovery still never creates, repairs, or
+  deletes storage.
+
+### Changed
+
+- Storage failure-path contracts are pinned by tests. An interrupted pass
+  between recovery and checkpoint publication replays to the same canonical
+  result and folds each record exactly once; a checkpoint replacement exposes
+  either the previous or the new complete checkpoint to concurrent readers,
+  never a partial or mixed one; a dropped seal, a seal/cursor regression, and a
+  seal ahead of its own WAL cursor are all rejected instead of becoming
+  authoritative; and a WAL shorter than a sealed checkpoint cursor is accepted
+  without rewinding the cursor, re-folding the sealed prefix, or inventing
+  missing records. ADR 0005 now states the durability scope explicitly: the
+  targeted failure is process crash, and no `fsync` or power-loss guarantee is
+  added.
+
+## [0.13.2]
+
+### Fixed
+
+- The LLM tab names each usage scope, so its figures can no longer be read as
+  one total. Pi records a child agent's own usage on the parent's subagent tool
+  result, which makes the session root (all persisted native usage) larger than
+  the model table (generation usage only) by exactly the child figure; the model
+  table's note now states that scope, the session root carries its own "Session
+  total" line, and the child card states that its figure is a breakdown inside
+  the session's tool-result usage. No arithmetic changed: the root was, and
+  remains, the report's native usage, never `native + child`.
+- A session runtime that Pi replaced can no longer leave a live registration
+  behind. Inspector's live counter registration is owned per runtime and
+  disposed when that runtime ends (`session_shutdown`, every reason), and a
+  registration owned by a replaced runtime is disposed instead of reused, so a
+  resumed session subscribes afresh. `A -> B -> A` therefore keeps counting
+  permission and skill telemetry instead of silently reporting nothing.
+- The read-boundary attempt memo is scoped to the session runtime as well, so a
+  session that failed its one bounded fold attempt before Pi replaced its
+  runtime gets a fresh attempt when it is resumed, while a healthy runtime still
+  folds at most once and never re-runs maintenance on every read.
+
 ## [0.13.1]
 
 ### Fixed
