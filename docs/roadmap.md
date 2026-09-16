@@ -1,23 +1,24 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.1.0`
+**Current release:** `1.2.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
 and M8 (publication and release) are complete. `1.0.0` is published to npm as
 `@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`. The `1.0.x`
 patch line has continued past it — `1.0.1` through `1.0.3` are published the same
-way, and `1.1.0` is the current release; it adds the post-1.0 `mcp` semantic
-integration.
+way, `1.1.0` added the post-1.0 `mcp` semantic integration, and `1.2.0` is the
+current release; it adds the multi-metric chart selection.
 
 **Next gate:** none for `1.0.0`. The post-1.0 follow-ups below are the next
 recorded work; they gate nothing and are not required for the published
-release. The post-1.0 MCP semantic integration shipped in `1.1.0`.
+release. MCP semantic integration shipped in `1.1.0` and multi-metric chart
+selection in `1.2.0`.
 
 **Post-1.0:** nine follow-ups are recorded at the end of this document — MCP
 semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native
 telemetry integration, push-based live updates, multi-metric chart selection
-(implemented, unreleased), usage
+(shipped in `1.2.0`), usage
 attribution, working tool/skill links, additional locales, and other
 harnesses. None is a release gate, and none blocks M8.
 
@@ -1264,8 +1265,7 @@ Before merge:
 
 ### 5. Multi-metric charts with metric selection
 
-**Status:** Implemented in source, unreleased. The next release carries it;
-`1.1.0` does not.
+**Status:** Complete in `1.2.0`.
 
 **Current state:** `scripts/web/chart.ts` already draws N series — each series
 carries its own `key`, `axis`, `format`, and palette entry, and the axis
