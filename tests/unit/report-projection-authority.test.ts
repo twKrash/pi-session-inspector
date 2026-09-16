@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { test } from "node:test";
+import ts from "typescript";
 
 import {
   attachSubagentEvidence,
@@ -27,14 +28,84 @@ const FIXTURE = "tests/fixtures/pi/0.85.1/mixed-usage.jsonl";
  * production contract of that branch: production always hands L1 a
  * `CanonicalSession`, and the legacy branch stays a compatibility surface
  * rather than a second report authority.
+ *
+ * The production-authority check is reference-based (TypeScript symbols, not
+ * source text), so aliased imports, re-exports, and formatting stay invisible
+ * to it.
  */
 
-function sourceFiles(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) return sourceFiles(path);
-    return entry.name.endsWith(".ts") ? [path] : [];
-  });
+let program: ts.Program | undefined;
+
+/** The `src/` files parsed with the repository compiler options. */
+function sourceProgram(): ts.Program {
+  if (program !== undefined) return program;
+  const config = ts.readConfigFile("tsconfig.json", ts.sys.readFile);
+  assert.equal(config.error, undefined, "tsconfig.json must be readable");
+  const parsed = ts.parseJsonConfigFileContent(
+    config.config,
+    ts.sys,
+    ".",
+    undefined,
+    "tsconfig.json",
+  );
+  program = ts.createProgram(
+    parsed.fileNames.filter((file) => projectPath(file).startsWith("src/")),
+    parsed.options,
+  );
+  return program;
+}
+
+function projectPath(fileName: string): string {
+  return relative(process.cwd(), fileName).split(sep).join("/");
+}
+
+type Declaration = { file: string; name: string };
+
+/**
+ * Every `src/` reference to an exported declaration, keyed by file, resolved
+ * through aliases and re-exports by the type checker.
+ */
+function referencesTo(declaration: Declaration): Map<string, ts.Node[]> {
+  const checker = sourceProgram().getTypeChecker();
+  const found = new Map<string, ts.Node[]>();
+  for (const source of sourceProgram().getSourceFiles()) {
+    const file = projectPath(source.fileName);
+    if (!file.startsWith("src/")) continue;
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node)) {
+        const raw = checker.getSymbolAtLocation(node);
+        const symbol =
+          raw !== undefined && (raw.flags & ts.SymbolFlags.Alias) !== 0
+            ? checker.getAliasedSymbol(raw)
+            : raw;
+        if (
+          symbol?.getName() === declaration.name &&
+          symbol.declarations?.some(
+            (entry) =>
+              projectPath(entry.getSourceFile().fileName) === declaration.file,
+          )
+        ) {
+          found.set(file, [...(found.get(file) ?? []), node]);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(source, visit);
+  }
+  return found;
+}
+
+/** References that are the callee of a call, not an import or type position. */
+function callSites(references: Map<string, ts.Node[]>): string[] {
+  return [...references]
+    .filter(([, nodes]) =>
+      nodes.some(
+        (node) =>
+          ts.isCallExpression(node.parent) && node.parent.expression === node,
+      ),
+    )
+    .map(([file]) => file)
+    .sort();
 }
 
 /** The builder input the production loaders use for the tracked fixture. */
@@ -65,24 +136,47 @@ function scopedEntries(session: CanonicalSession): SessionEntry[] {
 }
 
 test("production report call sites are the two canonical loaders", () => {
-  const referencing = sourceFiles("src")
-    .filter((file) => /\btoSessionReport\b/.test(readFileSync(file, "utf8")))
-    .sort();
+  const projection = referencesTo({
+    file: "src/core/reports.ts",
+    name: "toSessionReport",
+  });
+  const production = [...projection.keys()].filter(
+    (file) => file !== "src/core/reports.ts",
+  );
+  const loaders = ["src/ui/load-current.ts", "src/ui/load-history.ts"];
 
-  assert.deepEqual(referencing, [
-    "src/core/reports.ts",
-    "src/ui/load-current.ts",
-    "src/ui/load-history.ts",
-  ]);
+  // Exactly the two loaders call the projection; a third production caller
+  // would have to be a reviewed decision, not an accident.
+  assert.deepEqual(callSites(projection), loaders);
+  // Referencing it without calling is allowed only inside those loaders, so a
+  // future re-export module cannot smuggle a caller past this guard.
+  for (const file of production) {
+    assert.ok(
+      loaders.includes(file),
+      `${file} references the report projection`,
+    );
+  }
 
-  // The ReducedSession branch is only reachable from a caller that builds or
-  // accepts a ReducedSession. No production module may do either.
-  for (const loader of ["src/ui/load-current.ts", "src/ui/load-history.ts"]) {
-    const source = readFileSync(loader, "utf8");
+  // The ReducedSession branch is only reachable from a module that builds or
+  // names a ReducedSession. No production loader may do either.
+  const reducedBuilder = referencesTo({
+    file: "src/core/reduce.ts",
+    name: "reduceEntries",
+  });
+  const legacyShape = referencesTo({
+    file: "src/core/events.ts",
+    name: "ReducedSession",
+  });
+  for (const loader of loaders) {
     assert.equal(
-      /reduceEntries|ReducedSession/.test(source),
+      reducedBuilder.has(loader),
       false,
       `${loader} must project a CanonicalSession, not a ReducedSession`,
+    );
+    assert.equal(
+      legacyShape.has(loader),
+      false,
+      `${loader} must not name the legacy ReducedSession shape`,
     );
   }
 });
