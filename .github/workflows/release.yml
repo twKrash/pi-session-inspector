@@ -151,6 +151,7 @@ jobs:
             if (pkg.version !== source.version) fail(`version ${pkg.version} != ${source.version}`);
             if (pkg.publishConfig?.access !== "public") fail("publishConfig.access is not public");
             if (pkg.peerDependencies?.["@earendil-works/pi-tui"] !== "*") fail("pi-tui peer range changed");
+            if (!/^https:\/\/.+\.png$/.test(String(pkg.pi?.image))) fail("pi.image (gallery preview) missing");
             if (!files.includes("src/index.ts")) fail("missing Pi extension entry point");
             for (const required of ["README.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md"]) {
               if (!files.includes(required)) fail(`missing ${required}`);

@@ -7,7 +7,7 @@ bounded live and cooperative evidence when a producer publishes some. There is
 no LLM analytics step, no cloud service, and no daemon: nothing leaves the
 machine and no model call is spent on analysis.
 
-> **Status `1.0.1`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.0.2`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, and deterministic JSON reports are
 > available.
 
@@ -67,6 +67,17 @@ Child (subagent) usage breakdown of subagent usage already inside native
 ```bash
 pi install npm:@twkrash/pi-session-inspector
 /session-inspector
+```
+
+A Pi package runs with full system access, so install it the way you install any
+other Pi package: from a source you have reviewed. Inspector's own guarantees
+are narrower than that — it reads Pi's persisted session data and writes only
+its own metadata — and are described under [Guarantees](#guarantees).
+
+The bare install tracks releases. To hold one version, pin it:
+
+```bash
+pi install npm:@twkrash/pi-session-inspector@1.0.2
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the

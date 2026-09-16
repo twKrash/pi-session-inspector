@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 /** The released version this branch ships (SemVer, ADR 0018). */
-const RELEASE_VERSION = "1.0.1";
+const RELEASE_VERSION = "1.0.2";
 
 /**
  * The three browser assets the server and package share. `client.bundle.js` is
@@ -22,7 +22,7 @@ type PackageManifest = {
   files: string[];
   keywords: string[];
   engines: { node: string };
-  pi: { extensions: string[] };
+  pi: { extensions: string[]; image?: string };
   peerDependencies: Record<string, string>;
   dependencies: Record<string, string>;
 };
@@ -47,6 +47,10 @@ test("package declares Pi extension and ships entrypoint", () => {
   assert.equal(pkg.engines.node, ">=22.19.0");
   assert.deepEqual(pkg.keywords.includes("pi-package"), true);
   assert.deepEqual(pkg.pi.extensions, ["./src/index.ts"]);
+  // The gallery preview is part of the published manifest too: without it the
+  // Pi package listing has no image.
+  assert.match(String(pkg.pi.image), /^https:\/\/.+\.png$/);
+  assert.ok(pkg.keywords.includes("pi-package"));
   // Both Pi peers carry the documentation's `*` range: Inspector runs inside
   // whichever host loads it, and the tested baseline lives in docs.
   assert.equal(pkg.peerDependencies["@earendil-works/pi-coding-agent"], "*");

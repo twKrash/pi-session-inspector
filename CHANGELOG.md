@@ -2,6 +2,21 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2]
+
+### Added
+
+- `pi.image` points the [Pi package gallery](https://pi.dev/packages) at an
+  Overview screenshot, so the listing carries a preview once the gallery
+  indexes this package.
+
+### Changed
+
+- `keywords` also carry `pi-extension` and `pi-coding-agent`, the terms the
+  other Pi packages are found by.
+- The README states that a Pi package runs with full system access and shows the
+  version-pinned install form.
+
 ## [1.0.1]
 
 ### Changed
