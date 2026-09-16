@@ -172,6 +172,13 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # The registry is named here, not through `setup-node`'s `registry-url`:
+    # that option writes `_authToken=${NODE_AUTH_TOKEN}` into `.npmrc` and
+    # injects the GitHub token under that name, which makes npm treat the run as
+    # token-authenticated and skip the OIDC trusted-publishing exchange. The
+    # registry then rejects a credential it never issued.
+    env:
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -180,7 +187,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.x
-          registry-url: https://registry.npmjs.org
 
       # Pinned deliberately: trusted publishing needs npm 11.5.1 or newer, and a
       # floating `npm@latest` would silently change what packs and publishes.
