@@ -16,3 +16,6 @@ build/
 coverage/
 .tmp/
 .cache/
+
+# README screenshots are GitHub release assets (docs/images/README.md), never tracked
+docs/images/*.png

@@ -1,8 +1,64 @@
 # Pi Session Inspector
 
-Deterministic, local-only session analytics for [Pi](https://github.com/earendil-works/pi). Reconstructs Pi-native session data with confidence-aware live/cooperative metadata. No LLM analytics. No cloud. No daemon.
+A deterministic, local-only observability layer for [Pi](https://github.com/earendil-works/pi)
+sessions. Inspector reconstructs what Pi already persisted — usage and cost,
+generations, tool calls, compactions, errors, agent runs — and augments it with
+bounded live and cooperative evidence when a producer publishes some. There is
+no LLM analytics step, no cloud service, and no daemon: nothing leaves the
+machine and no model call is spent on analysis.
 
-> **Status: current, history, global, ledger, localhost UI, immutable snapshots, TUI, and JSON reports are available in `0.13.1`.**
+> **Status `0.13.3`:** current-session, history, global, ledger, localhost UI,
+> in-Pi TUI, immutable HTML snapshots, and deterministic JSON reports are
+> available.
+
+## Screenshots
+
+The Overview tab of `/session-inspector ui` — one current session, dark theme,
+and the multi-session global report, light theme.
+
+| Current session (dark) | Global report (light) |
+| --- | --- |
+| ![Overview tab of a current session, dark theme](https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-current-dark.png) | ![Overview tab of the global report, light theme](https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-global-light.png) |
+
+The images are GitHub release assets rather than repository files: no binary
+bytes enter git, and the absolute URLs render on GitHub and npm alike.
+
+## What you can inspect
+
+| Surface | What it shows |
+| --- | --- |
+| Overview | Native session usage and cost, generations, tool calls, and errors for the selected range, plus an evidence panel that keeps native, live/cooperative, and unavailable inputs apart |
+| LLM | Generation-attributed model usage and cost for the range; the same tab's Agent execution tree carries the session's own native total |
+| Agent execution | The LLM tab's second subject: Tree and Table readings of the same subagent runs — nested topology, run containers, model, status, and partial child usage. Grouping nodes are presentation only (see [Agent execution](#agent-execution)) |
+| Tools | Calls with duration and per-row usage coverage; partial usage and partial duration are flagged, never averaged away |
+| Skills | Discovered skill inventory plus explicit invocation evidence only |
+| Integrations | Semantic telemetry from supported Pi extensions (see below) |
+| Environment | Discovered commands and capability sources (the `builtin`, `npm:…` providers an environment loads) — availability, never activity |
+| Errors | Persisted error records by bounded kind |
+| Ledger | Chronological generations, tools, compactions, branch summaries, and errors with their status and confidence |
+| History / Global | Historical session rows and the multi-session aggregate report, each with its own inspection coverage |
+| Snapshot / JSON | Deterministic export surfaces: one self-contained HTML document, or the report DTO itself |
+
+## Accounting and evidence rules
+
+```text
+Session total          all persisted native Pi usage in the selected range:
+                       generations + tool results + compactions + branch summaries
+Model usage            the generation-attributed slice only
+Child (subagent) usage breakdown of subagent usage already inside native
+                       tool-result usage — never added a second time
+```
+
+- **Unavailable is not zero.** A figure that was never observed renders
+  unavailable; an observed zero stays zero. Counters are never fabricated.
+- **Partial coverage is explicit.** Coverage counts, `N of M runs reported
+  usage` fractions, and partial flags travel with the rows they qualify.
+- **Pi session JSONL is the durable usage/cost authority.**
+  Native usage and cost are read from it; no live or cooperative source
+  outranks it for native accounting.
+- **Live and cooperative evidence enriches attribution.** It can supply timing,
+  correlation, and producer facts; it never replaces, inflates, or re-derives
+  native accounting.
 
 ## Install
 
@@ -11,41 +67,109 @@ pi install npm:pi-session-inspector
 /session-inspector
 ```
 
-Commands and aliases:
+`/session-inspector` with no arguments is `tui current` in active scope: the
+TUI opens inside Pi for the current session. The alias `/session-ins` is
+equivalent, and `/session-inspector help` prints the grammar in the TUI.
+
+## Integrations
+
+Inspector distinguishes two things:
+
+- **Generic resource discovery** — commands, skills, tools, and tool sources
+  are inventoried and shown as availability, and `/skill:<name>` invocations
+  are counted generically. No extension needs to do anything for this.
+- **Semantic integration** — Inspector understands a producer's bounded,
+  structured protocol and turns its evidence into reportable facts. Not every
+  extension needs one, and one is added only when the producer publishes a real
+  telemetry contract.
+
+Shipped integrations ([full contract](docs/integrations.md)):
+
+| Integration | Evidence it reads | Reported telemetry |
+| --- | --- | --- |
+| `context` | `ctx_*` custom entries plus native `ctx_*` tool calls, folded by maximum | `calls` |
+| `rtk` | `message.details.rtkCompaction` (versioned shapes collapse to one contract) | `compactions`, char/line counts, `truncated` |
+| `ponytail` | `ponytail-mode` custom entries | `changes` |
+| `caveman` | `caveman-level` custom entries | `changes` |
+| `permission` | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors` |
+| `subagents` | persisted native subagent tool results | Rich run and activity evidence in the Agents view; the row itself declares no counters |
+| `lens` | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls | `calls` |
+
+Presence and evidence are independent claims. `Present / Unavailable` means the
+integration is installed but produced no observable evidence in the tracked
+scope — a mode-change integration that was never asked to change mode looks
+exactly like that. `Unsupported` means evidence exists in a shape or version
+Inspector does not understand. Installation is never guessed: `absent` is only
+reported when the inventory is readable and the defined signal is missing.
+Historical `mode` rows are validated for compatibility but never become a
+report row.
+
+## Agent execution
+
+The Agents view inside the LLM tab reads one set of runs two ways.
+
+- The tree's root is a **presentation grouping node** — the primary session, not
+  an AgentRun — and it is labelled with the session's own native total.
+- **Models are node attributes, never execution parents.**
+- A **run container** groups the runs one producer published. It has no agent,
+  status, model, or usage, because it is not an agent run.
+- Nesting is topology, not arithmetic: runs are a breakdown of usage the native
+  tool results already carry and are never added to a native or global total.
+- Runs come from **persisted producer evidence** (`details.results[]` and
+  `details.completions[]`), so a completed async run appears once its producer
+  has published durable evidence. A run that currently exists only inside the
+  running process may not be visible yet.
+- A run with no observed time cannot be placed in a range; the view says so
+  instead of blaming the range for the gap.
+
+## Commands
 
 ```text
 /session-inspector [ui|snapshot|tui|json] [target] [options]
 /session-ins ...
+/session-inspector help | --help | -h
 ```
 
 The four modes are separate surfaces: `ui` is the interactive localhost
 application, `snapshot` is the only immutable HTML artifact command, `tui`
-renders the current session inside Pi, and `json` is the deterministic export.
-Only `ui` starts a server; `ui` displays its tokenized URL and opens it unless
-`--no-open` is given, while `snapshot` writes its artifact, reports the path,
-and opens that exact document unless `--no-open` is given, without ever
-starting a server.
+renders inside Pi, and `json` is the deterministic export. Only `ui` starts a
+server.
+
+| Mode | Targets | Options |
+| --- | --- | --- |
+| `ui` | none; the application carries its own navigation | `--scope active\|tree`, `--theme dark\|light`, `--debug`, `--no-open` |
+| `snapshot` | required: `current`, `history`, `global`, or `session <sessionId>` | `--scope active\|tree` (current only), `--preset 7\|14\|30`, `--from DATE --to DATE`, `--theme`, `--debug`, `--output FILE`, `--no-open` |
+| `tui` | `current` (default) or `ledger` | `--scope`, `--debug` |
+| `json` | `current` (default), `history`, `global`, or `session <sessionId>` | `--scope` (current only), `--debug`, `--output FILE` |
 
 ```text
-/session-ins ui
+/session-ins
+/session-ins ui --theme dark
 /session-ins snapshot current --scope active --preset 14
 /session-ins snapshot history --from 2026-01-01 --to 2026-01-31 --no-open
 /session-ins snapshot global --output "global.html"
 /session-ins snapshot session <sessionId>
 /session-ins json history --output report.json
 /session-ins json session <sessionId> --output report.json
+/session-ins tui ledger
 ```
 
-`snapshot` requires an explicit target: `current`, `history`, `global`, or
-`session <sessionId>`; `json` takes the same four and defaults to `current`.
-`--output` is valid only for `snapshot` and `json`, so
-`ui` never writes a file; `--no-open` suppresses only the platform browser
-opener. Atomic session exports (`snapshot session <sessionId>` and
-`json session <sessionId>`) take no `--scope` and
-no range options: one requested session, nothing else. Both load that session
-through the same historical-session loader and publish the same canonical
-report DTO; the snapshot renders its own resolved projection of that DTO,
-while the JSON export writes the DTO itself.
+`ui` displays its tokenized URL and opens it unless `--no-open` is given, while
+`snapshot` writes its artifact, reports the path, and opens that exact document
+unless `--no-open` is given, without ever starting a server. `--no-open`
+suppresses only the platform browser opener.
+
+`--output` is valid only for `snapshot` and `json`, so `ui` never writes a file.
+Atomic session exports (`snapshot session <sessionId>` and
+`json session <sessionId>`) take no `--scope` and no range options: one
+requested session, nothing else. Both load that session through the same
+historical-session loader and publish the same canonical report DTO; the
+snapshot renders its own resolved projection of that DTO, while the JSON export
+writes the DTO itself. The range options are snapshot-only; history and global
+targets in `json` use their own full-tree resolution. `--format` and the old
+bare positional targets are removed syntax and are rejected with usage, as is
+any invalid combination. The legacy `--subagents-artifact` option is also
+removed: subagent runs are auto-discovered from persisted tool results.
 
 Snapshots are created lazily under Pi's agent directory at
 `session-inspector/v1/reports/` when `--output` is omitted. Unsafe/non-portable
@@ -90,10 +214,50 @@ enables logging even when settings leave it off. A missing file is the default
 configuration, not an error; a malformed, unreadable, or oversized (over 64 KiB)
 file degrades to the product defaults with a bounded diagnostic and never
 prevents Inspector from starting. Unknown keys are ignored rather than guessed.
+`--theme` is accepted by `ui` and `snapshot` only.
 
 The file carries presentation and diagnostics only. Which integrations Inspector
 supports, what each descriptor publishes, and how to add one are documented in
 [Integrations](docs/integrations.md).
+
+## Building an integration
+
+Adding an ordinary semantic integration should require approximately:
+
+```text
+one adapter/definition file
+one registration line in src/integrations/index.ts
+focused tests for its mapping
+one row in the integrations matrix
+```
+
+and should require **no** integration-specific edits to report key lists,
+canonical switch statements, retained-counter allowlists, UI integration lists,
+or report ordering tables. If a new integration seems to need one of those, the
+hook it needs is missing — add a hook to the contract instead of a name to a
+list, and let the subsystem that owns that operation iterate it. The composition
+root is the only place that names integrations, and its array position is the
+report order.
+
+What Inspector wants from a producer:
+
+- **Good evidence:** versioned structured events or entries, bounded enums and
+  counters, stable identifiers where correlation is required, and replayable
+  persisted evidence wherever historical reporting matters.
+- **Bad evidence:** prompts, outputs, arbitrary tool arguments or results,
+  filesystem-path inference, regexing prose or error text, and UI presentation
+  labels. None of those becomes a canonical fact, and no presentation-only
+  heuristic is ever promoted into evidence.
+
+Privacy is the reason for that line: Inspector needs semantic facts, not payload
+content. An integration may read only the bounded fields its hook declares, and
+never prompts, tool payloads, environment values, secrets, unrestricted paths,
+or raw producer payloads. Every subsystem fault-isolates per integration: one
+throwing integration degrades its own row to a bounded reason and never blocks
+another.
+
+See [docs/integrations.md](docs/integrations.md) for the descriptor contract,
+hooks, evidence states, and a complete worked example.
 
 ## Localhost UI security boundary
 
@@ -126,20 +290,12 @@ carry that token as `Authorization: Bearer`. The boundary is exact:
 
 The browser only navigates, requests, formats and renders: every scope, range,
 partiality, evidence and unavailable-versus-zero decision comes from the
-server's own projection. The Agents view reads those rows two ways — an
-execution tree rooted in the session, and the flat breakdown — and the tree's
-two grouping nodes (the session root and a run container) exist in the
-presentation alone: neither is an agent run, and neither is added to the
-report.
-
-The legacy `--subagents-artifact` option is removed; subagent runs are
-auto-discovered from persisted tool results. Missing or unreadable evidence
-renders unavailable rather than synthetic zeros.
+server's own projection.
 
 ## Guarantees
 
 - Pi session files remain source of truth; Inspector writes only its own metadata/WAL and a namespaced tracking marker.
-- Telemetry cannot block/change agent execution.
+- Telemetry cannot block or change agent execution.
 - WAL excludes prompts, outputs, raw tool arguments/results and provider payloads.
 - Metrics label native, live, cooperative, inferred, unavailable, or unsupported evidence.
 
@@ -148,6 +304,7 @@ Reports may still reveal project metadata. Treat exports as sensitive.
 ## Canonical design documentation
 
 - [Integrations](docs/integrations.md) — supported integrations, how to add one, and integration vs skill vs tool
+- [Roadmap](docs/roadmap.md) — milestones and post-1.0 plans
 - [Pi ecosystem research](docs/research/pi-ecosystem.md)
 - [v1 specification](docs/specs/pi-session-inspector-v1.md)
 - [implementation plan](docs/plans/pi-session-inspector-v1-implementation.md)
