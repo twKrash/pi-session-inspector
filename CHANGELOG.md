@@ -2,7 +2,11 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.13.3]
+## [1.0.0]
+
+First public release. Only `0.1.0` was ever published, so the `0.13.x` sections
+below are the pre-release development record and every change they describe is
+included here.
 
 ### Added
 
@@ -16,6 +20,11 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   browser/snapshot projection instead of exposing producer parent IDs.
 - Agent usage coverage is explicit in the TUI, and an empty ledger is reported
   as an observed empty result rather than unavailable evidence.
+
+## [0.13.3]
+
+### Fixed
+
 - A missing Inspector `wal/` directory is no longer indistinguishable from a
   healthy empty store when a valid checkpoint still declares retained WAL
   cursors: recovery reports the bounded `wal-directory-missing` code in
