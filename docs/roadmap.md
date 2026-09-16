@@ -770,9 +770,12 @@ persisted `durationMs: 0`.
 **Status:** Complete. **Depends on:** Pre-M8.1–Pre-M8.6 and Pre-M8.8.
 
 **Evidence:** [1.0.0 RC evidence package](release/1.0.0-rc-evidence.md) —
-release commit `d5bcfeb`, package version `1.0.0`, tarball
-`pi-session-inspector-1.0.0.tgz` (`sha512 e25d63ca…`), qualified from a clean
-checkout cloned from the public repository. The owner-verified manual
+release commit `e907d95`, npm name `@twkrash/pi-session-inspector`, package
+version `1.0.0`, tarball `twkrash-pi-session-inspector-1.0.0.tgz`
+(`sha512 15d96839…`), qualified from a clean checkout cloned from the public
+repository. The artifact is the replacement for the original candidate, which
+was superseded before publication because the unscoped npm name belongs to
+another publisher: only the npm coordinate changed, never the source. The owner-verified manual
 browser/TUI/privacy matrix and the WSL2 case passed. Two target-SLO variances
 were accepted for the 1.0 baseline: the 10k-record HTML size ceiling was revised
 from `< 5 MiB` to `< 10 MiB`, and the warm/cold replay and HTML render times are
