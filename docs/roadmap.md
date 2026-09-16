@@ -1,16 +1,17 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `0.13.1`
+**Current release:** `0.13.3`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
-Pre-M8.1–Pre-M8.6, and the integration-architecture/configuration/debug
+Pre-M8.1–Pre-M8.8, and the integration-architecture/configuration/debug
 milestone (see below) are complete. M8 is not started.
 
-**Next gate:** complete Pre-M8.7 before starting M8.
+**Next gate:** Pre-M8.7 RC qualification — one clean, immutable release
+candidate, evidenced by its own package hash.
 
-**Post-1.0:** one planned follow-up milestone (integration expansion and skill
-invocation evidence) is recorded at the end of this document. Neither item is a
-`1.0.0` release gate and neither blocks M8 or Pre-M8.7.
+**Post-1.0:** three follow-ups are recorded at the end of this document — MCP
+semantic integration, skill invocation evidence, and Pi native telemetry
+integration. None is a `1.0.0` release gate, and none blocks M8 or Pre-M8.7.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -761,7 +762,7 @@ persisted `durationMs: 0`.
 
 ### Pre-M8.7 — RC hardening and package audit
 
-**Status:** Planned. **Depends on:** Pre-M8.1–Pre-M8.6.
+**Status:** Planned. **Depends on:** Pre-M8.1–Pre-M8.6 and Pre-M8.8.
 
 Produce a release-candidate evidence package before M8 publication work. This
 is the final readiness gate, not a license to skip the smaller preceding
@@ -813,6 +814,9 @@ reviews.
 
 ### Pre-M8.8 — Production hardening and review follow-ups
 
+**Status:** Complete. **Evidence:** each item below carries its own outcome
+record — the release or commit that closed it.
+
 Address release-blocking defects, high-risk validation gaps, and actionable
 review findings before the public release. This milestone must leave the
 production paths validated and the remaining non-blocking technical debt
@@ -844,6 +848,19 @@ explicitly documented.
    - Production-path lifecycle UAT passes.
    - Any failure is release-blocking.
 
+   **Outcome: Complete.** Runtime-owned live registration with disposal on
+   every `session_shutdown` reason, `A → B → A` reactivation, and the
+   runtime-scoped read-boundary attempt memo (`0.13.2`; `9109934`;
+   `tests/integration/lifecycle-reactivation.test.ts`). The real-session UAT
+   covered `/new`, `/resume`, and `/reload`, and killed the pre-fix mutant
+   (owner-reported; not reproducible from the repository).
+
+   **Bounded validation limitation:** `/fork` is exercised by the lifecycle
+   integration test's reason matrix — `session_shutdown` runs for `new`,
+   `resume`, `fork`, `reload`, and `quit` — but it was not exercised in the
+   real UAT, because Pi requires a saved assistant turn. That is a validation
+   limitation, not an open defect.
+
 2. High-risk storage and recovery validation
 
    Highest-consequence modules:
@@ -869,14 +886,24 @@ explicitly documented.
    - No known path can silently double-count, lose retained evidence, or delete
      data outside the documented retention contract.
 
+   **Outcome: Complete.** `0.13.3` and `a5dddf0`: interrupted
+   recovery/publication replays identically and folds each record once, atomic
+   checkpoint replacement exposes the previous or the new complete checkpoint
+   and never a partial one, a dropped seal and a seal/cursor regression are
+   rejected, a missing WAL directory reports the bounded
+   `wal-directory-missing` diagnostic, a WAL shorter than a sealed cursor is
+   accepted without rewinding or inventing records, and ADR 0005 states the
+   process-crash-only durability scope.
+
 3. P2 — Tighten architectural layering
 
-   - The directory-level dependency graph currently contains an SCC spanning
+   Finding:
+   - The directory-level dependency graph contains an SCC spanning
      `core`, `integrations`, `pi`, and `storage`.
-   - There is no file-level import cycle; `npm run depcruise` currently reports
+   - There is no file-level import cycle; `npm run depcruise` reports
      0 errors.
-   - Treat this as a maintainability concern rather than an immediate release
-     blocker.
+   - This was classified as a maintainability concern rather than an immediate
+     release blocker.
 
    Required work:
    - Define explicit allowed dependency directions between architectural layers.
@@ -888,6 +915,18 @@ explicitly documented.
    - Layer boundaries are machine-checkable.
    - Any intentionally retained exceptions are documented.
    - `npm run depcruise` remains clean.
+
+   **Outcome: Complete.** `.dependency-cruiser.cjs` pins the permitted layer
+   edges — `3d31a3b` added `core-not-to-pi-and-storage-runtime`,
+   `storage-not-to-pi-implementation`, `integrations-not-to-canonical-owners`,
+   and `integrations-not-to-pi-or-storage` beside the loader, adapter, and
+   renderer rules — and the cruise reports 0 errors and no circular
+   relationship, so no file-level cycle exists. The one directory-level SCC
+   spanning `core`, `integrations`, `pi`, and `storage` is a documented
+   exception: `core -> integrations` registry/contract lookups are sanctioned
+   by ADR 0019 and the `pi <-> storage` pair is the composition seam. Breaking
+   the SCC would require speculative restructuring, so no release-blocking
+   layering issue remains.
 
 4. P2 — Eliminate competing report projection paths
 
@@ -911,6 +950,18 @@ explicitly documented.
    - Legacy compatibility paths cannot silently become an alternative source
      of truth.
 
+   **Outcome: Complete by isolation, not deletion.** Production report callers
+   are exactly the canonical loaders `src/ui/load-current.ts` and
+   `src/ui/load-history.ts`, and
+   `tests/unit/report-projection-authority.test.ts` fails if another appears
+   (`7931484`, `20eff93`). The guard is reference-based — it resolves
+   TypeScript symbols rather than matching source text — so an aliased or
+   re-exported caller is still caught. `ReducedSession` remains a compatibility
+   surface for pre-0.8 reducer-shaped fixtures and the benchmark harness: test
+   and benchmark input only, with `toSessionReport` documenting that it must
+   never become a report authority again. `ReducedSession` itself was not
+   removed.
+
 5. Low — Dependency hygiene
 
    - Verify whether `publint` is used by build, packaging, CI, or release
@@ -918,6 +969,10 @@ explicitly documented.
      `npm run publint` script, so `knip` and the pre-commit hook pass.)
    - If it is tooling-only, move it to `devDependencies`.
    - Remove it if unused.
+
+   **Outcome: Complete.** `publint` is pinned dev tooling (`0.3.24`) behind
+   `npm run publint`; `knip`, `depcruise`, `format:check`, and the package
+   checks are green.
 
 **Release:** a compatible RC hardening pass may bump the next patch version;
 publication remains part of M8.
