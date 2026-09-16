@@ -2,6 +2,24 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0]
+
+### Added
+
+- The daily activity chart takes a metric selection. Every metric the view's own
+  daily rows publish is offered as a toggle, `cost` and `tokens` are pressed by
+  default, and each selected metric is drawn as its own series. A chart of more
+  than one metric splits by unit — cost on the right axis, the count metrics on
+  the left one — while a single metric keeps the left axis. The selection is
+  remembered per view and survives a tab switch.
+
+### Changed
+
+- A day that does not publish a metric is a gap in its line, and its cell in the
+  chart data table reads Unavailable. That cell previously rendered `NaN`, or for
+  a cost a bound such as `< $0.0001`. A metric whose rows carry no value at all
+  is named under the chart instead of dropping out of the drawing.
+
 ## [1.1.0]
 
 ### Added
