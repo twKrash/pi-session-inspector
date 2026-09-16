@@ -3,14 +3,13 @@
 **Current release:** `1.0.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
-Pre-M8.1–Pre-M8.8, and the integration-architecture/configuration/debug
-milestone (see below) are complete, including the Pre-M8.7 RC qualification of
-the `1.0.0` candidate. M8 is not started.
+Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
+and M8 (publication and release) are complete. `1.0.0` is published to npm as
+`@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`.
 
-**Next gate:** M8 publication — publish the accepted `1.0.0` candidate
-(`d5bcfeb`, tarball `sha512` recorded in the
-[RC evidence package](release/1.0.0-rc-evidence.md)) and create the `v1.0.0`
-tag and release on that commit.
+**Next gate:** none for `1.0.0`. The three post-1.0 follow-ups below are the
+next recorded work; they gate nothing and are not required for the published
+release.
 
 **Post-1.0:** three follow-ups are recorded at the end of this document — MCP
 semantic integration, skill invocation evidence, and Pi native telemetry
@@ -87,14 +86,15 @@ by the explicitly named post-M8 cleanup tail.
 | Evidence coverage and resource inventory | Complete in `0.7.0` | [CHANGELOG](../CHANGELOG.md#070) |
 | Evidence foundation and canonical session model | Complete in `0.8.0` | [ADR 0016](architecture/adr/0016-evidence-foundation-and-canonical-session-model.md) |
 | Report semantics, diagnostics, and navigation | Complete in `0.9.0` | [ADR 0017](architecture/adr/0017-report-coverage-attribution-and-navigation.md) |
+| M8 — hardening and release | Complete in `1.0.0` | [1.0.0 RC evidence package](release/1.0.0-rc-evidence.md) |
 
 ## M8 — hardening and release
 
-**Status:** Next gate. All Pre-M8 readiness sub-milestones have passed their
-acceptance gates, and the accepted `1.0.0` candidate is named in the
-[RC evidence package](release/1.0.0-rc-evidence.md). Successful publication is
-the planned **`1.0.0`** release unless a deliberate SemVer decision changes that
-before publication.
+**Status:** Complete. `1.0.0` was published to npm as
+`@twkrash/pi-session-inspector@1.0.0` and released on GitHub as `v1.0.0` on the
+release commit `e907d95`; the registry's `dist.shasum` and `dist.integrity`
+match the qualified candidate, and the published artifact was installed from the
+registry and exercised. The steps below are the procedure that was followed.
 
 M8 consumes the immutable release-candidate evidence package from Pre-M8.7. It
 must not silently repeat the entire qualification suite under a different name.
@@ -775,12 +775,13 @@ version `1.0.0`, tarball `twkrash-pi-session-inspector-1.0.0.tgz`
 (`sha512 15d96839…`), qualified from a clean checkout cloned from the public
 repository. The artifact is the replacement for the original candidate, which
 was superseded before publication because the unscoped npm name belongs to
-another publisher: only the npm coordinate changed, never the source. The owner-verified manual
-browser/TUI/privacy matrix and the WSL2 case passed. Two target-SLO variances
-were accepted for the 1.0 baseline: the 10k-record HTML size ceiling was revised
-from `< 5 MiB` to `< 10 MiB`, and the warm/cold replay and HTML render times are
-accepted with their absolute SLOs unchanged. Hard regression gates stay disabled
-with two accepted baselines recorded; enabling them is a post-1.0 follow-up.
+another publisher: only the npm coordinate changed, never the source. The
+owner-verified manual browser/TUI/privacy matrix and the WSL2 case passed. Two
+target-SLO variances were accepted for the 1.0 baseline: the 10k-record HTML
+size ceiling was revised from `< 5 MiB` to `< 10 MiB`, and the warm/cold replay
+and HTML render times are accepted with their absolute SLOs unchanged. Hard
+regression gates stay disabled with two accepted baselines recorded; enabling
+them is a post-1.0 follow-up.
 
 Produce a release-candidate evidence package before M8 publication work. This
 is the final readiness gate, not a license to skip the smaller preceding
