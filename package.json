@@ -1,5 +1,5 @@
 {
-  "name": "pi-session-inspector",
+  "name": "@twkrash/pi-session-inspector",
   "version": "1.0.0",
   "description": "Deterministic local-only session analytics for Pi",
   "type": "module",

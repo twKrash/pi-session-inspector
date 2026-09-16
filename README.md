@@ -63,7 +63,7 @@ Child (subagent) usage breakdown of subagent usage already inside native
 ## Install
 
 ```bash
-pi install npm:pi-session-inspector
+pi install npm:@twkrash/pi-session-inspector
 /session-inspector
 ```
 
