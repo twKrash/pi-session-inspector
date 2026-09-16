@@ -2,6 +2,13 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1]
+
+### Changed
+
+- `peerDependencies` now match the Pi documentation: `@earendil-works/pi-tui`
+  accepts `*`, like `@earendil-works/pi-coding-agent`.
+
 ## [1.0.0]
 
 First public release. Only `0.1.0` was ever published, so the `0.13.x` sections
