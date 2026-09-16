@@ -289,14 +289,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.qualify.outputs.tag }}
+          REPO: ${{ github.repository }}
         run: |
           set -eu
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          # No checkout in this job: name the repository instead of relying on a
+          # local git remote.
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "release $TAG already exists; leaving it in place"
             exit 0
           fi
           gh release create "$TAG" \
             ./*.tgz release-metadata.json \
+            --repo "$REPO" \
             --verify-tag \
             --title "${TAG#v}" \
             --notes-file notes.md
