@@ -201,6 +201,31 @@ jobs:
           sha1sum --check SHA1SUMS
           sha512sum --check SHA512SUMS
 
+      - name: Show the OIDC claims npm will present
+        run: |
+          set -eu
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::this job needs id-token: write"
+            exit 1
+          fi
+          token="$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" | \
+            node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).value))')"
+          echo "::add-mask::$token"
+          echo "NPM_ID_TOKEN=$token" >> "$GITHUB_ENV"
+          node -e '
+            const claims = JSON.parse(
+              Buffer.from(process.argv[1].split(".")[1], "base64").toString("utf8"),
+            );
+            const fields = [
+              "repository", "repository_owner", "repository_visibility",
+              "workflow_ref", "job_workflow_ref", "environment", "ref", "event_name",
+            ];
+            for (const field of fields) {
+              if (claims[field] !== undefined) console.log(`${field}: ${claims[field]}`);
+            }
+          ' "$token" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Publish, unless this version is already on the registry
         env:
           # npm's OIDC exchange swallows its own failures at this level, so a
