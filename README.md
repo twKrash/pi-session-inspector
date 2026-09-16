@@ -16,12 +16,14 @@ machine and no model call is spent on analysis.
 The Overview tab of `/session-inspector ui` — one current session, dark theme,
 and the multi-session global report, light theme.
 
-| Current session (dark) | Global report (light) |
-| --- | --- |
-| ![Overview tab of a current session, dark theme](https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-current-dark.png) | ![Overview tab of the global report, light theme](https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-global-light.png) |
+<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-current-dark.png" alt="Overview tab of a current session, dark theme">
+
+<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-global-light.png" alt="Overview tab of the global report, light theme">
 
 The images are GitHub release assets rather than repository files: no binary
-bytes enter git, and the absolute URLs render on GitHub and npm alike.
+bytes enter git, and the absolute URLs render on GitHub and npm alike. They are
+plain inline images, so nothing is linkable or downloadable from the click — a
+right-click save is still the browser's own affordance.
 
 ## What you can inspect
 
