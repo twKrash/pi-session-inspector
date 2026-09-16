@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -567,6 +574,305 @@ test("folds only telemetry strictly after the checkpoint cursors", async () => {
       denied: 1,
     });
     assert.deepEqual(recovered.cursors.wal, { "writer-a": 3 });
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("treats a never-initialized store as healthy empty storage without a WAL diagnostic", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-empty-"));
+  try {
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(0),
+    });
+
+    assert.equal(recovered.availability, "available");
+    // A never-initialized store has no checkpoint to match and no WAL
+    // diagnostic: absence alone is never reported as lost storage.
+    assert.deepEqual(recovered.diagnostics, ["checkpoint-unavailable"]);
+    assert.deepEqual(recovered.cursors.wal, {});
+    assert.deepEqual(recovered.records, []);
+    // Recovery only observes: an absent store is never created or repaired.
+    assert.deepEqual(await readdir(directory), []);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("diagnoses a missing WAL directory the checkpoint declares sealed cursors for", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-nodir-"));
+  try {
+    await writeFile(
+      join(directory, "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: { pi: sourceCursor(1), wal: { "writer-1": 3 } },
+        aggregates,
+        sealingVersion: 1,
+        sealedWal: { "writer-1": 3 },
+      }),
+    );
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+
+    assert.equal(recovered.availability, "available");
+    assert.ok(recovered.diagnostics.includes("wal-directory-missing"));
+    // The sealed cursors stay authoritative: no backwards movement, no
+    // fabricated zero, and no invented record or repair.
+    assert.deepEqual(recovered.aggregates, aggregates);
+    assert.deepEqual(recovered.cursors.wal, { "writer-1": 3 });
+    assert.deepEqual(recovered.deltaCounters.counters, {});
+    assert.deepEqual(recovered.records, []);
+    assert.deepEqual(await readdir(directory), ["checkpoint.json"]);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("diagnoses a missing WAL directory instead of reporting a healthy empty replay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-nodir-"));
+  try {
+    await writeCheckpoint(directory, { pi: 1, wal: { "writer-1": 3 } });
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+
+    // An unsealed cursor whose retained detail is gone stays unavailable, but
+    // the reason is now distinguishable from a genuinely empty replay.
+    assert.equal(recovered.availability, "unavailable");
+    assert.ok(recovered.diagnostics.includes("wal-unavailable"));
+    assert.ok(recovered.diagnostics.includes("wal-directory-missing"));
+    assert.deepEqual(recovered.aggregates, {
+      totalTokens: 0,
+      totalCost: 0,
+      generations: 0,
+      tools: 0,
+      compactions: 0,
+    });
+    assert.deepEqual(recovered.deltaCounters.counters, {});
+    assert.deepEqual(await readdir(directory), ["checkpoint.json"]);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("does not diagnose a missing WAL directory when no cursor was ever declared", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "inspector-recovery-nocursor-"),
+  );
+  try {
+    await writeCheckpoint(directory, { pi: 1, wal: {} });
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+
+    assert.equal(recovered.availability, "available");
+    assert.deepEqual(recovered.diagnostics, []);
+    assert.deepEqual(recovered.cursors.wal, {});
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("replays a crash-interrupted recovery identically without consuming or double-folding WAL input", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-crash-"));
+  try {
+    await writeWal(
+      directory,
+      "writer-1",
+      `${[1, 2, 3]
+        .map((index) =>
+          JSON.stringify({
+            eventId: `e${index}`,
+            timestamp: `2026-09-11T10:00:0${index}Z`,
+            writerId: "writer-1",
+            writerSequence: index,
+            kind: "telemetry",
+            telemetry: permissionEnvelope("policy_allow", "allow"),
+          }),
+        )
+        .join("\n")}\n`,
+    );
+    await writeCheckpoint(directory, { pi: 1, wal: { "writer-1": 1 } });
+    const checkpointPath = join(directory, "checkpoint.json");
+    const segmentPath = join(directory, "wal", "writer-1", "2026-09-07.jsonl");
+    const checkpointBytes = await readFile(checkpointPath, "utf8");
+    const segmentBytes = await readFile(segmentPath, "utf8");
+
+    // The pass that produced valid state but crashed before its checkpoint
+    // committed left nothing behind: recovery itself is a pure read.
+    const first = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+    assert.equal(first.availability, "available");
+    assert.deepEqual(first.deltaCounters.counters.permission, {
+      decisions: 2,
+      allowed: 2,
+    });
+    assert.deepEqual(first.cursors.wal, { "writer-1": 3 });
+    assert.equal(await readFile(checkpointPath, "utf8"), checkpointBytes);
+    assert.equal(await readFile(segmentPath, "utf8"), segmentBytes);
+    assert.deepEqual(await readdir(join(directory, "wal", "writer-1")), [
+      "2026-09-07.jsonl",
+    ]);
+
+    // Restarting replays the same input to the same canonical result: the
+    // already-folded record stays excluded, never duplicated or consumed.
+    const second = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+    assert.deepEqual(second, first);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("keeps a sealed cursor ahead of the retained WAL without re-folding or rewinding it", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "inspector-recovery-shortwal-"),
+  );
+  try {
+    await writeFile(
+      join(directory, "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: { pi: sourceCursor(1), wal: { "writer-1": 3 } },
+        aggregates,
+        sealingVersion: 1,
+        sealedWal: { "writer-1": 3 },
+      }),
+    );
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    await writeFile(
+      join(shard, "2026-09-11.jsonl"),
+      `${[1, 2]
+        .map((index) =>
+          JSON.stringify({
+            eventId: `e${index}`,
+            timestamp: `2026-09-11T10:00:0${index}Z`,
+            writerId: "writer-1",
+            writerSequence: index,
+            kind: "telemetry",
+            telemetry: permissionEnvelope("policy_allow", "allow"),
+          }),
+        )
+        .join("\n")}\n`,
+    );
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+
+    assert.equal(recovered.availability, "available");
+    assert.deepEqual(recovered.aggregates, aggregates);
+    // The sealed cursor is not moved backwards to the retained tail, and the
+    // sealed prefix is not folded a second time.
+    assert.deepEqual(recovered.cursors.wal, { "writer-1": 3 });
+    assert.deepEqual(recovered.deltaCounters.counters, {});
+    assert.deepEqual(
+      recovered.records.map((record) => record.writerSequence),
+      [1, 2],
+    );
+    assert.ok(recovered.diagnostics.includes("wal-sealed"));
+    assert.equal(recovered.diagnostics.includes("wal-unavailable"), false);
+    // Nothing was repaired, appended, or deleted.
+    assert.deepEqual(await readdir(shard), ["2026-09-11.jsonl"]);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("accepts a sealed shard whose retained WAL was fully pruned without inventing records", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-pruned-"));
+  try {
+    await writeFile(
+      join(directory, "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: { pi: sourceCursor(1), wal: { "writer-1": 3 } },
+        aggregates,
+        sealingVersion: 1,
+        sealedWal: { "writer-1": 3 },
+      }),
+    );
+    await mkdir(join(directory, "wal"), { recursive: true });
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+
+    assert.equal(recovered.availability, "available");
+    assert.deepEqual(recovered.aggregates, aggregates);
+    assert.deepEqual(recovered.cursors.wal, { "writer-1": 3 });
+    assert.deepEqual(recovered.records, []);
+    assert.deepEqual(recovered.deltaCounters.counters, {});
+    assert.equal(recovered.diagnostics.includes("wal-unavailable"), false);
+    assert.equal(
+      recovered.diagnostics.includes("wal-directory-missing"),
+      false,
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("reports a sealed sequence gap beyond the cursor as unavailable instead of repairing it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-recovery-gap-"));
+  try {
+    await writeFile(
+      join(directory, "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: { pi: sourceCursor(1), wal: { "writer-1": 3 } },
+        aggregates,
+        sealingVersion: 1,
+        sealedWal: { "writer-1": 3 },
+      }),
+    );
+    const shard = join(directory, "wal", "writer-1");
+    await mkdir(shard, { recursive: true });
+    const segmentPath = join(shard, "2026-09-11.jsonl");
+    await writeFile(
+      segmentPath,
+      `${JSON.stringify({
+        eventId: "e5",
+        timestamp: "2026-09-11T10:00:05Z",
+        writerId: "writer-1",
+        writerSequence: 5,
+        kind: "telemetry",
+        telemetry: permissionEnvelope("policy_allow", "allow"),
+      })}\n`,
+    );
+
+    const recovered = await recoverSession({
+      directory,
+      piCursor: sourceCursor(1),
+    });
+
+    // Record 4 is missing and is never invented to bridge the gap.
+    assert.equal(recovered.availability, "unavailable");
+    assert.ok(recovered.diagnostics.includes("wal-unavailable"));
+    assert.deepEqual(recovered.records, []);
+    assert.deepEqual(recovered.deltaCounters.counters, {});
+    assert.equal(
+      await readFile(segmentPath, "utf8").then((text) =>
+        text.includes('"writerSequence":5'),
+      ),
+      true,
+    );
   } finally {
     await rm(directory, { force: true, recursive: true });
   }

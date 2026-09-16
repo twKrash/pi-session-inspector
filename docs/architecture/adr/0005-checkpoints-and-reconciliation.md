@@ -19,3 +19,5 @@ Checkpoint, reconciliation, and retention acquire a short per-session maintenanc
 ## Consequences
 
 Maintenance contenders may skip work and replay instead. Tests must cover stale lease recovery, partial records, source mismatch, and late-maintainer cursor regression.
+
+Durability scope: the targeted failure is process crash, not power loss. Publication relies on same-directory atomic rename, so a concurrent reader sees either the previous or the new complete checkpoint, never a partial one. Inspector deliberately performs no `fsync` (no file or directory sync): an OS crash or power loss may lose the newest checkpoint or WAL bytes, and the contract there is only that derived state is rebuildable from Pi plus whatever WAL survived. Recovery stays conservative rather than compensating: a declared cursor never moves backwards, a sealed prefix may be accepted as pruned but is never re-folded, re-counted, or invented, and a checkpoint whose retained unsealed WAL is gone is unavailable instead of folded from a shorter tail.

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   appendFile,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -13,6 +15,7 @@ import { test } from "node:test";
 
 import { readCheckpoint } from "../../src/storage/checkpoint.ts";
 import { maintainSession } from "../../src/storage/maintenance.ts";
+import { recoverSession } from "../../src/storage/recovery.ts";
 
 const trackingMarkerLine =
   '{"id":"marker","parentId":null,"timestamp":"2026-09-07T12:00:00.000Z","type":"custom","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}';
@@ -148,6 +151,209 @@ test("folds recovered telemetry into checkpoint aggregates exactly once across r
       allowed: 1,
       denied: 1,
     });
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("folds recovery state exactly once when a crash interrupts the pass before checkpoint publication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-crash-"));
+  try {
+    const sessionId = "session-1";
+    const sessionFile = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    const writerId = "writer-a";
+    const walSegment = join(directory, "wal", writerId, "2026-09-07.jsonl");
+    await mkdir(join(directory, "wal", writerId), { recursive: true });
+    await writeFile(sessionFile, `${trackingMarkerLine}\n`);
+    await appendTelemetry(
+      walSegment,
+      writerId,
+      1,
+      "permission-1",
+      permissionEnvelope("user_approved", "allow"),
+    );
+    await appendTelemetry(
+      walSegment,
+      writerId,
+      2,
+      "permission-2",
+      permissionEnvelope("user_denied", "deny"),
+    );
+    await appendTelemetry(
+      walSegment,
+      writerId,
+      3,
+      "permission-3",
+      permissionEnvelope("user_denied", "deny"),
+    );
+
+    // The interrupted pass completed recovery (all three records are its delta)
+    // and then died before `writeCheckpoint` published anything.
+    const recovered = await recoverSession({
+      directory,
+      piCursor: { lineCount: 99, revision: "a".repeat(64) },
+    });
+    assert.deepEqual(recovered.deltaCounters.counters.permission, {
+      decisions: 3,
+      allowed: 1,
+      denied: 2,
+    });
+    await assert.rejects(readFile(join(directory, "checkpoint.json")));
+
+    // The next healthy startup replays the same WAL from no checkpoint and
+    // folds each decision exactly once. A pinned clock keeps retention's own
+    // cutoff away from this fixture (14 days by default).
+    const maintain = (maintenanceWriterId: string) =>
+      maintainSession({
+        root,
+        sessionId,
+        sessionFile,
+        writerId: maintenanceWriterId,
+        now: () => new Date("2026-09-07T12:00:00.000Z"),
+      });
+    assert.equal((await maintain("m1")).status, "available");
+    const afterFirst = await readCheckpoint({ directory });
+    assert.deepEqual(afterFirst?.aggregates.integrationCounters?.permission, {
+      decisions: 3,
+      allowed: 1,
+      denied: 2,
+    });
+    assert.equal(afterFirst?.cursors.wal[writerId], 3);
+    const firstBytes = await readFile(
+      join(directory, "checkpoint.json"),
+      "utf8",
+    );
+
+    // A second pass sees nothing new and must not rewrite or re-add.
+    assert.equal((await maintain("m2")).status, "available");
+    assert.equal(
+      await readFile(join(directory, "checkpoint.json"), "utf8"),
+      firstBytes,
+    );
+
+    // Recovery on the published state folds nothing a second time.
+    const after = await recoverSession({
+      directory,
+      piCursor: afterFirst?.cursors.pi ?? {
+        lineCount: 0,
+        revision: "0".repeat(64),
+      },
+    });
+    assert.deepEqual(after.deltaCounters.counters, {});
+    assert.deepEqual(after.aggregates, afterFirst?.aggregates);
+
+    // Neither the crash nor the recovery passes deleted anything outside
+    // retention.
+    assert.deepEqual(await readdir(join(directory, "wal", writerId)), [
+      "2026-09-07.jsonl",
+    ]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("a missing WAL directory never regresses a sealed checkpoint's declared cursors", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-nodir-"));
+  try {
+    const sessionId = "session-1";
+    const sessionFile = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    await mkdir(directory, { recursive: true });
+    const markerLine = `${trackingMarkerLine}\n`;
+    await writeFile(sessionFile, markerLine);
+    await writeFile(
+      join(directory, "checkpoint.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        cursors: {
+          pi: {
+            lineCount: 1,
+            revision: createHash("sha256").update(markerLine).digest("hex"),
+          },
+          wal: { "writer-a": 3 },
+        },
+        aggregates: {
+          totalTokens: 5,
+          totalCost: 0,
+          generations: 1,
+          tools: 0,
+          compactions: 0,
+        },
+        sealingVersion: 1,
+        sealedWal: { "writer-a": 3 },
+      })}\n`,
+    );
+
+    // The next pass has no WAL directory to read either, but the sealed
+    // checkpoint stays authoritative and publishable.
+    assert.equal(
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile,
+          writerId: "m1",
+          now: () => new Date("2026-09-07T12:00:00.000Z"),
+        })
+      ).status,
+      "available",
+    );
+    const checkpoint = await readCheckpoint({ directory });
+    assert.equal(checkpoint?.cursors.wal["writer-a"], 3);
+    assert.equal(checkpoint?.sealedWal?.["writer-a"], 3);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("an unavailable recovery from a missing WAL directory never erases declared cursors", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-maintenance-nodir-"));
+  try {
+    const sessionId = "session-1";
+    const sessionFile = join(root, "session.jsonl");
+    const directory = join(root, "sessions", sessionId);
+    await mkdir(directory, { recursive: true });
+    const markerLine = `${trackingMarkerLine}\n`;
+    await writeFile(sessionFile, markerLine);
+    await writeFile(
+      join(directory, "checkpoint.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        cursors: {
+          pi: {
+            lineCount: 1,
+            revision: createHash("sha256").update(markerLine).digest("hex"),
+          },
+          wal: { "writer-a": 3 },
+        },
+        aggregates: {
+          totalTokens: 5,
+          totalCost: 0,
+          generations: 1,
+          tools: 0,
+          compactions: 0,
+        },
+      })}\n`,
+    );
+
+    // Recovery is unavailable (an unsealed declared cursor lost its retained
+    // detail), so the pass may not publish an empty cursor map: the declared
+    // cursors are preserved instead of the store regressing.
+    assert.equal(
+      (
+        await maintainSession({
+          root,
+          sessionId,
+          sessionFile,
+          writerId: "m1",
+          now: () => new Date("2026-09-07T12:00:00.000Z"),
+        })
+      ).status,
+      "unavailable",
+    );
+    const checkpoint = await readCheckpoint({ directory });
+    assert.equal(checkpoint?.cursors.wal["writer-a"], 3);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

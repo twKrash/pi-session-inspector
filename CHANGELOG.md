@@ -2,6 +2,33 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.3]
+
+### Fixed
+
+- A missing Inspector `wal/` directory is no longer indistinguishable from a
+  healthy empty store when a valid checkpoint still declares retained WAL
+  cursors: recovery reports the bounded `wal-directory-missing` code in
+  `RecoveryResult.diagnostics` (never a fabricated record, cursor, or
+  aggregate), while a never-initialized store, which declares nothing, stays
+  healthy empty. Availability, cursors, records, and folded counters are
+  unchanged in both cases, and recovery still never creates, repairs, or
+  deletes storage.
+
+### Changed
+
+- Storage failure-path contracts are pinned by tests. An interrupted pass
+  between recovery and checkpoint publication replays to the same canonical
+  result and folds each record exactly once; a checkpoint replacement exposes
+  either the previous or the new complete checkpoint to concurrent readers,
+  never a partial or mixed one; a dropped seal, a seal/cursor regression, and a
+  seal ahead of its own WAL cursor are all rejected instead of becoming
+  authoritative; and a WAL shorter than a sealed checkpoint cursor is accepted
+  without rewinding the cursor, re-folding the sealed prefix, or inventing
+  missing records. ADR 0005 now states the durability scope explicitly: the
+  targeted failure is process crash, and no `fsync` or power-loss guarantee is
+  added.
+
 ## [0.13.2]
 
 ### Fixed

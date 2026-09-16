@@ -29,7 +29,13 @@ export type RecoveryDiagnostic =
   | "checkpoint-unavailable"
   | "wal-partial-line"
   | "wal-sealed"
-  | "wal-unavailable";
+  | "wal-unavailable"
+  /**
+   * The checkpoint declares at least one WAL cursor but no `wal/` directory
+   * exists. Distinguished from a genuinely empty store, where nothing is
+   * declared and absence is expected; recovery neither creates nor repairs it.
+   */
+  | "wal-directory-missing";
 
 export type RecoveredRunningRecord = {
   eventId: string;
@@ -99,11 +105,7 @@ export async function recoverSession({
   if (!isPiSourceCursor(piCursor)) return unavailableResult(diagnostics);
 
   const checkpoint = await readCheckpoint({ directory });
-  const replay = await readWal(
-    directory,
-    diagnostics,
-    checkpoint?.sealingVersion === 1 ? checkpoint.sealedWal : undefined,
-  );
+  const replay = await readWal(directory, diagnostics, checkpoint);
   if (
     checkpoint !== undefined &&
     Object.entries(checkpoint.cursors.wal).some(
@@ -204,16 +206,18 @@ function logReplaySummary(
 async function readWal(
   directory: string,
   diagnostics: Set<RecoveryDiagnostic>,
-  checkpointCursors: Record<string, number> | undefined,
+  checkpoint: Checkpoint | undefined,
 ): Promise<{
   records: WalRecord[];
   cursors: Record<string, number>;
   unavailable: boolean;
 }> {
+  const sealedCursors =
+    checkpoint?.sealingVersion === 1 ? checkpoint.sealedWal : undefined;
   const records: WalRecord[] = [];
   const cursors: Record<string, number> = Object.assign(
     Object.create(null),
-    checkpointCursors,
+    sealedCursors,
   );
   const budget: ReplayBudget = { segments: 0, bytes: 0, records: 0 };
   let writers: string[];
@@ -223,7 +227,17 @@ async function readWal(
       (entry) => entry.isDirectory() && isToken(entry.name),
     );
   } catch (error) {
-    if (isMissing(error)) return { records, cursors, unavailable: false };
+    if (isMissing(error)) {
+      // A valid checkpoint that declares a WAL cursor names a shard this store
+      // should have; with no checkpoint (or no declared cursor) an absent
+      // directory is a genuinely empty store, never reported as lost storage.
+      if (
+        checkpoint !== undefined &&
+        Object.keys(checkpoint.cursors.wal).length > 0
+      )
+        diagnostics.add("wal-directory-missing");
+      return { records, cursors, unavailable: false };
+    }
     diagnostics.add("wal-unavailable");
     return { records, cursors, unavailable: true };
   }
@@ -237,7 +251,7 @@ async function readWal(
       writerId,
       diagnostics,
       budget,
-      checkpointCursors?.[writerId],
+      sealedCursors?.[writerId],
     );
     records.push(...shard.records);
     if (shard.cursor !== undefined) cursors[writerId] = shard.cursor;

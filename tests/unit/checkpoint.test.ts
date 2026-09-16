@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -39,6 +47,9 @@ function comparableCheckpoint(
       ...value.cursors,
       wal: Object.fromEntries(Object.entries(value.cursors.wal)),
     },
+    ...(value.sealedWal === undefined
+      ? {}
+      : { sealedWal: Object.fromEntries(Object.entries(value.sealedWal)) }),
   };
 }
 
@@ -624,6 +635,255 @@ test("preserves a __proto__ WAL cursor and rejects a checkpoint that drops it", 
     assert.equal(
       (await readCheckpoint({ directory }))?.cursors.wal.__proto__,
       9,
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("rejects a stale or seal-regressing checkpoint without disturbing newer retained state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-seal-"));
+  try {
+    const lease = await acquireLease(directory);
+    const sealed: Checkpoint = {
+      ...checkpoint,
+      cursors: {
+        pi: sourceCursor(12),
+        wal: { "writer-1": 7, "writer-2": 2 },
+      },
+      sealingVersion: 1,
+      sealedWal: { "writer-1": 5, "writer-2": 2 },
+    };
+    assert.equal(
+      await writeCheckpoint({ directory, lease, checkpoint: sealed }),
+      true,
+    );
+    const stored = comparableCheckpoint(await readCheckpoint({ directory }));
+
+    const regressions: [string, unknown][] = [
+      [
+        "an older Pi cursor",
+        { ...sealed, cursors: { ...sealed.cursors, pi: sourceCursor(11) } },
+      ],
+      ["a dropped sealing version", { ...sealed, sealingVersion: undefined }],
+      ["a dropped seal map", { ...sealed, sealedWal: undefined }],
+      ["an emptied seal map", { ...sealed, sealedWal: {} }],
+      [
+        "a seal cursor regression",
+        { ...sealed, sealedWal: { "writer-1": 4, "writer-2": 2 } },
+      ],
+      ["a dropped sealed writer", { ...sealed, sealedWal: { "writer-2": 2 } }],
+      [
+        "a WAL cursor regression",
+        {
+          ...sealed,
+          cursors: {
+            pi: sourceCursor(12),
+            wal: { "writer-1": 6, "writer-2": 2 },
+          },
+        },
+      ],
+      [
+        "a dropped WAL writer",
+        {
+          ...sealed,
+          cursors: { pi: sourceCursor(12), wal: { "writer-1": 7 } },
+        },
+      ],
+    ];
+    for (const [name, candidate] of regressions) {
+      assert.equal(
+        await writeCheckpoint({ directory, lease, checkpoint: candidate }),
+        false,
+        name,
+      );
+      assert.deepEqual(
+        comparableCheckpoint(await readCheckpoint({ directory })),
+        stored,
+        name,
+      );
+    }
+
+    // The guard blocks regressions only: a genuinely advancing seal and cursor
+    // still publishes, so a later maintainer can extend retained state.
+    const advanced: Checkpoint = {
+      ...sealed,
+      cursors: { pi: sourceCursor(12), wal: { "writer-1": 8, "writer-2": 5 } },
+      sealedWal: { "writer-1": 6, "writer-2": 5 },
+    };
+    assert.equal(
+      await writeCheckpoint({ directory, lease, checkpoint: advanced }),
+      true,
+    );
+    assert.deepEqual(
+      comparableCheckpoint(await readCheckpoint({ directory })),
+      advanced,
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("rejects a checkpoint whose seal is ahead of its own WAL cursor", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-seal-"));
+  try {
+    await writeFile(
+      join(directory, "checkpoint.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cursors: { pi: sourceCursor(12), wal: { "writer-1": 4 } },
+        aggregates: checkpoint.aggregates,
+        sealingVersion: 1,
+        sealedWal: { "writer-1": 5 },
+      }),
+    );
+    // A corrupt seal can never become authoritative state.
+    assert.equal(await readCheckpoint({ directory }), undefined);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("readers observe a complete previous or new checkpoint while a replacement is published", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-swap-"));
+  try {
+    const lease = await acquireLease(directory);
+    const candidates = Array.from(
+      { length: 24 },
+      (_, index): Checkpoint => ({
+        schemaVersion: 1,
+        cursors: {
+          pi: sourceCursor(index + 1),
+          wal: { "writer-1": index + 1 },
+        },
+        aggregates: {
+          totalTokens: (index + 1) * 10,
+          totalCost: 0,
+          generations: 1,
+          tools: 0,
+          compactions: 0,
+        },
+      }),
+    );
+    const key = (value: Checkpoint): string =>
+      `${value.cursors.pi.lineCount}:${value.cursors.wal["writer-1"]}:${value.aggregates.totalTokens}`;
+    const allowed = new Set(candidates.map(key));
+    assert.equal(
+      await writeCheckpoint({ directory, lease, checkpoint: candidates[0] }),
+      true,
+    );
+
+    const observed: string[] = [];
+    let finished = false;
+    const readers = Array.from({ length: 3 }, async () => {
+      while (!finished || observed.length < 96) {
+        const read = await readCheckpoint({ directory });
+        observed.push(read === undefined ? "undefined" : key(read));
+      }
+    });
+
+    try {
+      for (const next of candidates.slice(1)) {
+        // Race a read against every replacement: the atomic rename must expose
+        // either the previous or the new complete checkpoint, never a partial
+        // or mixed one.
+        const write = writeCheckpoint({ directory, lease, checkpoint: next });
+        const raced = await readCheckpoint({ directory });
+        observed.push(raced === undefined ? "undefined" : key(raced));
+        assert.equal(await write, true);
+      }
+    } finally {
+      // A failing assertion must fail the test, not leave the reader loops
+      // spinning on a directory the cleanup is about to remove.
+      finished = true;
+      await Promise.all(readers);
+    }
+
+    assert.ok(observed.length > 0);
+    assert.equal(observed.includes("undefined"), false);
+    assert.deepEqual(
+      observed.filter((value) => !allowed.has(value)),
+      [],
+    );
+    assert.deepEqual(
+      comparableCheckpoint(await readCheckpoint({ directory })),
+      candidates.at(-1),
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("publishes a replacement checkpoint atomically instead of overwriting it in place", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "inspector-checkpoint-inode-"),
+  );
+  try {
+    const lease = await acquireLease(directory);
+    const checkpointPath = join(directory, "checkpoint.json");
+    assert.equal(await writeCheckpoint({ directory, lease, checkpoint }), true);
+    const first = await stat(checkpointPath);
+
+    const newer: Checkpoint = {
+      ...checkpoint,
+      cursors: { pi: sourceCursor(13), wal: { "writer-1": 6 } },
+    };
+    assert.equal(
+      await writeCheckpoint({ directory, lease, checkpoint: newer }),
+      true,
+    );
+    const second = await stat(checkpointPath);
+
+    // An in-place overwrite (truncate then write) keeps the inode and is
+    // exactly the mode in which a concurrent reader can observe a truncated
+    // file; an atomic rename always binds the separately written file, so the
+    // published inode changes. Together with the reader race above this pins
+    // "previous or new complete state, never partial".
+    assert.notEqual(second.ino, first.ino);
+    assert.deepEqual(
+      comparableCheckpoint(await readCheckpoint({ directory })),
+      newer,
+    );
+    await lease.release();
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("a temp checkpoint left by a crashed publisher is never authoritative", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoint-tmp-"));
+  try {
+    const lease = await acquireLease(directory);
+    assert.equal(await writeCheckpoint({ directory, lease, checkpoint }), true);
+
+    const leftover = join(directory, `.checkpoint.json.${randomUUID()}.tmp`);
+    await writeFile(
+      leftover,
+      `${JSON.stringify({
+        ...checkpoint,
+        aggregates: { ...checkpoint.aggregates, totalTokens: 9999 },
+      })}\n`,
+    );
+    assert.deepEqual(
+      comparableCheckpoint(await readCheckpoint({ directory })),
+      checkpoint,
+    );
+
+    // The next publish still reads and replaces the real checkpoint path.
+    const newer: Checkpoint = {
+      ...checkpoint,
+      cursors: { pi: sourceCursor(13), wal: { "writer-1": 6 } },
+    };
+    assert.equal(
+      await writeCheckpoint({ directory, lease, checkpoint: newer }),
+      true,
+    );
+    assert.deepEqual(
+      comparableCheckpoint(await readCheckpoint({ directory })),
+      newer,
     );
     await lease.release();
   } finally {
