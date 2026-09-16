@@ -1,11 +1,13 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.0.0`
+**Current release:** `1.0.3`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
 and M8 (publication and release) are complete. `1.0.0` is published to npm as
-`@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`.
+`@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`. The `1.0.x`
+patch line has continued past it — `1.0.1` through `1.0.3` are published the same
+way, and `1.0.3` is the current release.
 
 **Next gate:** none for `1.0.0`. The three post-1.0 follow-ups below are the
 next recorded work; they gate nothing and are not required for the published
