@@ -1210,3 +1210,225 @@ Inspector usage rules if that seam lands:
 - New semantic evidence is accepted only from a producer contract strong enough
   to support historical replay and honest unavailable-vs-zero behavior.
 - No presentation-only heuristic becomes canonical evidence.
+
+## Post-1.0 candidate backlog — product and platform expansion
+
+**Status:** Candidate work. **Not scheduled, and not a release gate.** Nothing in
+this section is committed to a release line; each item starts as research and
+only becomes a milestone once its research question is answered and its
+constraints are written down. Items appear in the order they were raised, not by
+priority.
+
+Rules that bind every item here:
+
+- Inspector stays observer-only and local-only; Pi's persisted data remains the
+  billing/source authority (invariant 1);
+- no runtime dependency, database, server, LLM step, or raw-content persistence
+  without an ADR;
+- no new unbounded or unredacted producer string enters Inspector WAL, reports,
+  or logs (invariant 3, ADR 0010);
+- unknown formats and unavailable seams degrade to `unsupported`/`unavailable`
+  instead of being guessed (invariant 8);
+- presentational additions must not change report DTO semantics: TUI, HTML, and
+  JSON keep consuming the same DTO (invariant 7);
+- localized copy is presentation only; canonical values, identifiers, and the
+  JSON report stay canonical.
+
+### 1. Push-based live updates (WebSocket) — research required
+
+**Question:** can Inspector push new evidence to an open client instead of the
+reader asking for it?
+
+Today the localhost UI fetches a full payload on load and on the explicit
+Refresh action (the `refresh` handler in `scripts/web/client.js`), and the server
+(`src/ui/server.ts`) reads Inspector's own store per request. Nothing watches the
+WAL, so a reader watching a running session sees stale numbers until they
+refresh, and staying current costs one full payload per refresh.
+
+Research questions:
+
+- where can a change signal honestly come from: an in-process event on the
+  observer's write path, a filesystem watch on the exclusive WAL shard, or a
+  polling tail with an offset? Each candidate has to hold invariant 1 (Pi stays
+  the authority) and invariant 6 (one writer id owns one shard);
+- what is the bounded message shape? A push channel must not become a second
+  report path: either it signals "something changed, refetch", or it carries the
+  same DTO deltas the report path already produces;
+- how does this stay additive? The static HTML report has no server, so the
+  localhost UI gains push, the static report keeps its behavior, and the DTO
+  stays identical (invariant 7);
+- what happens on reconnect, on multiple tabs, on a stale client, and on a
+  session that stops writing;
+- transport: a WebSocket on the existing loopback server is the candidate, but
+  it is a new protocol surface on a server that speaks bounded HTTP GETs today.
+  Compare it against Server-Sent Events (one-way, text-only, no framing
+  dependency) before committing to either.
+
+Expected shape once research lands: an ADR for the transport and its lifetime,
+one bounded change notification, no new dependency unless the ADR justifies it,
+and the existing range/tab routes unchanged.
+
+### 2. Multi-metric charts with metric selection
+
+**Status:** partly supported already. `scripts/web/chart.ts` draws N series:
+each series carries its own `key`, `axis`, `format`, and palette entry, and the
+axis formatter is per-series, so a cost axis and a token axis can differ. What is
+missing is the projection and the control: the client projects exactly one series
+(the chart payload's `series` array in `scripts/web/client.js`), and no UI offers
+metric selection.
+
+Work:
+
+- project the additional series the DTO already carries (cost, tokens, and the
+  other daily rows) instead of one;
+- add a metric selector to the chart panel: multi-select, with a documented
+  default (cost and tokens are the obvious pair);
+- state the axis rule when units differ — dual axes exist per series today, so
+  the decision is which metrics share an axis and how the legend says so;
+- `null` (unavailable) stays a gap and never becomes a zero, and an unavailable
+  metric must not silently vanish from the selector;
+- keep the static report and the localhost UI on one DTO and one chart module.
+
+Definition of done: selecting two metrics renders two series with correct axes
+and tooltips, the selection survives a tab switch inside the session, and the
+JSON report output is unchanged unless a report deliberately adopts the
+selector.
+
+### 3. Attributing tokens and cost to tools, skills, environment, and more
+
+**Question:** how much of a session's native usage can honestly be attributed to
+a dimension (tool, skill, environment, model, integration) without inventing
+precision?
+
+The binding constraint is invariant 4: native usage is counted once and every
+breakdown is a breakdown, never an additive parent total. Usage is aggregated per
+session/day/model today, and skill evidence is invocation-level only — see
+"Skill invocation evidence follow-up" above for why presentation-only signals
+cannot carry attribution.
+
+Research questions:
+
+- what does Pi persist that correlates a usage record with a tool call, a skill
+  invocation, or an environment fact? The correlation must come from persisted
+  data, not from inference over adjacent entries;
+- attribution windows: a tool call has no usage of its own, so the candidate
+  models (per-turn boundaries, per-message deltas, proportional shares) each need
+  a stated accuracy claim, and the report must name the method instead of
+  implying measurement;
+- the honest fallback for anything unattributable is an explicit
+  `unattributed` bucket, not a spread;
+- privacy: attribution must not pull tool arguments, results, prompts, or file
+  contents into Inspector state (invariant 3); dimension keys stay bounded and
+  redacted like every other producer string.
+
+Expected shape: projection-level work with no new source of truth, a documented
+attribution method, per-dimension breakdown rows in the existing report DTO, and
+one visible statement of the method wherever a breakdown is shown.
+
+### 4. Make the tool and skill link affordances navigate
+
+**Status:** defect to reproduce, then a design decision. Reported: rows in Tools
+and Skills present a link affordance that does nothing when clicked.
+
+What the sources say today: the localhost client builds a real hash-route anchor
+only for entity kinds whose id the payload publishes (`entityLink`/`entityMark`
+in `scripts/web/client.js`), and every other kind falls back to a plain span — so
+an anchor that renders without a route cannot come from there; the static report
+(`src/ui/snapshot.ts`) emits no content anchors beyond the skip link. The
+reproduction, the surface, and the intended destination are therefore open.
+
+Work:
+
+- reproduce with the surface named (static report opened from disk, localhost UI,
+  or the TUI) plus the element and section involved;
+- choose the destination on purpose. Two candidates exist: navigate to the
+  entity's own subview/filter, which the client route already supports, or open a
+  file path in the reader's editor or file manager;
+- opening a local path is constrained by the browser and must be designed for it:
+  a page served from `http://127.0.0.1` cannot open local paths, so this needs an
+  explicit loopback endpoint or an editor URL scheme, and either choice exposes
+  paths and therefore needs privacy review;
+- an affordance that cannot lead anywhere must stop looking like a link; a
+  visibly non-interactive style is the fallback, not a dead anchor.
+
+Definition of done: every interactive-looking affordance either navigates, opens
+the intended target, or is visibly not a link — verified in the static report and
+the localhost UI, with a test covering the anchor's href for each entity kind
+that publishes an id.
+
+### 5. Additional UI languages (German, Russian, Ukrainian) with a settings-backed preference
+
+**Status:** ready for a spec. UI copy is already centralized: one catalog per
+surface (`src/ui/i18n/catalog.ts`, `ENGLISH_CATALOG`) reached through the `t()`
+helper (`src/ui/i18n.ts`), read by the TUI, the localhost client, and the static
+report alike.
+
+Work:
+
+- add a key to the Inspector-owned settings schema (`src/config/settings.ts`,
+  ADR 0019): `language`, a closed enum, default `"en"`. The schema's existing
+  rules already cover the rest: an unknown key is ignored, a malformed document
+  degrades to defaults with a bounded diagnostic, and no new failure mode may
+  prevent startup;
+- add `de`, `ru`, and `uk` catalogs; a missing key falls back to English rather
+  than to the key name or an empty string;
+- decide how the preference reaches each surface: the localhost UI can carry it
+  in the payload, the static report can bake it, and the TUI reads it directly;
+- decide what is never translated: canonical report values, entity ids, metric
+  and model identifiers, statuses that are part of the DTO contract, and the JSON
+  report;
+- keep layout honest: German and Ukrainian strings are longer than their English
+  counterparts, so the TUI's fixed-width columns and the report's tables need a
+  stated overflow rule;
+- the preference is not evidence: it never appears in the report DTO as
+  usage-relevant data.
+
+Definition of done: switching `language` changes the TUI, the localhost UI, and
+the static report consistently; an unsupported value falls back to English with a
+bounded diagnostic; tests cover the fallback and one non-English catalog per
+surface.
+
+### 6. Support for other harnesses (Claude Code, Codex, Hermes, others)
+
+**Question:** can Inspector observe another agent harness the way it observes Pi —
+from that harness's own persisted data — without weakening a single guarantee Pi
+enjoys?
+
+Today the invariant is unambiguous: Pi's persisted session data is the source
+authority, and `src/pi/adapter.ts` (`parseSessionJsonl()`) is the only producer of
+canonical entries. Anything Inspector cannot read honestly is reported as
+`unsupported` or `unavailable`.
+
+Research questions:
+
+- for each candidate harness: does it persist sessions locally at all, in what
+  format, with what stability guarantee, and does it persist usage/cost or only
+  messages? A harness that stores nothing locally cannot be observed from disk;
+- the identity model: each harness has its own session ids, project roots, and
+  possibly its own usage semantics, so per-harness totals stay separate and no
+  cross-harness figure is presented as one measurement (invariant 4 applies
+  across sources, not only inside one);
+- what scope and active ancestry mean for a harness with a different tree shape
+  (invariant 5 forbids inventing branch ids);
+- privacy: a second format brings its own payloads, prompts, and tool records, so
+  the same redaction and bounded-string rules apply before anything reaches
+  Inspector state (invariant 3);
+- packaging: harness support must not add a runtime dependency without an ADR, and
+  the package has to stay installable where that harness is absent.
+
+Expected shape: extend the existing pattern — integrations are descriptor-driven
+and adapters translate a producer into evidence — to a *session source*
+dimension, with an ADR for the model, one adapter per harness carrying a
+documented stability contract, and honest `unsupported` behavior for the rest.
+
+Definition of done: one non-Pi harness is read end-to-end from its own persisted
+data, with per-source usage authority, a report that names the source, a fixture
+matrix of sanitized samples, and no change to Pi-path behavior.
+
+### Promotion criteria
+
+An item leaves this backlog when its research questions are answered, its
+constraints are written into the spec or an ADR, and its work is small enough to
+enter `main` as independently mergeable pull requests. Nothing here changes the
+meaning of a released report field: a new dimension, source, or metric gets its
+own name and its own documented method before it gets a place in the DTO.
