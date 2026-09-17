@@ -4,6 +4,20 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [1.2.1]
 
+### Changed
+
+- The README opens with the product instead of the architecture: a one-line
+  value statement, a local/privacy statement, badges (npm version, CI, latest
+  release, license, Node engines), and the global-report screenshot as the hero
+  image. Install now sits directly under the opening description. The
+  deterministic, local-only framing and every accounting, integration, security
+  and guarantee statement are unchanged, only reordered.
+- The package-gallery preview (`pi.image`) is now that same global-report
+  capture, so the gallery and the README hero show the same view. Both
+  screenshots moved from the `v0.13.3` release assets to the `v1.2.0` ones, and
+  the tracked gallery copy replaced `overview-current-dark.png` with
+  `overview-global-dark.png`.
+
 ### Fixed
 
 - The TUI scope-toggle test no longer waits a fixed 20 ms for the asynchronous

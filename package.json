@@ -28,7 +28,7 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/twKrash/pi-session-inspector/main/docs/images/overview-current-dark.png"
+    "image": "https://raw.githubusercontent.com/twKrash/pi-session-inspector/main/docs/images/overview-global-dark.png"
   },
   "files": [
     "src",
