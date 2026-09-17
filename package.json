@@ -1,7 +1,7 @@
 {
   "name": "@twkrash/pi-session-inspector",
-  "version": "1.2.1",
-  "description": "Deterministic local-only session analytics for Pi",
+  "version": "1.3.0",
+  "description": "Local Pi session analytics for token usage, cost, models, tools, subagents, skills, and history",
   "type": "module",
   "license": "MIT",
   "author": "twKrash",
@@ -18,8 +18,17 @@
     "pi",
     "pi-extension",
     "pi-coding-agent",
+    "coding-agent",
+    "ai-agent",
+    "llm",
+    "llm-observability",
     "observability",
-    "session-analytics"
+    "token-usage",
+    "cost-tracking",
+    "session-analytics",
+    "session-history",
+    "subagents",
+    "local-first"
   ],
   "engines": {
     "node": ">=22.19.0"

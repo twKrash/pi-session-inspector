@@ -2,6 +2,43 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0]
+
+### Added
+
+- The localhost UI paints the configured theme before any report data arrives.
+  The shell is served with the resolved `theme` already in effect — the same
+  value the report DTO carries and the static snapshot renders — so the first
+  paint is the reader's own theme instead of the product default, and the theme
+  control starts in the state the document is already in. The theme is still
+  never a route, a report field, or persisted browser state, and the in-page
+  toggle still switches only the document it is on.
+- The loading state is a window rather than a bare line: it reuses the notice
+  the rest of the page uses, states what is loading, and speaks through the one
+  live region, announcing once per request — the request first, then the view
+  that answered it.
+
+### Fixed
+
+- A parent session inside an approved root is resolved even when the root's
+  lexical path and its canonical path differ. The containment check compared a
+  canonical root against a lexical candidate, so on macOS — where `/var`
+  resolves to `/private/var` — a parent under the same physical root was judged
+  outside it and reported `unavailable`. Lexical containment now uses the
+  lexical pair and canonical containment the canonical pair, with the component
+  walk and its symlink rejection unchanged.
+
+### Changed
+
+- The retained-precision cost rounding has one home (`src/core/rounding.ts`)
+  instead of six byte-identical private copies across the canonical fold, the
+  report builder, the live reducer, the subagent roll-up, and both UI
+  projections. No accounting value changes.
+- Discovery metadata: the package description and keywords, the GitHub
+  repository description, homepage, and topics, and the integration names in the
+  README now say what the project does and link each supported producer to its
+  own project page.
+
 ## [1.2.1]
 
 ### Changed
