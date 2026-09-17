@@ -5,7 +5,7 @@ import type {
   IntegrationTelemetryFold,
   LiveIntegrationContext,
 } from "../contract.ts";
-import { isRecord } from "./shared.ts";
+import { isRecord, toolCallNames } from "./shared.ts";
 
 /**
  * The `pi-mcp-adapter` semantic protocol.
@@ -17,6 +17,13 @@ import { isRecord } from "./shared.ts";
  *   decision. The record carries a server name, a tool name, and two SHA-256
  *   hashes, so this adapter validates the declared shape exactly and keeps
  *   only the decision class. Names and hashes never leave the reader.
+ * - its own tool vocabulary in the persisted session: `mcp`, `mcpScript`, and
+ *   the `mcp__<server>` proxies are invocations this adapter mediated, counted
+ *   as `calls`. The count is aggregate: which server, tool, or argument a call
+ *   named is never read from the tool-call name or the record, so no connector
+ *   identity is retained. It counts invocations of the adapter's own surface,
+ *   not MCP protocol round-trips — `mcpScript` can reach several servers, and
+ *   one gateway call can carry several operations.
  * - the `pi-mcp-adapter/status/v1` event: a sanitized runtime snapshot. It is
  *   a current-state reading, not an activity stream, so it is a presence
  *   sighting and never a counter.
@@ -128,8 +135,13 @@ function isMcpTool(name: string): boolean {
 export const mcpIntegration = defineIntegration({
   key: "mcp",
   schemas: {
+    // `calls` is declared on version 1 deliberately: the lowest declared
+    // version is the one folded checkpoint counters use, so a new version
+    // would leave this counter unfoldable. A reader that predates the counter
+    // reports the row `unsupported` rather than counting it, which is the
+    // documented degradation for an undeclared counter.
     1: {
-      counters: ["toolApprovals", "iframeApprovals", "iframeDenials"],
+      counters: ["calls", "toolApprovals", "iframeApprovals", "iframeDenials"],
     },
   },
   hooks: {
@@ -140,28 +152,34 @@ export const mcpIntegration = defineIntegration({
         iframeApprovals: 0,
         iframeDenials: 0,
       };
+      let calls = 0;
       let malformed = 0;
 
       for (const entry of entries) {
         if (
-          entry.type !== "custom" ||
-          entry.customType !== APPROVAL_CUSTOM_TYPE
+          entry.type === "custom" &&
+          entry.customType === APPROVAL_CUSTOM_TYPE
         ) {
+          const evidenceClass = readApprovalClass(entry.data);
+          if (evidenceClass === undefined) {
+            malformed += 1;
+            continue;
+          }
+          counters[evidenceClass] += 1;
           continue;
         }
-        const evidenceClass = readApprovalClass(entry.data);
-        if (evidenceClass === undefined) {
-          malformed += 1;
-          continue;
-        }
-        counters[evidenceClass] += 1;
+        // The adapter's own tool surface, counted by name only: no server,
+        // tool, or argument is read from a call.
+        const names = toolCallNames(entry);
+        if (names === undefined) continue;
+        calls += names.filter(isMcpTool).length;
       }
 
       const approvals =
         counters.toolApprovals +
         counters.iframeApprovals +
         counters.iframeDenials;
-      if (approvals === 0) {
+      if (calls === 0 && approvals === 0) {
         if (malformed === 0) return undefined;
         // Evidence of this integration exists but is not the declared shape.
         return {
@@ -171,11 +189,24 @@ export const mcpIntegration = defineIntegration({
           reason: "malformed-evidence",
         } satisfies IntegrationEvidence;
       }
+      // Only counters with evidence are published: an approval class nobody
+      // decided stays absent, never `0`.
+      const observed: Record<string, number> = {};
+      if (calls > 0) observed.calls = calls;
+      if (counters.toolApprovals > 0) {
+        observed.toolApprovals = counters.toolApprovals;
+      }
+      if (counters.iframeApprovals > 0) {
+        observed.iframeApprovals = counters.iframeApprovals;
+      }
+      if (counters.iframeDenials > 0) {
+        observed.iframeDenials = counters.iframeDenials;
+      }
       return {
         integration: "mcp",
         state: "supported",
         version: SCHEMA_VERSION,
-        counters,
+        counters: observed,
         reason: "evidence-supported",
       } satisfies IntegrationEvidence;
     },

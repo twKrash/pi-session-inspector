@@ -317,6 +317,43 @@ const IFRAME_DENY = {
   serverName: "demo",
 };
 
+test("mcp counts its own tool invocations as calls", () => {
+  // The adapter's own vocabulary is activity evidence in its own right: the
+  // gateway, the script tool, and the `mcp__<server>` proxies are all calls it
+  // mediated. Foreign names, including the single-underscore look-alike, are
+  // never counted.
+  assert.deepEqual(
+    mcpIntegration.hooks?.persisted?.(
+      persisted([
+        toolCalls(["mcp", "mcp__github", "mcpScript", "bash", "mcp_tools"]),
+        toolCalls(["mcp", "read"]),
+      ]),
+    ),
+    {
+      integration: "mcp",
+      state: "supported",
+      version: 1,
+      counters: { calls: 4 },
+      reason: "evidence-supported",
+    },
+  );
+  // Calls and approvals are independent evidence. When both exist both are
+  // published, and the approval counters are not zero-filled to reach the
+  // declared set: an unobserved class stays absent, never `0`.
+  assert.deepEqual(
+    mcpIntegration.hooks?.persisted?.(
+      persisted([toolCalls(["mcp"]), custom("mcp-approval-v1", TOOL_APPROVAL)]),
+    ),
+    {
+      integration: "mcp",
+      state: "supported",
+      version: 1,
+      counters: { calls: 1, toolApprovals: 1 },
+      reason: "evidence-supported",
+    },
+  );
+});
+
 test("mcp presence is the adapter's own tool vocabulary", () => {
   for (const tool of ["mcp", "mcpScript", "mcp__github"]) {
     assert.equal(

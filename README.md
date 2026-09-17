@@ -129,7 +129,7 @@ Shipped integrations ([full contract](docs/integrations.md)):
 | [`permission`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system) | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors` |
 | [`subagents`](https://github.com/nicobailon/pi-subagents) | persisted native subagent tool results | Rich run and activity evidence in the Agents view; the row itself declares no counters |
 | [`lens`](https://github.com/apmantza/pi-lens) | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls | `calls` |
-| [`mcp`](https://github.com/nicobailon/pi-mcp-adapter) | `pi-mcp-adapter` `mcp-approval-v1` entries, re-validated against the declared shape, plus its `pi-mcp-adapter/status/v1` runtime snapshot | `toolApprovals`, `iframeApprovals`, `iframeDenials`; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
+| [`mcp`](https://github.com/nicobailon/pi-mcp-adapter) | native `mcp`, `mcpScript`, and `mcp__<server>` tool calls, plus `pi-mcp-adapter` `mcp-approval-v1` entries re-validated against the declared shape, and its `pi-mcp-adapter/status/v1` runtime snapshot | `calls`, `toolApprovals`, `iframeApprovals`, `iframeDenials`; `calls` counts invocations of the adapter's own tool surface and only counters with evidence are published; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
 
 Presence and evidence are independent claims. `Present / Unavailable` means the
 integration is installed but produced no observable evidence in the tracked
