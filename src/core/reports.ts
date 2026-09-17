@@ -55,6 +55,7 @@ import {
   type CanonicalRetainedAggregates,
   isIntegrationKey as isCanonicalIntegrationKey,
 } from "./retained-aggregates.ts";
+import { roundCost } from "./rounding.ts";
 
 // The report-facing activity projection reuses the reader's shape so the
 // native subagent evidence has exactly one DTO definition (never re-declared).
@@ -1252,10 +1253,6 @@ function isIntegrationKey(
   return (
     typeof value === "string" && findIntegration(list, value) !== undefined
   );
-}
-
-function roundCost(value: number): number {
-  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
 /** A validated, already-folded view of the evidence counters projection. */

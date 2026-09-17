@@ -10,6 +10,7 @@ import { debugLog } from "../debug/log.ts";
 import type { SubagentEvidence } from "../integrations/subagents.ts";
 import type { ParsedSession } from "../pi/adapter.ts";
 import { resolveScope } from "../pi/scope.ts";
+import { roundCost } from "./rounding.ts";
 import type {
   AgentRun,
   Compaction,
@@ -1223,10 +1224,6 @@ function compositionEqual(
     total = next;
   }
   return total.totalTokens === known.totalTokens && total.cost === known.cost;
-}
-
-function roundCost(value: number): number {
-  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
 function isSafeToken(value: number): boolean {
