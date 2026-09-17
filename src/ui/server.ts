@@ -28,10 +28,12 @@ import type {
   GlobalReportProjection,
   InspectorUiSnapshot,
 } from "./ui-projection.ts";
-import { WEB_ASSETS } from "./web-assets.ts";
+import { renderShell, WEB_ASSETS, type ShellTheme } from "./web-assets.ts";
 
 /** The request-time data seams: only these callbacks may observe reports. */
 export type InspectorServerContext = {
+  /** The resolved theme the shell is rendered in; presentation, never report data. */
+  theme: ShellTheme;
   loadUi(intent?: RangeIntent): Promise<InspectorUiSnapshot>;
   loadSession(sessionId: string): Promise<SessionReport | undefined>;
   loadGlobal(intent?: RangeIntent): Promise<GlobalReportProjection>;
@@ -48,9 +50,8 @@ export type InspectorServer = {
 const SERVER_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-/** The three known assets; a path not in this table is never a resource. */
+/** The two fixed assets; the shell is rendered per request with its theme. */
 const ASSETS = new Map<string, { body: string; contentType: string }>([
-  ["/", { body: WEB_ASSETS.shell, contentType: "text/html; charset=utf-8" }],
   [
     "/style.css",
     { body: WEB_ASSETS.style, contentType: "text/css; charset=utf-8" },
@@ -60,6 +61,8 @@ const ASSETS = new Map<string, { body: string; contentType: string }>([
     { body: WEB_ASSETS.client, contentType: "text/javascript; charset=utf-8" },
   ],
 ]);
+
+const SHELL_CONTENT_TYPE = "text/html; charset=utf-8";
 
 /** One bounded opaque session-id route segment; never a path. */
 const SESSION_ID = /^[A-Za-z0-9._~-]{1,128}$/;
@@ -376,7 +379,13 @@ async function handleRequest(
     return;
   }
 
-  const asset = ASSETS.get(path);
+  const asset =
+    path === "/"
+      ? {
+          body: renderShell(state.context.theme),
+          contentType: SHELL_CONTENT_TYPE,
+        }
+      : ASSETS.get(path);
   if (asset !== undefined) {
     if (method !== "GET" && method !== "HEAD") {
       sendProblem(res, "method-not-allowed", {

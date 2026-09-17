@@ -178,6 +178,15 @@ interactive client. Browsers may probe exact `/favicon.ico`; `GET` and `HEAD`
 return an empty `204` response without report data or a diagnostic, and this
 compatibility route is not an additional browser asset.
 
+The shell is served with the resolved theme already in effect, exactly as a
+snapshot renders its own theme, so the first paint is the reader's configured
+theme and the in-page toggle starts in the state the document is in. The
+resolved theme is never a route, a report field, or persisted browser state,
+and the only injected value is a closed theme class name. While a report
+request is in flight the shell states what it is loading through the same
+notice and live-region vocabulary the rest of the page uses, and each request
+announces once: the request first, then the view that answered it.
+
 ### Pre-M8.4 HTTP and security contract
 
 The server uses Node `node:http` and `node:crypto`, binds only to

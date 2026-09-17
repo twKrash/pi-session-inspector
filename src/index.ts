@@ -1201,6 +1201,9 @@ function createUiServerContext(input: {
     sessionEvidence: readHistorySessionEvidence,
   });
   return {
+    // Rendered into the shell so the first paint is the resolved theme, the
+    // same value the DTO carries and the snapshot renders.
+    theme: input.theme,
     async loadUi(intent) {
       await flushLiveEvidence();
       // One synchronous observation of the live session, taken as soon as the

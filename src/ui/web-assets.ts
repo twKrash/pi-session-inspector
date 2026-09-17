@@ -25,3 +25,22 @@ export const WEB_ASSETS = {
     "utf8",
   ),
 } as const;
+
+/** The theme a shell is rendered in; the same closed pair a snapshot takes. */
+export type ShellTheme = "light" | "dark";
+
+/**
+ * The shell with the resolved theme already in effect, exactly as the static
+ * snapshot renders it. The reader's theme is configuration, so it is present in
+ * the first paint instead of waiting for a payload to state it; the in-page
+ * toggle still switches the document it is on and persists nothing.
+ *
+ * Presentation only: the one injected value is a closed enum's own class name,
+ * so no report, session, evidence, or path value can reach the shell through
+ * this seam. The light theme returns the shipped bytes unchanged.
+ */
+export function renderShell(theme: ShellTheme): string {
+  return theme === "dark"
+    ? WEB_ASSETS.shell.replace("<body>", '<body class="theme-dark">')
+    : WEB_ASSETS.shell;
+}
