@@ -31,9 +31,10 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.2.1`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.3.0`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, and the `mcp`
-> semantic integration are available.
+> semantic integration are available. The localhost UI paints the configured
+> theme before any report data arrives, and its loading state announces once.
 
 ## Install
 
@@ -121,14 +122,14 @@ Shipped integrations ([full contract](docs/integrations.md)):
 
 | Integration | Evidence it reads | Reported telemetry |
 | --- | --- | --- |
-| `context` | `ctx_*` custom entries plus native `ctx_*` tool calls, folded by maximum | `calls` |
-| `rtk` | `message.details.rtkCompaction` (versioned shapes collapse to one contract) | `compactions`, char/line counts, `truncated` |
-| `ponytail` | `ponytail-mode` custom entries | `changes` |
-| `caveman` | `caveman-level` custom entries | `changes` |
-| `permission` | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors` |
-| `subagents` | persisted native subagent tool results | Rich run and activity evidence in the Agents view; the row itself declares no counters |
-| `lens` | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls | `calls` |
-| `mcp` | `pi-mcp-adapter` `mcp-approval-v1` entries, re-validated against the declared shape, plus its `pi-mcp-adapter/status/v1` runtime snapshot | `toolApprovals`, `iframeApprovals`, `iframeDenials`; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
+| [`context`](https://github.com/mksglu/context-mode) | `ctx_*` custom entries plus native `ctx_*` tool calls, folded by maximum | `calls` |
+| [`rtk`](https://github.com/MasuRii/pi-rtk-optimizer) | `message.details.rtkCompaction` (versioned shapes collapse to one contract) | `compactions`, char/line counts, `truncated` |
+| [`ponytail`](https://github.com/DietrichGebert/ponytail) | `ponytail-mode` custom entries | `changes` |
+| [`caveman`](https://github.com/jonjonrankin/pi-caveman) | `caveman-level` custom entries | `changes` |
+| [`permission`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system) | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors` |
+| [`subagents`](https://github.com/nicobailon/pi-subagents) | persisted native subagent tool results | Rich run and activity evidence in the Agents view; the row itself declares no counters |
+| [`lens`](https://github.com/apmantza/pi-lens) | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls | `calls` |
+| [`mcp`](https://github.com/nicobailon/pi-mcp-adapter) | `pi-mcp-adapter` `mcp-approval-v1` entries, re-validated against the declared shape, plus its `pi-mcp-adapter/status/v1` runtime snapshot | `toolApprovals`, `iframeApprovals`, `iframeDenials`; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
 
 Presence and evidence are independent claims. `Present / Unavailable` means the
 integration is installed but produced no observable evidence in the tracked
@@ -240,7 +241,7 @@ Inspector reads one optional JSON file it owns, next to its own data:
 
 | Key | Values | Effect |
 | --- | --- | --- |
-| `theme` | `"light"` (default), `"dark"` | The initial theme of a `ui` page and of a `snapshot` document; the in-page toggle still switches the running page |
+| `theme` | `"light"` (default), `"dark"` | The theme a `ui` page and a `snapshot` document are rendered with: the shell carries it in the first paint, and the in-page toggle still switches the running page |
 | `debug` | `true`, `false` (default) | Writes Inspector's bounded local debug log (`0o600` JSONL under `session-inspector/v1/debug/`) |
 
 Precedence is `explicit CLI option > settings.json > product default`, so

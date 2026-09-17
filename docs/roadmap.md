@@ -1,22 +1,27 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.2.1`
+**Current release:** `1.3.0`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
 and M8 (publication and release) are complete. `1.0.0` is published to npm as
 `@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`. The `1.0.x`
 patch line has continued past it — `1.0.1` through `1.0.3` are published the same
-way, `1.1.0` added the post-1.0 `mcp` semantic integration, and `1.2.0`, which
-adds the multi-metric chart selection, is the latest published release. The tree
-sits one patch past it: `1.2.1` marks the test-wait hardening, changes no shipped
-behavior, and is not published.
+way, `1.1.0` added the post-1.0 `mcp` semantic integration, `1.2.0` added the
+multi-metric chart selection, and `1.3.0`, which paints the configured theme at
+first paint and turns the loading state into a stated, announced window, is the
+latest published release. `1.2.1`, which records the test-wait hardening and
+changes no shipped behavior, shipped within `1.3.0` rather than being published
+on its own, so no `1.2.1` artifact exists on the registry.
 
 **Next gate:** none for `1.0.0`. The post-1.0 follow-ups below are the next
 recorded work; they gate nothing and are not required for the published
-release. MCP semantic integration shipped in `1.1.0` and multi-metric chart
-selection in `1.2.0`. The maintenance and hardening backlog recorded after that
-release is unscheduled too: it blocks nothing and carries no version.
+release. MCP semantic integration shipped in `1.1.0`, multi-metric chart
+selection in `1.2.0`, and the loading state with a first-paint theme in `1.3.0`.
+The maintenance and hardening backlog recorded after that release remains
+partially scheduled: the macOS parent-session containment defect and the
+`roundCost()` duplication were delivered in `1.3.0`, and the rest of that
+backlog still blocks nothing and carries no version.
 
 **Post-1.0:** ten follow-ups are recorded at the end of this document — MCP
 semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native
@@ -1514,9 +1519,15 @@ added for a harness that has not passed the investigation above.
 
 ### 10. Loading state and first-paint theme
 
-**Status:** Ready for a spec. **Depends on:** nothing. Distinct from item 4:
-push decides when data arrives, this decides what the reader sees while it has
-not arrived yet.
+**Status:** Delivered in `1.3.0`; the checks below are covered by
+`tests/unit/server.test.ts` (the served shell carries one theme class, the light
+theme is the shipped bytes), `tests/unit/web-assets.test.ts` (a deferred payload
+paints the resolved theme first, the loading copy announces once and the applied
+route replaces it, and the storage-write assertion stays empty), and
+`tests/helpers/client-harness.ts`, which now renders its stub shell through the
+same `renderShell()` the server uses. **Depends on:** nothing. Distinct from
+item 4: push decides when data arrives, this decides what the reader sees while
+it has not arrived yet.
 
 **Current state:** `src/ui/web/shell.html` carries one hidden `#loading` line
 ("Loading report…") that `setLoading()` in `scripts/web/client.js` toggles, so a
@@ -1525,9 +1536,11 @@ browser-local: a click toggles `theme-dark` on `body` and nothing is persisted �
 the browser regression asserts zero storage writes — while
 `src/config/settings.ts` already resolves `theme` with `CLI option >
 settings.json > product default` precedence and reports its `themeSource`. The
-interactive server serves the shell untinted, so the first paint is always the
-product default: the reader sees the other theme until the data lands, and the
-click is lost on reload.
+resolved theme is now rendered into the shell the server serves and into every
+static snapshot, so the first paint is the reader's theme and the toggle starts
+on the state the document is already in; the toggle stays browser-local and
+persists nothing. The visible loading line is the shared notice component, and
+the one live region carries the loading message and then the applied route.
 
 Expected implementation shape:
 
@@ -1580,7 +1593,7 @@ restated. The review's praise is not repeated here, because praise is not work.
 Nothing below weakens the observer-only, privacy, determinism, or lifecycle
 invariants.
 
-### Immediate — confirmed defect: macOS parent-session containment
+### Resolved in `1.3.0` — macOS parent-session containment
 
 `src/pi/parent-session.ts` mixes a canonical root with a lexical candidate: it
 canonicalizes `realpath(sessionRoot)` into `approvedRoot` and then tests
@@ -1599,13 +1612,27 @@ Fix direction:
 - add macOS CI coverage so this class of platform bug is caught here rather than
   by a reader on that platform.
 
+**Outcome (`1.3.0`):** the two containment checks each use their own pair —
+`resolve()` on the root and the candidate, then `realpath()` on the root and the
+candidate — with the component walk and its symlink rejection unchanged, so a
+parent inside the approved root resolves again on the platforms where the root
+itself has a link component. `tests/unit/parent-session.test.ts` covers the
+divergence with a linked root, and pins that containment is not weakened to get
+there (a sibling of the root, reached through the same link, is still
+`unavailable`), so the class is caught on any platform rather than only on macOS.
+**Still open:** macOS CI coverage. No workflow runs this suite on macOS yet, so
+a macOS-only divergence would still reach a reader before it reaches CI; the
+regression test reproduces the shape, not the platform.
+
 ### Near term — duplication with one semantic owner
 
-- `roundCost()` exists as six byte-identical private copies — `core/canonical.ts`,
+- `roundCost()` existed as six byte-identical private copies — `core/canonical.ts`,
   `core/reports.ts`, `core/reduce.ts`, `integrations/subagents.ts`,
   `ui/report-projection.ts`, `ui/ui-projection.ts`. They encode one accounting
   semantic (the retained-precision cost rounding), so one shared home keeps the
-  rule from drifting between layers or projections.
+  rule from drifting between layers or projections. **Resolved in `1.3.0`:**
+  they are one function in `src/core/rounding.ts`, imported by all six sites;
+  no accounting value changes.
 - `integrations/subagents.ts` does **not** duplicate the ID digest: the helper
   `opaqueSubagentId()` is the single producer. What is duplicated is the
   resolution around it — the six-line "own run id, else the aggregate run id plus
