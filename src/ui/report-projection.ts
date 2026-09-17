@@ -1,6 +1,7 @@
 import type { EvidenceState } from "../core/events.ts";
 import { buildLedger, type LedgerItem } from "../core/ledger.ts";
 import { cacheHitPercent, type SessionReport } from "../core/reports.ts";
+import { roundCost } from "../core/rounding.ts";
 import type { SessionCoverage } from "../core/session-coverage.ts";
 import type { DateUsageRow, DatedModelRow } from "./dated-usage.ts";
 import type { GlobalReport, HistoryReport } from "./load-history.ts";
@@ -1070,8 +1071,4 @@ export function compareHistoryEntries(
 
 function money(value: number): string {
   return `$${value.toFixed(2)}`;
-}
-
-function roundCost(value: number): number {
-  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }

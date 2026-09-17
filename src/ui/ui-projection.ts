@@ -1,5 +1,6 @@
 import type { EvidenceState, Scope } from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
+import { roundCost } from "../core/rounding.ts";
 import {
   CAPABILITIES,
   type CurrentView,
@@ -897,8 +898,4 @@ function declaredOrRows(
 ): number | null {
   if (typeof declared === "number") return declared;
   return state === "supported" ? rows : null;
-}
-
-function roundCost(value: number): number {
-  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }

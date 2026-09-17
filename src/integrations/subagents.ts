@@ -8,6 +8,7 @@ import type {
 } from "../core/events.ts";
 import { boundedProducerLabel } from "../core/evidence.ts";
 import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
+import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
 
 /** Persisted pi-subagents tool names, in the report's fixed column order. */
@@ -785,10 +786,6 @@ function isBoundedCost(value: unknown): value is number {
     value >= 0 &&
     value <= MAX_COST
   );
-}
-
-function roundCost(value: number): number {
-  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
 function snapshotRecord(

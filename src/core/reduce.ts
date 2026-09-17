@@ -10,6 +10,7 @@ import type {
   UsageComposition,
 } from "./events.ts";
 import { REDACTED, redactBoundedText, secretLikeValue } from "./redact.ts";
+import { roundCost } from "./rounding.ts";
 
 const zeroUsage: Usage = { totalTokens: 0, cost: 0 };
 const MAX_REPORT_LABEL_BYTES = 128;
@@ -270,10 +271,6 @@ function isBoundedCost(value: unknown): value is number {
     value >= 0 &&
     value <= MAX_USAGE_VALUE
   );
-}
-
-function roundCost(value: number): number {
-  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
 function sumOptionalTokens(left: Usage, right: Usage): Partial<Usage> {
