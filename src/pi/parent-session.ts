@@ -85,16 +85,20 @@ async function resolveCandidate({
     return { state: "unavailable" };
   }
 
-  const approvedRoot = await realpath(sessionRoot);
-  // Lexical containment: relative() is platform-safe and rejects absolute
-  // targets and `..` escapes without string-prefix comparison.
+  // Containment is judged twice, each time within one form. The lexical root
+  // and the lexical candidate answer every `..`/absolute question; the approved
+  // (canonical) root and the canonical candidate answer the link question. A
+  // canonical root mixed with a lexical candidate would reject a parent that is
+  // genuinely inside the root wherever the root itself has a link component,
+  // which is what macOS presents for `/var` under `/private/var`.
+  const lexicalRoot = resolve(sessionRoot);
   const candidate = resolve(parentPath);
-  const lexical = relative(approvedRoot, candidate);
+  const lexical = relative(lexicalRoot, candidate);
   if (!isContained(lexical)) return { state: "unavailable" };
 
   // lstat every component beneath the root; reject symbolic links at any depth
   // and require the final target to be a regular file.
-  let current = approvedRoot;
+  let current = lexicalRoot;
   let finalInfo: Awaited<ReturnType<typeof lstat>> | undefined;
   const components = lexical.split(sep);
   for (const [index, component] of components.entries()) {
@@ -113,7 +117,9 @@ async function resolveCandidate({
   if (finalInfo === undefined) return { state: "unavailable" };
 
   // realpath re-containment defends against a lexical path that traverses a
-  // link the component walk did not observe (or a race with replacement).
+  // link the component walk did not observe (or a race with replacement). Both
+  // sides are canonical here, so the comparison is between like and like.
+  const approvedRoot = await realpath(sessionRoot);
   const realCandidate = await realpath(current);
   if (!isContained(relative(approvedRoot, realCandidate))) {
     return { state: "unavailable" };
