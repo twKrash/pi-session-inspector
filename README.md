@@ -31,7 +31,7 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.3.0`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.3.1`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, and the `mcp`
 > semantic integration are available. The localhost UI paints the configured
 > theme before any report data arrives, and its loading state announces once.

@@ -2,6 +2,23 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1]
+
+### Fixed
+
+- The `mcp` row counts invocations of the `pi-mcp-adapter` tool surface —
+  `mcp`, `mcpScript`, and the `mcp__<server>` proxies — as `calls`. A session
+  with adapter-mediated MCP calls but no approval decisions previously showed
+  the integration as `Present / Unavailable` with no counters at all, while the
+  Tools tab counted the same calls; the row now publishes `calls` and reports
+  `evidence-supported`. Only counters with evidence are published, so an
+  approval class nobody decided stays absent rather than `0`, and `calls`
+  counts adapter-mediated invocations rather than MCP round-trips (a script call
+  can reach several servers). The count is aggregate and adds no connector
+  identity: the approval record's server name, tool name, and hashes stay
+  validated-and-discarded, and a call's name is never read for which server it
+  names.
+
 ## [1.3.0]
 
 ### Added
