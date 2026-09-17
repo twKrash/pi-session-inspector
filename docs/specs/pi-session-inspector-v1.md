@@ -520,7 +520,7 @@ A checkpoint sealed by an older version can never gain `walDetailExpiredBefore`:
 
 `schemaVersion` deliberately stays `1`: the fields are additive and carry cooperative live evidence only, whereas a version bump would make older readers treat the whole checkpoint as unreadable and lose sealed-cursor knowledge, which is the more dangerous failure. `0.8.0` never writes state it cannot itself re-read and never relies on the new fields to authorize a seal or deletion.
 
-Release blockers: empirical validation of provider timing confidence, maintenance/retention crash races, and usage non-double-counting. Other risks: Pi API drift, subagent artifact drift, writer clock skew, metadata privacy leakage, scale beyond corpus, and npm/release ownership. See [research](../research/pi-ecosystem.md) and [implementation plan](../plans/pi-session-inspector-v1-implementation.md).
+Release blockers: empirical validation of provider timing confidence, maintenance/retention crash races, and usage non-double-counting. Other risks: Pi API drift, subagent artifact drift, writer clock skew, metadata privacy leakage, scale beyond corpus, and npm/release ownership. See [research](../research/pi-ecosystem.md) and the [roadmap](../roadmap.md).
 
 ## 12. Validation invariants
 

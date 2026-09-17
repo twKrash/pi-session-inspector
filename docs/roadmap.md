@@ -34,9 +34,11 @@ This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
 `docs/superpowers/**` material is removed by Pre-M8.1 after useful decisions are
 promoted to ADRs, product specs, benchmark records, this roadmap, the README, or
-the CHANGELOG. The tracked v1 implementation plan is a temporary exception: it
-remains available during M8 as an execution/history guide, then is retired only
-by the explicitly named post-M8 cleanup tail.
+the CHANGELOG. The tracked v1 implementation plan was the same kind of working
+material: it stayed available through M8 as an execution/history guide for the
+parts later ADRs and specs had not superseded, and it was retired in `1.3.0`
+after that review showed its durable content already lives in the spec, the
+ADRs, `CONTRIBUTING.md`, and this roadmap.
 
 ## Delivery rules
 
@@ -90,9 +92,9 @@ by the explicitly named post-M8 cleanup tail.
 
 | Milestone | Status | Durable record |
 | --- | --- | --- |
-| M0 — package skeleton | Complete | [v1 implementation plan](plans/pi-session-inspector-v1-implementation.md) |
-| M1 — replay-to-JSON | Complete | [v1 implementation plan](plans/pi-session-inspector-v1-implementation.md) |
-| M2 — live tracking | Complete | [v1 implementation plan](plans/pi-session-inspector-v1-implementation.md) |
+| M0 — package skeleton | Complete | [package contract](../tests/unit/package-contract.test.ts) |
+| M1 — replay-to-JSON | Complete | [ADR 0016](architecture/adr/0016-evidence-foundation-and-canonical-session-model.md) |
+| M2 — live tracking | Complete | [ADR 0004](architecture/adr/0004-per-writer-wal.md), [ADR 0010](architecture/adr/0010-telemetry-protocol-v1.md) |
 | M3 — checkpoint, recovery, history | Complete | [ADR 0005](architecture/adr/0005-checkpoints-and-reconciliation.md) |
 | M4 — current TUI and ledger | Complete | [ADR 0003](architecture/adr/0003-derived-ledger.md) |
 | M5 — integration and agent roll-up | Complete | [ADR 0007](architecture/adr/0007-subagent-rollup.md) |
@@ -133,11 +135,10 @@ M8 owns final candidate verification and publication:
 5. Create the Git tag/GitHub release when applicable, then install and verify
    the actual published npm artifact rather than only the local tarball.
 
-The original v1 implementation plan remains available during M8 as an
-execution/history guide only where it has not been superseded. Later accepted
-ADRs, durable specs, and roadmap decisions supersede conflicting plan text.
-Pre-M8.1 does not depend on M8 and does not retire the active plan; plan
-retirement occurs only in its named post-M8 cleanup tail.
+The original v1 implementation plan served M8 as an execution/history guide only
+where later accepted ADRs, durable specs, and roadmap decisions had not
+superseded it; it was reviewed against the published commit and retired in
+`1.3.0`.
 
 ## Pre-M8 readiness sequence
 
@@ -164,7 +165,8 @@ finishes.
    `.superpowers/**` ignored and available for future execution work.
 4. Keep `docs/plans/pi-session-inspector-v1-implementation.md` available during
    M8 because it is the active execution/history guide where not superseded.
-   Its retirement is not a Pre-M8.1 deliverable or acceptance condition.
+   Its retirement was not a Pre-M8.1 deliverable or acceptance condition, and it
+   was retired later, by the post-M8 cleanup tail below.
 5. Normalize the ignore policy to explicit directory entries:
    `.superpowers/` and `docs/superpowers/`. Remember that `.gitignore` does not
    untrack files already committed.
@@ -182,23 +184,34 @@ finishes.
 - Tracked documentation contains durable ADRs, product specs, benchmark
   records, roadmap, README, CHANGELOG, necessary research material, and the
   explicitly temporary v1 M8 execution plan.
-- No Pre-M8.1 acceptance condition depends on M8 completion. The active plan may
-  remain tracked during M8 as the stated temporary exception.
+- No Pre-M8.1 acceptance condition depends on M8 completion. The plan stayed
+  tracked through M8 as a stated temporary exception, and was retired afterwards
+  by the post-M8 cleanup tail.
 - No session data, prompts, outputs, credentials, or execution logs enter Git;
   documentation links and package-facing docs pass review.
 
 #### Post-M8 cleanup tail (not a Pre-M8.1 gate)
 
-After successful M8 publication:
+Completed in `1.3.0`; recorded as the procedure that was followed:
 
-1. Review the final implementation plan against the published commit and
-   promote useful historical information to `docs/roadmap.md`, ADRs, specs,
-   benchmarks, README, or CHANGELOG.
-2. Repair all links that pointed to the temporary plan.
-3. Remove `docs/plans/pi-session-inspector-v1-implementation.md` from Git only
-   after its durable history has been promoted.
-4. Verify the plan is untracked/absent and that the roadmap remains sufficient
-   as the historical milestone record.
+1. The final implementation plan was reviewed against the published commit. Its
+   durable content was confirmed to already live elsewhere — the module
+   boundaries in the spec's L0/L1/L2 sections and the enforced
+   `.dependency-cruiser.cjs` edges, the dependency and fixture discipline in
+   `CONTRIBUTING.md` and this roadmap, the milestone outcomes in the CHANGELOG,
+   the ADRs, and the benchmark and release records — so no historical material
+   needed promoting beyond the milestone table's durable-record column.
+2. Every link that pointed to the plan was repaired: the `README.md`
+   documentation index, the `CONTRIBUTING.md` and `AGENTS.md` read-first lists,
+   the spec's risk section, this roadmap's completed-milestone table, and the
+   two roadmap passages that described the plan's temporary status.
+3. `docs/plans/pi-session-inspector-v1-implementation.md` was removed from Git,
+   together with the now-empty `docs/plans/` directory.
+4. Verified: no tracked file references the removed path, and this roadmap
+   remains the historical milestone record. The file is still reachable through
+   Git history (`git log --follow docs/plans/pi-session-inspector-v1-implementation.md`),
+   so it was removed rather than archived in-tree: a tracked, unmaintained plan
+   is exactly what readers would mistake for current design authority.
 
 **Release:** compatible documentation cleanup may bump the next patch version;
 the roadmap-only change itself does not.
