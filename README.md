@@ -1,4 +1,23 @@
+<div align="center">
+
 # Pi Session Inspector
+
+**See where your Pi tokens, cost, models, tools, and subagents actually went.**
+
+Local-first session analytics for [Pi](https://github.com/earendil-works/pi) —
+no external database, no analytics service, no session uploads.
+
+[![npm version](https://img.shields.io/npm/v/@twkrash/pi-session-inspector)](https://www.npmjs.com/package/@twkrash/pi-session-inspector)
+[![CI](https://github.com/twKrash/pi-session-inspector/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/twKrash/pi-session-inspector/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/twKrash/pi-session-inspector)](https://github.com/twKrash/pi-session-inspector/releases/latest)
+[![license: MIT](https://img.shields.io/github/license/twKrash/pi-session-inspector)](https://github.com/twKrash/pi-session-inspector/blob/main/LICENSE)
+[![node: >=22.19.0](https://img.shields.io/node/v/@twkrash/pi-session-inspector)](https://www.npmjs.com/package/@twkrash/pi-session-inspector)
+
+<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v1.2.0/overview-global-dark.png" alt="Overview tab of the global report, dark theme">
+
+</div>
+
+## What is Pi Session Inspector?
 
 A deterministic, local-only observability layer for [Pi](https://github.com/earendil-works/pi)
 sessions. Inspector reconstructs what Pi already persisted — usage and cost,
@@ -7,19 +26,42 @@ bounded live and cooperative evidence when a producer publishes some. There is
 no LLM analytics step, no cloud service, and no daemon: nothing leaves the
 machine and no model call is spent on analysis.
 
+It reads that data in place and reports it four ways — the interactive
+localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
+the deterministic JSON report DTO — over the current session, one historical
+session, the session history, or the global aggregate.
+
 > **Status `1.2.1`:** current-session, history, global, ledger, localhost UI,
-> in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, a daily chart
-> whose metrics the reader picks, and the `mcp` semantic integration are
-> available.
+> in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, and the `mcp`
+> semantic integration are available.
+
+## Install
+
+```bash
+pi install npm:@twkrash/pi-session-inspector
+/session-inspector
+```
+
+A Pi package runs with full system access, so install it the way you install any
+other Pi package: from a source you have reviewed. Inspector's own guarantees
+are narrower than that — it reads Pi's persisted session data and writes only
+its own metadata — and are described under [Guarantees](#guarantees).
+
+The bare install tracks releases. To hold one version, pin it:
+
+```bash
+pi install npm:@twkrash/pi-session-inspector@1.0.2
+```
+
+`/session-inspector` with no arguments is `tui current` in active scope: the
+TUI opens inside Pi for the current session. The alias `/session-ins` is
+equivalent, and `/session-inspector help` prints the grammar in the TUI.
 
 ## Screenshots
 
-The Overview tab of `/session-inspector ui` — one current session, dark theme,
-and the multi-session global report, light theme.
+The same global report in the light theme.
 
-<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-current-dark.png" alt="Overview tab of a current session, dark theme">
-
-<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v0.13.3/overview-global-light.png" alt="Overview tab of the global report, light theme">
+<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v1.2.0/overview-global-light.png" alt="Overview tab of the global report, light theme">
 
 The images are GitHub release assets rather than repository files: no binary
 bytes enter git, and the absolute URLs render on GitHub and npm alike. They are
@@ -62,28 +104,6 @@ Child (subagent) usage breakdown of subagent usage already inside native
 - **Live and cooperative evidence enriches attribution.** It can supply timing,
   correlation, and producer facts; it never replaces, inflates, or re-derives
   native accounting.
-
-## Install
-
-```bash
-pi install npm:@twkrash/pi-session-inspector
-/session-inspector
-```
-
-A Pi package runs with full system access, so install it the way you install any
-other Pi package: from a source you have reviewed. Inspector's own guarantees
-are narrower than that — it reads Pi's persisted session data and writes only
-its own metadata — and are described under [Guarantees](#guarantees).
-
-The bare install tracks releases. To hold one version, pin it:
-
-```bash
-pi install npm:@twkrash/pi-session-inspector@1.0.2
-```
-
-`/session-inspector` with no arguments is `tui current` in active scope: the
-TUI opens inside Pi for the current session. The alias `/session-ins` is
-equivalent, and `/session-inspector help` prints the grammar in the TUI.
 
 ## Integrations
 
