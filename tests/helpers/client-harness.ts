@@ -15,7 +15,11 @@
  */
 import { createContext, runInContext } from "node:vm";
 
-import { WEB_ASSETS } from "../../src/ui/web-assets.ts";
+import {
+  renderShell,
+  type ShellTheme,
+  WEB_ASSETS,
+} from "../../src/ui/web-assets.ts";
 import type { InspectorUiSnapshot } from "../../src/ui/ui-projection.ts";
 /**
  * The two observers a chart library binds on construction. They never fire: the
@@ -278,6 +282,11 @@ export type WebClientEvent =
 export type WebClientInput = {
   responses?: readonly InspectorUiSnapshot[];
   hash?: string;
+  /**
+   * The theme the server rendered the shell in. Defaults to the product
+   * default, so a test that cares about the first paint states it explicitly.
+   */
+  theme?: ShellTheme;
   deferFetch?: boolean;
   fetchFailure?: "network" | "http";
   replaceStateFails?: boolean;
@@ -533,6 +542,17 @@ function markupTree(
       if (stack.length > 1) stack.pop();
       continue;
     }
+    // The document's own `<body>` tag describes the root the client writes to,
+    // as well as the element this scan nests: the server renders the resolved
+    // theme as an attribute on exactly that tag, and `document.body` is the
+    // root, so the class has to be visible on both.
+    if (name.toLowerCase() === "body") {
+      for (const attribute of attributeText.matchAll(
+        /([\w:-]+)\s*=\s*"([^"]*)"/g,
+      )) {
+        body.setAttribute(attribute[1], attribute[2]);
+      }
+    }
     const element = stubElement(name, register, tracking);
     for (const attribute of attributeText.matchAll(
       /([\w:-]+)\s*=\s*"([^"]*)"/g,
@@ -579,7 +599,13 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
       }
     },
   };
-  const { body, nodes } = markupTree(WEB_ASSETS.shell, tracking, register);
+  // The shell is the one the server serves for this theme: the harness renders
+  // it through the same function, so the browser test drives the real bytes.
+  const { body, nodes } = markupTree(
+    renderShell(input.theme ?? "light"),
+    tracking,
+    register,
+  );
   for (const node of nodes) register(node);
   let renders = 0;
   const view = store.get("view");

@@ -16,7 +16,7 @@ import type {
   GlobalReportProjection,
   InspectorUiSnapshot,
 } from "../../src/ui/ui-projection.ts";
-import { WEB_ASSETS } from "../../src/ui/web-assets.ts";
+import { WEB_ASSETS, type ShellTheme } from "../../src/ui/web-assets.ts";
 
 /**
  * The loopback server boundary (ADR 0018 and the spec's Pre-M8.4 HTTP and
@@ -58,11 +58,15 @@ type Calls = {
 };
 
 /** The counting context: every callback records its bounded input. */
-function fixtureContext(): { context: InspectorServerContext; calls: Calls } {
+function fixtureContext(theme: ShellTheme = "light"): {
+  context: InspectorServerContext;
+  calls: Calls;
+} {
   const calls: Calls = { ui: [], sessions: [], global: [] };
   return {
     calls,
     context: {
+      theme,
       loadUi: async (intent) => {
         calls.ui.push(intent);
         return SNAPSHOT;
@@ -316,10 +320,55 @@ test("known assets are served byte-for-byte for GET and HEAD with fixed headers"
   }
 });
 
+test("the shell is served with the resolved theme already in effect", async () => {
+  try {
+    const lightServer = await getInspectorServer(
+      fixtureContext("light").context,
+    );
+    const light = await call(lightServer, "/");
+    assert.equal(light.status, 200);
+    assert.equal(light.headers["content-type"], "text/html; charset=utf-8");
+    // The default theme is the shipped shell bytes: nothing is injected, and
+    // the content length is that document's own.
+    assert.equal(light.body, WEB_ASSETS.shell);
+    assert.equal(
+      light.headers["content-length"],
+      String(Buffer.byteLength(WEB_ASSETS.shell)),
+    );
+    assert.equal(light.body.includes("theme-dark"), false);
+
+    // One long-lived instance rotates its context, and the theme with it.
+    const darkServer = await getInspectorServer(fixtureContext("dark").context);
+    assert.equal(darkServer.origin, lightServer.origin);
+    const dark = await call(darkServer, "/");
+    const themedShell = WEB_ASSETS.shell.replace(
+      "<body>",
+      '<body class="theme-dark">',
+    );
+    assert.equal(dark.status, 200);
+    assert.equal(dark.body, themedShell);
+    assert.equal(
+      dark.headers["content-length"],
+      String(Buffer.byteLength(themedShell)),
+    );
+    // Presentation only: the same headers, and still no report, session, or
+    // catalog value — the one injected value is a closed enum's class name.
+    assert.equal(dark.headers["content-security-policy"], SERVER_CSP);
+    assert.equal(dark.body.includes("SNAPSHOT_DTO"), false);
+    assert.equal(dark.body.includes(SESSION_ID), false);
+    assert.equal(dark.body.includes("application/json"), false);
+    assert.equal(
+      dark.body.length - light.body.length,
+      ' class="theme-dark"'.length,
+    );
+  } finally {
+    await closeInspectorServer();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Bearer authentication
 // ---------------------------------------------------------------------------
-
 test("protected API calls require the exact bearer credential", async () => {
   const { context, calls } = fixtureContext();
   const server = await getInspectorServer(context);

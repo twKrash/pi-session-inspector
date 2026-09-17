@@ -19,7 +19,7 @@
 <dialog id="date-dialog" aria-labelledby="date-title"><form id="date-form"><h2 id="date-title">Custom date range</h2><p class="muted">Inclusive UTC dates</p><label>From<input id="date-from" type="date" required aria-describedby="date-error"></label><label>To<input id="date-to" type="date" required aria-describedby="date-error"></label><p id="date-error" class="date-error" role="alert" hidden>From must be on or before To.</p><div class="actions"><button type="button" id="date-cancel">Cancel</button><button type="submit" class="primary">Apply range</button></div></form></dialog>
 <nav class="tabs" id="tabs" aria-label="Report section"></nav>
 <p class="range-note" id="route-notice" hidden></p>
-<p id="loading" hidden>Loading report…</p>
+<section class="notice" id="loading" hidden><span aria-hidden="true">ⓘ</span><div><strong id="loading-title">Loading report…</strong> <p>Reading the persisted session data. This page stays usable while it arrives.</p></div></section>
 <section class="notice" id="error" hidden role="alert"><span aria-hidden="true">ⓘ</span><div><strong>The report could not be loaded.</strong> <p id="error-detail">This Inspector session may have stopped, or the page may have lost its access. Reload the tokenized URL from Pi to continue.</p><button id="retry" data-retry="true">Retry</button></div></section>
 <div id="view"></div>
 <div class="notice"><span aria-hidden="true">ⓘ</span><div><strong>Local does not mean safe to share.</strong> Report metadata can be sensitive. Review exports before sharing.</div></div>

@@ -941,6 +941,7 @@ function kinds(events: readonly { kind: string }[]): string[] {
 
 test("the loaded browser scripts bootstrap data and wire the theme control", async () => {
   const harness = createWebClient({
+    theme: "dark",
     responses: [uiSnapshot()],
     hash: `#token=${TOKEN}`,
   });
@@ -1034,10 +1035,21 @@ test("the loading and error landmarks report the request state", async () => {
   const started = deferred.start();
   assert.equal(deferred.element("loading").hidden, false);
   assert.equal(deferred.element("error").hidden, true);
+  // The loading window reuses the notice the reader already knows, states what
+  // is loading, and speaks once through the one live region. The applied route
+  // replaces that message when the payload lands.
+  assert.equal(deferred.element("loading").className.includes("notice"), true);
+  const copy = createTranslator("en")("state.loading");
+  assert.equal(deferred.element("loading-title").textContent, copy);
+  assert.equal(deferred.element("announcement").textContent, copy);
   deferred.releaseFetch();
   await started;
   assert.equal(deferred.element("loading").hidden, true);
   assert.equal(deferred.element("error").hidden, true);
+  assert.equal(
+    deferred.element("announcement").textContent.startsWith("Current session"),
+    true,
+  );
   assert.equal(deferred.element("title").textContent, "A session, in focus.");
 
   // A boundary failure renders bounded copy, never the transport's own text.
@@ -1061,6 +1073,48 @@ test("the loading and error landmarks report the request state", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(failed.fetches().length, 2);
   assert.equal(failed.element("error").hidden, false);
+});
+
+test("the resolved theme is in the first paint, before any payload arrives", async () => {
+  // The shell the server serves already carries the resolved theme, so the
+  // reader's theme is on screen before the report exists, and the control
+  // already agrees with the document it is on.
+  const darkHarness = createWebClient({
+    theme: "dark",
+    responses: [uiSnapshot()],
+    deferFetch: true,
+  });
+  const darkStarted = darkHarness.start();
+  assert.equal(darkHarness.body().className.includes("theme-dark"), true);
+  assert.equal(darkHarness.element("theme").textContent, "Light theme");
+  assert.equal(darkHarness.element("theme").attributes["aria-pressed"], "true");
+  darkHarness.releaseFetch();
+  await darkStarted;
+  assert.equal(darkHarness.body().className.includes("theme-dark"), true);
+  assert.deepEqual(darkHarness.storageWrites(), []);
+
+  // The same document in the other theme, and a reload of it: the resolved
+  // preference paints again, nothing is persisted, and the toggle still means
+  // the document it is on.
+  const light = uiSnapshot();
+  light.theme = "light";
+  const lightHarness = createWebClient({ theme: "light", responses: [light] });
+  await lightHarness.start();
+  assert.equal(lightHarness.body().className.includes("theme-dark"), false);
+  assert.equal(lightHarness.element("theme").textContent, "Dark theme");
+  assert.equal(
+    lightHarness.element("theme").attributes["aria-pressed"],
+    "false",
+  );
+  assert.deepEqual(lightHarness.storageWrites(), []);
+  lightHarness.click(lightHarness.element("theme"));
+  assert.equal(lightHarness.body().className.includes("theme-dark"), true);
+  assert.equal(lightHarness.element("theme").textContent, "Light theme");
+  assert.equal(
+    lightHarness.element("theme").attributes["aria-pressed"],
+    "true",
+  );
+  assert.deepEqual(lightHarness.storageWrites(), []);
 });
 
 test("the header refresh re-reads the report without moving the reader", async () => {

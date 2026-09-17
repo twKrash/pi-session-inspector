@@ -119,6 +119,7 @@
   let snapshot = null;
   let loadedQuery = null;
   let loadedOnce = false;
+  let isLoading = false;
   let lastAppliedKey = "";
   let stateNotice = undefined;
   let inFlight = null;
@@ -500,6 +501,18 @@
   const setLoading = (active) => {
     const landmark = q("loading");
     if (landmark !== null) landmark.hidden = !active;
+    // The reader hears one message per turn: the request first, then the view
+    // that answered it (which `apply` announces). Re-entering the same state
+    // says nothing again, and leaving it clears only this client's own words.
+    if (active === isLoading) return;
+    isLoading = active;
+    const region = q("announcement");
+    if (region === null) return;
+    if (active) {
+      region.textContent = COPY["state.loading"];
+      return;
+    }
+    if (region.textContent === COPY["state.loading"]) region.textContent = "";
   };
   const setFailure = (active) => {
     const landmark = q("error");
@@ -2867,16 +2880,21 @@
       : resolved.from + " → " + resolved.to;
   };
 
+  /** The control names the theme it would switch to, never the one in effect. */
+  const syncThemeControl = (dark) => {
+    const button = q("theme");
+    if (button === null) return;
+    button.textContent = dark ? COPY["theme.light"] : COPY["theme.dark"];
+    button.setAttribute("aria-pressed", String(dark));
+  };
+
   /** Puts the DTO's own initial theme in effect, once, on the first payload. */
   const syncTheme = () => {
     const body = document.body;
     const dark = snapshot !== null && snapshot.theme === "dark";
     if (dark) body.classList.add("theme-dark");
     else body.classList.remove("theme-dark");
-    const button = q("theme");
-    if (button === null) return;
-    button.textContent = dark ? COPY["theme.light"] : COPY["theme.dark"];
-    button.setAttribute("aria-pressed", String(dark));
+    syncThemeControl(dark);
   };
 
   const syncNavigation = () => {
@@ -3518,6 +3536,12 @@
   };
 
   const wire = () => {
+    // The shell arrives with the resolved theme already in effect, so the first
+    // paint is the reader's theme and the control starts on the state the
+    // document is already in — before any payload exists to say so.
+    syncThemeControl(document.body.className.includes("theme-dark"));
+    const loading = q("loading-title");
+    if (loading !== null) loading.textContent = COPY["state.loading"];
     document.addEventListener("click", onDocumentClick);
     document.addEventListener("input", onDocumentInput);
     document.addEventListener("change", onDocumentChange);

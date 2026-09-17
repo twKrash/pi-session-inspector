@@ -26,6 +26,9 @@ export const ENGLISH_CATALOG = {
     "Native usage within the selected dates. Each session counted once.",
   "theme.dark": "Dark theme",
   "theme.light": "Light theme",
+  // What the one live region says while a request is in flight, and the visible
+  // line the same words fill. The applied route replaces it once data lands.
+  "state.loading": "Loading report…",
   // The header control that re-reads the report from the running Inspector.
   "action.refresh": "Refresh",
   "scope.label": "Entry scope",
