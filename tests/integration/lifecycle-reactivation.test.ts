@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import registerSessionInspector from "../../src/index.ts";
+import { waitFor } from "../helpers/wait.ts";
 
 /**
  * Regression coverage for the M8.8 lifecycle blocker: Pi replaces the session
@@ -84,25 +85,6 @@ const SKILL_COMMAND = "/skill:graphify";
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Tracking promotion and live WAL setup are detached (observer-only) inside the
- * production handler, so a test must wait for the runtime's durable setup
- * instead of assuming `session_start` finished it.
- */
-async function waitFor(
-  predicate: () => boolean,
-  label: string,
-  timeoutMs = 5_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for ${label}`);
-    }
-    await sleep(5);
-  }
-}
 
 function trackedSource(sessionId: string, marker: boolean): string {
   const records: Record<string, unknown>[] = [
@@ -580,6 +562,10 @@ test("a runtime replaced mid-setup leaves one live owner for the session", async
       () => fixture.shardExists(a),
       "the raced runtime's WAL shard",
     );
+    // The assertion below is an absence, and the detached chain that must not
+    // reach it has no completion signal while the guard holds, so this settle is
+    // the window that separates "disposed" from "not yet attached". A wait on
+    // the empty handler list would pass before the chain ever got there.
     await sleep(60);
     assert.equal(
       replaced.inputHandlers().length,

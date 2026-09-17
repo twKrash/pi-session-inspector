@@ -14,6 +14,7 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 
 import { parseWalRecord, recoverSession } from "../../src/storage/recovery.ts";
+import { waitFor } from "../helpers/wait.ts";
 
 const execFile = promisify(execFileCallback);
 
@@ -324,8 +325,24 @@ test("flushes after 200 ms without keeping the process alive", async () => {
       kind: "tool-end",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    assert.match(await readFile(segment, "utf8"), /"eventId":"event-1"/);
+    // The flush rides the writer's own 200 ms debounce timer. Waiting for the
+    // record to land is the completion signal; a fixed delay would read an
+    // unwritten segment on a slower runner. The 200 ms debounce itself is not
+    // re-asserted: a bound tight enough to catch it is the same timing guess
+    // this test no longer makes.
+    await waitFor(
+      async () => {
+        try {
+          return (await readFile(segment, "utf8")).includes(
+            '"eventId":"event-1"',
+          );
+        } catch {
+          return false;
+        }
+      },
+      "the debounced WAL flush",
+      1_000,
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -597,9 +614,19 @@ test(
       await writer.flush();
 
       current = new Date("2026-09-08T00:00:00.000Z");
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      // The rollover is checked on the writer's own timer, so the closed
+      // segment — not a guessed delay — is what says the day advanced.
+      const segments = join(root, "wal", "writer-1");
+      await waitFor(
+        async () =>
+          (await readdir(segments)).includes("2026-09-07.jsonl.closed"),
+        "the UTC rollover to close the active segment",
+        // Under the test's own 5 s timeout, so the labelled wait error is what
+        // a failure reports instead of the runner's generic timeout.
+        3_000,
+      );
 
-      assert.deepEqual(await readdir(join(root, "wal", "writer-1")), [
+      assert.deepEqual(await readdir(segments), [
         ".owner",
         "2026-09-07.jsonl",
         "2026-09-07.jsonl.closed",

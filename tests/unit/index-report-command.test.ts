@@ -28,6 +28,7 @@ import {
   generatedSnapshotPath,
 } from "../../src/ui/report-output.ts";
 import { closeInspectorServer } from "../../src/ui/server.ts";
+import { waitFor } from "../helpers/wait.ts";
 
 type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type CustomFactory = Parameters<ExtensionCommandContext["ui"]["custom"]>[0];
@@ -1732,8 +1733,10 @@ test("a repeated session_start for one session registers live observation exactl
     };
     await handler({}, context);
     await handler({}, context);
-    // Tracking promotion is detached; let the microtask queue settle.
-    await sleep(20);
+    // Tracking promotion is detached (`void track(...)`), and the writer setup
+    // is the last step it performs, so waiting for that setup is the completion
+    // signal rather than a guess at how long the promotion takes.
+    await waitFor(() => setups > 0, "the promoted live writer registration");
 
     assert.equal(setups, 1, "second session_start must not register a writer");
     assert.equal(schedules, 1);
