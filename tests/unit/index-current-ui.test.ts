@@ -22,6 +22,7 @@ import { renderJson } from "../../src/ui/json.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { renderSnapshot } from "../../src/ui/snapshot.ts";
 import { projectCurrentView } from "../../src/ui/ui-projection.ts";
+import { waitFor } from "../helpers/wait.ts";
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -934,8 +935,13 @@ test("opens the current-session TUI through Pi's public session lookup", async (
   assert.equal(notifications, 0);
   assert.ok(toggleTree);
   toggleTree();
-  await new Promise<void>((resolve) => setTimeout(resolve, 20));
-  assert.ok(rendered?.().some((line) => line.includes("Total tokens: 72")));
+  // The scope reload is asynchronous, so the rendered tree total — not a
+  // guessed delay — is what says the toggle has landed.
+  await waitFor(
+    () =>
+      rendered?.().some((line) => line.includes("Total tokens: 72")) ?? false,
+    "the tree-scope report to render",
+  );
 });
 
 test("loads auto-discovered subagent runs for active and tree scopes through the production command", async () => {
@@ -989,7 +995,13 @@ test("loads auto-discovered subagent runs for active and tree scopes through the
 
   assert.ok(toggleTree);
   toggleTree();
-  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  // The scope reload is asynchronous, and it resets the content page. Waiting
+  // for the rendered scope is what keeps the page-down below on the reloaded
+  // report instead of the one it replaces.
+  await waitFor(
+    () => rendered?.().some((line) => line.includes("Scope: Tree")) ?? false,
+    "the tree-scope report to render",
+  );
   // A scope reload resets the content page, so the tree report's run evidence
   // is reached the same way the active report's was.
   keypress?.("\u001B[B");
