@@ -99,10 +99,17 @@ format.
   that does not exist, and npm then answers `OIDC token exchange error -
   package not found` for an otherwise valid token. The `publish` job prints the
   claims npm sees, so a mismatch is a direct comparison.
-- **A successful publish is not immediately readable.** The registry's read path
-  can lag, so verification retries for up to a minute before it compares
-  `dist.shasum` and `dist.integrity` with the packed file, and fails loudly if
-  they disagree.
+- **A successful publish is not immediately readable, and it may arrive
+  staged.** npm accepts the upload before the read path serves it; an accepted
+  release was measured at **173 seconds** from publish to a readable version
+  document, so the verification step retries for up to five minutes and reports
+  an actionable failure rather than implying the publish was lost. With npm
+  `>= 11.19` the first attempt can land in the staging area (`npm stage
+  list|approve`), where it is promoted without a maintainer action but reads as
+  absent until it is; a re-run in that window answers `E409 Cannot publish over
+  previously staged version`, which the publish step reports as a notice because
+  it means *accepted and pending*, not failed. When in doubt, read the version's
+  own `time` entry and `dist-tags` rather than retrying the publish.
 - **Archives are content-reproducible, not byte-reproducible.** Two environments
   packing the same commit produce the same entries with identical contents and
   tar metadata but a different gzip stream, so their hashes differ. Integrity is

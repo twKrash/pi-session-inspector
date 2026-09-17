@@ -253,7 +253,23 @@ jobs:
           if npm view "$name@$version" version >/dev/null 2>&1; then
             echo "$name@$version is already published; nothing to publish"
           else
-            npm publish ./*.tgz --access public --provenance
+            # npm >= 11.19 stages a publish: the first attempt is accepted and
+            # becomes readable a minute or two later, so a re-run of a
+            # *successful* publish meets the staged version instead of a
+            # published one. That answer is "still on its way", not "failed":
+            # the version's own `time` entry is what proves the outcome, and the
+            # verification step below waits for it. Any other failure is a real
+            # failure and keeps its exit status.
+            status=0
+            output="$(npm publish ./*.tgz --access public --provenance 2>&1)" || status=$?
+            printf '%s\n' "$output"
+            if [ "$status" -ne 0 ]; then
+              if printf '%s' "$output" | grep -q 'previously staged version'; then
+                echo "::notice::$name@$version is already staged and awaiting registry propagation"
+              else
+                exit "$status"
+              fi
+            fi
           fi
 
       - name: Verify the registry serves exactly these bytes
@@ -263,23 +279,27 @@ jobs:
           version="$(node -p "require('./release-metadata.json').version")"
           local_sha1="$(cut -d' ' -f1 SHA1SUMS)"
           local_integrity="sha512-$(openssl dgst -sha512 -binary ./*.tgz | openssl base64 -A)"
-          # A successful publish is not immediately visible on the registry's
-          # read path, so the first read after it can still answer 404.
+          # A publish is accepted before it is readable, and the read path is
+          # cached on top of that: an accepted release was measured at 173s from
+          # publish to a readable version document, so the window is bounded at
+          # five minutes rather than one.
+          attempts=60
+          delay=5
           remote_sha1=""
           remote_integrity=""
-          for attempt in $(seq 1 12); do
+          for attempt in $(seq 1 "$attempts"); do
             remote_sha1="$(npm view "$name@$version" dist.shasum 2>/dev/null || true)"
             remote_integrity="$(npm view "$name@$version" dist.integrity 2>/dev/null || true)"
             if [ -n "$remote_sha1" ] && [ -n "$remote_integrity" ]; then break; fi
-            echo "attempt $attempt: $name@$version is not readable yet; retrying in 5s"
-            sleep 5
+            echo "attempt $attempt/$attempts: $name@$version is not readable yet; retrying in ${delay}s"
+            sleep "$delay"
           done
           echo "local  sha1=$local_sha1"        | tee -a "$GITHUB_STEP_SUMMARY"
           echo "remote sha1=$remote_sha1"       | tee -a "$GITHUB_STEP_SUMMARY"
           echo "local  integrity=$local_integrity"  | tee -a "$GITHUB_STEP_SUMMARY"
           echo "remote integrity=$remote_integrity" | tee -a "$GITHUB_STEP_SUMMARY"
           if [ -z "$remote_sha1" ] || [ -z "$remote_integrity" ]; then
-            echo "::error::$name@$version is still not readable from the registry"
+            echo "::error::$name@$version is still not readable after $((attempts * delay))s. npm accepts a publish before the read path serves it, so this is not proof that the publish failed: check the version's dist-tags and \`npm view $name@$version\`, then re-run this job — do not push a new tag for the same version."
             exit 1
           fi
           if [ "$local_sha1" != "$remote_sha1" ] || [ "$local_integrity" != "$remote_integrity" ]; then
