@@ -1643,7 +1643,11 @@ Fix direction:
   Pi persisted-format version or an explicit format-drift fixture. The
   hand-rolled browser harness has known limits: record that as a testing risk
   rather than prescribing a replacement, and do not make process or
-  version-string assertions more brittle.
+  version-string assertions more brittle. One flake is already observed: the TUI
+  scope-toggle assertion in `tests/unit/index-current-ui.test.ts` waits a fixed
+  short delay for an asynchronous re-render and has asserted the stale value on a
+  slower runner. Wait for the rendered state instead of sleeping; a fixed-delay
+  wait is the same brittleness this item already warns about.
 - **Documentation.** Contributor-facing documentation is dense and this roadmap
   has accumulated implementation history. Shorter onboarding, and a roadmap that
   keeps to current and planned work with durable decisions in ADRs and specs, is
