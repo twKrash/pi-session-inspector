@@ -15,6 +15,8 @@ let root: string;
 let linkPath: string;
 let nestedLinkDirectory: string;
 let outsidePath: string;
+let linkedRoot: string;
+let linkedSiblingPath: string;
 let hugePath: string;
 let overBoundPaddingPath: string;
 let smallPaddingPath: string;
@@ -83,6 +85,24 @@ before(async () => {
 
   outsidePath = join(workspace, "outside.jsonl");
   await writeFile(outsidePath, header("outside-session"));
+
+  // A root whose lexical path and canonical path differ, because one component
+  // is a symbolic link. This is the shape macOS presents for `/var` under
+  // `/private/var`: the approved root is canonical while Pi reports the path it
+  // was given, so the two must not be compared across forms.
+  const linkedTarget = join(workspace, "linked-target");
+  await mkdir(join(linkedTarget, "sessions"), { recursive: true });
+  await writeFile(
+    join(linkedTarget, "sessions", "linked-parent.jsonl"),
+    header("linked-parent-session"),
+  );
+  await writeFile(
+    join(linkedTarget, "linked-sibling.jsonl"),
+    header("linked-sibling-session"),
+  );
+  linkedRoot = join(workspace, "linked-root");
+  await symlink(linkedTarget, linkedRoot);
+  linkedSiblingPath = join(linkedRoot, "linked-sibling.jsonl");
 
   linkPath = join(root, "link.jsonl");
   await symlink(join(root, "parent.jsonl"), linkPath);
@@ -166,6 +186,28 @@ test("a valid header with sub-bound padding still resolves", async () => {
     { state: "known", id: "padded-parent-session" },
   );
   assert.equal(diagnostics.size, 0);
+});
+
+test("a root reached through a link still contains the parents inside it", async () => {
+  // Mutant kill: judging the lexical candidate against the canonical root makes
+  // this contained parent look like a `..` escape, so it is reported
+  // `unavailable` on the platforms that present a link component in the root.
+  assert.deepEqual(
+    await resolveParentSession({
+      parentPath: join(linkedRoot, "sessions", "linked-parent.jsonl"),
+      sessionRoot: join(linkedRoot, "sessions"),
+    }),
+    { state: "known", id: "linked-parent-session" },
+  );
+  // Containment is not weakened to get there: a sibling of the root, reached
+  // through the same link, is still outside it.
+  assert.deepEqual(
+    await resolveParentSession({
+      parentPath: linkedSiblingPath,
+      sessionRoot: join(linkedRoot, "sessions"),
+    }),
+    { state: "unavailable" },
+  );
 });
 
 test("a symlinked intermediate component is rejected", async () => {
