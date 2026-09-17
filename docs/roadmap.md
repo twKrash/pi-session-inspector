@@ -1,14 +1,16 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.2.0`
+**Current release:** `1.2.1`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
 and M8 (publication and release) are complete. `1.0.0` is published to npm as
 `@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`. The `1.0.x`
 patch line has continued past it — `1.0.1` through `1.0.3` are published the same
-way, `1.1.0` added the post-1.0 `mcp` semantic integration, and `1.2.0` is the
-current release; it adds the multi-metric chart selection.
+way, `1.1.0` added the post-1.0 `mcp` semantic integration, and `1.2.0`, which
+adds the multi-metric chart selection, is the latest published release. The tree
+sits one patch past it: `1.2.1` marks the test-wait hardening, changes no shipped
+behavior, and is not published.
 
 **Next gate:** none for `1.0.0`. The post-1.0 follow-ups below are the next
 recorded work; they gate nothing and are not required for the published
@@ -1643,20 +1645,24 @@ Fix direction:
   Pi persisted-format version or an explicit format-drift fixture. The
   hand-rolled browser harness has known limits: record that as a testing risk
   rather than prescribing a replacement, and do not make process or
-  version-string assertions more brittle. The observed TUI scope-toggle flake in
-  `tests/unit/index-current-ui.test.ts` is fixed, and so is the same pattern of
-  waiting a fixed delay on detached work in `tests/unit/wal.test.ts` and
-  `tests/unit/index-report-command.test.ts`: those tests now wait on the
-  condition they assert through `tests/helpers/wait.ts`. A fixed delay standing
-  in for asynchronous work is the brittleness this item warns about — except an
-  assertion about an absence, which has no completion signal to wait on and
-  keeps a documented settle (the subscription-disposal check in
-  `tests/integration/lifecycle-reactivation.test.ts`, whose local helper is now
-  shared).
+  version-string assertions more brittle. A fixed delay standing in for
+  asynchronous work is that same brittleness — assert the condition instead,
+  except where the assertion is an absence and keeps a documented settle.
 - **Documentation.** Contributor-facing documentation is dense and this roadmap
   has accumulated implementation history. Shorter onboarding, and a roadmap that
   keeps to current and planned work with durable decisions in ADRs and specs, is
   a reasonable future cleanup; no historical material is deleted for it.
+
+### Resolved since recording
+
+- **TUI scope-toggle flake and its siblings.** `tests/unit/index-current-ui.test.ts`
+  waited a fixed 20 ms for the asynchronous scope reload and asserted the stale
+  report on a slower runner. It waits for the rendered report now, and the same
+  fixed-delay pattern is gone from `tests/unit/wal.test.ts` and
+  `tests/unit/index-report-command.test.ts`; `tests/helpers/wait.ts` holds the one
+  condition-based `waitFor`, which `tests/integration/lifecycle-reactivation.test.ts`
+  uses in place of its local copy. PR #26 (`e53b08e`), recorded in the
+  changelog's `[1.2.1]` section.
 
 ### Later — research
 

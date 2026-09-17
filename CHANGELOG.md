@@ -2,6 +2,17 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1]
+
+### Fixed
+
+- The TUI scope-toggle test no longer waits a fixed 20 ms for the asynchronous
+  scope reload, which asserted the stale report on a slower runner; it waits for
+  the rendered report. The same fixed-delay pattern is gone from the
+  promoted-writer, WAL debounce/rollover, and subscription-disposal tests, which
+  now assert the condition they were guessing at through one shared helper
+  (`tests/helpers/wait.ts`). Tests only — the shipped artifact is unchanged.
+
 ## [1.2.0]
 
 ### Added
