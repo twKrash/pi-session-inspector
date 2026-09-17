@@ -1,6 +1,6 @@
 # Agent guidance
 
-Read [research](docs/research/pi-ecosystem.md), [spec](docs/specs/pi-session-inspector-v1.md), [implementation plan](docs/plans/pi-session-inspector-v1-implementation.md), and relevant ADRs before modifying code. They are canonical design sources.
+Read [research](docs/research/pi-ecosystem.md), [spec](docs/specs/pi-session-inspector-v1.md), and relevant ADRs before modifying code. They are canonical design sources.
 
 ## Non-negotiable invariants
 

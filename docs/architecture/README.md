@@ -2,6 +2,8 @@
 
 Pi Session Inspector uses small, explicit ADRs. Canonical behavior lives in [v1 spec](../specs/pi-session-inspector-v1.md); these record why boundaries exist.
 
+The boundaries themselves are stated in the spec's L0/L1/L2 sections and enforced in `.dependency-cruiser.cjs`, which the `quality` CI job runs — a forbidden edge fails the build rather than relying on a document to be remembered.
+
 | ADR | Decision |
 | --- | --- |
 | [0001](adr/0001-deterministic-local-analytics.md) | deterministic local analytics |

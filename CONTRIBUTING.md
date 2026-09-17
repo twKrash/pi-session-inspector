@@ -126,7 +126,7 @@ version and publish a corrected one; do not rely on unpublishing.
 
 ## Rules
 
-- Read [research](docs/research/pi-ecosystem.md), [spec](docs/specs/pi-session-inspector-v1.md), [implementation plan](docs/plans/pi-session-inspector-v1-implementation.md), [ADRs](docs/architecture/README.md), and `AGENTS.md` first. These are canonical; do not create a competing planning source.
+- Read [research](docs/research/pi-ecosystem.md), [spec](docs/specs/pi-session-inspector-v1.md), [ADRs](docs/architecture/README.md), and `AGENTS.md` first. These are canonical; do not create a competing planning source.
 - Tests precede implementation changes. Keep one small deterministic fixture/check per non-trivial behavior.
 - Sanitize fixtures: never commit prompts, outputs, tool payloads, user paths, credentials, account IDs, or real session telemetry.
 - Do not add a runtime dependency, database, server, LLM step, or raw-content persistence without an ADR and measured need.

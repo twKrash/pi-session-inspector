@@ -344,7 +344,6 @@ Reports may still reveal project metadata. Treat exports as sensitive.
 - [Roadmap](docs/roadmap.md) — milestones and post-1.0 plans
 - [Pi ecosystem research](docs/research/pi-ecosystem.md)
 - [v1 specification](docs/specs/pi-session-inspector-v1.md)
-- [implementation plan](docs/plans/pi-session-inspector-v1-implementation.md)
 - [architecture decisions](docs/architecture/README.md)
 
 These documents and ADRs are canonical. Planning scratch files are not retained as competing authority.
