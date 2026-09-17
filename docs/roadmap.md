@@ -27,8 +27,8 @@ backlog still blocks nothing and carries no version.
 semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native
 telemetry integration, push-based live updates, multi-metric chart selection
 (shipped in `1.2.0`), usage attribution, working tool/skill links, additional
-locales, other harnesses, and the loading state with a first-paint theme. None is
-a release gate, and none blocks M8.
+locales, other harnesses, and the loading state with a first-paint theme
+(shipped in `1.3.0`). None is a release gate, and none blocks M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -1554,7 +1554,7 @@ Expected implementation shape:
 - no new asset, no runtime module loading, no CSP change, and no change to the
   three-file asset contract.
 
-Before merge:
+Before merge (all met in `1.3.0`):
 
 1. a cold load paints the resolved theme before any report data arrives;
 2. the loading window is asserted through the client harness — visible while a
@@ -1583,8 +1583,10 @@ Before merge:
 
 ## Maintenance and hardening backlog
 
-**Status:** Recorded, unscheduled. **Depends on:** nothing. No item here is a
-release gate and none is required for the published `1.2.0`.
+**Status:** Partly delivered; the rest is recorded and unscheduled. **Depends
+on:** nothing. No item here is a release gate. Two items shipped in `1.3.0` —
+the macOS parent-session containment defect and the `roundCost()` duplication —
+and nothing here is required for a published release.
 
 An external architectural/code review of `main` after `1.2.0` produced the
 findings below. Each one was checked against the tree before it was recorded, and

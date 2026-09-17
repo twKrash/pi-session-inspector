@@ -10,8 +10,9 @@
  *
  * It is data, not a filesystem surface: there is no path parameter, no directory
  * scan, no lookup by name and no dynamic specifier, so nothing outside these
- * three files can ever be read through it. The server serves exactly these
- * bytes, and the static snapshot inlines the same stylesheet bytes
+ * three files can ever be read through it. The server serves these bytes — the
+ * shell through `renderShell()`, which adds nothing but the resolved theme's own
+ * class name — and the static snapshot inlines the same stylesheet bytes
  * (`snapshot.ts`), so the interactive application and the archived document
  * cannot drift apart.
  */
