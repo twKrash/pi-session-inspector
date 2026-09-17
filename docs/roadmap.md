@@ -1,6 +1,6 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.3.0`
+**Current release:** `1.3.1`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
@@ -10,18 +10,27 @@ patch line has continued past it — `1.0.1` through `1.0.3` are published the s
 way, `1.1.0` added the post-1.0 `mcp` semantic integration, `1.2.0` added the
 multi-metric chart selection, and `1.3.0`, which paints the configured theme at
 first paint and turns the loading state into a stated, announced window, is the
-latest published release. `1.2.1`, which records the test-wait hardening and
+latest published release. `1.3.1` follows it with the `mcp` counter fix: the
+`mcp` row counts invocations of the adapter's own tool surface as `calls`
+instead of reporting `Present / Unavailable` beside a Tools tab that already
+counted them. `1.2.1`, which records the test-wait hardening and
 changes no shipped behavior, shipped within `1.3.0` rather than being published
 on its own, so no `1.2.1` artifact exists on the registry.
 
 **Next gate:** none for `1.0.0`. The post-1.0 follow-ups below are the next
 recorded work; they gate nothing and are not required for the published
 release. MCP semantic integration shipped in `1.1.0`, multi-metric chart
-selection in `1.2.0`, and the loading state with a first-paint theme in `1.3.0`.
-The maintenance and hardening backlog recorded after that release remains
+selection in `1.2.0`, and the loading state with a first-paint theme in `1.3.0`;
+`1.3.1` fixes the `mcp` counter set. The maintenance and hardening backlog
+recorded after that release remains
 partially scheduled: the macOS parent-session containment defect and the
 `roundCost()` duplication were delivered in `1.3.0`, and the rest of that
-backlog still blocks nothing and carries no version.
+backlog still blocks nothing and carries no version. Two follow-ups named in
+that backlog stay open and are the next recorded work: macOS CI coverage, and a
+per-connector MCP breakdown, which would need its own evidence shape, a privacy
+amendment, and therefore an ADR — the producer's own telemetry would have to
+carry per-server counters, because a gateway call names its connector only in
+the tool arguments Inspector may not retain.
 
 **Post-1.0:** ten follow-ups are recorded at the end of this document — MCP
 semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native
