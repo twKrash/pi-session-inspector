@@ -1,14 +1,16 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.2.0`
+**Current release:** `1.2.1`
 
 **Current state:** M0–M7, the follow-up evidence/report milestones,
 Pre-M8.1–Pre-M8.8, the integration-architecture/configuration/debug milestone,
 and M8 (publication and release) are complete. `1.0.0` is published to npm as
 `@twkrash/pi-session-inspector` and released on GitHub as `v1.0.0`. The `1.0.x`
 patch line has continued past it — `1.0.1` through `1.0.3` are published the same
-way, `1.1.0` added the post-1.0 `mcp` semantic integration, and `1.2.0` is the
-current release; it adds the multi-metric chart selection.
+way, `1.1.0` added the post-1.0 `mcp` semantic integration, and `1.2.0`, which
+adds the multi-metric chart selection, is the latest published release. The tree
+sits one patch past it: `1.2.1` marks the test-wait hardening, changes no shipped
+behavior, and is not published.
 
 **Next gate:** none for `1.0.0`. The post-1.0 follow-ups below are the next
 recorded work; they gate nothing and are not required for the published
@@ -1660,7 +1662,7 @@ Fix direction:
   `tests/unit/index-report-command.test.ts`; `tests/helpers/wait.ts` holds the one
   condition-based `waitFor`, which `tests/integration/lifecycle-reactivation.test.ts`
   uses in place of its local copy. PR #26 (`e53b08e`), recorded in the
-  changelog's `[Unreleased]` section.
+  changelog's `[1.2.1]` section.
 
 ### Later — research
 
