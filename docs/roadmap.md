@@ -32,12 +32,13 @@ amendment, and therefore an ADR — the producer's own telemetry would have to
 carry per-server counters, because a gateway call names its connector only in
 the tool arguments Inspector may not retain.
 
-**Post-1.0:** ten follow-ups are recorded at the end of this document — MCP
+**Post-1.0:** eleven follow-ups are recorded at the end of this document — MCP
 semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native
 telemetry integration, push-based live updates, multi-metric chart selection
 (shipped in `1.2.0`), usage attribution, working tool/skill links, additional
-locales, other harnesses, and the loading state with a first-paint theme
-(shipped in `1.3.0`). None is a release gate, and none blocks M8.
+locales, other harnesses, the loading state with a first-paint theme
+(shipped in `1.3.0`), and token economics and cache accounting. None is a release
+gate, and none blocks M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -1047,7 +1048,7 @@ This milestone is explicitly **not** a `1.0.0` release gate. It collects
 product-facing follow-ups discovered during Pre-M8 hardening plus candidate
 work raised after the `1.0.0` publication. Both halves follow the same rules:
 items 1–3 are integration/evidence follow-ups with a recorded research
-baseline, and items 4–10 are candidate product and platform work whose research
+baseline, and items 4–11 are candidate product and platform work whose research
 question is still open. Nothing in this section is scheduled, and no item in it
 blocks a release.
 
@@ -1583,6 +1584,52 @@ Before merge (all met in `1.3.0`):
    response is deferred, gone after the render, and announced once;
 3. a reload paints the resolved preference again with the storage-write
    assertion still empty.
+
+### 11. Token economics and cache accounting
+
+**Status:** Ready for a spec. **Depends on:** nothing.
+
+**Current state:** Pi persisted usage already exposes separate input, output,
+cache-read, and cache-write token buckets. Inspector preserves those optional
+token counts in canonical usage, but global/history reporting still emphasizes
+total tokens and total cost. Per-bucket native cost is not retained, and no
+cache-efficiency metric is exposed.
+
+The goal is to make token economics visible without creating a second usage
+authority.
+
+Expected semantics:
+
+- preserve Pi's native `input`, `output`, `cacheRead`, and `cacheWrite` buckets;
+- keep persisted `totalTokens` and total cost authoritative;
+- retain native per-bucket cost where Pi provides it;
+- expose cache reuse only as an explicitly documented derived metric;
+- never infer reasoning tokens: expose them only when a stable native source
+  provides them, otherwise report `unavailable`;
+- preserve unavailable-vs-zero semantics for every token and cost bucket;
+- expose coverage when an aggregate contains only partial bucket evidence.
+
+Expected presentation:
+
+- session/history/global views can show input, output, cache-read, and
+  cache-write tokens separately;
+- daily charts may select those token metrics through the existing
+  multi-metric chart surface;
+- cost breakdown identifies the contribution of input, output, cache reads,
+  and cache writes when native evidence supports it;
+- cache reuse is shown alongside its documented denominator and evidence
+  coverage.
+
+Before merge:
+
+1. fixture-backed tests prove native token and cost buckets survive parsing,
+   canonicalization, history aggregation, and report projection;
+2. partial bucket evidence never becomes a fabricated complete total or zero;
+3. the documented cache-reuse formula is shared by JSON, HTML, and TUI
+   projections rather than reimplemented per surface;
+4. providers without a bucket or reasoning-token signal report it as
+   unavailable;
+5. existing `totalTokens` and total-cost values remain unchanged.
 
 ### Acceptance
 
