@@ -31,10 +31,11 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.3.1`:** current-session, history, global, ledger, localhost UI,
-> in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, and the `mcp`
-> semantic integration are available. The localhost UI paints the configured
-> theme before any report data arrives, and its loading state announces once.
+> **Status `1.4.0`:** current-session, history, global, ledger, localhost UI,
+> in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
+> semantic integration, and native token economics/cache accounting are
+> available. The localhost UI paints the configured theme before any report
+> data arrives, and its loading state announces once.
 
 ## Install
 
@@ -51,7 +52,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.0.2
+pi install npm:@twkrash/pi-session-inspector@1.4.0
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the

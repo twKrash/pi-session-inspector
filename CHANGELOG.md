@@ -2,6 +2,22 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0]
+
+### Added
+
+- Native token economics now flow through current, history, global, JSON, HTML,
+  browser, chart, and TUI reports: input, output, reasoning, cache-read, and
+  cache-write tokens, plus native per-bucket costs.
+- Cache reuse is exposed with its documented denominator and explicit coverage;
+  unavailable evidence remains unavailable and observed zero stays zero.
+
+### Fixed
+
+- Dated, daily, history, global, and selected-range folds now preserve exact
+  per-field coverage evidence, including usage-less native owners and
+  date-filtered global reports. Totals and costs remain Pi-native authority.
+
 ## [1.3.1]
 
 ### Fixed
