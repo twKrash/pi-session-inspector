@@ -1,7 +1,14 @@
+import { usageFieldCoverage } from "../core/events.ts";
 import {
+  attachUsageFieldCoverage,
   MAX_DATED_DATES,
+  mergeUsageFieldCoverage,
+  OPTIONAL_USAGE_FIELDS,
   type DateUsageRow,
+  type OptionalUsageFields,
   type SafeUsage,
+  type UsageCoverageCarrier,
+  usageFieldCoverageOf,
 } from "./dated-usage.ts";
 
 /** One date of one or more sessions: the only daily series any surface charts. */
@@ -19,7 +26,8 @@ export type DailyRow = {
     compactions: SafeUsage;
     branchSummaries: SafeUsage;
   };
-};
+} & OptionalUsageFields &
+  UsageCoverageCarrier;
 
 /** One session's contribution: its own dated window and that window's verdict. */
 export type DailyContribution = {
@@ -74,6 +82,7 @@ export function buildDailyRows(contributions: readonly DailyContribution[]): {
       },
       sessionIds: new Set<string>(),
     };
+    attachUsageFieldCoverage(created.row, usageFieldCoverage([]));
     byDate.set(date, created);
     return created;
   };
@@ -91,10 +100,30 @@ export function buildDailyRows(contributions: readonly DailyContribution[]): {
       row.cost = round(row.cost + dated.cost);
       row.generations += dated.generations;
       row.tools += dated.tools;
+      for (const field of OPTIONAL_USAGE_FIELDS) {
+        const value = dated[field];
+        if (value !== undefined) {
+          const next = (row[field] ?? 0) + value;
+          row[field] = field.endsWith("Cost") ? round(next) : next;
+        }
+      }
+      attachUsageFieldCoverage(
+        row,
+        mergeUsageFieldCoverage([
+          usageFieldCoverageOf(row),
+          usageFieldCoverageOf(dated) ?? usageFieldCoverage([dated]),
+        ]),
+      );
       for (const part of COMPOSITION_PARTS) {
         const total = row.composition[part];
         total.totalTokens += dated.composition[part].totalTokens;
         total.cost = round(total.cost + dated.composition[part].cost);
+        for (const field of OPTIONAL_USAGE_FIELDS) {
+          const value = dated.composition[part][field];
+          if (value === undefined) continue;
+          const next = (total[field] ?? 0) + value;
+          total[field] = field.endsWith("Cost") ? round(next) : next;
+        }
       }
     }
   }
@@ -105,10 +134,15 @@ export function buildDailyRows(contributions: readonly DailyContribution[]): {
   const capped = all.length > MAX_DATED_DATES;
   const retained = capped ? all.slice(all.length - MAX_DATED_DATES) : all;
   return {
-    rows: retained.map(({ row, sessionIds }) => ({
-      ...row,
-      sessions: sessionIds.size,
-    })),
+    rows: retained.map(({ row, sessionIds }) =>
+      attachUsageFieldCoverage(
+        {
+          ...row,
+          sessions: sessionIds.size,
+        },
+        usageFieldCoverageOf(row) ?? usageFieldCoverage([]),
+      ),
+    ),
     truncated: truncated || capped,
   };
 }

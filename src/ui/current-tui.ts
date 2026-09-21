@@ -151,15 +151,83 @@ export function createCurrentTuiComponent({
       case "overview": {
         const usage = currentModel.report.usage;
         if (usage === undefined) return ["Usage: unavailable"];
-        const cacheHit = cacheHitPercent(usage);
+        const economics = currentModel.report.usageEconomics;
+        const cacheHit =
+          economics?.cacheReuse.percent ??
+          (economics === undefined ? cacheHitPercent(usage) : undefined);
         const compactions = currentModel.report.compactions.filter(
           (entry) => entry.kind === "compaction",
         ).length;
+        const coverage = (state: string): string =>
+          state === "complete" || state === "unavailable" ? "" : ` (${state})`;
+        const value = (
+          label: string,
+          amount: number | undefined,
+          state: string,
+        ): string =>
+          `${label}: ${amount === undefined ? "Unavailable" : amount}${coverage(state)}`;
         return [
           `Total tokens: ${usage.totalTokens}`,
-          `Cache hit: ${cacheHit === undefined ? "Unavailable" : `${cacheHit.toFixed(1)}%`}`,
+          ...(economics === undefined
+            ? [
+                `Cache hit: ${cacheHit === undefined ? "Unavailable" : `${cacheHit.toFixed(1)}%`}`,
+              ]
+            : []),
           `Compactions: ${compactions}`,
           `Cost: ${usage.cost}`,
+          ...(economics === undefined
+            ? []
+            : [
+                "Token totals:",
+                value(
+                  "Input tokens",
+                  economics.input.tokens,
+                  economics.input.tokenCoverage,
+                ),
+                value(
+                  "Input cost",
+                  economics.input.cost,
+                  economics.input.costCoverage,
+                ),
+                value(
+                  "Output tokens",
+                  economics.output.tokens,
+                  economics.output.tokenCoverage,
+                ),
+                value(
+                  "Output cost",
+                  economics.output.cost,
+                  economics.output.costCoverage,
+                ),
+                value(
+                  "Reasoning tokens",
+                  economics.reasoning.tokens,
+                  economics.reasoning.coverage,
+                ),
+                "Cache:",
+                value(
+                  "Cache read tokens",
+                  economics.cacheRead.tokens,
+                  economics.cacheRead.tokenCoverage,
+                ),
+                value(
+                  "Cache read cost",
+                  economics.cacheRead.cost,
+                  economics.cacheRead.costCoverage,
+                ),
+                value(
+                  "Cache write tokens",
+                  economics.cacheWrite.tokens,
+                  economics.cacheWrite.tokenCoverage,
+                ),
+                value(
+                  "Cache write cost",
+                  economics.cacheWrite.cost,
+                  economics.cacheWrite.costCoverage,
+                ),
+                `Cache reuse: ${economics.cacheReuse.percent === undefined ? "Unavailable" : `${economics.cacheReuse.percent.toFixed(1)}%`}${coverage(economics.cacheReuse.coverage)}`,
+                `Cache denominator: ${economics.cacheReuse.denominatorTokens === undefined ? "Unavailable" : economics.cacheReuse.denominatorTokens}${coverage(economics.cacheReuse.coverage)}`,
+              ]),
         ];
       }
       case "models":

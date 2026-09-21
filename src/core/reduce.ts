@@ -1,13 +1,14 @@
-import type {
-  Compaction,
-  ErrorKind,
-  ErrorRecord,
-  Generation,
-  ReducedSession,
-  SessionEntry,
-  Tool,
-  Usage,
-  UsageComposition,
+import {
+  usageFieldCoverage,
+  type Compaction,
+  type ErrorKind,
+  type ErrorRecord,
+  type Generation,
+  type ReducedSession,
+  type SessionEntry,
+  type Tool,
+  type Usage,
+  type UsageComposition,
 } from "./events.ts";
 import { REDACTED, redactBoundedText, secretLikeValue } from "./redact.ts";
 import { roundCost } from "./rounding.ts";
@@ -28,6 +29,13 @@ const OPTIONAL_TOKEN_FIELDS = [
   "outputTokens",
   "cacheReadTokens",
   "cacheWriteTokens",
+  "reasoningTokens",
+] as const;
+const OPTIONAL_COST_FIELDS = [
+  "inputCost",
+  "outputCost",
+  "cacheReadCost",
+  "cacheWriteCost",
 ] as const;
 const encoder = new TextEncoder();
 
@@ -162,6 +170,11 @@ export function reduceEntries(
     sessionId,
     usage,
     usageComposition: composition,
+    usageFieldCoverage: usageFieldCoverage([
+      ...generations.map((generation) => generation.usage),
+      ...tools.map((tool) => tool.usage),
+      ...compactions.map((compaction) => compaction.usage),
+    ]),
     generations,
     tools,
     compactions,
@@ -214,22 +227,23 @@ function readToolResultMessage(value: unknown): string | undefined {
 /**
  * Adds bounded usage parts. A part with out-of-range fields, or a sum that
  * leaves the safe range, contributes nothing so totals never reach a
- * non-finite or unsafe number. Optional token fields stay absent unless at
- * least one input observed them, so unknown never becomes a fabricated zero.
+ * non-finite or unsafe number. Optional fields stay absent unless at least
+ * one input observed them, so unknown never becomes a fabricated zero.
  */
 export function addUsage(left: Usage, right: Usage): Usage {
   if (!isBoundedUsage(right)) return left;
   const totalTokens = left.totalTokens + right.totalTokens;
   const cost = roundCost(left.cost + right.cost);
   const optionalTokens = sumOptionalTokens(left, right);
+  const optionalCosts = sumOptionalCosts(left, right);
   if (
     !isBoundedTokens(totalTokens) ||
     !isBoundedCost(cost) ||
-    !Object.values(optionalTokens).every(isBoundedTokens)
+    !isBoundedOptionalFields({ ...optionalTokens, ...optionalCosts })
   ) {
     return left;
   }
-  return { totalTokens, cost, ...optionalTokens };
+  return { totalTokens, cost, ...optionalTokens, ...optionalCosts };
 }
 
 /**
@@ -246,6 +260,7 @@ export function readUsage(value: unknown): Usage | undefined {
     totalTokens: value.totalTokens,
     cost: value.cost.total,
     ...readOptionalTokens(value),
+    ...readOptionalCosts(value.cost),
   };
 }
 
@@ -253,9 +268,19 @@ function isBoundedUsage(usage: Usage): boolean {
   return (
     isBoundedTokens(usage.totalTokens) &&
     isBoundedCost(usage.cost) &&
+    isBoundedOptionalFields(usage)
+  );
+}
+
+function isBoundedOptionalFields(usage: Partial<Usage>): boolean {
+  return (
     OPTIONAL_TOKEN_FIELDS.every((field) => {
       const value = usage[field];
       return value === undefined || isBoundedTokens(value);
+    }) &&
+    OPTIONAL_COST_FIELDS.every((field) => {
+      const value = usage[field];
+      return value === undefined || isBoundedCost(value);
     })
   );
 }
@@ -284,6 +309,17 @@ function sumOptionalTokens(left: Usage, right: Usage): Partial<Usage> {
   return summed;
 }
 
+function sumOptionalCosts(left: Usage, right: Usage): Partial<Usage> {
+  const summed: Partial<Usage> = {};
+  for (const field of OPTIONAL_COST_FIELDS) {
+    const leftValue = left[field];
+    const rightValue = right[field];
+    if (leftValue === undefined && rightValue === undefined) continue;
+    summed[field] = roundCost((leftValue ?? 0) + (rightValue ?? 0));
+  }
+  return summed;
+}
+
 function readOptionalTokens(value: Record<string, unknown>): Partial<Usage> {
   const tokens: Partial<Usage> = {};
   const input = boundedToken(value.input);
@@ -294,11 +330,30 @@ function readOptionalTokens(value: Record<string, unknown>): Partial<Usage> {
   if (cacheRead !== undefined) tokens.cacheReadTokens = cacheRead;
   const cacheWrite = boundedToken(value.cacheWrite);
   if (cacheWrite !== undefined) tokens.cacheWriteTokens = cacheWrite;
+  const reasoning = boundedToken(value.reasoning);
+  if (reasoning !== undefined) tokens.reasoningTokens = reasoning;
   return tokens;
+}
+
+function readOptionalCosts(value: Record<string, unknown>): Partial<Usage> {
+  const costs: Partial<Usage> = {};
+  const input = boundedCost(value.input);
+  if (input !== undefined) costs.inputCost = input;
+  const output = boundedCost(value.output);
+  if (output !== undefined) costs.outputCost = output;
+  const cacheRead = boundedCost(value.cacheRead);
+  if (cacheRead !== undefined) costs.cacheReadCost = cacheRead;
+  const cacheWrite = boundedCost(value.cacheWrite);
+  if (cacheWrite !== undefined) costs.cacheWriteCost = cacheWrite;
+  return costs;
 }
 
 function boundedToken(value: unknown): number | undefined {
   return isBoundedTokens(value) ? value : undefined;
+}
+
+function boundedCost(value: unknown): number | undefined {
+  return isBoundedCost(value) ? value : undefined;
 }
 
 function toolCalls(value: unknown): { id: string; name: string }[] {

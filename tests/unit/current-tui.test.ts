@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import {
+  projectUsageEconomics,
   type SessionReport,
   unavailableEvidenceHealth,
 } from "../../src/core/reports.ts";
@@ -116,6 +117,40 @@ function contentLines(lines: readonly string[]): string[] {
     (line) => line.startsWith("Tool: ") || line.startsWith("Tools: "),
   );
 }
+
+test("shows native bucket economics and inline coverage in Overview", () => {
+  const usage = {
+    totalTokens: 41,
+    cost: 0.182,
+    inputTokens: 27,
+    outputTokens: 12,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    reasoningTokens: 3,
+    inputCost: 0.065,
+    outputCost: 0.094,
+    cacheReadCost: 0.01,
+    cacheWriteCost: 0.013,
+  };
+  const component = componentWith(
+    modelWith({
+      usage,
+      usageEconomics: projectUsageEconomics(usage),
+    }),
+    "overview",
+  );
+  const firstPage = component.render(120);
+  component.handleInput(KEY_DOWN);
+  const rendered = [...firstPage, ...component.render(120)].join("\n");
+  assert.match(rendered, /Token totals:/);
+  assert.match(rendered, /Cache:/);
+  assert.match(rendered, /Input tokens: 27/);
+  assert.match(rendered, /Output cost: 0\.094/);
+  assert.match(rendered, /Cache read tokens: 1/);
+  assert.match(rendered, /Reasoning tokens: 3/);
+  assert.match(rendered, /Cache reuse: 3\.4%/);
+  assert.match(rendered, /Cache denominator: 29/);
+});
 
 test("shows cache hit percentage and native compaction count in Overview", () => {
   const lines = renderTab(

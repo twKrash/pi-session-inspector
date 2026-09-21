@@ -2,22 +2,31 @@ import type {
   CanonicalSession,
   CanonicalUsageLine,
 } from "../core/canonical.ts";
-import type { Usage } from "../core/events.ts";
+import {
+  type Usage,
+  type UsageCoverageState,
+  type UsageFieldCoverageMap,
+  usageFieldCoverage,
+} from "../core/events.ts";
 
-export type SafeUsage = { totalTokens: number; cost: number };
+export type OptionalUsageFields = Pick<
+  Usage,
+  | "inputTokens"
+  | "outputTokens"
+  | "cacheReadTokens"
+  | "cacheWriteTokens"
+  | "reasoningTokens"
+  | "inputCost"
+  | "outputCost"
+  | "cacheReadCost"
+  | "cacheWriteCost"
+>;
+export type SafeUsage = Pick<Usage, "totalTokens" | "cost"> &
+  OptionalUsageFields;
 export type DateUsageRow = {
   date: string;
   totalTokens: number;
   cost: number;
-  /**
-   * The optional producer token breakdown travels with the date so an aggregate
-   * fold stays exactly as additive as the per-record fold it replaces. A key is
-   * present only when a contributing native line carried it, never as zero.
-   */
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
   generations: number;
   tools: number;
   errors: number;
@@ -27,7 +36,8 @@ export type DateUsageRow = {
     compactions: SafeUsage;
     branchSummaries: SafeUsage;
   };
-};
+} & OptionalUsageFields &
+  UsageCoverageCarrier;
 export type DatedModelRow = {
   date: string;
   provider: string;
@@ -51,12 +61,79 @@ const COMPOSITION_PART: Readonly<
   "branch-summary": "branchSummaries",
   "child-run": undefined,
 };
-const OPTIONAL_USAGE_FIELDS = [
+export const OPTIONAL_USAGE_FIELDS = [
   "inputTokens",
   "outputTokens",
   "cacheReadTokens",
   "cacheWriteTokens",
+  "reasoningTokens",
+  "inputCost",
+  "outputCost",
+  "cacheReadCost",
+  "cacheWriteCost",
 ] as const;
+
+/** Internal, non-serialized evidence carried alongside one dated row. */
+const USAGE_FIELD_COVERAGE = Symbol("usageFieldCoverage");
+export type UsageCoverageCarrier = {
+  [USAGE_FIELD_COVERAGE]?: UsageFieldCoverageMap;
+};
+
+export function usageFieldCoverageOf(
+  row: UsageCoverageCarrier | undefined,
+): UsageFieldCoverageMap | undefined {
+  return row?.[USAGE_FIELD_COVERAGE];
+}
+
+export function attachUsageFieldCoverage<T extends object>(
+  row: T,
+  coverage: UsageFieldCoverageMap,
+): T & UsageCoverageCarrier {
+  Object.defineProperty(row, USAGE_FIELD_COVERAGE, {
+    configurable: true,
+    value: coverage,
+    writable: true,
+  });
+  return row as T & UsageCoverageCarrier;
+}
+
+function coverageState(
+  owners: number,
+  ownersWithValue: number,
+): UsageCoverageState {
+  return ownersWithValue === 0
+    ? "unavailable"
+    : ownersWithValue === owners
+      ? "complete"
+      : "partial";
+}
+
+/** Sums independent owner evidence; counts make this fold associative. */
+export function mergeUsageFieldCoverage(
+  parts: readonly (UsageFieldCoverageMap | undefined)[],
+): UsageFieldCoverageMap {
+  return Object.fromEntries(
+    OPTIONAL_USAGE_FIELDS.map((field) => {
+      let owners = 0;
+      let ownersWithValue = 0;
+      for (const part of parts) {
+        const fieldCoverage = part?.[field];
+        if (fieldCoverage === undefined) continue;
+        owners += fieldCoverage.owners;
+        ownersWithValue += fieldCoverage.ownersWithValue;
+      }
+      return [
+        field,
+        {
+          state: coverageState(owners, ownersWithValue),
+          owners,
+          ownersWithValue,
+        },
+      ];
+    }),
+  ) as UsageFieldCoverageMap;
+}
+
 const zero = (): SafeUsage => ({ totalTokens: 0, cost: 0 });
 // The canonical builder and the reducer both round costs at this precision, so
 // a per-date sum can equal the report's own total exactly (spec §5.6).
@@ -83,20 +160,25 @@ export function sessionDatedUsage(session: CanonicalSession): {
 } {
   const byDate = new Map<string, DateUsageRow>();
   const rowFor = (date: string): DateUsageRow => {
-    const existing = byDate.get(date) ?? {
-      date,
-      totalTokens: 0,
-      cost: 0,
-      generations: 0,
-      tools: 0,
-      errors: 0,
-      composition: {
-        generations: zero(),
-        toolResults: zero(),
-        compactions: zero(),
-        branchSummaries: zero(),
-      },
-    };
+    const existing =
+      byDate.get(date) ??
+      attachUsageFieldCoverage(
+        {
+          date,
+          totalTokens: 0,
+          cost: 0,
+          generations: 0,
+          tools: 0,
+          errors: 0,
+          composition: {
+            generations: zero(),
+            toolResults: zero(),
+            compactions: zero(),
+            branchSummaries: zero(),
+          },
+        },
+        usageFieldCoverage([]),
+      );
     byDate.set(date, existing);
     return existing;
   };
@@ -105,19 +187,58 @@ export function sessionDatedUsage(session: CanonicalSession): {
     usage: Usage,
     part: keyof DateUsageRow["composition"],
   ): void => {
-    row.composition[part].totalTokens += usage.totalTokens;
-    row.composition[part].cost = round(row.composition[part].cost + usage.cost);
+    const component = row.composition[part];
+    component.totalTokens += usage.totalTokens;
+    component.cost = round(component.cost + usage.cost);
     row.totalTokens += usage.totalTokens;
     row.cost = round(row.cost + usage.cost);
     for (const field of OPTIONAL_USAGE_FIELDS) {
       const value = usage[field];
       if (value === undefined) continue;
-      row[field] = (row[field] ?? 0) + value;
+      const add = (current: number | undefined): number => {
+        const next = (current ?? 0) + value;
+        return field.endsWith("Cost") ? round(next) : next;
+      };
+      row[field] = add(row[field]);
+      component[field] = add(component[field]);
     }
+    attachUsageFieldCoverage(
+      row,
+      mergeUsageFieldCoverage([
+        usageFieldCoverageOf(row),
+        usageFieldCoverage([usage]),
+      ]),
+    );
   };
   const dateByOwner = new Map<string, string>();
   let unattributed = false;
   let nativeLines = 0;
+  // Canonical field coverage counts every native owner, including owners whose
+  // usage record is absent. Keep those owner facts dated even though no line
+  // can carry their value.
+  const nativeUsageOwnerIds = new Set(
+    session.usage.lines
+      .filter(
+        (line) => line.domain === "native-session" && line.contributesToSession,
+      )
+      .map((line) => line.ownerId),
+  );
+  const addMissingOwner = (ownerId: string, timestamp: string): void => {
+    if (nativeUsageOwnerIds.has(ownerId)) return;
+    const date = dayOf(timestamp);
+    if (date === undefined) {
+      unattributed = true;
+      return;
+    }
+    const row = rowFor(date);
+    attachUsageFieldCoverage(
+      row,
+      mergeUsageFieldCoverage([
+        usageFieldCoverageOf(row),
+        usageFieldCoverage([undefined]),
+      ]),
+    );
+  };
   // An overflowed aggregate publishes no total, so its bounded lines are never
   // summed here either (`unavailable != 0`); they only make the window partial
   // below instead of being dated as a fabricated zero row.
@@ -141,12 +262,17 @@ export function sessionDatedUsage(session: CanonicalSession): {
     if (part !== undefined) addUsage(rowFor(date), line.usage, part);
   }
   for (const generation of session.generations) {
+    addMissingOwner(generation.id, generation.timestamp);
     const date = dayOf(generation.timestamp);
     if (date !== undefined) rowFor(date).generations += 1;
   }
   for (const tool of session.tools) {
+    addMissingOwner(tool.id, tool.timestamp);
     const date = dayOf(tool.timestamp);
     if (date !== undefined) rowFor(date).tools += 1;
+  }
+  for (const compaction of session.compactions) {
+    addMissingOwner(compaction.id, compaction.timestamp);
   }
   for (const error of session.errors) {
     const date = dayOf(error.timestamp);

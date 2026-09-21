@@ -1,6 +1,10 @@
 import type { EvidenceState } from "../core/events.ts";
 import { buildLedger, type LedgerItem } from "../core/ledger.ts";
-import { cacheHitPercent, type SessionReport } from "../core/reports.ts";
+import {
+  cacheHitPercent,
+  type SessionReport,
+  type UsageEconomics,
+} from "../core/reports.ts";
 import { roundCost } from "../core/rounding.ts";
 import type { SessionCoverage } from "../core/session-coverage.ts";
 import type { DateUsageRow, DatedModelRow } from "./dated-usage.ts";
@@ -131,6 +135,7 @@ export type StatusView = {
 export type SessionReportView = {
   sessionId: string;
   usage?: SafeUsage;
+  usageEconomics?: UsageEconomics;
   cacheHitPercent: number | null;
   compactionCount: number;
   composition: CompositionView;
@@ -311,6 +316,17 @@ export function safeUsage(
     ...(usage.cacheWriteTokens === undefined
       ? {}
       : { cacheWriteTokens: usage.cacheWriteTokens }),
+    ...(usage.reasoningTokens === undefined
+      ? {}
+      : { reasoningTokens: usage.reasoningTokens }),
+    ...(usage.inputCost === undefined ? {} : { inputCost: usage.inputCost }),
+    ...(usage.outputCost === undefined ? {} : { outputCost: usage.outputCost }),
+    ...(usage.cacheReadCost === undefined
+      ? {}
+      : { cacheReadCost: usage.cacheReadCost }),
+    ...(usage.cacheWriteCost === undefined
+      ? {}
+      : { cacheWriteCost: usage.cacheWriteCost }),
   };
 }
 
@@ -771,6 +787,9 @@ export function sessionView(report: SessionReport): SessionReportView {
   return {
     sessionId: report.sessionId,
     ...(report.usage === undefined ? {} : { usage: safeUsage(report.usage) }),
+    ...(report.usageEconomics === undefined
+      ? {}
+      : { usageEconomics: report.usageEconomics }),
     cacheHitPercent: cacheHitPercent(report.usage) ?? null,
     compactionCount: report.compactions.filter(
       (compaction) => compaction.kind === "compaction",

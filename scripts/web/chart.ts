@@ -73,8 +73,12 @@ const THEMES: Record<"dark" | "light", ChartPalette> = {
   dark: {
     grid: "#40493e",
     line: {
+      cacheReadTokens: "#b6d7a8",
+      cacheWriteTokens: "#f0c987",
       cost: "#ffad80",
       generations: "#9db3e8",
+      inputTokens: "#86c5da",
+      outputTokens: "#d9a6c2",
       sessions: "#8fb3a2",
       tokens: "#d8c07a",
       tools: "#c8a2d8",
@@ -85,8 +89,12 @@ const THEMES: Record<"dark" | "light", ChartPalette> = {
   light: {
     grid: "#dddfd6",
     line: {
+      cacheReadTokens: "#4f7a3f",
+      cacheWriteTokens: "#9a6d16",
       cost: "#aa3e13",
       generations: "#4a5f9e",
+      inputTokens: "#276b7d",
+      outputTokens: "#8a4569",
       sessions: "#34624b",
       tokens: "#8a6d1f",
       tools: "#7b4a8f",

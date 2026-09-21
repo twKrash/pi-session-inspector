@@ -1809,7 +1809,7 @@ test("the history table carries an opaque id column with a copy control", async 
 // client.js: the presentation the legacy document rendered
 // ---------------------------------------------------------------------------
 
-test("the overview renders the DTO's compaction count and cache hit", async () => {
+test("the overview renders the DTO's compaction count and cache reuse", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()], hash: "" });
   await harness.start();
   const cards = metrics(harness);
@@ -1818,21 +1818,94 @@ test("the overview renders the DTO's compaction count and cache hit", async () =
     true,
   );
   assert.equal(
-    cards.some((card) => card.includes("Cache hit") && card.includes("6.1%")),
+    cards.some((card) => card.includes("Cache reuse") && card.includes("6.1%")),
     true,
   );
 });
 
-test("the overview renders Cache hit as Unavailable without a denominator", async () => {
+test("the overview renders native economics from the selected range", async () => {
   const snapshot = uiSnapshot();
-  const usage = snapshot.current.tree.report?.usage;
-  if (usage === undefined) throw new Error("fixture must carry a tree usage");
-  delete (usage as { cacheReadTokens?: number }).cacheReadTokens;
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a range");
+  range.usageEconomics = {
+    input: {
+      tokens: 10,
+      cost: 0.01,
+      tokenCoverage: "complete",
+      costCoverage: "complete",
+    },
+    output: {
+      tokens: 5,
+      cost: 0.02,
+      tokenCoverage: "partial",
+      costCoverage: "partial",
+    },
+    cacheRead: {
+      tokens: 0,
+      cost: 0,
+      tokenCoverage: "complete",
+      costCoverage: "complete",
+    },
+    cacheWrite: {
+      tokenCoverage: "unavailable",
+      costCoverage: "unavailable",
+    },
+    reasoning: { tokens: 0, coverage: "complete" },
+    cacheReuse: { percent: 0, denominatorTokens: 10, coverage: "partial" },
+  };
+  const harness = createWebClient({ responses: [snapshot], hash: "" });
+  await harness.start();
+  const renderedMetrics = metrics(harness);
+  const total = renderedMetrics.find((card) => card.includes("Total tokens"));
+  const cache = renderedMetrics.find((card) => card.startsWith("Cache "));
+  assert.ok(total);
+  assert.ok(cache);
+  assert.equal(total.includes("Input tokens") && total.includes("10"), true);
+  assert.equal(
+    total.includes("Output tokens") && total.includes("5 · partial"),
+    true,
+  );
+  assert.equal(total.includes("Cache read tokens"), false);
+  assert.equal(total.includes("Cache denominator"), false);
+  assert.equal(
+    cache.includes("Cache read tokens") && cache.includes("0"),
+    true,
+  );
+  assert.equal(
+    cache.includes("Cache write tokens") && cache.includes("Unavailable"),
+    true,
+  );
+  assert.equal(cache.includes("Cache reuse") && cache.includes("0.0%"), true);
+  assert.equal(
+    cache.includes("Cache denominator") && cache.includes("10 · partial"),
+    true,
+  );
+  assert.equal(
+    harness
+      .element("view")
+      .querySelectorAll(".section-gap")
+      .some((card) =>
+        harness.texts(card).join(" ").includes("Usage composition"),
+      ),
+    true,
+  );
+});
+
+test("the overview renders Cache reuse as Unavailable without a denominator", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range?.usageEconomics === undefined) {
+    throw new Error("fixture must carry range economics");
+  }
+  range.usageEconomics = {
+    ...range.usageEconomics,
+    cacheReuse: { coverage: "unavailable" },
+  };
   const harness = createWebClient({ responses: [snapshot], hash: "" });
   await harness.start();
   assert.equal(
     metrics(harness).some(
-      (card) => card.includes("Cache hit") && card.includes("Unavailable"),
+      (card) => card.includes("Cache reuse") && card.includes("Unavailable"),
     ),
     true,
   );
@@ -1853,16 +1926,22 @@ test("the overview compacts the breakdown and keeps the total precise", async ()
     cacheWriteTokens: 1_500_000,
   };
   view.range.totals = { ...view.range.totals, totalTokens: 1_234_567 };
+  view.range.usageEconomics = undefined;
 
   const harness = createWebClient({ responses: [snapshot], hash: "" });
   await harness.start();
-  const total = metrics(harness).find((card) => card.includes("Total tokens"));
+  const renderedMetrics = metrics(harness);
+  const total = renderedMetrics.find((card) => card.includes("Total tokens"));
+  const cache = renderedMetrics.find((card) => card.startsWith("Cache "));
   assert.ok(total);
+  assert.ok(cache);
   assert.equal(total.includes("Input") && total.includes("1K"), true);
   assert.equal(total.includes("Output") && total.includes("1.3K"), true);
-  assert.equal(total.includes("Cache read") && total.includes("1M"), true);
-  assert.equal(total.includes("Cache write") && total.includes("1.5M"), true);
-  assert.equal(total.includes("Total") && total.includes("1,234,567"), true);
+  assert.equal(total.includes("Cache read"), false);
+  assert.equal(total.includes("Cache write"), false);
+  assert.equal(cache.includes("Cache read") && cache.includes("1M"), true);
+  assert.equal(cache.includes("Cache write") && cache.includes("1.5M"), true);
+  assert.equal(total.includes("1,234,567"), true);
   assert.equal(total.includes("1.2M"), false);
 });
 
@@ -2388,6 +2467,18 @@ function chartDataRow(harness: Harness, index: number) {
     .map((cell) => cell.textContent);
 }
 
+test("the browser chart vocabulary includes native token buckets", () => {
+  const source = readFileSync(
+    new URL("../../scripts/web/client.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const CHART_METRICS = \["sessions", "cost", "tokens", "generations", "tools", "inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"\]/,
+  );
+  assert.match(source, /row\[name\]/);
+});
+
 test("the global chart offers only the metrics its daily rows publish", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
@@ -2398,10 +2489,22 @@ test("the global chart offers only the metrics its daily rows publish", async ()
     "sessions",
     "cost",
     "tokens",
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
   ]);
   assert.deepEqual(
     plain(metricToggles(harness).map((toggle) => toggle.textContent)),
-    ["Sessions", "Cost", "Tokens"],
+    [
+      "Sessions",
+      "Cost",
+      "Tokens",
+      "Input tokens",
+      "Output tokens",
+      "Cache read tokens",
+      "Cache write tokens",
+    ],
   );
   // The default is the pair whose units differ, so the axis rule is what the
   // reader sees before choosing anything.
@@ -2437,6 +2540,10 @@ test("a session view offers every metric its own daily rows publish", async () =
     "tokens",
     "generations",
     "tools",
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
   ]);
   assert.deepEqual(chartDataHeaders(harness), [
     "Date",
@@ -2445,6 +2552,45 @@ test("a session view offers every metric its own daily rows publish", async () =
     "Cost (USD)",
     "Generations",
     "Tool calls",
+  ]);
+});
+
+test("native daily metrics read published fields and preserve gaps", async () => {
+  const snapshot = uiSnapshot();
+  const rows = snapshot.current.tree.range?.daily ?? [];
+  if (rows.length < 2) throw new Error("fixture must carry two session days");
+  (rows[0] as { inputTokens?: number }).inputTokens = 321;
+  delete (rows[1] as { inputTokens?: number }).inputTokens;
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/overview?scope=tree",
+  });
+  await harness.start();
+  harness.click(metricToggle(harness, "inputTokens"));
+  assert.deepEqual(
+    plain(
+      lastChart(harness).series.find((series) => series.key === "inputTokens")
+        ?.values,
+    ),
+    [321, null],
+  );
+  assert.deepEqual(chartDataHeaders(harness), [
+    "Date",
+    "Sessions",
+    "Tokens",
+    "Cost (USD)",
+    "Generations",
+    "Tool calls",
+    "Input tokens",
+  ]);
+  assert.deepEqual(chartDataRow(harness, 2), [
+    "2026-02-02",
+    "1",
+    "800",
+    "$0.16",
+    "1",
+    "1",
+    "Unavailable",
   ]);
 });
 

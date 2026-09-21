@@ -8,9 +8,21 @@ import {
   type RetainedWalRecord,
 } from "../core/canonical.ts";
 import type { L0Evidence } from "../core/evidence.ts";
-import type { Scope, SessionEntry, Usage } from "../core/events.ts";
+import {
+  type Scope,
+  type SessionEntry,
+  type Usage,
+  type UsageFieldCoverageMap,
+  usageFieldCoverage,
+} from "../core/events.ts";
 import { addUsage } from "../core/reduce.ts";
-import { toSessionReport, type SessionReport } from "../core/reports.ts";
+import {
+  mergeUsageEconomics,
+  projectUsageEconomics,
+  toSessionReport,
+  type SessionReport,
+  type UsageEconomics,
+} from "../core/reports.ts";
 import {
   buildSessionCoverage,
   type SessionCoverage,
@@ -29,9 +41,13 @@ import {
   type HistorySession,
 } from "../storage/history.ts";
 import {
+  attachUsageFieldCoverage,
+  mergeUsageFieldCoverage,
   sessionDatedUsage,
   type DatedModelRow,
   type DateUsageRow,
+  type UsageCoverageCarrier,
+  usageFieldCoverageOf,
 } from "./dated-usage.ts";
 import type { SessionObservation } from "./observation.ts";
 import { countersFrom, resourceCountsFrom } from "./l2-projection.ts";
@@ -141,12 +157,13 @@ export type DateUsage = {
   date: string;
   sessions: number;
   usage: Usage;
-};
+} & UsageCoverageCarrier;
 
 export type GlobalReport = {
   availability: "available" | "unavailable";
   sessions: GlobalSessionRow[];
   usage: Usage;
+  usageEconomics?: UsageEconomics;
   dates: DateUsage[];
   diagnostics: HistoryDiagnostic[];
   coverage?: SessionCoverage;
@@ -543,7 +560,14 @@ export async function loadGlobalReport(
   },
 ): Promise<GlobalReport> {
   const history = await scanHistory(options);
-  const rows = new Map<string, { sessionIds: Set<string>; usage: Usage }>();
+  const rows = new Map<
+    string,
+    {
+      sessionIds: Set<string>;
+      usage: Usage;
+      usageCoverage: UsageFieldCoverageMap;
+    }
+  >();
   for (const session of history.sessions) {
     if (session.availability !== "available") continue;
     // R19: the aggregate folds the very rows the session's own projection
@@ -553,26 +577,55 @@ export async function loadGlobalReport(
       const row = rows.get(dated.date) ?? {
         sessionIds: new Set<string>(),
         usage: zeroUsage(),
+        usageCoverage: usageFieldCoverage([]),
       };
       row.sessionIds.add(session.sessionId);
       row.usage = addUsage(row.usage, datedUsage(dated));
+      row.usageCoverage = mergeUsageFieldCoverage([
+        row.usageCoverage,
+        usageFieldCoverageOf(dated) ?? usageFieldCoverage([dated]),
+      ]);
       rows.set(dated.date, row);
     }
   }
   const dates = [...rows]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([date, row]) => ({
-      date,
-      sessions: row.sessionIds.size,
-      usage: row.usage,
-    }));
+    .map(([date, row]) =>
+      attachUsageFieldCoverage(
+        {
+          date,
+          sessions: row.sessionIds.size,
+          usage: row.usage,
+        },
+        row.usageCoverage,
+      ),
+    );
+  const usage = dates.reduce(
+    (total, row) => addUsage(total, row.usage),
+    zeroUsage(),
+  );
+  const usageCoverage = mergeUsageFieldCoverage(
+    dates.map(
+      (row) => usageFieldCoverageOf(row) ?? usageFieldCoverage([row.usage]),
+    ),
+  );
+  // A direct global load may already be date-filtered, so its economics must
+  // use the same dated fold as `usage`, not whole-session coverage. An
+  // unavailable session contributes evidence without adding usage totals.
+  const economicsParts: (UsageEconomics | undefined)[] = [
+    projectUsageEconomics(usage, usageCoverage),
+  ];
+  for (const session of history.sessions) {
+    if (session.availability === "unavailable") economicsParts.push(undefined);
+  }
+  const usageEconomics = mergeUsageEconomics(usage, economicsParts);
   return {
     availability: history.availability,
     sessions: history.sessions.map(toGlobalSessionRow),
-    usage: dates.reduce(
-      (total, row) => addUsage(total, row.usage),
-      zeroUsage(),
-    ),
+    usage,
+    ...(history.availability === "available" && usageEconomics !== undefined
+      ? { usageEconomics }
+      : {}),
     dates,
     inventory: globalInventory(history.sessions),
     diagnostics: history.diagnostics,
@@ -670,6 +723,17 @@ function datedUsage(row: DateUsageRow): Usage {
     ...(row.cacheWriteTokens === undefined
       ? {}
       : { cacheWriteTokens: row.cacheWriteTokens }),
+    ...(row.reasoningTokens === undefined
+      ? {}
+      : { reasoningTokens: row.reasoningTokens }),
+    ...(row.inputCost === undefined ? {} : { inputCost: row.inputCost }),
+    ...(row.outputCost === undefined ? {} : { outputCost: row.outputCost }),
+    ...(row.cacheReadCost === undefined
+      ? {}
+      : { cacheReadCost: row.cacheReadCost }),
+    ...(row.cacheWriteCost === undefined
+      ? {}
+      : { cacheWriteCost: row.cacheWriteCost }),
   };
 }
 

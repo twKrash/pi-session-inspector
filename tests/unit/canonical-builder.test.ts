@@ -108,6 +108,107 @@ test("deduplicates a duplicate tree-scope id before L1 usage reduction", () => {
   }
 });
 
+test("retains native economics and independent field coverage in canonical usage", () => {
+  const first = {
+    ...ASSISTANT,
+    id: "economics-generation-1",
+    message: {
+      ...ASSISTANT.message,
+      usage: {
+        input: 20,
+        output: 8,
+        cacheRead: 1,
+        cacheWrite: 1,
+        reasoning: 3,
+        totalTokens: 30,
+        cost: {
+          input: 0.04,
+          output: 0.06,
+          cacheRead: 0.01,
+          cacheWrite: 0.013,
+          total: 0.123,
+        },
+      },
+    },
+  };
+  const second = {
+    ...ASSISTANT,
+    id: "economics-generation-2",
+    parentId: first.id,
+    message: {
+      ...ASSISTANT.message,
+      usage: {
+        input: 5,
+        output: 3,
+        cacheRead: 0,
+        totalTokens: 8,
+        cost: { input: 0.02, output: 0.03, cacheRead: 0, total: 0.05 },
+      },
+    },
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([
+      MARKER,
+      first,
+      second,
+      {
+        ...TOOL_RESULT,
+        parentId: second.id,
+        message: {
+          ...TOOL_RESULT.message,
+          usage: {
+            input: 2,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 3,
+            cost: {
+              input: 0.005,
+              output: 0.004,
+              cacheRead: 0,
+              cacheWrite: 0,
+              total: 0.009,
+            },
+          },
+        },
+      },
+    ]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+
+  assert.equal(result.state, "ready");
+  if (result.state !== "ready" || result.session.usage.state !== "known") {
+    return;
+  }
+  assert.deepEqual(result.session.usage.known, {
+    totalTokens: 41,
+    cost: 0.182,
+    inputTokens: 27,
+    outputTokens: 12,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    reasoningTokens: 3,
+    inputCost: 0.065,
+    outputCost: 0.094,
+    cacheReadCost: 0.01,
+    cacheWriteCost: 0.013,
+  });
+  assert.equal(
+    result.session.usage.fieldCoverage?.inputTokens.state,
+    "complete",
+  );
+  assert.equal(
+    result.session.usage.fieldCoverage?.cacheWriteTokens.state,
+    "partial",
+  );
+  assert.equal(
+    result.session.usage.fieldCoverage?.reasoningTokens.state,
+    "partial",
+  );
+});
+
 test("rejects a cap-plus-one retained checkpoint counter as bounded invalid", () => {
   const folded: FoldedAggregateEvidence[] = [
     {

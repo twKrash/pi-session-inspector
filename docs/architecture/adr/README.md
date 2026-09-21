@@ -27,3 +27,4 @@ Amend an ADR only to correct it. Add a superseding ADR for a changed decision.
 | [0017](0017-report-coverage-attribution-and-navigation.md) | Report coverage, attribution, and navigation authority |
 | [0018](0018-ephemeral-localhost-ui-and-immutable-snapshots.md) | Ephemeral localhost UI and immutable snapshot exports |
 | [0019](0019-integration-adapter-registry.md) | Integration adapter registry, settings precedence, and debug-log privacy |
+| [0020](0020-token-economics-and-cache-accounting.md) | Token economics and cache accounting |

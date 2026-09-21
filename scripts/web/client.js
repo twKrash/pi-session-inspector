@@ -243,6 +243,7 @@
         resolved: snapshot.global.resolved,
         truncated: snapshot.global.truncated,
         totals: snapshot.global.totals,
+        usageEconomics: snapshot.global.usageEconomics,
         daily: snapshot.global.daily,
       };
     }
@@ -252,6 +253,7 @@
         resolved: snapshot.history.resolved,
         truncated: snapshot.history.truncated,
         totals: snapshot.history.totals,
+        usageEconomics: snapshot.history.usageEconomics,
         daily: snapshot.history.daily,
       };
     }
@@ -778,11 +780,11 @@
 
   /**
    * The chart data table's columns: the four fields every daily row publishes,
-   * plus the two a session projection carries as well. `metrics` is the
-   * section's own chart vocabulary, so a column exists exactly when a
-   * selectable metric reads it and never for a field the rows do not publish.
+   * plus the session counts and native token buckets that its vocabulary
+   * supports. A column exists only when at least one row publishes its metric;
+   * an absent cell stays Unavailable.
    */
-  const dailyColumns = (metrics) => {
+  const dailyColumns = (metrics, rows) => {
     const columns = [
       {
         header: COPY["table.date"],
@@ -819,6 +821,23 @@
         cls: "num",
       });
     }
+    [
+      "inputTokens",
+      "outputTokens",
+      "cacheReadTokens",
+      "cacheWriteTokens",
+    ].forEach((name) => {
+      if (
+        metrics.indexOf(name) < 0 ||
+        !rows.some((row) => chartPoint(row[name]) !== null)
+      )
+        return;
+      columns.push({
+        header: COPY["chart." + name],
+        cell: (row) => publishedCell(row[name], number),
+        cls: "num",
+      });
+    });
     return columns;
   };
 
@@ -850,7 +869,12 @@
       composition === undefined ||
       !composition.available
     ) {
-      return emptyCard(COPY["usage.title"], COPY["unavailable.composition"]);
+      const section = emptyCard(
+        COPY["usage.title"],
+        COPY["unavailable.composition"],
+      );
+      section.classList.add("section-gap");
+      return section;
     }
     const rows = composition.parts.map((part) => ({
       cells: [
@@ -871,6 +895,7 @@
       });
     }
     const section = card(COPY["usage.title"], COPY["usage.note"]);
+    section.classList.add("section-gap");
     section
       .querySelector(".panel-head")
       .append(
@@ -899,7 +924,8 @@
     if (name === "tokens") return row.totalTokens;
     if (name === "generations") return row.generations;
     if (name === "tools") return row.tools;
-    return row.sessions;
+    if (name === "sessions") return row.sessions;
+    return row[name];
   };
   const chartFormat = (name) => (name === "cost" ? "cost" : "number");
   const chartLabel = (name) => COPY["chart." + name];
@@ -910,14 +936,14 @@
    * axis, which is the rendering a lone metric has always had.
    */
   const chartAxis = (name, split) => (split && name === "cost" ? "y1" : "y");
-  const CHART_METRICS = ["sessions", "cost", "tokens", "generations", "tools"];
+  const CHART_METRICS = ["sessions", "cost", "tokens", "generations", "tools", "inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
   /**
-   * The global aggregate's daily rows publish their date, session count and
-   * usage — no generation or tool count — so its chart vocabulary is the subset
-   * its own rows carry. No metric outside that vocabulary is offered, and a
-   * value the selected row list does not publish is never charted as a zero.
+   * The global aggregate's daily rows publish their date, session count, usage,
+   * and native token buckets — no generation or tool count. Its vocabulary
+   * therefore omits those session-only counters, while a missing native value
+   * stays a chart gap and never becomes zero.
    */
-  const GLOBAL_CHART_METRICS = ["sessions", "cost", "tokens"];
+  const GLOBAL_CHART_METRICS = ["sessions", "cost", "tokens", "inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
   /**
    * What a chart shows before the reader chooses otherwise: the pair whose units
    * differ, so the default already states the axis rule. A vocabulary that
@@ -1057,7 +1083,7 @@
     }
     const details = document.createElement("details");
     details.append(el("summary", "", COPY["chart.data"]));
-    const columns = dailyColumns(metrics);
+    const columns = dailyColumns(metrics, rows);
     simpleTable(
       details,
       columns.map((column) => column.header),
@@ -1088,6 +1114,136 @@
     const totals = resolved === null || meta === null ? null : meta.totals;
     const partial = meta !== null && meta.truncated === true;
     const usage = report.usage;
+    const economics =
+      meta === null
+        ? report.usageEconomics
+        : resolved === null
+          ? undefined
+          : meta.usageEconomics;
+    const economicsWithCoverage = (shown, coverage) =>
+      coverage === "complete" ||
+      (shown === COPY["evidence.unavailable"] && coverage === "unavailable")
+        ? shown
+        : shown + " · " + coverage;
+    const economicsNumber = (value, coverage) =>
+      economicsWithCoverage(compactOrUnavailable(value), coverage);
+    const economicsCost = (value, coverage) =>
+      economicsWithCoverage(
+        value === undefined || value === null
+          ? COPY["evidence.unavailable"]
+          : money(value),
+        coverage,
+      );
+    const cachePercent =
+      economics?.cacheReuse.percent ?? report.cacheHitPercent;
+    const tokenDetails =
+      economics === undefined
+        ? [
+            [COPY["metric.input"], compactOrUnavailable(usage.inputTokens)],
+            [COPY["metric.output"], compactOrUnavailable(usage.outputTokens)],
+            ...(usage.reasoningTokens === undefined
+              ? []
+              : [
+                  [
+                    COPY["metric.reasoningTokens"],
+                    compactOrUnavailable(usage.reasoningTokens),
+                  ],
+                ]),
+          ]
+        : [
+            [
+              COPY["metric.inputTokens"],
+              economicsNumber(
+                economics.input.tokens,
+                economics.input.tokenCoverage,
+              ),
+            ],
+            [
+              COPY["metric.outputTokens"],
+              economicsNumber(
+                economics.output.tokens,
+                economics.output.tokenCoverage,
+              ),
+            ],
+            [
+              COPY["metric.reasoningTokens"],
+              economicsNumber(
+                economics.reasoning.tokens,
+                economics.reasoning.coverage,
+              ),
+            ],
+            [
+              COPY["metric.inputCost"],
+              economicsCost(economics.input.cost, economics.input.costCoverage),
+            ],
+            [
+              COPY["metric.outputCost"],
+              economicsCost(
+                economics.output.cost,
+                economics.output.costCoverage,
+              ),
+            ],
+          ];
+    const cacheDetails =
+      economics === undefined
+        ? [
+            [
+              COPY["metric.cacheRead"],
+              compactOrUnavailable(usage.cacheReadTokens),
+            ],
+            [
+              COPY["metric.cacheWrite"],
+              compactOrUnavailable(usage.cacheWriteTokens),
+            ],
+            [
+              COPY["metric.cacheHit"],
+              typeof cachePercent === "number"
+                ? cachePercent.toFixed(1) + "%"
+                : COPY["evidence.unavailable"],
+            ],
+          ]
+        : [
+            [
+              COPY["metric.cacheReadTokens"],
+              economicsNumber(
+                economics.cacheRead.tokens,
+                economics.cacheRead.tokenCoverage,
+              ),
+            ],
+            [
+              COPY["metric.cacheWriteTokens"],
+              economicsNumber(
+                economics.cacheWrite.tokens,
+                economics.cacheWrite.tokenCoverage,
+              ),
+            ],
+            [
+              COPY["metric.cacheReadCost"],
+              economicsCost(
+                economics.cacheRead.cost,
+                economics.cacheRead.costCoverage,
+              ),
+            ],
+            [
+              COPY["metric.cacheWriteCost"],
+              economicsCost(
+                economics.cacheWrite.cost,
+                economics.cacheWrite.costCoverage,
+              ),
+            ],
+            [
+              COPY["metric.cacheDenominator"],
+              economicsNumber(
+                economics.cacheReuse.denominatorTokens,
+                economics.cacheReuse.coverage,
+              ),
+            ],
+            [COPY["metric.coverage"], economics.cacheReuse.coverage],
+          ];
+    const cacheValue =
+      typeof cachePercent !== "number"
+        ? COPY["evidence.unavailable"]
+        : `${cachePercent.toFixed(1)}%${economics === undefined || economics.cacheReuse.coverage === "complete" ? "" : ` · ${economics.cacheReuse.coverage}`}`;
     const costValue =
       totals === null ? COPY["evidence.unavailable"] : money(totals.cost);
     const tokensValue =
@@ -1109,25 +1265,13 @@
         partial ? COPY["metric.knownTokens"] : COPY["metric.tokens"],
         tokensValue,
         COPY["metric.tokens.note"],
-        [
-          [COPY["metric.input"], compactOrUnavailable(usage.inputTokens)],
-          [COPY["metric.output"], compactOrUnavailable(usage.outputTokens)],
-          [
-            COPY["metric.cacheRead"],
-            compactOrUnavailable(usage.cacheReadTokens),
-          ],
-          [
-            COPY["metric.cacheWrite"],
-            compactOrUnavailable(usage.cacheWriteTokens),
-          ],
-          [
-            COPY["metric.cacheHit"],
-            typeof report.cacheHitPercent === "number"
-              ? report.cacheHitPercent.toFixed(1) + "%"
-              : COPY["evidence.unavailable"],
-          ],
-          [COPY["usage.total"], tokensValue],
-        ],
+        tokenDetails,
+      ),
+      metric(
+        COPY["metric.cacheReuse"],
+        cacheValue,
+        COPY["metric.cache.note"],
+        cacheDetails,
       ),
       metric(
         COPY["metric.compactions"],

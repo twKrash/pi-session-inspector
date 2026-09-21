@@ -72,7 +72,10 @@ import type {
   ReducedSession,
   Tool,
   Usage,
+  UsageCoverageState,
+  UsageFieldCoverageMap,
 } from "./events.ts";
+import { usageFieldCoverage } from "./events.ts";
 
 const MAX_AGENT_ROWS = 256;
 /**
@@ -277,6 +280,7 @@ export type SessionReportEvidence = {
         state: "known";
         usage: Usage;
         composition: ReducedSession["usageComposition"];
+        fieldCoverage?: UsageFieldCoverageMap;
       }
     | { state: "unavailable" };
 };
@@ -310,11 +314,36 @@ export type ResourceInventory = {
 /** A tool row plus its optional inventory source label (never a path). */
 export type SessionReportTool = Tool & { source?: string };
 
+export type UsageEconomicsBucket = {
+  tokens?: number;
+  cost?: number;
+  tokenCoverage: UsageCoverageState;
+  costCoverage: UsageCoverageState;
+};
+
+export type UsageEconomics = {
+  input: UsageEconomicsBucket;
+  output: UsageEconomicsBucket;
+  cacheRead: UsageEconomicsBucket;
+  cacheWrite: UsageEconomicsBucket;
+  reasoning: {
+    tokens?: number;
+    coverage: UsageCoverageState;
+  };
+  cacheReuse: {
+    percent?: number;
+    denominatorTokens?: number;
+    coverage: UsageCoverageState;
+  };
+};
+
 export type SessionReport = {
   walDetail?: "expired";
   sessionId: string;
   /** Absent when L1 rejects the native aggregate (for example overflow). */
   usage?: Usage;
+  /** Shared native bucket/cost projection; absent with an unavailable usage. */
+  usageEconomics?: UsageEconomics;
   /** Absent together with usage so the DTO cannot imply a zero total. */
   usageComposition?: ReducedSession["usageComposition"];
   models: ModelSummary[];
@@ -349,19 +378,215 @@ export type SessionReport = {
   retainedAggregates?: CanonicalRetainedAggregates;
 };
 
+type UsageTokenField =
+  | "inputTokens"
+  | "outputTokens"
+  | "cacheReadTokens"
+  | "cacheWriteTokens";
+type UsageCostField =
+  | "inputCost"
+  | "outputCost"
+  | "cacheReadCost"
+  | "cacheWriteCost";
+
+function bucketEconomics(
+  usage: Usage,
+  coverage: UsageFieldCoverageMap,
+  tokenField: UsageTokenField,
+  costField: UsageCostField,
+): UsageEconomicsBucket {
+  return {
+    ...(usage[tokenField] === undefined ? {} : { tokens: usage[tokenField] }),
+    ...(usage[costField] === undefined ? {} : { cost: usage[costField] }),
+    tokenCoverage: coverage[tokenField].state,
+    costCoverage: coverage[costField].state,
+  };
+}
+
+function combinedCoverage(
+  states: readonly UsageCoverageState[],
+): UsageCoverageState {
+  if (states.every((state) => state === "unavailable")) return "unavailable";
+  return states.every((state) => state === "complete") ? "complete" : "partial";
+}
+
+export function projectUsageEconomics(
+  usage: Usage | undefined,
+  fieldCoverage?: UsageFieldCoverageMap,
+): UsageEconomics | undefined {
+  if (usage === undefined) return undefined;
+  const coverage = fieldCoverage ?? usageFieldCoverage([usage]);
+  const cacheCoverage = combinedCoverage([
+    coverage.inputTokens.state,
+    coverage.cacheReadTokens.state,
+    coverage.cacheWriteTokens.state,
+  ]);
+  const cacheReuse: UsageEconomics["cacheReuse"] = {
+    coverage: cacheCoverage,
+  };
+  if (
+    usage.inputTokens !== undefined &&
+    usage.cacheReadTokens !== undefined &&
+    usage.cacheWriteTokens !== undefined
+  ) {
+    const denominator =
+      usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+    if (Number.isSafeInteger(denominator)) {
+      cacheReuse.denominatorTokens = denominator;
+      if (denominator > 0) {
+        cacheReuse.percent =
+          Math.round((usage.cacheReadTokens / denominator) * 1_000) / 10;
+      }
+    }
+  }
+  return {
+    input: bucketEconomics(usage, coverage, "inputTokens", "inputCost"),
+    output: bucketEconomics(usage, coverage, "outputTokens", "outputCost"),
+    cacheRead: bucketEconomics(
+      usage,
+      coverage,
+      "cacheReadTokens",
+      "cacheReadCost",
+    ),
+    cacheWrite: bucketEconomics(
+      usage,
+      coverage,
+      "cacheWriteTokens",
+      "cacheWriteCost",
+    ),
+    reasoning: {
+      ...(usage.reasoningTokens === undefined
+        ? {}
+        : { tokens: usage.reasoningTokens }),
+      coverage: coverage.reasoningTokens.state,
+    },
+    cacheReuse,
+  };
+}
+
 /** Returns cache-read share of input-side tokens, or unknown. */
 export function cacheHitPercent(usage: Usage | undefined): number | undefined {
-  if (
-    usage?.inputTokens === undefined ||
-    usage.cacheReadTokens === undefined ||
-    usage.cacheWriteTokens === undefined
-  ) {
-    return undefined;
-  }
-  const denominator =
-    usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
-  if (!Number.isSafeInteger(denominator) || denominator <= 0) return undefined;
-  return Math.round((usage.cacheReadTokens / denominator) * 1_000) / 10;
+  return projectUsageEconomics(usage)?.cacheReuse.percent;
+}
+
+function mergedEconomicsCoverage(
+  parts: readonly (UsageEconomics | undefined)[],
+  read: (part: UsageEconomics) => UsageCoverageState,
+): UsageCoverageState {
+  return combinedCoverage(
+    parts.map((part) => (part === undefined ? "unavailable" : read(part))),
+  );
+}
+
+/** Merges coverage evidence while retaining values from the supplied usage. */
+export function mergeUsageEconomics(
+  usage: Usage | undefined,
+  parts: readonly (UsageEconomics | undefined)[],
+): UsageEconomics | undefined {
+  const base = projectUsageEconomics(usage);
+  if (base === undefined || parts.length === 0) return base;
+  const input = {
+    ...base.input,
+    tokenCoverage: mergedEconomicsCoverage(
+      parts,
+      (part) => part.input.tokenCoverage,
+    ),
+    costCoverage: mergedEconomicsCoverage(
+      parts,
+      (part) => part.input.costCoverage,
+    ),
+  };
+  const output = {
+    ...base.output,
+    tokenCoverage: mergedEconomicsCoverage(
+      parts,
+      (part) => part.output.tokenCoverage,
+    ),
+    costCoverage: mergedEconomicsCoverage(
+      parts,
+      (part) => part.output.costCoverage,
+    ),
+  };
+  const cacheRead = {
+    ...base.cacheRead,
+    tokenCoverage: mergedEconomicsCoverage(
+      parts,
+      (part) => part.cacheRead.tokenCoverage,
+    ),
+    costCoverage: mergedEconomicsCoverage(
+      parts,
+      (part) => part.cacheRead.costCoverage,
+    ),
+  };
+  const cacheWrite = {
+    ...base.cacheWrite,
+    tokenCoverage: mergedEconomicsCoverage(
+      parts,
+      (part) => part.cacheWrite.tokenCoverage,
+    ),
+    costCoverage: mergedEconomicsCoverage(
+      parts,
+      (part) => part.cacheWrite.costCoverage,
+    ),
+  };
+  const reasoning = {
+    ...base.reasoning,
+    coverage: mergedEconomicsCoverage(parts, (part) => part.reasoning.coverage),
+  };
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    reasoning,
+    cacheReuse: {
+      ...base.cacheReuse,
+      coverage: combinedCoverage([
+        input.tokenCoverage,
+        cacheRead.tokenCoverage,
+        cacheWrite.tokenCoverage,
+      ]),
+    },
+  };
+}
+
+/** A retained-window omission makes observed economics partial, not zero. */
+export function markUsageEconomicsPartial(
+  economics: UsageEconomics | undefined,
+): UsageEconomics | undefined {
+  if (economics === undefined) return undefined;
+  const partial = (state: UsageCoverageState): UsageCoverageState =>
+    state === "complete" ? "partial" : state;
+  return {
+    input: {
+      ...economics.input,
+      tokenCoverage: partial(economics.input.tokenCoverage),
+      costCoverage: partial(economics.input.costCoverage),
+    },
+    output: {
+      ...economics.output,
+      tokenCoverage: partial(economics.output.tokenCoverage),
+      costCoverage: partial(economics.output.costCoverage),
+    },
+    cacheRead: {
+      ...economics.cacheRead,
+      tokenCoverage: partial(economics.cacheRead.tokenCoverage),
+      costCoverage: partial(economics.cacheRead.costCoverage),
+    },
+    cacheWrite: {
+      ...economics.cacheWrite,
+      tokenCoverage: partial(economics.cacheWrite.tokenCoverage),
+      costCoverage: partial(economics.cacheWrite.costCoverage),
+    },
+    reasoning: {
+      ...economics.reasoning,
+      coverage: partial(economics.reasoning.coverage),
+    },
+    cacheReuse: {
+      ...economics.cacheReuse,
+      coverage: partial(economics.cacheReuse.coverage),
+    },
+  };
 }
 
 /**
@@ -394,6 +619,13 @@ export function toSessionReport(
           state: "known" as const,
           usage: source.usage.known,
           composition: source.usage.composition,
+          fieldCoverage:
+            source.usage.fieldCoverage ??
+            usageFieldCoverage(
+              source.usage.lines
+                .filter((line) => line.contributesToSession)
+                .map((line) => line.usage),
+            ),
         }
       : undefined
     : evidence.usage?.state === "unavailable"
@@ -404,6 +636,13 @@ export function toSessionReport(
             state: "known" as const,
             usage: source.usage,
             composition: source.usageComposition,
+            fieldCoverage:
+              source.usageFieldCoverage ??
+              usageFieldCoverage([
+                ...source.generations.map((generation) => generation.usage),
+                ...source.tools.map((tool) => tool.usage),
+                ...source.compactions.map((compaction) => compaction.usage),
+              ]),
           };
   const projectedEvidence = projectEvidence(
     canonical === undefined
@@ -455,6 +694,10 @@ export function toSessionReport(
       ? {}
       : {
           usage: sourceUsage.usage,
+          usageEconomics: projectUsageEconomics(
+            sourceUsage.usage,
+            sourceUsage.fieldCoverage,
+          ),
           usageComposition: sourceUsage.composition,
         }),
     generations,

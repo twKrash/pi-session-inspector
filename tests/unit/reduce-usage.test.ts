@@ -17,6 +17,10 @@ const compositionFixture = readFileSync(
   "tests/fixtures/pi/0.85.1/usage-composition.jsonl",
   "utf8",
 );
+const economicsFixture = readFileSync(
+  "tests/fixtures/pi/0.85.1/token-economics.jsonl",
+  "utf8",
+);
 
 function fixtureReport() {
   const session = parseSessionJsonl(fixture);
@@ -35,6 +39,10 @@ test("retains Pi 0.85.1 input/output/cacheRead/cacheWrite token breakdown", () =
     outputTokens: 5,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    inputCost: 0.01,
+    outputCost: 0.02,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
   });
   assert.deepEqual(report.usage, {
     totalTokens: 72,
@@ -43,6 +51,10 @@ test("retains Pi 0.85.1 input/output/cacheRead/cacheWrite token breakdown", () =
     outputTokens: 27,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    inputCost: 0.044,
+    outputCost: 0.042,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
   });
 });
 
@@ -92,6 +104,10 @@ test("usage composition reconciles to the session total exactly", () => {
     outputTokens: 23,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    inputCost: 0.042,
+    outputCost: 0.038,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
   });
   assert.deepEqual(toolResults, {
     totalTokens: 4,
@@ -100,6 +116,10 @@ test("usage composition reconciles to the session total exactly", () => {
     outputTokens: 2,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    inputCost: 0.001,
+    outputCost: 0.002,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
   });
   assert.deepEqual(compactions, {
     totalTokens: 3,
@@ -108,6 +128,10 @@ test("usage composition reconciles to the session total exactly", () => {
     outputTokens: 2,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    inputCost: 0.001,
+    outputCost: 0.002,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
   });
   assert.deepEqual(branchSummaries, { totalTokens: 0, cost: 0 });
   assert.deepEqual(
@@ -136,6 +160,10 @@ test("four-way composition splits compaction from branch-summary usage", () => {
     outputTokens: 5,
     cacheReadTokens: 2,
     cacheWriteTokens: 1,
+    inputCost: 0.01,
+    outputCost: 0.01,
+    cacheReadCost: 0.005,
+    cacheWriteCost: 0.005,
   });
   assert.deepEqual(toolResults, {
     totalTokens: 2,
@@ -144,6 +172,10 @@ test("four-way composition splits compaction from branch-summary usage", () => {
     outputTokens: 1,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    inputCost: 0.0005,
+    outputCost: 0.0005,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
   });
   assert.deepEqual(compactions, {
     totalTokens: 150,
@@ -152,6 +184,10 @@ test("four-way composition splits compaction from branch-summary usage", () => {
     outputTokens: 50,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    inputCost: 0.1,
+    outputCost: 0.05,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
   });
   assert.deepEqual(branchSummaries, {
     totalTokens: 10,
@@ -160,6 +196,10 @@ test("four-way composition splits compaction from branch-summary usage", () => {
     outputTokens: 3,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    inputCost: 0.007,
+    outputCost: 0.003,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
   });
   assert.deepEqual(report.usage, {
     totalTokens: 180,
@@ -168,6 +208,10 @@ test("four-way composition splits compaction from branch-summary usage", () => {
     outputTokens: 59,
     cacheReadTokens: 2,
     cacheWriteTokens: 1,
+    inputCost: 0.1175,
+    outputCost: 0.0635,
+    cacheReadCost: 0.005,
+    cacheWriteCost: 0.005,
   });
   assert.deepEqual(
     addUsage(
@@ -438,4 +482,117 @@ test("addUsage keeps totals finite and safe when a part is out of range", () => 
     ),
     true,
   );
+});
+
+function economicsFixtureReport() {
+  const session = parseSessionJsonl(economicsFixture);
+  return toSessionReport(
+    reduceEntries(session.id, selectScope(session.entries, "marker", "tree")),
+  );
+}
+
+test("retains native bucket costs and reasoning tokens through reduction", () => {
+  const report = economicsFixtureReport();
+
+  assert.deepEqual(report.generations[0]?.usage, {
+    totalTokens: 30,
+    cost: 0.123,
+    inputTokens: 20,
+    outputTokens: 8,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    reasoningTokens: 3,
+    inputCost: 0.04,
+    outputCost: 0.06,
+    cacheReadCost: 0.01,
+    cacheWriteCost: 0.013,
+  });
+  assert.deepEqual(report.usage, {
+    totalTokens: 41,
+    cost: 0.182,
+    inputTokens: 27,
+    outputTokens: 12,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    reasoningTokens: 3,
+    inputCost: 0.065,
+    outputCost: 0.094,
+    cacheReadCost: 0.01,
+    cacheWriteCost: 0.013,
+  });
+  assert.equal(report.usageEconomics?.cacheReuse.percent, 3.4);
+  assert.equal(report.usageEconomics?.cacheReuse.denominatorTokens, 29);
+  assert.equal(report.usageEconomics?.cacheReuse.coverage, "partial");
+  assert.equal(report.usageEconomics?.reasoning.coverage, "partial");
+});
+
+test("keeps invalid optional economics absent and native zero known", () => {
+  const invalid = toSessionReport(
+    reduceEntries("invalid-economics", [
+      {
+        type: "message",
+        id: "generation",
+        parentId: null,
+        timestamp: "2026-09-07T00:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "provider",
+          model: "model",
+          usage: {
+            totalTokens: 0,
+            cost: {
+              total: 0,
+              input: -1,
+              output: "many",
+              cacheRead: Number.POSITIVE_INFINITY,
+            },
+            input: -1,
+            output: "many",
+            cacheRead: Number.POSITIVE_INFINITY,
+            reasoning: "unknown",
+          },
+        },
+      },
+    ]),
+  );
+  assert.equal(Object.hasOwn(invalid.usage ?? {}, "inputTokens"), false);
+  assert.equal(Object.hasOwn(invalid.usage ?? {}, "inputCost"), false);
+  assert.equal(Object.hasOwn(invalid.usage ?? {}, "reasoningTokens"), false);
+  assert.equal(invalid.usageEconomics?.reasoning.coverage, "unavailable");
+
+  const zero = toSessionReport(
+    reduceEntries("zero-economics", [
+      {
+        type: "message",
+        id: "generation",
+        parentId: null,
+        timestamp: "2026-09-07T00:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "provider",
+          model: "model",
+          usage: {
+            totalTokens: 0,
+            cost: {
+              total: 0,
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+            },
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            reasoning: 0,
+          },
+        },
+      },
+    ]),
+  );
+  assert.equal(zero.usage?.inputTokens, 0);
+  assert.equal(zero.usage?.inputCost, 0);
+  assert.equal(zero.usage?.reasoningTokens, 0);
+  assert.equal(zero.usageEconomics?.reasoning.coverage, "complete");
+  assert.equal(zero.usageEconomics?.cacheReuse.percent, undefined);
 });
