@@ -1,13 +1,23 @@
-import type { EvidenceState, Scope } from "../core/events.ts";
+import type { EvidenceState, Scope, Usage } from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
 import { roundCost } from "../core/rounding.ts";
+import {
+  markUsageEconomicsPartial,
+  mergeUsageEconomics,
+  projectUsageEconomics,
+  type UsageEconomics,
+} from "../core/reports.ts";
 import {
   CAPABILITIES,
   type CurrentView,
   type InspectorBundle,
 } from "./bundle.ts";
 import { buildDailyRows, type DailyRow } from "./daily.ts";
-import type { DatedModelRow } from "./dated-usage.ts";
+import {
+  OPTIONAL_USAGE_FIELDS,
+  type DatedModelRow,
+  type OptionalUsageFields,
+} from "./dated-usage.ts";
 import type {
   GlobalReport,
   HistoricalSession,
@@ -166,7 +176,8 @@ export type UiRangeProjection = {
     generations: number;
     tools: number;
     days: number;
-  };
+  } & OptionalUsageFields;
+  usageEconomics?: UsageEconomics;
   composition: CompositionView | null;
   models: readonly ModelRow[];
   modelsTruncated: boolean;
@@ -237,6 +248,7 @@ export type UiHistoryProjection = {
   truncated: boolean;
   daily: readonly DailyRow[];
   totals: UiRangeProjection["totals"];
+  usageEconomics?: UsageEconomics;
   coverage: CoverageProjection | null;
   usageLabels: UsageLabels;
   evidence: readonly EvidenceRow[];
@@ -249,7 +261,7 @@ export type UiGlobalDailyRow = {
   sessions: number;
   totalTokens: number;
   cost: number;
-};
+} & OptionalUsageFields;
 
 /**
  * The global aggregate: its resolved range and bounded daily rows, the
@@ -262,7 +274,12 @@ export type UiGlobalProjection = {
   resolved: RangeState | null;
   truncated: boolean;
   daily: readonly UiGlobalDailyRow[];
-  totals: { totalTokens: number; cost: number; days: number };
+  totals: {
+    totalTokens: number;
+    cost: number;
+    days: number;
+  } & OptionalUsageFields;
+  usageEconomics?: UsageEconomics;
   composition: CompositionView;
   coverage: CoverageProjection | null;
   usageLabels: UsageLabels;
@@ -414,19 +431,39 @@ export function projectHistoryReport(
       ),
     )
     .sort(compareHistoryEntries);
+  const totals = periodTotals(daily);
+  const truncated =
+    resolved === null
+      ? false
+      : (folded.truncated && reachesBeforeRetained(folded.rows, resolved)) ||
+        partialContribution(report.sessions, resolved);
+  const sourceEconomics = mergeUsageEconomics(
+    usageFromTotals(totals),
+    report.sessions
+      .filter(
+        (
+          session,
+        ): session is Extract<
+          HistoryReport["sessions"][number],
+          { availability: "available" }
+        > => session.availability === "available",
+      )
+      .map((session) => session.report.usageEconomics),
+  );
+  const usageEconomics =
+    resolved === null
+      ? undefined
+      : rangeEconomics(totals, sourceEconomics, truncated);
   return {
     availability: report.availability,
     requested,
     resolved,
     // The aggregate is partial when its own fold cannot represent the range, or
     // when any contributing session's retained window cannot (design §5.6).
-    truncated:
-      resolved === null
-        ? false
-        : (folded.truncated && reachesBeforeRetained(folded.rows, resolved)) ||
-          partialContribution(report.sessions, resolved),
+    truncated,
     daily,
-    totals: periodTotals(daily),
+    totals,
+    ...(usageEconomics === undefined ? {} : { usageEconomics }),
     coverage: coverageProjection(report.availability, report.coverage),
     usageLabels: aggregateUsageLabels({
       availability: report.availability,
@@ -468,10 +505,9 @@ export function projectGlobalReport(
 ): UiGlobalProjection {
   const requested = intent ?? null;
   const rows: UiGlobalDailyRow[] = report.dates.map((row) => ({
+    ...safeUsage(row.usage),
     date: row.date,
     sessions: row.sessions,
-    totalTokens: row.usage.totalTokens,
-    cost: row.usage.cost,
   }));
   const resolved =
     resolveRange(
@@ -483,28 +519,49 @@ export function projectGlobalReport(
     resolved === null
       ? []
       : rows.filter((row) => isInRange(row.date, resolved));
-  const totals = { totalTokens: 0, cost: 0, days: 0 };
+  const totals: UiGlobalProjection["totals"] = {
+    totalTokens: 0,
+    cost: 0,
+    days: 0,
+  };
   for (const row of daily) {
     totals.totalTokens += row.totalTokens;
     totals.cost += row.cost;
     totals.days += 1;
+    for (const field of OPTIONAL_USAGE_FIELDS) {
+      const value = row[field];
+      if (value === undefined) continue;
+      const next = (totals[field] ?? 0) + value;
+      totals[field] = field.endsWith("Cost") ? roundCost(next) : next;
+    }
   }
+  totals.cost = roundCost(totals.cost);
+  const truncated =
+    resolved === null
+      ? false
+      : (report.sessions.some(
+          (session) =>
+            session.availability === "available" &&
+            session.usageByDateTruncated === true,
+        ) &&
+          reachesBeforeRetained(rows, resolved)) ||
+        partialContribution(historyWindows ?? [], resolved);
+  const usageEconomics =
+    resolved === null
+      ? undefined
+      : rangeEconomics(
+          totals,
+          report.usageEconomics ?? projectUsageEconomics(report.usage),
+          truncated,
+        );
   return {
     availability: report.availability,
     requested,
     resolved,
-    truncated:
-      resolved === null
-        ? false
-        : (report.sessions.some(
-            (session) =>
-              session.availability === "available" &&
-              session.usageByDateTruncated === true,
-          ) &&
-            reachesBeforeRetained(rows, resolved)) ||
-          partialContribution(historyWindows ?? [], resolved),
+    truncated,
     daily,
-    totals: { ...totals, cost: roundCost(totals.cost) },
+    totals,
+    ...(usageEconomics === undefined ? {} : { usageEconomics }),
     // An aggregate never has one native composition; the all-date total stays
     // visible beside an explicit `available: false`.
     composition: {
@@ -610,6 +667,12 @@ function sessionRange(input: {
   }
   const daily = input.daily.filter((row) => isInRange(row.date, resolved));
   const totals = periodTotals(daily);
+  const truncated = input.truncation(resolved);
+  const usageEconomics = rangeEconomics(
+    totals,
+    input.report.usageEconomics,
+    truncated,
+  );
   const filtered = filterView(
     {
       rows: [],
@@ -624,9 +687,10 @@ function sessionRange(input: {
   return {
     requested,
     resolved,
-    truncated: input.truncation(resolved),
+    truncated,
     daily,
     totals,
+    ...(usageEconomics === undefined ? {} : { usageEconomics }),
     composition: periodComposition(daily, totals),
     models: modelRangeRows(
       (input.datedModels ?? []).filter((row) => isInRange(row.date, resolved)),
@@ -654,9 +718,40 @@ function periodTotals(rows: readonly DailyRow[]): UiRangeProjection["totals"] {
     totals.cost += row.cost || 0;
     totals.generations += row.generations || 0;
     totals.tools += row.tools || 0;
+    for (const field of OPTIONAL_USAGE_FIELDS) {
+      const value = row[field];
+      if (value === undefined) continue;
+      const next = (totals[field] ?? 0) + value;
+      totals[field] = field.endsWith("Cost") ? roundCost(next) : next;
+    }
   }
   totals.cost = roundCost(totals.cost);
   return totals;
+}
+
+function usageFromTotals(
+  totals: { totalTokens: number; cost: number } & OptionalUsageFields,
+): Usage {
+  return {
+    totalTokens: totals.totalTokens,
+    cost: totals.cost,
+    ...Object.fromEntries(
+      OPTIONAL_USAGE_FIELDS.flatMap((field) =>
+        totals[field] === undefined ? [] : [[field, totals[field]]],
+      ),
+    ),
+  } as Usage;
+}
+
+function rangeEconomics(
+  totals: { totalTokens: number; cost: number } & OptionalUsageFields,
+  source: UsageEconomics | undefined,
+  truncated: boolean,
+): UsageEconomics | undefined {
+  const usage = usageFromTotals(totals);
+  const observed = projectUsageEconomics(usage);
+  const merged = mergeUsageEconomics(usage, [source, observed]);
+  return truncated ? markUsageEconomicsPartial(merged) : merged;
 }
 
 /**

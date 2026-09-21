@@ -805,3 +805,72 @@ nothing about it is fabricated in the meantime.
 | Integration version when the producer publishes none | Unsupported | Rendered `Unavailable`, never `0` |
 | Exact aggregate-row/detail reconciliation for ranges older than a session's retained dated window | Unsupported (bounded projection) | The window holds 366 dates; the omitted portion is reported as partial/`Known` with a truncation diagnostic, never reconstructed |
 | Child usage completeness when some runs report none | Known-only | Shown as `Known … (n of m runs)`; never extrapolated |
+
+### 13.7 Token economics and cache accounting
+
+Roadmap item 11 extends the read-time report contract without creating a second
+usage authority. Pi persisted usage remains the billing/source authority. The
+Inspector does not write Pi session JSONL, change Pi totals, or change WAL,
+checkpoint, retention, or session schema versions.
+
+Inspector retains the existing authoritative `totalTokens` and total `cost`
+fields and the optional native token buckets `input`, `output`, `cacheRead`,
+and `cacheWrite`. It additionally retains Pi's optional native
+`usage.reasoning` as `reasoningTokens`, and native per-bucket costs as
+`inputCost`, `outputCost`, `cacheReadCost`, and `cacheWriteCost`. Optional
+fields are validated independently: malformed or absent fields stay absent;
+native zero remains zero. Reasoning is a subset of output and is never inferred
+from output or added to `totalTokens`. `cacheWrite` remains the displayed
+cache-write bucket; no separate `cacheWrite1h` metric is exposed in this
+contract.
+
+The shared report projection exposes these buckets with independent token and
+cost coverage:
+
+```ts
+type UsageEconomicsCoverage = "complete" | "partial" | "unavailable";
+type UsageEconomicsBucket = {
+  tokens?: number;
+  cost?: number;
+  tokenCoverage: UsageEconomicsCoverage;
+  costCoverage: UsageEconomicsCoverage;
+};
+```
+
+`complete` means every included native usage owner supplied the field;
+`partial` means at least one did and at least one did not; `unavailable` means
+none did. Partial aggregates may publish the sum of observed values, but are
+never presented as complete totals. Unavailable fields are omitted and render
+`Unavailable`; observed native zero remains known zero. History/global
+aggregates remain partial when known usage is combined with incomplete or
+unavailable contributing sessions. Unavailable sessions never contribute
+synthetic usage.
+
+Current, history, global, and daily projections consume the same economics DTO.
+JSON, HTML, and TUI do not parse raw usage or reimplement bucket math. The TUI
+renders coverage inline rather than adding a separate coverage panel.
+
+Cache reuse is the one documented derived metric:
+
+```text
+cacheRead / (input + cacheRead + cacheWrite) * 100
+```
+
+The denominator excludes output. The projection publishes the denominator and
+its coverage. It calculates a percentage only when all three token buckets are
+present and their denominator is greater than zero, rounded to one decimal
+place. A zero denominator is known-but-not-applicable, not `0%`; a missing
+bucket makes the percentage unavailable. Existing `cacheHitPercent` values are
+fed by this same helper.
+
+The daily chart may select input, output, cache-read, and cache-write tokens.
+Reasoning tokens are optional non-additive detail, not a chart metric. Cost
+breakdowns use native per-bucket costs only and preserve unavailable-vs-zero
+semantics.
+
+Before merge, fixture-backed tests must prove that native token/cost buckets
+survive parsing, canonicalization, history aggregation, and report projection;
+partial evidence never becomes a fabricated complete total or zero; JSON,
+HTML, and TUI share the cache formula; providers without a bucket or reasoning
+signal report it unavailable; and existing total tokens and total cost remain
+unchanged.

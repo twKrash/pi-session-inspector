@@ -112,6 +112,27 @@ export type SubagentEvidence = {
   diagnostics: readonly SubagentEvidenceDiagnostic[];
 };
 
+export type UsageCoverageState = "complete" | "partial" | "unavailable";
+
+export type UsageField =
+  | "inputTokens"
+  | "outputTokens"
+  | "cacheReadTokens"
+  | "cacheWriteTokens"
+  | "reasoningTokens"
+  | "inputCost"
+  | "outputCost"
+  | "cacheReadCost"
+  | "cacheWriteCost";
+
+export type UsageFieldCoverage = {
+  state: UsageCoverageState;
+  owners: number;
+  ownersWithValue: number;
+};
+
+export type UsageFieldCoverageMap = Record<UsageField, UsageFieldCoverage>;
+
 export type Usage = {
   totalTokens: number;
   cost: number;
@@ -119,7 +140,43 @@ export type Usage = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  inputCost?: number;
+  outputCost?: number;
+  cacheReadCost?: number;
+  cacheWriteCost?: number;
 };
+
+const USAGE_FIELDS: readonly UsageField[] = [
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "reasoningTokens",
+  "inputCost",
+  "outputCost",
+  "cacheReadCost",
+  "cacheWriteCost",
+];
+
+export function usageFieldCoverage(
+  owners: readonly (Usage | undefined)[],
+): UsageFieldCoverageMap {
+  return Object.fromEntries(
+    USAGE_FIELDS.map((field) => {
+      const ownersWithValue = owners.filter(
+        (usage) => usage?.[field] !== undefined,
+      ).length;
+      const state: UsageCoverageState =
+        ownersWithValue === 0
+          ? "unavailable"
+          : ownersWithValue === owners.length
+            ? "complete"
+            : "partial";
+      return [field, { state, owners: owners.length, ownersWithValue }];
+    }),
+  ) as UsageFieldCoverageMap;
+}
 
 /** Bounded token/cost subtotals whose parts sum to the session total. */
 export type UsageComposition = {
@@ -192,6 +249,7 @@ export type ReducedSession = {
   sessionId: string;
   usage: Usage;
   usageComposition: UsageComposition;
+  usageFieldCoverage?: UsageFieldCoverageMap;
   generations: Generation[];
   tools: Tool[];
   compactions: Compaction[];

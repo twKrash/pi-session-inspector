@@ -13,6 +13,7 @@ import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../../src/core/reports.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { sessionDatedUsage } from "../../src/ui/dated-usage.ts";
+import { buildDailyRows } from "../../src/ui/daily.ts";
 import { loadHistoryReports } from "../../src/ui/load-history.ts";
 
 const FIXTURE = "tests/fixtures/pi/0.85.1/mixed-usage.jsonl";
@@ -77,11 +78,103 @@ test("dated rows attribute every usage source by logical call", () => {
     ],
   );
   assert.deepEqual(dates[0]?.composition, {
-    generations: { totalTokens: 150, cost: 1.5 },
-    toolResults: { totalTokens: 15, cost: 0.15 },
+    generations: {
+      totalTokens: 150,
+      cost: 1.5,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      inputCost: 1,
+      outputCost: 0.5,
+      cacheReadCost: 0,
+      cacheWriteCost: 0,
+    },
+    toolResults: {
+      totalTokens: 15,
+      cost: 0.15,
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      inputCost: 0.1,
+      outputCost: 0.05,
+      cacheReadCost: 0,
+      cacheWriteCost: 0,
+    },
     compactions: { totalTokens: 0, cost: 0 },
     branchSummaries: { totalTokens: 0, cost: 0 },
   });
+});
+
+test("dated rows preserve native costs and reasoning while zero stays known", () => {
+  const { dates } = sessionDatedUsage(canonicalOf(FIXTURE));
+  const row = dates[0];
+  assert.equal(row?.inputCost, 1.1);
+  assert.equal(row?.outputCost, 0.55);
+  assert.equal(row?.cacheReadCost, 0);
+  assert.equal(row?.cacheWriteCost, 0);
+  assert.equal(row?.reasoningTokens, undefined);
+
+  const [daily] = buildDailyRows([
+    {
+      sessionId: "a",
+      truncated: false,
+      rows: [
+        {
+          date: "2026-09-01",
+          totalTokens: 1,
+          cost: 0.01,
+          inputTokens: 1,
+          outputTokens: 0,
+          cacheReadTokens: 1,
+          cacheWriteTokens: 0,
+          inputCost: 0.01,
+          outputCost: 0,
+          cacheReadCost: 0,
+          generations: 1,
+          tools: 0,
+          errors: 0,
+          composition: {
+            generations: { totalTokens: 1, cost: 0.01 },
+            toolResults: { totalTokens: 0, cost: 0 },
+            compactions: { totalTokens: 0, cost: 0 },
+            branchSummaries: { totalTokens: 0, cost: 0 },
+          },
+        },
+      ],
+    },
+    {
+      sessionId: "b",
+      truncated: false,
+      rows: [
+        {
+          date: "2026-09-01",
+          totalTokens: 1,
+          cost: 0.01,
+          inputTokens: 1,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          inputCost: 0.01,
+          outputCost: 0,
+          cacheReadCost: 0,
+          generations: 1,
+          tools: 0,
+          errors: 0,
+          composition: {
+            generations: { totalTokens: 1, cost: 0.01 },
+            toolResults: { totalTokens: 0, cost: 0 },
+            compactions: { totalTokens: 0, cost: 0 },
+            branchSummaries: { totalTokens: 0, cost: 0 },
+          },
+        },
+      ],
+    },
+  ]).rows;
+  assert.equal(daily?.cacheReadTokens, 1);
+  assert.equal(Object.hasOwn(daily ?? {}, "cacheWriteTokens"), true);
+  assert.equal(daily?.cacheWriteTokens, 0);
+  assert.equal(daily?.cacheWriteCost, undefined);
 });
 
 test("the retained window reconciles with the report's own usage", () => {

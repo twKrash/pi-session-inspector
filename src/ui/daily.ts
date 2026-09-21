@@ -1,6 +1,8 @@
 import {
   MAX_DATED_DATES,
+  OPTIONAL_USAGE_FIELDS,
   type DateUsageRow,
+  type OptionalUsageFields,
   type SafeUsage,
 } from "./dated-usage.ts";
 
@@ -19,7 +21,7 @@ export type DailyRow = {
     compactions: SafeUsage;
     branchSummaries: SafeUsage;
   };
-};
+} & OptionalUsageFields;
 
 /** One session's contribution: its own dated window and that window's verdict. */
 export type DailyContribution = {
@@ -91,10 +93,23 @@ export function buildDailyRows(contributions: readonly DailyContribution[]): {
       row.cost = round(row.cost + dated.cost);
       row.generations += dated.generations;
       row.tools += dated.tools;
+      for (const field of OPTIONAL_USAGE_FIELDS) {
+        const value = dated[field];
+        if (value !== undefined) {
+          const next = (row[field] ?? 0) + value;
+          row[field] = field.endsWith("Cost") ? round(next) : next;
+        }
+      }
       for (const part of COMPOSITION_PARTS) {
         const total = row.composition[part];
         total.totalTokens += dated.composition[part].totalTokens;
         total.cost = round(total.cost + dated.composition[part].cost);
+        for (const field of OPTIONAL_USAGE_FIELDS) {
+          const value = dated.composition[part][field];
+          if (value === undefined) continue;
+          const next = (total[field] ?? 0) + value;
+          total[field] = field.endsWith("Cost") ? round(next) : next;
+        }
       }
     }
   }

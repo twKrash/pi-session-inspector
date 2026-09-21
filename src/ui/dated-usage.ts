@@ -4,20 +4,24 @@ import type {
 } from "../core/canonical.ts";
 import type { Usage } from "../core/events.ts";
 
-export type SafeUsage = { totalTokens: number; cost: number };
+export type OptionalUsageFields = Pick<
+  Usage,
+  | "inputTokens"
+  | "outputTokens"
+  | "cacheReadTokens"
+  | "cacheWriteTokens"
+  | "reasoningTokens"
+  | "inputCost"
+  | "outputCost"
+  | "cacheReadCost"
+  | "cacheWriteCost"
+>;
+export type SafeUsage = Pick<Usage, "totalTokens" | "cost"> &
+  OptionalUsageFields;
 export type DateUsageRow = {
   date: string;
   totalTokens: number;
   cost: number;
-  /**
-   * The optional producer token breakdown travels with the date so an aggregate
-   * fold stays exactly as additive as the per-record fold it replaces. A key is
-   * present only when a contributing native line carried it, never as zero.
-   */
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
   generations: number;
   tools: number;
   errors: number;
@@ -27,7 +31,7 @@ export type DateUsageRow = {
     compactions: SafeUsage;
     branchSummaries: SafeUsage;
   };
-};
+} & OptionalUsageFields;
 export type DatedModelRow = {
   date: string;
   provider: string;
@@ -51,11 +55,16 @@ const COMPOSITION_PART: Readonly<
   "branch-summary": "branchSummaries",
   "child-run": undefined,
 };
-const OPTIONAL_USAGE_FIELDS = [
+export const OPTIONAL_USAGE_FIELDS = [
   "inputTokens",
   "outputTokens",
   "cacheReadTokens",
   "cacheWriteTokens",
+  "reasoningTokens",
+  "inputCost",
+  "outputCost",
+  "cacheReadCost",
+  "cacheWriteCost",
 ] as const;
 const zero = (): SafeUsage => ({ totalTokens: 0, cost: 0 });
 // The canonical builder and the reducer both round costs at this precision, so
@@ -105,14 +114,20 @@ export function sessionDatedUsage(session: CanonicalSession): {
     usage: Usage,
     part: keyof DateUsageRow["composition"],
   ): void => {
-    row.composition[part].totalTokens += usage.totalTokens;
-    row.composition[part].cost = round(row.composition[part].cost + usage.cost);
+    const component = row.composition[part];
+    component.totalTokens += usage.totalTokens;
+    component.cost = round(component.cost + usage.cost);
     row.totalTokens += usage.totalTokens;
     row.cost = round(row.cost + usage.cost);
     for (const field of OPTIONAL_USAGE_FIELDS) {
       const value = usage[field];
       if (value === undefined) continue;
-      row[field] = (row[field] ?? 0) + value;
+      const add = (current: number | undefined): number => {
+        const next = (current ?? 0) + value;
+        return field.endsWith("Cost") ? round(next) : next;
+      };
+      row[field] = add(row[field]);
+      component[field] = add(component[field]);
     }
   };
   const dateByOwner = new Map<string, string>();

@@ -48,6 +48,21 @@ npm run benchmark:browser:check   # shipped asset + chart, against the accepted 
 npm pack --dry-run                # packaging, file allowlist, tarball contents
 ```
 
+### Check an unreleased checkout in Pi
+
+No npm publish is needed. Build the browser asset, then load this checkout for
+one Pi run only:
+
+```bash
+npm run build:web
+pi -e "$PWD"
+```
+
+Inside that Pi run, use `/session-inspector ui --no-open` to inspect the local
+UI URL, or `/session-inspector snapshot current --output ~/.pi/tmp/inspector.html --no-open`
+then open that self-contained local HTML report. `pi -e` does not modify package
+settings or install a release.
+
 A pull request states the tests run, the privacy impact, fixture provenance, the
 supported Pi version, and any ADR/spec change. See `CHANGELOG.md` for the release
 format.

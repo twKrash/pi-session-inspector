@@ -37,8 +37,8 @@ semantic integration (shipped in `1.1.0`), skill invocation evidence, Pi native
 telemetry integration, push-based live updates, multi-metric chart selection
 (shipped in `1.2.0`), usage attribution, working tool/skill links, additional
 locales, other harnesses, the loading state with a first-paint theme
-(shipped in `1.3.0`), and token economics and cache accounting. None is a release
-gate, and none blocks M8.
+(shipped in `1.3.0`), and token economics and cache accounting (implemented,
+unreleased). None is a release gate, and none blocks M8.
 
 This is the durable roadmap. Superpowers execution specs, task briefs, ledgers,
 and review reports are working artifacts, not product documentation. Tracked
@@ -1587,13 +1587,15 @@ Before merge (all met in `1.3.0`):
 
 ### 11. Token economics and cache accounting
 
-**Status:** Ready for a spec. **Depends on:** nothing.
+**Status:** Implemented, unreleased. **Depends on:** nothing.
 
-**Current state:** Pi persisted usage already exposes separate input, output,
-cache-read, and cache-write token buckets. Inspector preserves those optional
-token counts in canonical usage, but global/history reporting still emphasizes
-total tokens and total cost. Per-bucket native cost is not retained, and no
-cache-efficiency metric is exposed.
+**Durable record:** ADR 0020 and product spec §13.7.
+
+**Current state:** Pi-native input, output, cache-read, cache-write, reasoning,
+and per-bucket cost evidence now flows through canonical usage, dated/history/
+global aggregation, JSON projections, TUI, static HTML, and browser charts.
+Coverage remains explicit and missing values stay unavailable; cache reuse uses
+one shared projection and denominator.
 
 The goal is to make token economics visible without creating a second usage
 authority.
@@ -1631,7 +1633,14 @@ Before merge:
    unavailable;
 5. existing `totalTokens` and total-cost values remain unchanged.
 
-### Acceptance
+### Acceptance (met)
+
+- Native token/cost/reasoning evidence survives parsing, canonicalization,
+  dated/history/global aggregation, and report projection.
+- Partial bucket evidence stays partial; absent evidence stays unavailable;
+  observed zero remains zero.
+- JSON, TUI, static HTML, and browser charts consume the shared economics
+  projection and preserve the cache-reuse denominator.
 
 - None of the MCP, skill-attribution, or native-telemetry work is required for
   `1.0.0`.

@@ -59,11 +59,18 @@ const ENTRIES = [
       model: "alpha",
       usage: {
         totalTokens: 100,
-        cost: { total: 0.02 },
-        inputTokens: 60,
-        outputTokens: 30,
-        cacheReadTokens: 8,
-        cacheWriteTokens: 2,
+        cost: {
+          input: 0.012,
+          output: 0.006,
+          cacheRead: 0.0016,
+          cacheWrite: 0.0004,
+          total: 0.02,
+        },
+        input: 60,
+        output: 30,
+        cacheRead: 8,
+        cacheWrite: 2,
+        reasoning: 5,
       },
       content: [
         { type: "toolCall", id: "call_read", name: "read" },
@@ -231,7 +238,18 @@ function datedRow(
 
 const DATED_ROWS: DateUsageRow[] = [
   datedRow("2026-03-09", 0, 0, 0, 0),
-  datedRow("2026-03-10", 120, 0.024, 1, 2),
+  {
+    ...datedRow("2026-03-10", 120, 0.024, 1, 2),
+    inputTokens: 70,
+    outputTokens: 35,
+    cacheReadTokens: 10,
+    cacheWriteTokens: 5,
+    reasoningTokens: 5,
+    inputCost: 0.014,
+    outputCost: 0.007,
+    cacheReadCost: 0.002,
+    cacheWriteCost: 0.001,
+  },
 ];
 
 const DATED_MODELS: DatedModelRow[] = [
@@ -427,6 +445,10 @@ test("renders one resolved current snapshot with its title, range and rows", () 
   // The composition reconciles with the same resolved range.
   assert.equal(html.includes(CATALOG["usage.reconciled"]), true);
   assert.equal(html.includes(CATALOG["usage.total"]), true);
+  assert.equal(html.includes("Cache reuse"), true);
+  assert.equal(html.includes("Cache denominator"), true);
+  assert.equal(html.includes("Input tokens"), true);
+  assert.equal(html.includes('class="card section-gap"'), true);
   // Fixed section order and coverage of every current/session section.
   const sections = [
     CATALOG["panel.daily"],
@@ -1093,12 +1115,31 @@ test("prints a grouped duration with its coverage, and Unavailable without one",
     },
   });
 
+  const summaryHtml = html.slice(
+    html.indexOf(CATALOG["tools.summary"]),
+    html.indexOf(CATALOG["tools.calls"]),
+  );
   const rowFor = (name: string): string => {
-    const match = new RegExp(
-      `<tr>(?:(?!</tr>)[\\s\\S])*${name}(?:(?!</tr>)[\\s\\S])*</tr>`,
-    ).exec(html);
-    assert.notEqual(match, null, `the ${name} row must render`);
-    return match?.[0] ?? "";
+    const rows = summaryHtml
+      .split("<tr>")
+      .slice(1)
+      .map((row) => {
+        const end = row.indexOf("</tr>");
+        return end < 0 ? "" : row.slice(0, end + "</tr>".length);
+      });
+    const row = rows.find((candidate) => {
+      const cellStart = candidate.indexOf("<td");
+      if (cellStart < 0) return false;
+      const contentStart = candidate.indexOf(">", cellStart) + 1;
+      const contentEnd = candidate.indexOf("</td>", contentStart);
+      return (
+        contentStart > 0 &&
+        contentEnd >= contentStart &&
+        decodeHtml(candidate.slice(contentStart, contentEnd)) === name
+      );
+    });
+    assert.equal(row !== undefined, true, `the ${name} row must render`);
+    return row ?? "";
   };
   const coverageNote = (withDuration: number, total: number): string =>
     CATALOG["tools.durationFraction"]

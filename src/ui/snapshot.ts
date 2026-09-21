@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { EvidenceState } from "../core/events.ts";
+import type { UsageEconomics } from "../core/reports.ts";
 import type { LedgerItem } from "../core/ledger.ts";
 import {
   buildAgentForest,
@@ -8,6 +9,7 @@ import {
   type UiAgentTreeFilteredRun,
 } from "./agent-tree.ts";
 import type { DailyRow } from "./daily.ts";
+import { OPTIONAL_USAGE_FIELDS } from "./dated-usage.ts";
 import { formatCost } from "./format.ts";
 import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
 import { createTranslator } from "./i18n.ts";
@@ -267,9 +269,10 @@ function card(
   note: string,
   content: string,
   right = "",
+  className = "card",
 ): string {
   return (
-    `<section class="card"><div class="panel-head"><div><h2>${text(title)}</h2>` +
+    `<section class="${className}"><div class="panel-head"><div><h2>${text(title)}</h2>` +
     `<p>${text(note)}</p></div>${right}</div>${content}</section>`
   );
 }
@@ -346,6 +349,85 @@ function orUnavailable(value: string | null | undefined): string {
 
 function numberOrUnavailable(value: number | null): string {
   return value === null ? t("evidence.unavailable") : count(value);
+}
+
+function detailRow(label: string, value: string): readonly [string, string] {
+  return [label, value];
+}
+
+type DetailRows = readonly (readonly [string, string])[];
+
+function usageEconomicsDetails(economics: UsageEconomics | undefined): {
+  readonly tokens: readonly (readonly [string, string])[];
+  readonly cache: readonly (readonly [string, string])[];
+} {
+  if (economics === undefined) return { tokens: [], cache: [] };
+  const catalog = ENGLISH_CATALOG;
+  const unknown = catalog["evidence.unavailable"];
+  const withCoverage = (shown: string, state: string): string =>
+    state === "complete" || (shown === unknown && state === "unavailable")
+      ? shown
+      : `${shown} · ${state}`;
+  const numberValue = (value: number | undefined, state: string): string =>
+    withCoverage(value === undefined ? unknown : count(value), state);
+  const costValue = (value: number | undefined, state: string): string =>
+    withCoverage(value === undefined ? unknown : money(value), state);
+  return {
+    tokens: [
+      [
+        catalog["metric.inputTokens"],
+        numberValue(economics.input.tokens, economics.input.tokenCoverage),
+      ],
+      [
+        catalog["metric.outputTokens"],
+        numberValue(economics.output.tokens, economics.output.tokenCoverage),
+      ],
+      [
+        catalog["metric.reasoningTokens"],
+        numberValue(economics.reasoning.tokens, economics.reasoning.coverage),
+      ],
+      [
+        catalog["metric.inputCost"],
+        costValue(economics.input.cost, economics.input.costCoverage),
+      ],
+      [
+        catalog["metric.outputCost"],
+        costValue(economics.output.cost, economics.output.costCoverage),
+      ],
+    ],
+    cache: [
+      [
+        catalog["metric.cacheReadTokens"],
+        numberValue(
+          economics.cacheRead.tokens,
+          economics.cacheRead.tokenCoverage,
+        ),
+      ],
+      [
+        catalog["metric.cacheWriteTokens"],
+        numberValue(
+          economics.cacheWrite.tokens,
+          economics.cacheWrite.tokenCoverage,
+        ),
+      ],
+      [
+        catalog["metric.cacheReadCost"],
+        costValue(economics.cacheRead.cost, economics.cacheRead.costCoverage),
+      ],
+      [
+        catalog["metric.cacheWriteCost"],
+        costValue(economics.cacheWrite.cost, economics.cacheWrite.costCoverage),
+      ],
+      [
+        catalog["metric.cacheDenominator"],
+        numberValue(
+          economics.cacheReuse.denominatorTokens,
+          economics.cacheReuse.coverage,
+        ),
+      ],
+      [catalog["metric.coverage"], economics.cacheReuse.coverage],
+    ],
+  };
 }
 
 /** One catalog entry by a value computed at render time (a status, a label key). */
@@ -503,6 +585,58 @@ function overviewMetrics(
   const unknown = catalog["evidence.unavailable"];
   const childCount =
     report.agentCount === null ? unknown : count(report.agentCount);
+  const economics =
+    range === undefined
+      ? report.usageEconomics
+      : range.resolved === null
+        ? undefined
+        : range.usageEconomics;
+  const economicsDetails = usageEconomicsDetails(economics);
+  const cachePercent = economics?.cacheReuse.percent ?? report.cacheHitPercent;
+  const tokenDetails: DetailRows =
+    economics === undefined
+      ? [
+          detailRow(
+            catalog["metric.input"],
+            numberOrUnavailable(usage?.inputTokens ?? null),
+          ),
+          detailRow(
+            catalog["metric.output"],
+            numberOrUnavailable(usage?.outputTokens ?? null),
+          ),
+          ...(usage?.reasoningTokens === undefined
+            ? []
+            : [
+                detailRow(
+                  catalog["metric.reasoningTokens"],
+                  numberOrUnavailable(usage.reasoningTokens),
+                ),
+              ]),
+        ]
+      : economicsDetails.tokens;
+  const cacheDetails: DetailRows =
+    economics === undefined
+      ? [
+          detailRow(
+            catalog["metric.cacheRead"],
+            numberOrUnavailable(usage?.cacheReadTokens ?? null),
+          ),
+          detailRow(
+            catalog["metric.cacheWrite"],
+            numberOrUnavailable(usage?.cacheWriteTokens ?? null),
+          ),
+          detailRow(
+            catalog["metric.cacheHit"],
+            cachePercent === null || cachePercent === undefined
+              ? unknown
+              : `${cachePercent.toFixed(1)}%`,
+          ),
+        ]
+      : economicsDetails.cache;
+  const cacheValue =
+    cachePercent === null || cachePercent === undefined
+      ? unknown
+      : `${cachePercent.toFixed(1)}%${economics === undefined || economics.cacheReuse.coverage === "complete" ? "" : ` · ${economics.cacheReuse.coverage}`}`;
   return [
     metric(
       partial ? catalog["metric.knownCost"] : catalog["metric.cost"],
@@ -517,31 +651,13 @@ function overviewMetrics(
       partial ? catalog["metric.knownTokens"] : catalog["metric.tokens"],
       tokensValue,
       catalog["metric.tokens.note"],
-      [
-        [
-          catalog["metric.input"],
-          numberOrUnavailable(usage?.inputTokens ?? null),
-        ],
-        [
-          catalog["metric.output"],
-          numberOrUnavailable(usage?.outputTokens ?? null),
-        ],
-        [
-          catalog["metric.cacheRead"],
-          numberOrUnavailable(usage?.cacheReadTokens ?? null),
-        ],
-        [
-          catalog["metric.cacheWrite"],
-          numberOrUnavailable(usage?.cacheWriteTokens ?? null),
-        ],
-        [
-          catalog["metric.cacheHit"],
-          report.cacheHitPercent === null
-            ? unknown
-            : `${report.cacheHitPercent.toFixed(1)}%`,
-        ],
-        [catalog["usage.total"], tokensValue],
-      ],
+      tokenDetails,
+    ),
+    metric(
+      catalog["metric.cacheReuse"],
+      cacheValue,
+      catalog["metric.cache.note"],
+      cacheDetails,
     ),
     metric(
       catalog["metric.compactions"],
@@ -608,6 +724,8 @@ function compositionSection(composition: CompositionView | null): string {
       catalog["usage.title"],
       catalog["unavailable.composition"],
       body,
+      "",
+      "card section-gap",
     );
   }
   const total = composition.total;
@@ -644,7 +762,44 @@ function compositionSection(composition: CompositionView | null): string {
         : catalog["usage.unreconciled"],
       composition.reconciles ? "" : "warn",
     ),
+    "card section-gap",
   );
+}
+
+type OptionalField = (typeof OPTIONAL_USAGE_FIELDS)[number];
+
+function dailyFieldLabels(): Record<OptionalField, string> {
+  const catalog = ENGLISH_CATALOG;
+  return {
+    inputTokens: catalog["metric.inputTokens"],
+    outputTokens: catalog["metric.outputTokens"],
+    cacheReadTokens: catalog["metric.cacheReadTokens"],
+    cacheWriteTokens: catalog["metric.cacheWriteTokens"],
+    reasoningTokens: catalog["metric.reasoningTokens"],
+    inputCost: catalog["metric.inputCost"],
+    outputCost: catalog["metric.outputCost"],
+    cacheReadCost: catalog["metric.cacheReadCost"],
+    cacheWriteCost: catalog["metric.cacheWriteCost"],
+  };
+}
+
+function publishedDailyFields(
+  rows: readonly { [field in OptionalField]?: number }[],
+): OptionalField[] {
+  return OPTIONAL_USAGE_FIELDS.filter((field) =>
+    rows.some((row) => row[field] !== undefined),
+  );
+}
+
+function dailyFieldValues(
+  row: { [field in OptionalField]?: number },
+  fields: readonly OptionalField[],
+): string[] {
+  return fields.map((field) => {
+    const value = row[field];
+    if (value === undefined) return ENGLISH_CATALOG["evidence.unavailable"];
+    return field.endsWith("Cost") ? money(value) : count(value);
+  });
 }
 
 function dailySection(rows: readonly DailyRow[]): string {
@@ -652,6 +807,8 @@ function dailySection(rows: readonly DailyRow[]): string {
   if (rows.length === 0) {
     return emptyCard(catalog["panel.daily"], catalog["bars.empty"]);
   }
+  const fields = publishedDailyFields(rows);
+  const labels = dailyFieldLabels();
   return card(
     catalog["panel.daily"],
     DAILY_NOTE,
@@ -663,6 +820,7 @@ function dailySection(rows: readonly DailyRow[]): string {
         catalog["table.cost"],
         catalog["table.generations"],
         catalog["table.tools"],
+        ...fields.map((field) => labels[field]),
       ],
       rows.map((row) => [
         row.date,
@@ -671,8 +829,17 @@ function dailySection(rows: readonly DailyRow[]): string {
         money(row.cost),
         count(row.generations),
         count(row.tools),
+        ...dailyFieldValues(row, fields),
       ]),
-      ["status-cell", "num", "num", "num", "num", "num"],
+      [
+        "status-cell",
+        "num",
+        "num",
+        "num",
+        "num",
+        "num",
+        ...fields.map(() => "num"),
+      ],
     ),
   );
 }
@@ -1635,6 +1802,7 @@ function historyTarget(projection: SnapshotHistoryProjection): SnapshotTarget {
       : metrics(
           aggregateMetrics({
             totals: projection.totals,
+            usageEconomics: projection.usageEconomics,
             labels,
             partial: projection.truncated,
             datable,
@@ -1665,6 +1833,7 @@ function aggregateMetrics(input: {
     /** Absent for an aggregate that carries no generation figure at all. */
     generations?: number;
   };
+  usageEconomics?: UsageEconomics;
   labels: { cost: string; tokens: string; usageUnavailable: boolean };
   partial: boolean;
   datable: boolean;
@@ -1688,12 +1857,26 @@ function aggregateMetrics(input: {
     : datable
       ? count(totals.totalTokens)
       : unknown;
+  const economics = datable ? input.usageEconomics : undefined;
+  const economicsDetails = usageEconomicsDetails(economics);
+  const cachePercent = economics?.cacheReuse.percent;
+  const cacheValue =
+    cachePercent === undefined
+      ? unknown
+      : `${cachePercent.toFixed(1)}%${economics === undefined || economics.cacheReuse.coverage === "complete" ? "" : ` · ${economics.cacheReuse.coverage}`}`;
   return [
     metric(catalogEntry(costLabel), costValue, catalog["metric.native"]),
     metric(
       catalogEntry(tokensLabel),
       tokensValue,
       catalog["metric.tokens.note"],
+      economicsDetails.tokens,
+    ),
+    metric(
+      catalog["metric.cacheReuse"],
+      cacheValue,
+      catalog["metric.cache.note"],
+      economicsDetails.cache,
     ),
     metric(
       catalog["metric.generations"],
@@ -1737,6 +1920,7 @@ function globalTarget(projection: SnapshotGlobalProjection): SnapshotTarget {
       : metrics([
           ...aggregateMetrics({
             totals: projection.totals,
+            usageEconomics: projection.usageEconomics,
             labels,
             partial: projection.truncated,
             datable,
@@ -1778,6 +1962,8 @@ function globalDailySection(rows: UiGlobalProjection["daily"]): string {
   if (rows.length === 0) {
     return emptyCard(catalog["panel.daily"], catalog["bars.empty"]);
   }
+  const fields = publishedDailyFields(rows);
+  const labels = dailyFieldLabels();
   return card(
     catalog["panel.daily"],
     DAILY_NOTE,
@@ -1787,14 +1973,16 @@ function globalDailySection(rows: UiGlobalProjection["daily"]): string {
         catalog["table.sessions"],
         catalog["table.tokens"],
         catalog["table.cost"],
+        ...fields.map((field) => labels[field]),
       ],
       rows.map((row) => [
         row.date,
         count(row.sessions),
         count(row.totalTokens),
         money(row.cost),
+        ...dailyFieldValues(row, fields),
       ]),
-      ["status-cell", "num", "num", "num"],
+      ["status-cell", "num", "num", "num", ...fields.map(() => "num")],
     ),
   );
 }

@@ -105,6 +105,11 @@ Child (subagent) usage breakdown of subagent usage already inside native
 - **Live and cooperative evidence enriches attribution.** It can supply timing,
   correlation, and producer facts; it never replaces, inflates, or re-derives
   native accounting.
+- **Token economics stay native.** Overview and export surfaces retain input,
+  output, cache-read, cache-write, reasoning, and native bucket costs when Pi
+  provides them. Cache reuse is `cacheRead / (input + cacheRead + cacheWrite)`;
+  its denominator and coverage are shown, and missing evidence stays
+  unavailable rather than becoming zero.
 
 ## Integrations
 

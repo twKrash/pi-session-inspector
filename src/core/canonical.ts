@@ -25,7 +25,9 @@ import type {
   Tool,
   Usage,
   UsageComposition,
+  UsageFieldCoverageMap,
 } from "./events.ts";
+import { usageFieldCoverage } from "./events.ts";
 import {
   type AtomicEvidence,
   boundedProducerLabel,
@@ -95,6 +97,13 @@ const OPTIONAL_TOKEN_FIELDS = [
   "outputTokens",
   "cacheReadTokens",
   "cacheWriteTokens",
+  "reasoningTokens",
+] as const;
+const OPTIONAL_COST_FIELDS = [
+  "inputCost",
+  "outputCost",
+  "cacheReadCost",
+  "cacheWriteCost",
 ] as const;
 const encoder = new TextEncoder();
 
@@ -213,12 +222,14 @@ export type CanonicalUsageSummary =
       composition: UsageComposition;
       lines: CanonicalUsageLine[];
       coverage: Record<UsageBucket, UsageCoverage>;
+      fieldCoverage?: UsageFieldCoverageMap;
     }
   | {
       state: "unavailable";
       reason: "overflow";
       lines: CanonicalUsageLine[];
       coverage: Record<UsageBucket, UsageCoverage>;
+      fieldCoverage?: UsageFieldCoverageMap;
     };
 
 export type CanonicalSession = {
@@ -1043,6 +1054,7 @@ function buildUsage(
       (subagents?.runs ?? []).filter((run) => run.usage !== undefined).length,
     ),
   };
+  const fieldCoverage = usageFieldCoverage(nativeUsageOwners(lines, coverage));
 
   const composition: UsageComposition = {
     generations: zeroUsage(),
@@ -1068,13 +1080,48 @@ function buildUsage(
     // A clamped aggregate is never published: bounded lines remain, the
     // aggregate state becomes unavailable, and usage health turns partial.
     diagnostics.add("pi-jsonl", "usage-overflow", 1, "error");
-    return { state: "unavailable", reason: "overflow", lines, coverage };
+    return {
+      state: "unavailable",
+      reason: "overflow",
+      lines,
+      coverage,
+      fieldCoverage,
+    };
   }
 
   if (!compositionEqual(composition, known)) {
     diagnostics.add("pi-jsonl", "usage-reconciliation-mismatch", 1, "error");
   }
-  return { state: "known", known, composition, lines, coverage };
+  return {
+    state: "known",
+    known,
+    composition,
+    lines,
+    coverage,
+    fieldCoverage,
+  };
+}
+
+function nativeUsageOwners(
+  lines: readonly CanonicalUsageLine[],
+  coverage: Record<UsageBucket, UsageCoverage>,
+): (Usage | undefined)[] {
+  const owners: (Usage | undefined)[] = [];
+  for (const bucket of [
+    "generation",
+    "tool-result",
+    "compaction",
+    "branch-summary",
+  ] as const) {
+    const values = lines
+      .filter((line) => line.contributesToSession && line.bucket === bucket)
+      .map((line) => line.usage);
+    owners.push(...values);
+    for (let index = values.length; index < coverage[bucket].owners; index++) {
+      owners.push(undefined);
+    }
+  }
+  return owners;
 }
 
 function compositionBucket(bucket: UsageBucket): keyof UsageComposition {
@@ -1203,6 +1250,14 @@ function safeAdd(left: Usage, right: Usage): Usage | undefined {
     if (leftValue === undefined && rightValue === undefined) continue;
     const sum = (leftValue ?? 0) + (rightValue ?? 0);
     if (!isSafeToken(sum)) return undefined;
+    next[field] = sum;
+  }
+  for (const field of OPTIONAL_COST_FIELDS) {
+    const leftValue = left[field];
+    const rightValue = right[field];
+    if (leftValue === undefined && rightValue === undefined) continue;
+    const sum = roundCost((leftValue ?? 0) + (rightValue ?? 0));
+    if (!isSafeCost(sum)) return undefined;
     next[field] = sum;
   }
   return next;

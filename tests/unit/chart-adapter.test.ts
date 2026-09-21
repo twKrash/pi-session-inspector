@@ -130,7 +130,17 @@ test("theme colors are looked up by metric key, not by the series label", () => 
 });
 
 test("both themes provide a concrete color for every charted metric", () => {
-  const metrics = ["sessions", "cost", "tokens", "generations", "tools"];
+  const metrics = [
+    "sessions",
+    "cost",
+    "tokens",
+    "generations",
+    "tools",
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+  ];
   for (const palette of [chartTheme(false), chartTheme(true)]) {
     for (const metric of metrics) {
       assert.match(palette.line[metric] ?? "", /^#[0-9a-f]{6}$/);

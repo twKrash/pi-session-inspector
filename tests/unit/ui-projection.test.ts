@@ -36,6 +36,7 @@ import {
   projectInspectorUi,
   type GlobalReportProjection,
 } from "../../src/ui/ui-projection.ts";
+import { renderJson } from "../../src/ui/json.ts";
 import {
   aggregateUsageLabels,
   errorHeadline,
@@ -275,6 +276,40 @@ function foldedDaily(
 }
 
 /** One generation-only session, the minimum a history row's report needs. */
+function economicsReport(): SessionReport {
+  return toSessionReport(
+    reduceEntries("economics-report", [
+      {
+        type: "message",
+        id: "economics-generation",
+        parentId: null,
+        timestamp: "2026-02-02T10:00:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "alpha",
+          usage: {
+            input: 27,
+            output: 12,
+            cacheRead: 1,
+            cacheWrite: 1,
+            reasoning: 3,
+            totalTokens: 41,
+            cost: {
+              input: 0.065,
+              output: 0.094,
+              cacheRead: 0.01,
+              cacheWrite: 0.013,
+              total: 0.182,
+            },
+          },
+          content: [],
+        },
+      },
+    ]),
+  );
+}
+
 function historicalReport(input: {
   sessionId: string;
   timestamp: string;
@@ -474,6 +509,72 @@ const FIRST_DAY = {
   from: "2026-02-02",
   to: "2026-02-02",
 } as const;
+
+test("projects shared token economics into session, range, history and global views", () => {
+  const report = economicsReport();
+  const view = sessionView(report);
+  assert.equal(view.usageEconomics?.input.tokens, 27);
+  assert.equal(view.usageEconomics?.input.cost, 0.065);
+  assert.equal(view.usageEconomics?.reasoning.tokens, 3);
+  assert.equal(view.usageEconomics?.cacheReuse.denominatorTokens, 29);
+  assert.equal(view.usageEconomics?.cacheReuse.percent, 3.4);
+  const jsonView = JSON.parse(renderJson(view)) as typeof view;
+  assert.equal(jsonView.usageEconomics?.cacheRead.tokens, 1);
+
+  const dated = {
+    ...dateRow({
+      date: "2026-02-02",
+      totalTokens: 41,
+      cost: 0.182,
+      generations: 1,
+    }),
+    inputTokens: 27,
+    outputTokens: 12,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    reasoningTokens: 3,
+    inputCost: 0.065,
+    outputCost: 0.094,
+    cacheReadCost: 0.01,
+    cacheWriteCost: 0.013,
+  };
+  const history: HistoryReport = {
+    availability: "available",
+    sessions: [
+      {
+        availability: "available",
+        sessionId: report.sessionId,
+        usageByDate: [dated],
+        usageByDateTruncated: false,
+        datedModels: [],
+        modelsTruncated: false,
+        report,
+      },
+    ],
+    diagnostics: [],
+  };
+  const historyView = projectHistoryReport(history);
+  assert.equal(historyView.totals.inputTokens, 27);
+  assert.equal(historyView.usageEconomics?.cacheReuse.percent, 3.4);
+
+  const global: GlobalReport = {
+    availability: "available",
+    sessions: [
+      {
+        availability: "available",
+        sessionId: report.sessionId,
+        usageByDateTruncated: false,
+      },
+    ],
+    usage: report.usage ?? { totalTokens: 0, cost: 0 },
+    dates: [{ date: dated.date, sessions: 1, usage: dated }],
+    diagnostics: [],
+    inventory: { commands: null, skills: null, resources: null },
+  };
+  const globalView = projectGlobalReport(global);
+  assert.equal(globalView.totals.outputCost, 0.094);
+  assert.equal(globalView.usageEconomics?.cacheReuse.percent, 3.4);
+});
 
 test("each current view resolves a preset against its own observed dates", async () => {
   const bundle = await bundleWithDifferentObservedDates();

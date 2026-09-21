@@ -43,6 +43,15 @@ const unavailableInventory = {
   resources: { state: "unavailable", items: [] },
 };
 
+const unavailableUsageEconomics = {
+  input: { tokenCoverage: "unavailable", costCoverage: "unavailable" },
+  output: { tokenCoverage: "unavailable", costCoverage: "unavailable" },
+  cacheRead: { tokenCoverage: "unavailable", costCoverage: "unavailable" },
+  cacheWrite: { tokenCoverage: "unavailable", costCoverage: "unavailable" },
+  reasoning: { coverage: "unavailable" },
+  cacheReuse: { coverage: "unavailable" },
+};
+
 async function createHistoryRoot(): Promise<{
   root: string;
   sessionDirectory: string;
@@ -630,6 +639,7 @@ test("replays manifest-discovered history through the shared session report pipe
           report: {
             sessionId: "history-session",
             usage: { totalTokens: 30, cost: 0.3 },
+            usageEconomics: unavailableUsageEconomics,
             usageComposition: {
               generations: { totalTokens: 30, cost: 0.3 },
               toolResults: { totalTokens: 0, cost: 0 },
@@ -863,6 +873,7 @@ test("preserves branch-summary usage once through history and global reports", a
       report: {
         sessionId: "history-session",
         usage: { totalTokens: 17, cost: 0.17 },
+        usageEconomics: unavailableUsageEconomics,
         usageComposition: {
           generations: { totalTokens: 0, cost: 0 },
           toolResults: { totalTokens: 0, cost: 0 },
@@ -923,7 +934,7 @@ test("keeps the optional token breakdown in global and per-date folds", async ()
       [
         '{"type":"session","version":3,"id":"history-session"}',
         '{"type":"custom","id":"marker","parentId":null,"timestamp":"2026-02-01T00:00:01.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
-        '{"type":"message","id":"gen","parentId":"marker","timestamp":"2026-02-01T10:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"totalTokens":18,"cost":{"total":0.03}}}}',
+        '{"type":"message","id":"gen","parentId":"marker","timestamp":"2026-02-01T10:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"reasoning":3,"totalTokens":18,"cost":{"input":0.01,"output":0.015,"cacheRead":0.001,"cacheWrite":0.002,"total":0.03}}}}',
       ].join("\n"),
     );
     const expected = {
@@ -933,6 +944,11 @@ test("keeps the optional token breakdown in global and per-date folds", async ()
       outputTokens: 5,
       cacheReadTokens: 2,
       cacheWriteTokens: 1,
+      reasoningTokens: 3,
+      inputCost: 0.01,
+      outputCost: 0.015,
+      cacheReadCost: 0.001,
+      cacheWriteCost: 0.002,
     };
 
     const global = await loadGlobalReport({
@@ -943,6 +959,10 @@ test("keeps the optional token breakdown in global and per-date folds", async ()
     });
 
     assert.deepEqual(global.usage, expected);
+    assert.equal(global.usageEconomics?.input.tokens, 10);
+    assert.equal(global.usageEconomics?.output.cost, 0.015);
+    assert.equal(global.usageEconomics?.reasoning.tokens, 3);
+    assert.equal(global.usageEconomics?.cacheReuse.percent, 15.4);
     assert.deepEqual(global.dates, [
       { date: "2026-02-01", sessions: 1, usage: expected },
     ]);
@@ -971,6 +991,7 @@ test("folds native session usage once into deterministic sorted date rows and in
         },
       ],
       usage: { totalTokens: 20, cost: 0.2 },
+      usageEconomics: unavailableUsageEconomics,
       dates: [
         {
           date: "2026-02-02",

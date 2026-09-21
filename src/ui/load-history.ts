@@ -10,7 +10,12 @@ import {
 import type { L0Evidence } from "../core/evidence.ts";
 import type { Scope, SessionEntry, Usage } from "../core/events.ts";
 import { addUsage } from "../core/reduce.ts";
-import { toSessionReport, type SessionReport } from "../core/reports.ts";
+import {
+  mergeUsageEconomics,
+  toSessionReport,
+  type SessionReport,
+  type UsageEconomics,
+} from "../core/reports.ts";
 import {
   buildSessionCoverage,
   type SessionCoverage,
@@ -147,6 +152,7 @@ export type GlobalReport = {
   availability: "available" | "unavailable";
   sessions: GlobalSessionRow[];
   usage: Usage;
+  usageEconomics?: UsageEconomics;
   dates: DateUsage[];
   diagnostics: HistoryDiagnostic[];
   coverage?: SessionCoverage;
@@ -566,13 +572,28 @@ export async function loadGlobalReport(
       sessions: row.sessionIds.size,
       usage: row.usage,
     }));
+  const usage = dates.reduce(
+    (total, row) => addUsage(total, row.usage),
+    zeroUsage(),
+  );
+  const usageEconomics = mergeUsageEconomics(
+    usage,
+    history.sessions
+      .filter(
+        (
+          session,
+        ): session is Extract<SessionScan, { availability: "available" }> =>
+          session.availability === "available",
+      )
+      .map((session) => session.report.usageEconomics),
+  );
   return {
     availability: history.availability,
     sessions: history.sessions.map(toGlobalSessionRow),
-    usage: dates.reduce(
-      (total, row) => addUsage(total, row.usage),
-      zeroUsage(),
-    ),
+    usage,
+    ...(history.availability === "available" && usageEconomics !== undefined
+      ? { usageEconomics }
+      : {}),
     dates,
     inventory: globalInventory(history.sessions),
     diagnostics: history.diagnostics,
@@ -670,6 +691,17 @@ function datedUsage(row: DateUsageRow): Usage {
     ...(row.cacheWriteTokens === undefined
       ? {}
       : { cacheWriteTokens: row.cacheWriteTokens }),
+    ...(row.reasoningTokens === undefined
+      ? {}
+      : { reasoningTokens: row.reasoningTokens }),
+    ...(row.inputCost === undefined ? {} : { inputCost: row.inputCost }),
+    ...(row.outputCost === undefined ? {} : { outputCost: row.outputCost }),
+    ...(row.cacheReadCost === undefined
+      ? {}
+      : { cacheReadCost: row.cacheReadCost }),
+    ...(row.cacheWriteCost === undefined
+      ? {}
+      : { cacheWriteCost: row.cacheWriteCost }),
   };
 }
 
