@@ -12,9 +12,13 @@ import {
 import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../../src/core/reports.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
-import { sessionDatedUsage } from "../../src/ui/dated-usage.ts";
+import {
+  sessionDatedUsage,
+  usageFieldCoverageOf,
+} from "../../src/ui/dated-usage.ts";
 import { buildDailyRows } from "../../src/ui/daily.ts";
 import { loadHistoryReports } from "../../src/ui/load-history.ts";
+import { projectCurrentView } from "../../src/ui/ui-projection.ts";
 
 const FIXTURE = "tests/fixtures/pi/0.85.1/mixed-usage.jsonl";
 
@@ -175,6 +179,118 @@ test("dated rows preserve native costs and reasoning while zero stays known", ()
   assert.equal(Object.hasOwn(daily ?? {}, "cacheWriteTokens"), true);
   assert.equal(daily?.cacheWriteTokens, 0);
   assert.equal(daily?.cacheWriteCost, undefined);
+});
+
+test("dated rows retain associative per-field coverage evidence", () => {
+  const session = canonicalOfSource(datedCoverageSource());
+  const { dates } = sessionDatedUsage(session);
+  const monday = dates.find((row) => row.date === "2026-09-14");
+  const tuesday = dates.find((row) => row.date === "2026-09-15");
+  const wednesday = dates.find((row) => row.date === "2026-09-16");
+  assert.equal(
+    usageFieldCoverageOf(monday)?.cacheWriteTokens.state,
+    "complete",
+  );
+  assert.equal(
+    usageFieldCoverageOf(tuesday)?.cacheWriteTokens.state,
+    "unavailable",
+  );
+  const cacheRead = usageFieldCoverageOf(wednesday)?.cacheReadTokens;
+  assert.deepEqual(cacheRead, {
+    state: "partial",
+    owners: 3,
+    ownersWithValue: 2,
+  });
+  assert.equal(wednesday?.cacheReadTokens, 2);
+  assert.equal(usageFieldCoverageOf(wednesday)?.cacheReadCost.state, "partial");
+  assert.equal(wednesday?.cacheReadCost, 0.2);
+});
+
+test("dated coverage counts usage-less native owners on their date", () => {
+  const session = canonicalOfSource(missingUsageOwnerSource());
+  const dated = sessionDatedUsage(session);
+  const row = dated.dates.find((candidate) => candidate.date === "2026-09-14");
+  assert.deepEqual(usageFieldCoverageOf(row)?.cacheWriteTokens, {
+    state: "partial",
+    owners: 2,
+    ownersWithValue: 1,
+  });
+
+  const daily = buildDailyRows([
+    {
+      sessionId: session.sessionId,
+      rows: dated.dates,
+      truncated: dated.truncated,
+    },
+  ]).rows;
+  const view = {
+    availability: "available" as const,
+    report: toSessionReport(session),
+    usageByDate: dated.dates,
+    datedModels: dated.models,
+    modelsTruncated: dated.modelsTruncated,
+    daily,
+    dailyTruncated: dated.truncated,
+    capabilities: [],
+  };
+  assert.equal(
+    projectCurrentView(view, "tree", {
+      kind: "custom",
+      from: "2026-09-14",
+      to: "2026-09-14",
+    }).range?.usageEconomics?.cacheWrite.tokenCoverage,
+    "partial",
+  );
+});
+
+test("selected dated ranges derive exact economics coverage", () => {
+  const session = canonicalOfSource(datedCoverageSource());
+  const dated = sessionDatedUsage(session);
+  const daily = buildDailyRows([
+    {
+      sessionId: session.sessionId,
+      rows: dated.dates,
+      truncated: dated.truncated,
+    },
+  ]).rows;
+  const view = {
+    availability: "available" as const,
+    report: toSessionReport(session),
+    usageByDate: dated.dates,
+    datedModels: dated.models,
+    modelsTruncated: dated.modelsTruncated,
+    daily,
+    dailyTruncated: dated.truncated,
+    capabilities: [],
+  };
+  const range = (from: string, to = from) =>
+    projectCurrentView(view, "tree", { kind: "custom", from, to }).range;
+
+  const monday = range("2026-09-14");
+  const tuesday = range("2026-09-15");
+  const mondayAndTuesday = range("2026-09-14", "2026-09-15");
+  const wednesday = range("2026-09-16");
+
+  assert.equal(monday?.usageEconomics?.cacheWrite.tokenCoverage, "complete");
+  assert.equal(monday?.usageEconomics?.cacheReuse.coverage, "complete");
+  assert.equal(
+    tuesday?.usageEconomics?.cacheWrite.tokenCoverage,
+    "unavailable",
+  );
+  assert.equal(tuesday?.usageEconomics?.cacheReuse.coverage, "partial");
+  assert.equal(tuesday?.usageEconomics?.cacheReuse.percent, undefined);
+  assert.equal(
+    mondayAndTuesday?.usageEconomics?.cacheWrite.tokenCoverage,
+    "partial",
+  );
+  assert.equal(
+    mondayAndTuesday?.usageEconomics?.cacheReuse.coverage,
+    "partial",
+  );
+  assert.equal(wednesday?.usageEconomics?.cacheRead.tokens, 2);
+  assert.equal(wednesday?.usageEconomics?.cacheRead.tokenCoverage, "partial");
+  assert.equal(wednesday?.usageEconomics?.cacheRead.cost, 0.2);
+  assert.equal(wednesday?.usageEconomics?.cacheRead.costCoverage, "partial");
 });
 
 test("the retained window reconciles with the report's own usage", () => {
@@ -401,6 +517,127 @@ function inlineGeneration(input: {
  * Two generations whose one-day costs are only representable below 1e-6 per
  * line, so a coarser per-date rounding cannot reconcile with the report.
  */
+function datedCoverageSource(): string {
+  return `${[
+    JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "dated-coverage-inline",
+    }),
+    inlineMarker(),
+    inlineGeneration({
+      id: "monday",
+      parentId: "marker",
+      timestamp: "2026-09-14T10:00:00.000Z",
+      usage: {
+        input: 10,
+        output: 1,
+        cacheRead: 2,
+        cacheWrite: 3,
+        totalTokens: 16,
+        cost: {
+          input: 1,
+          output: 0.1,
+          cacheRead: 0.2,
+          cacheWrite: 0.3,
+          total: 1.6,
+        },
+      },
+    }),
+    inlineGeneration({
+      id: "tuesday",
+      parentId: "monday",
+      timestamp: "2026-09-15T10:00:00.000Z",
+      usage: {
+        input: 10,
+        output: 1,
+        cacheRead: 2,
+        totalTokens: 13,
+        cost: { input: 1, output: 0.1, cacheRead: 0.2, total: 1.3 },
+      },
+    }),
+    inlineGeneration({
+      id: "wednesday-1",
+      parentId: "tuesday",
+      timestamp: "2026-09-16T10:00:00.000Z",
+      usage: {
+        input: 10,
+        output: 1,
+        cacheRead: 2,
+        cacheWrite: 1,
+        totalTokens: 14,
+        cost: {
+          input: 1,
+          output: 0.1,
+          cacheRead: 0.2,
+          cacheWrite: 0.1,
+          total: 1.4,
+        },
+      },
+    }),
+    inlineGeneration({
+      id: "wednesday-2",
+      parentId: "wednesday-1",
+      timestamp: "2026-09-16T11:00:00.000Z",
+      usage: {
+        input: 5,
+        output: 1,
+        cacheWrite: 1,
+        totalTokens: 7,
+        cost: { input: 0.5, output: 0.1, total: 0.6 },
+      },
+    }),
+    inlineGeneration({
+      id: "wednesday-3",
+      parentId: "wednesday-2",
+      timestamp: "2026-09-16T12:00:00.000Z",
+      usage: {
+        input: 5,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 6,
+        cost: {
+          input: 0.5,
+          output: 0.1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0.6,
+        },
+      },
+    }),
+  ].join("\n")}\n`;
+}
+
+function missingUsageOwnerSource(): string {
+  return `${[
+    JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "missing-usage-owner-inline",
+    }),
+    inlineMarker(),
+    inlineGeneration({
+      id: "known",
+      parentId: "marker",
+      timestamp: "2026-09-14T10:00:00.000Z",
+      usage: {
+        input: 1,
+        output: 1,
+        cacheWrite: 1,
+        totalTokens: 3,
+        cost: { input: 0.1, output: 0.1, cacheWrite: 0.1, total: 0.3 },
+      },
+    }),
+    inlineGeneration({
+      id: "missing",
+      parentId: "known",
+      timestamp: "2026-09-14T11:00:00.000Z",
+      usage: undefined,
+    }),
+  ].join("\n")}\n`;
+}
+
 function tinyCostSource(): string {
   return `${[
     JSON.stringify({ type: "session", version: 3, id: "tiny-cost-inline" }),

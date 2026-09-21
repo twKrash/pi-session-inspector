@@ -1,4 +1,10 @@
-import type { EvidenceState, Scope, Usage } from "../core/events.ts";
+import {
+  type EvidenceState,
+  type Scope,
+  type Usage,
+  type UsageFieldCoverageMap,
+  usageFieldCoverage,
+} from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
 import { roundCost } from "../core/rounding.ts";
 import {
@@ -14,9 +20,13 @@ import {
 } from "./bundle.ts";
 import { buildDailyRows, type DailyRow } from "./daily.ts";
 import {
+  attachUsageFieldCoverage,
+  mergeUsageFieldCoverage,
   OPTIONAL_USAGE_FIELDS,
   type DatedModelRow,
   type OptionalUsageFields,
+  type UsageCoverageCarrier,
+  usageFieldCoverageOf,
 } from "./dated-usage.ts";
 import type {
   GlobalReport,
@@ -261,7 +271,8 @@ export type UiGlobalDailyRow = {
   sessions: number;
   totalTokens: number;
   cost: number;
-} & OptionalUsageFields;
+} & OptionalUsageFields &
+  UsageCoverageCarrier;
 
 /**
  * The global aggregate: its resolved range and bounded daily rows, the
@@ -358,15 +369,20 @@ export function projectHistoricalSession(
     return noSessionProjection(session.reason);
   }
   const report = sessionView(session.report);
-  const daily = session.usageByDate.map((row) => ({
-    date: row.date,
-    sessions: 1,
-    totalTokens: row.totalTokens,
-    cost: row.cost,
-    generations: row.generations,
-    tools: row.tools,
-    composition: row.composition,
-  }));
+  const daily = session.usageByDate.map((row) =>
+    attachUsageFieldCoverage(
+      {
+        date: row.date,
+        sessions: 1,
+        totalTokens: row.totalTokens,
+        cost: row.cost,
+        generations: row.generations,
+        tools: row.tools,
+        composition: row.composition,
+      },
+      usageFieldCoverageOf(row) ?? usageFieldCoverage([row]),
+    ),
+  );
   return {
     availability: "available",
     capabilities: CAPABILITIES.historySession,
@@ -431,24 +447,26 @@ export function projectHistoryReport(
       ),
     )
     .sort(compareHistoryEntries);
-  const totals = periodTotals(daily);
+  const { totals, usageCoverage } = periodTotals(daily);
   const truncated =
     resolved === null
       ? false
       : (folded.truncated && reachesBeforeRetained(folded.rows, resolved)) ||
         partialContribution(report.sessions, resolved);
-  const sourceEconomics = mergeUsageEconomics(
+  const unknownSessionEconomics = unavailableSessionEconomics(
     usageFromTotals(totals),
-    report.sessions.map((session) =>
-      session.availability === "available"
-        ? session.report.usageEconomics
-        : undefined,
-    ),
+    report.sessions.filter((session) => session.availability === "unavailable")
+      .length,
   );
   const usageEconomics =
     resolved === null
       ? undefined
-      : rangeEconomics(totals, sourceEconomics, truncated);
+      : rangeEconomics(
+          totals,
+          usageCoverage,
+          unknownSessionEconomics,
+          truncated,
+        );
   return {
     availability: report.availability,
     requested,
@@ -499,11 +517,16 @@ export function projectGlobalReport(
   historyWindows?: readonly PartialityWindow[],
 ): UiGlobalProjection {
   const requested = intent ?? null;
-  const rows: UiGlobalDailyRow[] = report.dates.map((row) => ({
-    ...safeUsage(row.usage),
-    date: row.date,
-    sessions: row.sessions,
-  }));
+  const rows: UiGlobalDailyRow[] = report.dates.map((row) =>
+    attachUsageFieldCoverage(
+      {
+        ...safeUsage(row.usage),
+        date: row.date,
+        sessions: row.sessions,
+      },
+      usageFieldCoverageOf(row) ?? usageFieldCoverage([row.usage]),
+    ),
+  );
   const resolved =
     resolveRange(
       intent,
@@ -531,6 +554,9 @@ export function projectGlobalReport(
     }
   }
   totals.cost = roundCost(totals.cost);
+  const usageCoverage = mergeUsageFieldCoverage(
+    daily.map((row) => usageFieldCoverageOf(row) ?? usageFieldCoverage([row])),
+  );
   const truncated =
     resolved === null
       ? false
@@ -541,12 +567,18 @@ export function projectGlobalReport(
         ) &&
           reachesBeforeRetained(rows, resolved)) ||
         partialContribution(historyWindows ?? [], resolved);
+  const unknownSessionEconomics = unavailableSessionEconomics(
+    usageFromTotals(totals),
+    report.sessions.filter((session) => session.availability === "unavailable")
+      .length,
+  );
   const usageEconomics =
     resolved === null
       ? undefined
       : rangeEconomics(
           totals,
-          report.usageEconomics ?? projectUsageEconomics(report.usage),
+          usageCoverage,
+          unknownSessionEconomics,
           truncated,
         );
   return {
@@ -661,11 +693,12 @@ function sessionRange(input: {
     };
   }
   const daily = input.daily.filter((row) => isInRange(row.date, resolved));
-  const totals = periodTotals(daily);
+  const { totals, usageCoverage } = periodTotals(daily);
   const truncated = input.truncation(resolved);
   const usageEconomics = rangeEconomics(
     totals,
-    input.report.usageEconomics,
+    usageCoverage,
+    undefined,
     truncated,
   );
   const filtered = filterView(
@@ -705,7 +738,10 @@ function sessionRange(input: {
 }
 
 /** The in-range sums of one view's own dated rows (design §5.2). */
-function periodTotals(rows: readonly DailyRow[]): UiRangeProjection["totals"] {
+function periodTotals(rows: readonly DailyRow[]): {
+  totals: UiRangeProjection["totals"];
+  usageCoverage: UsageFieldCoverageMap;
+} {
   const totals = zeroTotals();
   for (const row of rows) {
     totals.days += 1;
@@ -721,7 +757,12 @@ function periodTotals(rows: readonly DailyRow[]): UiRangeProjection["totals"] {
     }
   }
   totals.cost = roundCost(totals.cost);
-  return totals;
+  return {
+    totals,
+    usageCoverage: mergeUsageFieldCoverage(
+      rows.map((row) => usageFieldCoverageOf(row) ?? usageFieldCoverage([row])),
+    ),
+  };
 }
 
 function usageFromTotals(
@@ -738,14 +779,30 @@ function usageFromTotals(
   } as Usage;
 }
 
+function unavailableSessionEconomics(
+  usage: Usage,
+  unavailableSessions: number,
+): UsageEconomics | undefined {
+  return unavailableSessions === 0
+    ? undefined
+    : mergeUsageEconomics(
+        usage,
+        Array.from({ length: unavailableSessions }, () => undefined),
+      );
+}
+
 function rangeEconomics(
   totals: { totalTokens: number; cost: number } & OptionalUsageFields,
+  usageCoverage: UsageFieldCoverageMap,
   source: UsageEconomics | undefined,
   truncated: boolean,
 ): UsageEconomics | undefined {
   const usage = usageFromTotals(totals);
-  const observed = projectUsageEconomics(usage);
-  const merged = mergeUsageEconomics(usage, [source, observed]);
+  const observed = projectUsageEconomics(usage, usageCoverage);
+  const merged = mergeUsageEconomics(
+    usage,
+    source === undefined ? [observed] : [observed, source],
+  );
   return truncated ? markUsageEconomicsPartial(merged) : merged;
 }
 

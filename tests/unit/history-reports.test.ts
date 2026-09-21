@@ -974,6 +974,43 @@ test("keeps the optional token breakdown in global and per-date folds", async ()
   }
 });
 
+test("direct global economics uses date-filtered coverage evidence", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    await writeFile(
+      join(sessionDirectory, "history-session.jsonl"),
+      [
+        '{"type":"session","version":3,"id":"history-session"}',
+        '{"type":"custom","id":"marker","parentId":null,"timestamp":"2026-02-01T00:00:01.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
+        '{"type":"message","id":"complete","parentId":"marker","timestamp":"2026-02-01T10:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"totalTokens":18,"cost":{"input":0.01,"output":0.015,"cacheRead":0.001,"cacheWrite":0.002,"total":0.03}}}}',
+        '{"type":"message","id":"missing-cache-write","parentId":"complete","timestamp":"2026-02-02T10:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"input":10,"output":5,"cacheRead":2,"totalTokens":17,"cost":{"input":0.01,"output":0.015,"cacheRead":0.001,"total":0.026}}}}',
+      ].join("\n"),
+    );
+    const global = await loadGlobalReport({
+      ...historyOptions(root, sessionDirectory),
+      dateRange: { from: "2026-02-02", to: "2026-02-02" },
+    });
+    assert.deepEqual(global.usage, {
+      totalTokens: 17,
+      cost: 0.026,
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 2,
+      inputCost: 0.01,
+      outputCost: 0.015,
+      cacheReadCost: 0.001,
+    });
+    assert.equal(global.usageEconomics?.input.tokenCoverage, "complete");
+    assert.equal(
+      global.usageEconomics?.cacheWrite.tokenCoverage,
+      "unavailable",
+    );
+    assert.equal(global.usageEconomics?.cacheReuse.coverage, "partial");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("marks history and global economics partial when one discovered session is unavailable", async () => {
   const { root, sessionDirectory } = await createHistoryRoot();
   try {
