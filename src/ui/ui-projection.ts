@@ -439,16 +439,11 @@ export function projectHistoryReport(
         partialContribution(report.sessions, resolved);
   const sourceEconomics = mergeUsageEconomics(
     usageFromTotals(totals),
-    report.sessions
-      .filter(
-        (
-          session,
-        ): session is Extract<
-          HistoryReport["sessions"][number],
-          { availability: "available" }
-        > => session.availability === "available",
-      )
-      .map((session) => session.report.usageEconomics),
+    report.sessions.map((session) =>
+      session.availability === "available"
+        ? session.report.usageEconomics
+        : undefined,
+    ),
   );
   const usageEconomics =
     resolved === null

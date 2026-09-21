@@ -7,8 +7,8 @@ import type { FoldedAggregateEvidence } from "../../src/core/evidence.ts";
 import type { SessionEvidenceHealth } from "../../src/core/evidence-health.ts";
 import type { CanonicalRetainedAggregates } from "../../src/core/retained-aggregates.ts";
 import type { PresenceContext } from "../../src/integrations/contract.ts";
-import { readPresence } from "../../src/integrations/presence.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
+import { readPresence } from "../../src/integrations/presence.ts";
 import type { CoverageReason } from "../../src/storage/history.ts";
 import { renderJson } from "../../src/ui/json.ts";
 import {
@@ -18,7 +18,10 @@ import {
   loadHistorySessionReport,
   type SessionEvidenceProvider,
 } from "../../src/ui/load-history.ts";
-import { projectGlobalReport } from "../../src/ui/ui-projection.ts";
+import {
+  projectGlobalReport,
+  projectHistoryReport,
+} from "../../src/ui/ui-projection.ts";
 
 /** The registry's presence model, keyed by every registered integration. */
 const readIntegrationPresence = (signals: PresenceContext) =>
@@ -966,6 +969,54 @@ test("keeps the optional token breakdown in global and per-date folds", async ()
     assert.deepEqual(global.dates, [
       { date: "2026-02-01", sessions: 1, usage: expected },
     ]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("marks history and global economics partial when one discovered session is unavailable", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    const unavailableDirectory = join(root, "sessions", "unavailable-session");
+    await mkdir(unavailableDirectory, { recursive: true });
+    await writeFile(
+      join(unavailableDirectory, "meta.json"),
+      '{"schemaVersion":2,"sessionId":"unavailable-session","sourceFile":"missing.jsonl","state":"tracking"}\n',
+    );
+    await writeFile(
+      join(sessionDirectory, "history-session.jsonl"),
+      [
+        '{"type":"session","version":3,"id":"history-session"}',
+        '{"type":"custom","id":"marker","parentId":null,"timestamp":"2026-02-01T00:00:01.000Z","customType":"session-inspector:tracking-start","data":{"schemaVersion":1}}',
+        '{"type":"message","id":"gen","parentId":"marker","timestamp":"2026-02-01T10:00:00.000Z","message":{"role":"assistant","content":[],"provider":"acme","model":"alpha","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"reasoning":3,"totalTokens":18,"cost":{"input":0.01,"output":0.015,"cacheRead":0.001,"cacheWrite":0.002,"total":0.03}}}}',
+      ].join("\n"),
+    );
+    const options = historyOptions(root, sessionDirectory);
+    const history = await loadHistoryReports(options);
+    const projectedHistory = projectHistoryReport(history);
+    assert.equal(projectedHistory.totals.totalTokens, 18);
+    assert.equal(
+      projectedHistory.usageEconomics?.input.tokenCoverage,
+      "partial",
+    );
+    assert.equal(
+      projectedHistory.usageEconomics?.cacheReuse.coverage,
+      "partial",
+    );
+
+    const global = await loadGlobalReport(options);
+    assert.equal(global.usage.totalTokens, 18);
+    assert.equal(global.usageEconomics?.input.tokenCoverage, "partial");
+    assert.equal(global.usageEconomics?.cacheReuse.coverage, "partial");
+    const projectedGlobal = projectGlobalReport(global);
+    assert.equal(
+      projectedGlobal.usageEconomics?.input.tokenCoverage,
+      "partial",
+    );
+    assert.equal(
+      projectedGlobal.usageEconomics?.cacheReuse.coverage,
+      "partial",
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }

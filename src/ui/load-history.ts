@@ -578,14 +578,11 @@ export async function loadGlobalReport(
   );
   const usageEconomics = mergeUsageEconomics(
     usage,
-    history.sessions
-      .filter(
-        (
-          session,
-        ): session is Extract<SessionScan, { availability: "available" }> =>
-          session.availability === "available",
-      )
-      .map((session) => session.report.usageEconomics),
+    history.sessions.map((session) =>
+      session.availability === "available"
+        ? session.report.usageEconomics
+        : undefined,
+    ),
   );
   return {
     availability: history.availability,
