@@ -537,3 +537,173 @@ Until the upstream telemetry seam exists:
 - explicit `jev_*` native tool activity may be reported under explicitly named
   counters;
 - total Jev request/token accounting remains unavailable.
+
+### 13. Subagent run outcome and effort breakdown
+
+**Status:** Research / product follow-up.
+**Depends on:** existing Agent execution evidence and subagent run attribution.
+
+**Motivation:** token and cost totals answer which subagent runs were expensive,
+but not whether that effort led to a terminal outcome or whether a run spent a
+large amount of work before failing, being cancelled, or remaining incomplete.
+
+Invariant: **Inspector observes runs, not role taxonomies.**
+
+The goal is to make deterministic execution effort visible per subagent run
+without inventing a semantic quality or "success" score.
+
+A useful comparison should make cases such as these obvious from observed
+evidence:
+
+    <subagent A>   completed   6 tool calls    9k tokens    42s
+    <subagent B>   failed     20 tool calls   31k tokens   3m12s
+
+Subagent names, roles, and topology are producer-defined evidence. Inspector
+must not assume or hard-code a role vocabulary such as `worker`, `scout`,
+`reviewer`, or any orchestration-specific agent name.
+
+The report must not infer that the first run solved its task correctly or that
+the second "wandered". It reports execution outcome and effort only. Semantic
+task quality remains unavailable unless a producer publishes an explicit,
+bounded semantic-evaluation contract.
+
+**Current state:** Agent execution already exposes persisted subagent topology,
+model, producer-reported status, usage/cost where available, and explicit
+coverage/partiality. It does not yet provide a complete per-run effort breakdown
+that answers how much execution activity occurred before that terminal state.
+
+Research questions:
+
+- which per-run facts are durably available from Pi and supported subagent
+  producers: terminal status, start/end time, duration, generations, tool calls,
+  errors, token usage, and cost;
+- which activity can be attributed to a specific subagent run by stable
+  persisted identity rather than by adjacency, timing windows, prompt text, or
+  other inference;
+- whether nested subagent activity belongs to the parent's effort breakdown,
+  the child's breakdown, or both as explicitly labelled topology without
+  double-counting;
+- how async/incomplete runs are represented when the producer has not yet
+  published terminal evidence;
+- how coverage is expressed when usage is known but tool/generation activity is
+  not, or vice versa;
+- whether any producer-reported "completed" state means only execution
+  completion rather than semantic task success. Inspector must preserve that
+  distinction in naming and UI copy;
+- how producer-defined subagent identity, role/name, and topology are represented
+  without assuming a fixed agent vocabulary; unknown or new producer roles must
+  remain renderable without code changes unless their evidence shape itself is
+  unsupported.
+
+Expected implementation shape:
+
+- extend the existing Agent execution Tree/Table projections rather than add a
+  separate analytics subsystem;
+- expose only evidence-backed per-run fields, candidates being:
+  - terminal status/outcome;
+  - duration;
+  - generation count;
+  - tool-call count;
+  - bounded error count/status;
+  - token usage;
+  - cost;
+- retain `unavailable` / partial coverage independently for each evidence class;
+- keep child usage a breakdown of already-counted native usage, never an
+  additive total;
+- derive only mechanically valid measures from observed facts, for example
+  tokens per generation or tool calls per run, and only when their denominators
+  have complete enough evidence;
+- do not introduce an Inspector-defined quality, productivity, wandering, or
+  success score;
+- do not use an LLM/eval pass to judge whether the subagent solved its task;
+- no new dependency or remote tracing backend is required;
+- treat subagent names and roles as bounded producer evidence, not as Inspector
+  enums or hard-coded categories;
+- render arbitrary supported subagent identities consistently across Tree/Table,
+  JSON, snapshot, and TUI surfaces where the surface exposes Agent execution;
+- do not derive semantics from names such as `worker`, `scout`, `reviewer`,
+  `oracle`, or orchestration-specific aliases.
+
+Before implementation:
+
+1. document the exact persisted evidence available for each supported subagent
+   producer and distinguish observed facts from inferred ones;
+2. define the per-run DTO/coverage contract before changing UI projections;
+3. prove with fixtures that parent/child attribution does not double-count
+   tokens, cost, generations, or tool activity;
+4. include at least one completed, failed/cancelled, partial, and unavailable
+   run case;
+5. verify that identical canonical evidence renders the same outcome/effort
+   semantics in the localhost UI, immutable snapshot, TUI where applicable, and
+   JSON report.
+
+Out of scope:
+- Cross-session delegated agents are out of scope here; they require explicit 
+  producer-backed session correlation and are tracked separately in item 14.
+
+### 14. Cross-session delegated agent correlation
+
+**Status:** Research.
+**Depends on:** item 13 only for presentation reuse; discovery/correlation is a
+separate evidence problem.
+
+**Motivation:** some orchestration tools launch delegated agents as independent
+Pi sessions rather than as subagent runs persisted inside the parent session.
+For example, a `herdrd-delegate` invocation may create work that is invisible to
+the current session's native Agent execution tree even though it is logically
+part of the same orchestration.
+
+Inspector should be able to represent these delegated sessions only when a
+producer exposes a stable, bounded correlation contract. It must not infer
+parent/child relationships from timestamps, working directories, prompts,
+session proximity, agent names, or other heuristics.
+
+Research questions:
+
+- which orchestration producers launch work in independent Pi sessions;
+- whether they expose stable parent session, delegated session, run, task, or
+  invocation identities;
+- whether correlation evidence is persisted, live-only, or recoverable after
+  restart;
+- how delegated-session lifecycle maps to existing Agent execution semantics:
+  started, running, completed, failed, cancelled, unavailable;
+- whether a delegated session may itself launch further delegated sessions and
+  therefore form a cross-session tree;
+- how usage/cost is presented without double-counting the delegated session in
+  both its own native session totals and the parent's orchestration breakdown;
+- how historical/global reports distinguish physical Pi sessions from logical
+  orchestration ancestry;
+- what privacy/redaction rules apply to producer identities and correlation ids.
+
+Expected implementation shape:
+
+- keep Pi session identity and orchestration identity separate;
+- add a producer adapter only when the producer publishes a real correlation
+  contract;
+- represent delegated sessions as linked session-backed runs rather than
+  pretending they are native in-session AgentRuns;
+- reuse the existing Agent execution projection where semantics genuinely
+  match, but preserve the distinction between native subagent runs and
+  cross-session delegated work;
+- subagent/delegate names and roles remain producer-defined evidence, never an
+  Inspector enum;
+- no heuristic joins by time, cwd, prompt text, model, command name, or nearby
+  session creation;
+- missing correlation stays unavailable rather than guessed.
+
+Initial producer candidate:
+
+- `herdrd` / `herdrd-delegate`, subject to verifying that it exposes a stable
+  parent/delegate correlation contract.
+
+Before implementation:
+
+1. document Herdrd's actual persisted/live correlation surface;
+2. prove that parent and delegated sessions can be joined by explicit producer
+   identity rather than inference;
+3. define accounting semantics for parent orchestration views versus native
+   per-session totals;
+4. cover nested delegation, missing delegate session, incomplete work, restart,
+   and duplicate/replayed evidence;
+5. ensure global/history totals remain native session totals and are never
+   inflated by logical orchestration links.
