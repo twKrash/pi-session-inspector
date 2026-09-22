@@ -41,7 +41,39 @@ The original pin assumed a manual `--subagents-artifact` input shaped `{version:
 
 Real-session evidence used for UAT: 174 `subagent` and 46 `subagent_wait` tool results with populated `details`. Fixture provenance for `tests/fixtures/pi/0.85.1/{ponytail-caveman,error-message,subagent-tool-results}.jsonl` and `tests/fixtures/integrations/*` records producer name, version, integrity, symbol/field, and that the content is synthetic.
 
-## Answers to required research questions
+## Item 13 evidence audit (13A, 2026-09-22)
+
+This is a research-only addendum for the subagent run outcome/effort follow-up. It does not change `AgentRun.status` or `confidence`, and it does not define the 13B DTO. The checked-in fixture `tests/fixtures/pi/0.85.1/subagent-agent-run-effort-audit.jsonl` is synthetic and sanitized: Pi session format is pinned to `0.85.1`; producer observations are labelled independently as `pi-subagents` `0.70.1` (current local declaration) and `0.59.0` (historical comparison row). IDs and labels are bounded placeholders, content is empty, and no task text, output, arguments, paths, secrets, raw errors, archive bodies, or `toolCalls[]` are present.
+
+### Evidence matrix
+
+| Candidate fact | Coverage | Producer field / persisted surface | Stable identity and privacy treatment | Exact limitation / 13B boundary |
+| --- | --- | --- | --- | --- |
+| Terminal success/failure/interruption | supported | `results[]` and `completions[]`: `success`, `state`, `exitCode`, `processSignal`, bounded `outputState` | session-scoped opaque digest of `runId`; bounded agent label only | execution completion, not semantic task success; closed vocabulary maps unknown values to `unknown` |
+| Failure class | supported | bounded `exit-nonzero`, `process-signal`, `completion-failed`, `output-absent` | enum only; raw producer `error` is discarded | no raw error text; a terminal producer state is not a quality judgement |
+| Per-run error count | unavailable | no explicit bounded attributable count in the checked surfaces | never derived from aggregate parent tool-result failures | aggregate failure counts do not qualify |
+| Duration | partial | `progressSummary.durationMs` or `progress.durationMs` when persisted in the publication | non-negative bounded number; no timestamp arithmetic | `observedAt` is only the publishing Pi entry timestamp; live status files and `startedAt`/`endedAt` are not historical evidence without a proven, reviewed join |
+| Generations/turns | partial | producer `progressSummary.turnCount` / `progress.turnCount`; `usage.turns` recorded separately | bounded count, without content | `usage.turns` is not silently equated with a native generation count; absent in the Pi 0.85.1 fixture is unavailable |
+| Tool-call count | partial | producer-reported bounded `progressSummary.toolCount` / `progress.toolCount` only | bounded count; `toolCalls[]` content is prohibited | array length is not used; absent in the fixture is unavailable |
+| Usage | partial | complete child `usage` groups from `results[]`, `completions[]`, and workflow children | opaque run digest; bounded numeric fields | malformed/partial groups remain partial or unavailable; no additive parent total |
+| Cost | partial | `usage.cost` within a validated usage group | bounded numeric value | producer cost only; never synthesized from time or missing tokens |
+| Nested identity | partial | foreground `results[]`; workflow `children[]` with public index | run digest; `(aggregate run id, child index)` only where producer supplies it | no branch or parent inferred from adjacency |
+| Repeated publication | supported | later completion observation for the same producer run | same session-scoped opaque digest | completion replaces/selects the earlier observation; it is not added to it |
+| Native-vs-child accounting | supported | child usage is emitted as `child-breakdown` with `contributesToSession: false` | child row remains separately labelled | child usage is never added to native tool-result usage |
+| Archive reference | partial | `completions[].archivePath` presence validation | only `available`/`missing` verdict is retained | archive contents, path, and raw reference are never retained |
+| Running/incomplete publication | supported | `state`/bounded output state without terminal evidence | same opaque run digest | remains running/incomplete; no duration or outcome inferred |
+| Malformed publication | supported | missing/invalid `details`, invalid arrays, or invalid numeric groups | no producer payload copied | degrades to `unavailable`, never guessed |
+| Producer version | supported for provenance | fixture metadata/row `producerVersion`; public declarations | version is provenance, not a run metric | `0.59.0` historical evidence and `0.70.1` current observation are separate; neither rewrites the other |
+
+### Four audit lanes and PR boundary
+
+1. **Outcome/error:** publish only bounded producer terminal evidence and failure classes; retain existing execution status semantics; error counts stay unavailable without an explicit producer count.
+2. **Effort:** accept only producer-reported duration/turn/tool counts from persisted publication surfaces; never infer duration from `observedAt` or timestamps, and never inspect `toolCalls[]`.
+3. **Usage/nesting:** preserve opaque run identity, repeated-publication replacement, explicit workflow child identity, and non-additive child usage; archive data is presence-only.
+4. **Provenance/privacy:** keep Pi `0.85.1` as the session fixture baseline and record producer versions per evidence row; synthetic rows are bounded, empty-content, and safe to commit.
+
+13A produces this matrix and fixture only. 13B owns any canonical DTO, adapter implementation, coverage mechanism, and new tests; 13C/13D remain out of scope. Any candidate lacking stable persisted attribution must be published as `unavailable`.
+
 
 | # | Question | Answer | Evidence |
 | --- | --- | --- | --- |
