@@ -21,6 +21,16 @@ An **integration** is a known semantic protocol: Inspector understands the evide
 | [`mcp`](https://github.com/nicobailon/pi-mcp-adapter) | adapter tool vocabulary: `mcp`, `mcpScript`, or `mcp__<server>` proxies | `mcp-approval-v1` session entries, re-validated against the declared shape, plus native `mcp`/`mcpScript`/`mcp__<server>` tool calls | yes: `pi-mcp-adapter/status/v1` | no | `calls`, `toolApprovals`, `iframeApprovals`, `iframeDenials`; `calls` counts invocations of the adapter's own surface (not MCP round-trips — a script call can reach several servers), and only counters with evidence are published, so an approval class nobody decided stays absent rather than `0`; the runtime status snapshot is a presence sighting, never a counter, and server/tool names plus hashes are never retained |
 | `mode` (legacy) | — | — | — | — | Validates historical rows and counters only; never a report row, presence entry, or hook |
 
+### Permission System event contract
+
+Inspector observes the Permission System's three best-effort, unversioned broadcasts defensively by field presence. Producer fields may be added within a major; `schemaVersion` on Inspector telemetry is Inspector's own envelope version, not a producer protocol version.
+
+- `permissions:ready` is presence only. Each node may broadcast it at its own `session_start` and again at its first `before_agent_start`, so it is never a session or activity counter.
+- `permissions:ui_prompt` means the human is about to be shown a permission prompt. It counts only that explicit broadcast, not request creation, waiting, or gate evaluation; policy and automatic resolutions may emit no prompt.
+- `permissions:decision` follows every gate resolution. Decisions and prompts are independent counters, so decisions may exceed prompts; Inspector never fabricates a prompt from a decision.
+- Producer `requestId` is the supported producer-side correlation key for prompt, decision, and review-log entries. Inspector never persists the raw ID or joins those records: it retains only existing session-scoped opaque `attribution.request` metadata, which is additive metadata and not a canonical join key.
+- Forwarded requests can emit a parent-session prompt and a child-session decision, or no human prompt when the parent's policy answers the request. Their session-scoped attribution hashes therefore must not be used as cross-session correlation.
+
 Evidence states: `supported` (evidence observed and parsed), `unavailable` (the integration may be installed but produced no observable evidence), `unsupported` (evidence exists but its shape or version is not understood).
 
 ### Reading a row

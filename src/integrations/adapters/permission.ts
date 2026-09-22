@@ -7,6 +7,12 @@ import type {
 } from "../contract.ts";
 import { isRecord } from "./shared.ts";
 
+/**
+ * Inspector telemetry envelope schema version.
+ *
+ * This is not a pi-permission-system producer protocol version: its
+ * broadcasts are unversioned and consumed defensively by field presence.
+ */
 const SCHEMA_VERSION = 1;
 /** Byte bound shared with `canonicalOpaqueDigest` for raw opaque identities. */
 const MAX_REQUEST_ID_BYTES = 512;
@@ -52,7 +58,9 @@ function readResolution(value: unknown): string {
  * Session-scoped, domain-separated hash of a validated permission request ID.
  * Returns `undefined` for an absent, non-string, empty, control-character, or
  * oversized `requestId`; a malformed ID yields no attribution rather than a
- * hash of a fallback. The raw producer ID never leaves this function.
+ * hash of a fallback. The raw producer ID never leaves this function. The
+ * producer supports requestId correlation, but this metadata is intentionally
+ * not a canonical prompt/decision join key.
  */
 function readRequestAttribution(
   payload: unknown,
@@ -125,6 +133,12 @@ export const permissionIntegration = defineIntegration({
         }
       };
 
+      // Producer contract: ready may repeat for one node, so every sighting is
+      // folded as boolean presence only; ui_prompt is an explicit human-facing
+      // prompt, while decisions fire for every resolution and may outnumber
+      // prompts. These broadcasts are best-effort and unversioned: consume
+      // known fields defensively, without a producer protocolVersion gate.
+      // Inspector's schemaVersion belongs only to its own telemetry envelope.
       subscribe("permissions:ready", () => {
         try {
           context.markPresence("permission");
