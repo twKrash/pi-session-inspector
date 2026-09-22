@@ -65,6 +65,19 @@ This is a research-only addendum for the subagent run outcome/effort follow-up. 
 | Malformed publication | supported | missing/invalid `details`, invalid arrays, or invalid numeric groups | no producer payload copied | degrades to `unavailable`, never guessed |
 | Producer version | supported for provenance | fixture metadata/row `producerVersion`; public declarations | version is provenance, not a run metric | `0.59.0` historical evidence and `0.70.1` current observation are separate; neither rewrites the other |
 
+### Version-scoped producer contract (13B input)
+
+The following is the 0.70.1 declaration-level map. It is deliberately separate from the historical 0.59.0 rows above and from the Pi/session `0.85.1` pin. The fixture is a persisted Pi v3 session surface; each row carries `producerVersion` solely as provenance.
+
+| Public declaration symbol (pi-subagents 0.70.1) | Exact field path | Persisted publication surface | Immutable source provenance | 13B coverage |
+| --- | --- | --- | --- | --- |
+| `SingleResult` via `SubagentDetails.results: SingleResult[]` | `details.results[].index`, `.runId`, `.agent`, `.usage` | `subagent` tool-result `details.results[]` | publishing Pi entry timestamp and the opaque digest of `.runId`; no result payload | supported for identity/usage when complete; effort fields absent in this fixture are unavailable |
+| `WaitCompletion` via `WaitDetails.completions: WaitCompletion[]` | `details.completions[].runId`, `.agent`, `.success`, `.usage`, `.archivePath`; nested `details.completions[].results[]` | `subagent_wait` tool-result `details.completions[]` | same publishing entry timestamp and run digest; archive is reduced to available/missing | supported for terminal success and replacement usage; cancellation is unavailable unless a pinned declaration field proves it |
+| `WorkflowChild` via `WorkflowChildren.children: WorkflowChild[]` | `details.workflowChildren.children[].index`, `.runId`, `.agent`, `.usage` | workflow publication `details.workflowChildren.children[]` | aggregate run digest plus supplied child `index`; no branch inferred | partial: child rows and complete usage only; container is not an AgentRun |
+| `ArchiveReference` (`WaitCompletion.archivePath`) | `details.completions[].archivePath` → referenced archive `version`/`runId` only | archive reference attached to a wait completion | immutable presence/identity verdict; path and archive contents discarded | partial: available/missing only |
+
+`progressSummary.durationMs`, `progressSummary.turnCount`, `progressSummary.toolCount` and their `progress.*` counterparts are not fields of the checked 0.70.1 `SingleResult` declaration and are therefore unavailable for this fixture. Likewise, `state: "cancelled"` is not pinned as a 0.70.1 `SingleResult` cancellation contract; the fixture preserves it only as an unavailable publication, rather than claiming interruption. `usage.turns` remains usage metadata, not a native generation count.
+
 ### Four audit lanes and PR boundary
 
 1. **Outcome/error:** publish only bounded producer terminal evidence and failure classes; retain existing execution status semantics; error counts stay unavailable without an explicit producer count.
