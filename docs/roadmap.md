@@ -469,3 +469,71 @@ items moved to the archive.
 
 - Other harnesses stay item 9 above. The external review's Claude Code
   observation is recorded there rather than as a parallel initiative.
+
+### 12. Theo pi-jev integration telemetry
+
+**Status:** Research / upstream dependency.
+**Depends on:** integration adapter registry only.
+
+Integrate specifically with the `pi-jev` npm package published from
+`TheoOliveira/pi-jev`. This is not a generic Jev integration and must not be
+confused with the separate `@alexlikevibe/pi-jev` package from `iefnaf/pi-jev`.
+
+Canonical Inspector integration key:
+
+    pi-jev-theo
+
+Presence must not be inferred from the generic `/jev` command because multiple
+independent packages expose that command.
+
+Current safe presence vocabulary:
+
+    jev_find_tools
+    jev_find_skill
+    jev_evaluate
+
+Persisted native tool calls may report explicitly observed calls to those tools,
+but they must not be labeled as total Jev requests because automatic routing,
+compaction, guards, orchestration, and other internal paths call Jev without
+producing those Pi tool calls.
+
+The current producer keeps request count, token usage, latency, and error state
+only in process-local `JevClient.stats` and renders them through `/jev status`.
+Inspector must not scrape status UI text, import producer internals, monkey-patch
+the client, inspect API credentials, or infer hidden Jev requests.
+
+Preferred upstream contract:
+
+    pi-jev:telemetry:v1
+
+A producer-owned, versioned Pi event carrying only bounded non-sensitive fields
+such as event class, success, token count, elapsed time, activated-tool count,
+recommended-skill count, and model-switch boolean.
+
+No prompts, Jev state/questions/answers, tool names, skill bodies, tool
+arguments/results, API keys, filesystem paths, or raw errors may reach Inspector
+telemetry.
+
+Candidate v1 Inspector counters:
+
+    requests
+    tokens
+    errors
+    autoRoutes
+    toolsActivated
+    skillsRecommended
+    modelRouteDecisions
+    modelSwitches
+    compactions
+    guardChecks
+    agentDispatches
+
+Do not derive `savedTokens` or `savedCost`. Savings remain an analysis over Pi's
+native usage/cost evidence, not a producer counter.
+
+Until the upstream telemetry seam exists:
+
+- presence may be supported;
+- explicit `jev_*` native tool activity may be reported under explicitly named
+  counters;
+- total Jev request/token accounting remains unavailable.
