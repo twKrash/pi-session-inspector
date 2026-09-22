@@ -565,7 +565,7 @@ must not assume or hard-code a role vocabulary such as `worker`, `scout`,
 The report must not infer that the first run solved its task correctly or that
 the second "wandered". It reports execution outcome and effort only. Semantic
 task quality remains unavailable unless a producer publishes an explicit,
-bounded outcome contract.
+bounded semantic-evaluation contract.
 
 **Current state:** Agent execution already exposes persisted subagent topology,
 model, producer-reported status, usage/cost where available, and explicit
@@ -620,7 +620,7 @@ Expected implementation shape:
 - treat subagent names and roles as bounded producer evidence, not as Inspector
   enums or hard-coded categories;
 - render arbitrary supported subagent identities consistently across Tree/Table,
-  JSON, snapshot, and TUI surfaces;
+  JSON, snapshot, and TUI surfaces where the surface exposes Agent execution;
 - do not derive semantics from names such as `worker`, `scout`, `reviewer`,
   `oracle`, or orchestration-specific aliases.
 
@@ -637,7 +637,7 @@ Before implementation:
    semantics in the localhost UI, immutable snapshot, TUI where applicable, and
    JSON report.
 
-Wont do:
+Out of scope:
 - Cross-session delegated agents are out of scope here; they require explicit 
   producer-backed session correlation and are tracked separately in item 14.
 
