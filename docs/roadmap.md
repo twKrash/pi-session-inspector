@@ -572,6 +572,10 @@ model, producer-reported status, usage/cost where available, and explicit
 coverage/partiality. It does not yet provide a complete per-run effort breakdown
 that answers how much execution activity occurred before that terminal state.
 
+**13A evidence audit (research-only, 2026-09-22):** Four bounded audit lanes are complete as documentation and sanitized fixture evidence: (1) outcome/error surfaces, (2) duration/generations/tools, (3) usage/cost/nesting and double-counting, and (4) producer version/provenance/privacy. The Pi/session fixture baseline is `0.85.1`; local `pi-subagents` `0.70.1` observations and historical `0.59.0` research remain separate. Producer terminal state means execution completion, not semantic task success. `observedAt` is not a duration source; unsupported attribution remains unavailable. No production behavior or status/outcome coverage mechanism is added by 13A.
+
+**PR boundaries:** 13A supplies the evidence matrix and sanitized JSONL fixture only. 13B may define the bounded canonical DTO and adapter contract from that matrix; 13C may project it across report surfaces; 13D may add only evidence-backed UX. No 13B/13C/13D work is included here.
+
 Research questions:
 
 - which per-run facts are durably available from Pi and supported subagent
