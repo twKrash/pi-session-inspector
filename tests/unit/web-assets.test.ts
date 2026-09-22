@@ -1988,7 +1988,7 @@ test("every session tab renders from the DTO's own published rows", async () => 
   assert.equal(rendered().includes("Evidence, not estimates."), true);
 });
 
-test("a tools row narrows the calls list in place, and the clear control restores it", async () => {
+test("a tool route filters the calls list and clear restores it", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
     hash: "#/current/tools?scope=tree",
@@ -2002,14 +2002,20 @@ test("a tools row narrows the calls list in place, and the clear control restore
   assert.equal(rows(), 3); // the header row plus the fixture's two calls
 
   const filter = view()
-    .querySelectorAll("button")
-    .find((button) => button.dataset.toolFilter === "read");
+    .querySelectorAll("a")
+    .find((anchor) => anchor.dataset.entity === "tool:read");
   assert.notEqual(filter, undefined);
-  // The button names the tool it narrows to, and it is not a route of its own.
-  assert.match((filter as StubElement).attributes["aria-label"] ?? "", /read/);
+  // The tool link names the route that filters calls and focuses its summary row.
+  assert.equal(
+    (filter as StubElement).attributes.href,
+    "#/current/tools?scope=tree&entity=tool%3Aread",
+  );
   harness.click(filter as StubElement);
   assert.equal(rows(), 2);
-  assert.equal(harness.location.hash, "#/current/tools?scope=tree");
+  assert.equal(
+    harness.location.hash,
+    "#/current/tools?scope=tree&entity=tool%3Aread",
+  );
 
   const clear = view()
     .querySelectorAll("button")
@@ -2017,6 +2023,60 @@ test("a tools row narrows the calls list in place, and the clear control restore
   assert.notEqual(clear, undefined);
   harness.click(clear as StubElement);
   assert.equal(rows(), 3);
+});
+
+test("a tool link routes to Tools, filters calls, and focuses its row", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/tools?scope=tree",
+  });
+  await harness.start();
+  const link = harness
+    .element("view")
+    .querySelectorAll("a")
+    .find((anchor) => anchor.dataset.entity === "tool:read");
+  assert.notEqual(link, undefined);
+  const row = link as StubElement;
+  assert.equal(
+    row.attributes.href,
+    "#/current/tools?scope=tree&entity=tool%3Aread",
+  );
+  harness.click(row);
+  const calls = harness.element("view").querySelectorAll("table")[1];
+  assert.notEqual(calls, undefined);
+  assert.equal(calls?.querySelectorAll("tr").length, 2);
+  assert.equal(
+    calls?.querySelectorAll("tr")[1]?.querySelectorAll("td").length,
+    6,
+  );
+  const summary = harness.element("view").querySelectorAll("table")[0];
+  assert.equal(
+    summary?.querySelectorAll("tr")[1]?.querySelectorAll("td").length,
+    11,
+  );
+  assert.equal(harness.location.hash, row.attributes.href);
+  assert.equal(harness.activeElement()?.dataset.entity, "tool:read");
+});
+
+test("a skill link routes to Skills and focuses its row", async () => {
+  const harness = createWebClient({
+    responses: [uiSnapshot()],
+    hash: "#/current/skills?scope=tree",
+  });
+  await harness.start();
+  const link = harness
+    .element("view")
+    .querySelectorAll("a")
+    .find((anchor) => anchor.dataset.entity === "skill:build");
+  assert.notEqual(link, undefined);
+  const row = link as StubElement;
+  assert.equal(
+    row.attributes.href,
+    "#/current/skills?scope=tree&entity=skill%3Abuild",
+  );
+  harness.click(row);
+  assert.equal(harness.location.hash, row.attributes.href);
+  assert.equal(harness.activeElement()?.dataset.entity, "skill:build");
 });
 
 test("a row link is a real route that keeps the context and focuses its row", async () => {
@@ -4181,14 +4241,18 @@ test("the Tools tab separates its summary from the calls timeline", async () => 
   );
   assert.equal(view.querySelectorAll("hr").length, 0);
 
-  // Nothing about the tab's behaviour moved: the summary row still narrows the
-  // calls list, and the clear control still restores it.
+  // The summary link narrows the calls list, and the clear control restores it.
   const filter = view
-    .querySelectorAll("button")
-    .find((button) => button.dataset.toolFilter !== undefined);
-  if (filter === undefined) throw new Error("the summary row must filter");
+    .querySelectorAll("a")
+    .find((anchor) => anchor.dataset.entity === "tool:read");
+  if (filter === undefined) throw new Error("the summary row must link");
   harness.click(filter);
   assert.equal(harness.texts(view).join(" ").includes("Filtered by"), true);
+  assert.equal(
+    harness.location.hash,
+    "#/current/tools?scope=tree&preset=7&entity=tool%3Aread",
+  );
   harness.click(control(harness, "view", "clearFilter", "true"));
   assert.equal(harness.texts(view).join(" ").includes("Filtered by"), false);
+  assert.equal(harness.location.hash, "#/current/tools?scope=tree&preset=7");
 });

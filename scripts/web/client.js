@@ -167,7 +167,6 @@
   // tab) settings of the views this document is not showing.
   const rangeIntents = {};
   const viewSettings = {};
-  const toolFilters = {};
 
   // -------------------------------------------------------------------------
   // Route helpers
@@ -1463,9 +1462,10 @@
     if (summary.length === 0) {
       return [emptyCard(COPY["tools.summary"], COPY["tools.none"])];
     }
-    const identity = viewIdentity();
     const filter =
-      toolFilters[identity] === undefined ? null : toolFilters[identity];
+      state.entity !== undefined && state.entity.kind === "tool"
+        ? state.entity.id
+        : null;
     const summarySection = table(
       COPY["tools.summary"],
       COPY["tools.note"],
@@ -1484,7 +1484,7 @@
       ],
       summary.map((row) => ({
         cells: [
-          toolFilterButton(row.name),
+          entityLink("tool", row.name, row.name, "mono"),
           number(row.calls),
           number(row.succeeded),
           number(row.failed),
@@ -1530,7 +1530,7 @@
             calls.map((row) => ({
               cells: [
                 row.timestamp,
-                row.name,
+                entityLink("tool", row.name, row.name, "mono"),
                 orUnavailable(row.source),
                 badgeCell(
                   COPY["tools." + row.status],
@@ -1554,7 +1554,7 @@
             ],
           );
     if (filter === null) return [summarySection, tabSection([callsCard])];
-    // The filter is ephemeral state of the view it was chosen in, never a route.
+    // The filter is route state, so the URL is shareable and Back/Forward restore it.
     const bar = el("div", "toolbar");
     const clear = el("button", "", COPY["tools.clearFilter"]);
     clear.dataset.clearFilter = "true";
@@ -1563,15 +1563,6 @@
       clear,
     );
     return [bar, summarySection, tabSection([callsCard])];
-  };
-
-  /** A summary row's own tool name narrows the calls list; it is not a route. */
-  const toolFilterButton = (name) => {
-    const button = el("button", "", name);
-    button.dataset.toolFilter = name;
-    button.setAttribute("aria-label", tr("tools.filteredBy", { tool: name }));
-    entityMark(button, "tool", name);
-    return button;
   };
 
   const inventoryCount = (value) =>
@@ -3306,7 +3297,11 @@
     // The chart is drawn on a canvas inside the subtree about to be replaced.
     destroyChart();
     const output = q("view");
-    if (output !== null) output.replaceChildren(...viewNodes());
+    if (output !== null) {
+      const stack = el("div", "view-stack");
+      stack.append(...viewNodes());
+      output.replaceChildren(stack);
+    }
     mountChart();
     const focused = flags.structural === true ? focusEntity() : false;
     if (
@@ -3528,17 +3523,10 @@
     const control = link !== null ? link : target.closest("button");
     if (control === null) return;
     const data = control.dataset;
-    // The view-local controls come first: a summary row's tool name carries both
-    // its filter role and its entity identity, and the filter is what a click on
-    // it means.
-    if (data.toolFilter !== undefined) {
-      toolFilters[viewIdentity()] = data.toolFilter;
-      render({});
-      return;
-    }
+    // Route controls run before view-local settings so entity links preserve
+    // their destination and clearFilter removes the route's focused entity.
     if (data.clearFilter !== undefined) {
-      toolFilters[viewIdentity()] = null;
-      render({});
+      navigate(routeFor({ entity: null }));
       return;
     }
     if (data.copyId !== undefined) {

@@ -11,3 +11,4 @@
 
 .tab-section{display:grid;gap:16px;margin-top:22px;border-top:1px solid var(--line);padding-top:16px}.tab-section>.section-title{font:11px var(--mono);text-transform:uppercase;letter-spacing:1.4px;color:var(--muted);font-weight:600}@media(max-width:760px){.tab-section{gap:12px;margin-top:18px;padding-top:14px}}
 .metric-picker{display:flex;gap:6px;flex-wrap:wrap}.metric-picker button{font-size:12px;min-height:32px;padding:4px 10px}
+html{scroll-behavior:smooth}.view-stack,.snapshot-stack{display:grid;gap:20px}.view-stack>.section-gap,.view-stack>.tab-section,.snapshot-stack>.section-gap,.snapshot-stack>.tab-section{margin-top:0}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}

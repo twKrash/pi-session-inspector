@@ -449,6 +449,11 @@ test("renders one resolved current snapshot with its title, range and rows", () 
   assert.equal(html.includes("Cache denominator"), true);
   assert.equal(html.includes("Input tokens"), true);
   assert.equal(html.includes('class="card section-gap"'), true);
+  assert.equal(html.includes('class="snapshot-stack"'), true);
+  assert.equal(html.includes('id="tools"'), true);
+  assert.equal(html.includes('id="skills"'), true);
+  assert.equal(html.includes('<a href="#tools">read</a>'), true);
+  assert.equal(html.includes('<a href="#skills">skill-one</a>'), true);
   // Fixed section order and coverage of every current/session section.
   const sections = [
     CATALOG["panel.daily"],
@@ -632,17 +637,15 @@ test("renders a static, script-free and network-free document", () => {
   assert.equal(html.includes('"sessionId"'), false);
   assert.equal(html.includes("application/json"), false);
   assert.equal(html.includes("JSON.parse"), false);
-  // The skip link is the one permitted anchor: exactly one `href`, and it is
-  // the same-document fragment `#main`. External, protocol-relative, `data:`,
-  // `file:` and route links stay banned; the one inlined stylesheet is the only
-  // <style> block the CSP hash covers.
-  assert.equal((html.match(/<a[\s>]/g) ?? []).length, 1);
-  assert.deepEqual(
-    [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]),
-    ["#main"],
+  // Anchors stay same-document and target the skip link or published sections.
+  const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]);
+  assert.equal(hrefs.filter((href) => href === "#main").length, 1);
+  assert.equal(hrefs.includes("#tools"), true);
+  assert.equal(hrefs.includes("#skills"), true);
+  assert.equal(
+    hrefs.every((href) => ["#main", "#tools", "#skills"].includes(href)),
+    true,
   );
-  assert.equal(/href="(?:\/\/|(?:data|file|javascript):)/i.test(html), false);
-  assert.equal(/href="#\//.test(html), false);
   assert.equal((html.match(/<style>/g) ?? []).length, 1);
   assert.equal((html.match(/<\/style>/g) ?? []).length, 1);
   for (const tag of ["td", "th", "section"]) {
@@ -1119,6 +1122,10 @@ test("prints a grouped duration with its coverage, and Unavailable without one",
     html.indexOf(CATALOG["tools.summary"]),
     html.indexOf(CATALOG["tools.calls"]),
   );
+  const summaryRows = summaryHtml.match(/<tr>[\s\S]*?<\/tr>/g) ?? [];
+  assert.equal(summaryRows.length > 1, true);
+  assert.equal((summaryRows[0]?.match(/<th\b/g) ?? []).length, 11);
+  assert.equal((summaryRows[1]?.match(/<td\b/g) ?? []).length, 11);
   const rowFor = (name: string): string => {
     const rows = summaryHtml
       .split("<tr>")
@@ -1135,7 +1142,9 @@ test("prints a grouped duration with its coverage, and Unavailable without one",
       return (
         contentStart > 0 &&
         contentEnd >= contentStart &&
-        decodeHtml(candidate.slice(contentStart, contentEnd)) === name
+        decodeHtml(
+          candidate.slice(contentStart, contentEnd).replace(/<[^>]+>/g, ""),
+        ) === name
       );
     });
     assert.equal(row !== undefined, true, `the ${name} row must render`);
@@ -1382,7 +1391,13 @@ test("restores the skip link as the one same-document anchor", () => {
   );
   assert.match(html, /<main id="main"[^>]*>/);
   const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]);
-  assert.deepEqual(hrefs, ["#main"]);
+  assert.equal(hrefs.filter((href) => href === "#main").length, 1);
+  assert.equal(hrefs.includes("#tools"), true);
+  assert.equal(hrefs.includes("#skills"), true);
+  assert.equal(
+    hrefs.every((href) => ["#main", "#tools", "#skills"].includes(href)),
+    true,
+  );
 });
 
 test("prints L2's parent verdict instead of looking a parent up in its rows", () => {
