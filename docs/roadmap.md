@@ -637,6 +637,10 @@ Before implementation:
    semantics in the localhost UI, immutable snapshot, TUI where applicable, and
    JSON report.
 
+Wont do:
+- Cross-session delegated agents are out of scope here; they require explicit 
+  producer-backed session correlation and are tracked separately in item 14.
+
 ### 14. Cross-session delegated agent correlation
 
 **Status:** Research.
