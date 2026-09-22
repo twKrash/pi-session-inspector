@@ -171,10 +171,12 @@ test("translates public permission bus events into bounded envelopes only", asyn
   assert.equal(readyFolded.presence.permission, true);
 });
 
-test("prompt and decision share a hashed request attribution", () => {
+test("permission request attribution is stable within a session and differs across sessions", () => {
   const handlers = new Map<string, (payload: unknown) => void>();
+  const childHandlers = new Map<string, (payload: unknown) => void>();
   const envelopes: Record<string, unknown>[] = [];
-  registerLiveCounters(
+  const childEnvelopes: Record<string, unknown>[] = [];
+  const registration = registerLiveCounters(
     {
       events: {
         on: (channel, handler) => {
@@ -198,7 +200,32 @@ test("prompt and decision share a hashed request attribution", () => {
       now: () => new Date("2026-09-12T10:00:00.000Z"),
     },
   );
+  const childRegistration = registerLiveCounters(
+    {
+      events: {
+        on: (channel, handler) => {
+          childHandlers.set(channel, handler);
+          return () => {};
+        },
+      },
+      on: () => () => {},
+    },
+    {
+      appendTelemetry: (envelope) => {
+        childEnvelopes.push(envelope as Record<string, unknown>);
+      },
+      flush: async () => {},
+    },
+    {
+      sessionId: "permission-attribution-child-session",
+      root: "/inspector",
+      runtimeId: "runtime-permission-attribution-child",
+      inventoryNames: () => new Set<string>(),
+      now: () => new Date("2026-09-12T10:00:00.000Z"),
+    },
+  );
 
+  // Same-session prompt/decision metadata is deterministic for one raw id.
   handlers.get("permissions:ui_prompt")?.({
     requestId: "req-1",
     source: "tool_call",
@@ -209,14 +236,144 @@ test("prompt and decision share a hashed request attribution", () => {
     result: "allow",
     resolution: "user_approved",
   });
-
   const [prompt, decision] = envelopes;
   assert.equal(attributionOf(prompt).request, attributionOf(decision).request);
   assert.match(
     String(attributionOf(prompt).request),
     /^permission-request-[a-f0-9]{64}$/,
   );
+
+  // Forwarded parent prompt / child decision metadata is session-scoped, so it
+  // must not be treated as an Inspector cross-session join key.
+  childHandlers.get("permissions:decision")?.({
+    requestId: "req-1",
+    result: "allow",
+    resolution: "user_approved",
+  });
+  assert.notEqual(
+    attributionOf(prompt).request,
+    attributionOf(childEnvelopes[0]).request,
+  );
   assert.equal(JSON.stringify(envelopes).includes("req-1"), false);
+  assert.equal(JSON.stringify(childEnvelopes).includes("req-1"), false);
+
+  registration.dispose();
+  childRegistration.dispose();
+});
+
+test("repeated permissions:ready stays presence-only", () => {
+  const handlers = new Map<string, (payload: unknown) => void>();
+  const envelopes: unknown[] = [];
+  const observed: string[] = [];
+  const registration = registerLiveCounters(
+    {
+      events: {
+        on: (channel, handler) => {
+          handlers.set(channel, handler);
+          return () => {};
+        },
+      },
+      on: () => () => {},
+    },
+    {
+      appendTelemetry: (envelope) => envelopes.push(envelope),
+      flush: async () => {},
+    },
+    {
+      sessionId: "permission-ready-repeat-session",
+      root: "/inspector",
+      runtimeId: "runtime-permission-ready-repeat",
+      inventoryNames: () => new Set<string>(),
+      now: () => new Date("2026-09-12T10:00:00.000Z"),
+      markPresence: (integration) => observed.push(integration),
+    },
+  );
+
+  const ready = handlers.get("permissions:ready");
+  ready?.({ sessionId: "node-1" });
+  ready?.({ sessionId: "node-1", additionalProducerField: true });
+
+  assert.deepEqual(observed, ["permission", "permission"]);
+  assert.equal(
+    envelopes.filter(
+      (envelope) =>
+        (envelope as { metric: string }).metric === "permission.ready",
+    ).length,
+    2,
+  );
+  const folded = foldTelemetryCounters(envelopes);
+  assert.deepEqual(folded.counters, {});
+  assert.equal(folded.presence.permission, true);
+  registration.dispose();
+});
+
+test("permission decisions and prompts count independently from additive fields", () => {
+  const handlers = new Map<string, (payload: unknown) => void>();
+  const envelopes: unknown[] = [];
+  const registration = registerLiveCounters(
+    {
+      events: {
+        on: (channel, handler) => {
+          handlers.set(channel, handler);
+          return () => {};
+        },
+      },
+      on: () => () => {},
+    },
+    {
+      appendTelemetry: (envelope) => envelopes.push(envelope),
+      flush: async () => {},
+    },
+    {
+      sessionId: "permission-independent-counts-session",
+      root: "/inspector",
+      runtimeId: "runtime-permission-independent-counts",
+      inventoryNames: () => new Set<string>(),
+      now: () => new Date("2026-09-12T10:00:00.000Z"),
+    },
+  );
+
+  // One real prompt followed by its decision, plus one automatic decision that
+  // has no prompt. Additional producer fields must not affect known mapping.
+  handlers.get("permissions:ui_prompt")?.({
+    requestId: "req-prompt",
+    source: "tool_call",
+    protocolVersion: 99,
+    futureField: { ignored: true },
+  });
+  handlers.get("permissions:decision")?.({
+    requestId: "req-prompt",
+    result: "allow",
+    resolution: "user_approved",
+    protocolVersion: 99,
+    futureField: { ignored: true },
+  });
+  handlers.get("permissions:decision")?.({
+    requestId: "req-automatic",
+    result: "deny",
+    resolution: "policy_deny",
+    futureField: "ignored",
+  });
+
+  const folded = foldTelemetryCounters(envelopes);
+  assert.deepEqual(folded.counters.permission, {
+    decisions: 2,
+    allowed: 1,
+    denied: 1,
+    prompts: 1,
+    promptToolCall: 1,
+  });
+  assert.equal(
+    (folded.counters.permission?.decisions ?? 0) >
+      (folded.counters.permission?.prompts ?? 0),
+    true,
+  );
+  const serialized = JSON.stringify(envelopes);
+  assert.equal(serialized.includes("protocolVersion"), false);
+  assert.equal(serialized.includes("futureField"), false);
+  assert.equal(serialized.includes("req-prompt"), false);
+  assert.equal(serialized.includes("req-automatic"), false);
+  registration.dispose();
 });
 
 test("absent or invalid request ids produce no attribution at all", () => {
