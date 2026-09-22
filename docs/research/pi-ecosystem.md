@@ -32,7 +32,7 @@ Implementation evidence recorded against installed package `0.85.1` with the int
 The original pin assumed a manual `--subagents-artifact` input shaped `{version:1, runs:[{id,parentId,status,usage}]}`. Re-auditing the installed producers found that **no pinned producer writes that shape**, so the flag was removed rather than preserved. The verified surfaces are:
 
 - `details.completions[]` on `subagent_wait` results (`WaitCompletion`): `runId`, `agent`, `success`, `usage{input,output,cacheRead,cacheWrite,cost,turns}`, `artifactPaths`, `sessionFile`, `archivePath`.
-- `details.results[]` on `subagent` results: `index`, `runId`, `agent`, `usage`; `workflowChildren{version,inventoryComplete}` for workflow fan-out.
+- `details.runId` identifies the foreground container; `details.results[]` on `subagent` results carries `index`, `agent`, and `usage` (no row-level foreground `runId`); completion surfaces carry their own `runId`s. `workflowChildren{version,inventoryComplete}` for workflow fan-out.
 - `foreground-history.json` `{version:1, runs:[{runId,mode,cwd,sessionId,updatedAt,children[]}]}`.
 - `completion-replay/<runId>.json` `{version:1, runId, sessionId, completedAt, expiresAt, archivePath, completion}`.
 - `output-archives/<runId>.json` `{version:1, runId, createdAt, entries:[{agent,resultIndex,source,path}]}`.
