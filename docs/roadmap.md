@@ -266,30 +266,18 @@ Expected implementation shape:
 - per-dimension breakdown rows in the existing report DTO.
 ### 7. Make the tool and skill link affordances navigate
 
-**Status:** Defect to reproduce, then a design decision. **Depends on:** nothing.
+**Status:** Implemented. **Depends on:** nothing.
 
-**Current state:** the localhost client builds a real hash-route anchor only for
-entity kinds whose id the payload publishes (`entityLink`/`entityMark` in
-`scripts/web/client.js`), and every other kind falls back to a plain span; the
-static report (`src/ui/snapshot.ts`) emits no content anchors beyond the skip
-link. An anchor that renders without a route therefore cannot come from either
-surface as written, which leaves the reproduction, the surface, and the intended
-destination open. Reported symptom: rows in Tools and Skills present a link
-affordance that does nothing when clicked.
+**Decision:** choose the entity's existing navigation surface, not a local path. In the localhost UI, Tools tool-name affordances are real `entity=tool:<name>` route anchors: they filter Calls, focus the summary row, preserve route context, and clear through the route. Skills keep their published entity routes. In static HTML, tool and skill names are same-document anchors to the corresponding `#tools` and `#skills` sections; no filesystem path or producer string is exposed.
+
+**Current state:** Both surfaces now have destinations for every rendered tool/skill affordance. The route remains bounded by published ids, static hrefs are fixed section fragments, and TUI output has no interactive link affordance to fix.
 
 Expected implementation shape:
+Acceptance verified:
 
-- the surface is named in the reproduction (static report opened from disk,
-  localhost UI, or the TUI) together with the element and section involved;
-- the destination is chosen on purpose. Two candidates exist: navigate to the
-  entity's own subview/filter, which the client route already supports, or open a
-  file path in the reader's editor or file manager;
-- opening a local path is constrained by the browser and must be designed for it:
-  a page served from `http://127.0.0.1` cannot open local paths, so this needs an
-  explicit loopback endpoint or an editor URL scheme, and either choice exposes
-  paths and therefore needs privacy review;
-- an affordance that cannot lead anywhere stops looking like a link; a visibly
-  non-interactive style is the fallback, not a dead anchor.
+- localhost tool and skill affordances use real route anchors with tests for `href`, filtering, and focus;
+- static report tool and skill links resolve to emitted `#tools`/`#skills` targets with CSP/privacy tests;
+- no local-path endpoint, editor scheme, or new persistence added; TUI has no interactive affordance for this item.
 
 Before merge:
 
@@ -481,3 +469,71 @@ items moved to the archive.
 
 - Other harnesses stay item 9 above. The external review's Claude Code
   observation is recorded there rather than as a parallel initiative.
+
+### 12. Theo pi-jev integration telemetry
+
+**Status:** Research / upstream dependency.
+**Depends on:** integration adapter registry only.
+
+Integrate specifically with the `pi-jev` npm package published from
+`TheoOliveira/pi-jev`. This is not a generic Jev integration and must not be
+confused with the separate `@alexlikevibe/pi-jev` package from `iefnaf/pi-jev`.
+
+Canonical Inspector integration key:
+
+    pi-jev-theo
+
+Presence must not be inferred from the generic `/jev` command because multiple
+independent packages expose that command.
+
+Current safe presence vocabulary:
+
+    jev_find_tools
+    jev_find_skill
+    jev_evaluate
+
+Persisted native tool calls may report explicitly observed calls to those tools,
+but they must not be labeled as total Jev requests because automatic routing,
+compaction, guards, orchestration, and other internal paths call Jev without
+producing those Pi tool calls.
+
+The current producer keeps request count, token usage, latency, and error state
+only in process-local `JevClient.stats` and renders them through `/jev status`.
+Inspector must not scrape status UI text, import producer internals, monkey-patch
+the client, inspect API credentials, or infer hidden Jev requests.
+
+Preferred upstream contract:
+
+    pi-jev:telemetry:v1
+
+A producer-owned, versioned Pi event carrying only bounded non-sensitive fields
+such as event class, success, token count, elapsed time, activated-tool count,
+recommended-skill count, and model-switch boolean.
+
+No prompts, Jev state/questions/answers, tool names, skill bodies, tool
+arguments/results, API keys, filesystem paths, or raw errors may reach Inspector
+telemetry.
+
+Candidate v1 Inspector counters:
+
+    requests
+    tokens
+    errors
+    autoRoutes
+    toolsActivated
+    skillsRecommended
+    modelRouteDecisions
+    modelSwitches
+    compactions
+    guardChecks
+    agentDispatches
+
+Do not derive `savedTokens` or `savedCost`. Savings remain an analysis over Pi's
+native usage/cost evidence, not a producer counter.
+
+Until the upstream telemetry seam exists:
+
+- presence may be supported;
+- explicit `jev_*` native tool activity may be reported under explicitly named
+  counters;
+- total Jev request/token accounting remains unavailable.

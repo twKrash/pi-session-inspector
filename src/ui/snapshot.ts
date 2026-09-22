@@ -211,6 +211,14 @@ function raw(html: string): Cell {
   return { html };
 }
 
+function sectionLink(section: "tools" | "skills", label: string): Cell {
+  return raw(`<a href="#${attr(section)}">${text(label)}</a>`);
+}
+
+function sectionTarget(section: "tools" | "skills", content: string): string {
+  return `<div id="${attr(section)}">${content}</div>`;
+}
+
 // ---------------------------------------------------------------------------
 // Document frame and primitive markup
 // ---------------------------------------------------------------------------
@@ -233,7 +241,7 @@ function frame(theme: SnapshotTheme, target: SnapshotTarget): string {
     `<main id="main" class="content" tabindex="-1">` +
     `<div class="heading"><div><p class="eyebrow">${text(target.kicker)}</p><h1>${text(target.title)}</h1><p>${text(target.subtitle)}</p></div></div>` +
     `<div class="context"><div><span class="mono">${text(target.identity)}</span> <span class="badge neutral">${text(catalog["tag.snapshot"])}</span><small>${text(target.scopeNote)}</small></div></div>` +
-    target.content +
+    `<div class="snapshot-stack">${target.content}</div>` +
     `<div class="notice"><span aria-hidden="true">ⓘ</span><div><strong>${text(catalog["notice.sensitive"])}</strong> ${text(catalog["notice.copy"])}</div></div>` +
     `<footer><span>${text(catalog["footer.authority"])}</span><span class="mono">${text(catalog.offline)} · ${text(catalog["tag.snapshot"])}</span></footer>` +
     `</main></div></div></body></html>`
@@ -903,7 +911,7 @@ function toolsSections(
               catalog["table.source"],
             ],
             summary.map((row) => [
-              row.name,
+              sectionLink("tools", row.name),
               count(row.calls),
               count(row.succeeded),
               count(row.failed),
@@ -952,7 +960,7 @@ function toolsSections(
             ],
             calls.map((row) => [
               timestampCell(row.timestamp),
-              row.name,
+              sectionLink("tools", row.name),
               orUnavailable(row.source ?? null),
               raw(
                 badge(
@@ -979,7 +987,7 @@ function toolsSections(
             ],
           ),
         );
-  return summarySection + tabSection(callsSection);
+  return sectionTarget("tools", summarySection) + tabSection(callsSection);
 }
 
 /**
@@ -1136,7 +1144,7 @@ function environmentSections(
               catalog["table.invocations"],
             ],
             skills.items.map((row) => [
-              row.name,
+              sectionLink("skills", row.name),
               orUnavailable(row.sourceLabel ?? null),
               orUnavailable(row.scope ?? null),
               orUnavailable(row.origin ?? null),
@@ -1192,7 +1200,8 @@ function environmentSections(
             ],
           ),
         );
-  return summary + commandRows + skillRows + resourceRows;
+  const skillsSection = sectionTarget("skills", skillRows);
+  return summary + commandRows + skillsSection + resourceRows;
 }
 
 /**
