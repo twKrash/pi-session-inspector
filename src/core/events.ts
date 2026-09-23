@@ -48,6 +48,17 @@ export type AgentFailure = {
   detail?: number | string;
 };
 
+export type AgentRunCoverage = "complete" | "partial" | "unavailable";
+
+export type AgentRunEffortCoverage = {
+  duration: AgentRunCoverage;
+  generations: AgentRunCoverage;
+  tools: AgentRunCoverage;
+  errors: AgentRunCoverage;
+  usage: AgentRunCoverage;
+  cost: AgentRunCoverage;
+};
+
 export type AgentRun = {
   id: string;
   parentId?: string;
@@ -76,6 +87,11 @@ export type AgentRun = {
   thinking?: string;
   failure?: AgentFailure;
   usage?: Usage;
+  durationMs?: number;
+  generations?: number;
+  toolCalls?: number;
+  errorCount?: number;
+  effortCoverage: AgentRunEffortCoverage;
 };
 
 /** Native subagent tool activity; usage is a breakdown, never a session total. */

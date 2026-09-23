@@ -91,12 +91,28 @@ test("carries only bounded agent labels into agent rows", () => {
           id: `subagent-${"0".repeat(64)}`,
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
           agent: label,
         },
         {
           id: `subagent-${"1".repeat(64)}`,
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
           agent: "/home/dev/PRIVATE/agent",
         },
       ],
@@ -116,18 +132,42 @@ test("projects only the bounded archive presence verdict on agent rows", () => {
           id: `subagent-${"0".repeat(64)}`,
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
           artifacts: "available",
         },
         {
           id: `subagent-${"1".repeat(64)}`,
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
           artifacts: "missing",
         },
         {
           id: `subagent-${"2".repeat(64)}`,
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
           // A forged producer value must never reach the report.
           artifacts: "/home/dev/PRIVATE/archive.json" as never,
         },
@@ -229,6 +269,14 @@ test("drops forged evidence fields and rows without projecting private values", 
           parentId: privateSentinel,
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
           usage: { totalTokens: Number.POSITIVE_INFINITY, cost: 1 },
         },
         {
@@ -236,6 +284,14 @@ test("drops forged evidence fields and rows without projecting private values", 
           parentId: "parent-agent",
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
           usage: { totalTokens: 1, cost: 1 },
         },
       ],
@@ -698,6 +754,14 @@ test("projects bounded exit-code failure details and drops out-of-range ones", (
     status: "failed" as const,
     confidence: "cooperative" as const,
     failure: { reason: "exit-nonzero" as const, detail },
+    effortCoverage: {
+      duration: "unavailable",
+      generations: "unavailable",
+      tools: "unavailable",
+      errors: "unavailable",
+      usage: "unavailable",
+      cost: "unavailable",
+    } as const,
   });
   const report = toSessionReport(parent, {
     agents: {
@@ -1438,6 +1502,82 @@ test("drops a retained aggregate when only one expired cursor map is populated",
   assert.equal(report.retainedAggregates, undefined);
 });
 
+test("normalizes effort values and coverage independently without forged fields", () => {
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [
+        {
+          id: `subagent-${"e".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          durationMs: 12,
+          generations: 7,
+          toolCalls: 2,
+          errorCount: 3,
+          usage: {
+            totalTokens: 10,
+            cost: 1,
+            inputTokens: 4,
+            inputCost: 0.4,
+            forged: "secret",
+          } as never,
+          effortCoverage: {
+            duration: "partial",
+            generations: "complete",
+            tools: "partial",
+            errors: "complete",
+            usage: "partial",
+            cost: "partial",
+          },
+        },
+        {
+          id: `subagent-${"f".repeat(64)}`,
+          status: "running",
+          confidence: "cooperative",
+          durationMs: -1,
+          toolCalls: 3,
+          effortCoverage: {
+            duration: "forged",
+            generations: "unavailable",
+            tools: "partial",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          } as never,
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(report.agents[0], {
+    id: `subagent-${"e".repeat(64)}`,
+    status: "succeeded",
+    confidence: "cooperative",
+    usage: { totalTokens: 10, cost: 1, inputTokens: 4, inputCost: 0.4 },
+    durationMs: 12,
+    toolCalls: 2,
+    effortCoverage: {
+      duration: "partial",
+      generations: "unavailable",
+      tools: "partial",
+      errors: "unavailable",
+      usage: "partial",
+      cost: "partial",
+    },
+  });
+  assert.deepEqual(report.agents[1]?.effortCoverage, {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "partial",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  });
+  assert.equal("generations" in (report.agents[0] ?? {}), false);
+  assert.equal("errorCount" in (report.agents[0] ?? {}), false);
+});
+
 test("agent usage is derived from the projected run set and bounded", () => {
   const report = toSessionReport(parent, {
     agents: {
@@ -1447,17 +1587,41 @@ test("agent usage is derived from the projected run set and bounded", () => {
           id: `subagent-${"a".repeat(64)}`,
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "partial",
+            cost: "partial",
+          },
           usage: { totalTokens: 5, cost: 0.05 },
         },
         {
           id: `subagent-${"b".repeat(64)}`,
           status: "failed",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
         },
         {
           id: `subagent-${"c".repeat(64)}`,
           status: "running",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
         },
         // A forged row never reaches the projected set, so it can neither
         // raise the run total nor add itself to the runs that reported usage.
@@ -1465,6 +1629,14 @@ test("agent usage is derived from the projected run set and bounded", () => {
           id: "not-an-opaque-run-id",
           status: "succeeded",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
           usage: { totalTokens: 9, cost: 0.9 },
         },
       ],
@@ -1489,6 +1661,14 @@ test("an agent set with no usage reports zero of N, never a fabricated total", (
           id: `subagent-${"d".repeat(64)}`,
           status: "unknown",
           confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "unavailable",
+            cost: "unavailable",
+          },
         },
       ],
     },

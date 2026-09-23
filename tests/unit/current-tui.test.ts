@@ -608,6 +608,14 @@ test("renders bounded agent and integration evidence", () => {
             parentId: "parent-run",
             status: "succeeded",
             confidence: "cooperative",
+            effortCoverage: {
+              duration: "unavailable",
+              generations: "unavailable",
+              tools: "unavailable",
+              errors: "unavailable",
+              usage: "unavailable",
+              cost: "unavailable",
+            },
             usage: { totalTokens: 20, cost: 3 },
           },
         ],
@@ -814,6 +822,14 @@ function agentRow(
     ...(parentId === undefined ? {} : { parentId }),
     status: "succeeded",
     confidence: "cooperative",
+    effortCoverage: {
+      duration: "unavailable",
+      generations: "unavailable",
+      tools: "unavailable",
+      errors: "unavailable",
+      usage: "unavailable",
+      cost: "unavailable",
+    },
   };
 }
 

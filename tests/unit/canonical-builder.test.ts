@@ -15,10 +15,72 @@ import type {
 } from "../../src/core/evidence.ts";
 import { MAX_FOLDED_COUNT } from "../../src/core/live-counter-fold.ts";
 import type { SubagentEvidence } from "../../src/integrations/subagents.ts";
+import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
-// Minimal local fixtures (R2): the brief shows assertions, not a harness.
+test("audited effort fixture is normalized once before canonical health and usage", () => {
+  const parsed = parseSessionJsonl(
+    readFileSync(
+      "tests/fixtures/pi/0.85.1/subagent-agent-run-effort.jsonl",
+      "utf8",
+    ),
+  );
+  const evidence = readSubagentEvidence(parsed.entries, parsed.id);
+  const built = buildCanonicalSession({
+    parsed,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    subagents: evidence,
+  });
+
+  assert.equal(built.state, "ready");
+  if (built.state !== "ready") throw new Error("unreachable");
+  const session = built.session;
+  const foreground = session.agents.find((run) => run.agent === "agent-a");
+  assert.deepEqual(
+    {
+      durationMs: foreground?.durationMs,
+      toolCalls: foreground?.toolCalls,
+      coverage: foreground?.effortCoverage,
+    },
+    {
+      durationMs: 1234,
+      toolCalls: 3,
+      coverage: {
+        duration: "partial",
+        generations: "unavailable",
+        tools: "partial",
+        errors: "unavailable",
+        usage: "partial",
+        cost: "partial",
+      },
+    },
+  );
+  assert.equal(
+    session.agents.filter((run) => run.durationMs !== undefined).length,
+    2,
+  );
+  assert.equal(
+    session.agents.filter((run) => run.toolCalls !== undefined).length,
+    2,
+  );
+  assert.equal(
+    session.usage.lines.filter((line) => line.domain === "child-breakdown")
+      .length,
+    4,
+  );
+  assert.equal(session.health.joins.agentRuns, session.agents.length);
+  assert.equal(session.health.usage.childLines, 4);
+  assert.equal(
+    session.usage.lines
+      .filter((line) => line.domain === "child-breakdown")
+      .every((line) => line.contributesToSession === false),
+    true,
+  );
+  assert.equal(JSON.stringify(session).includes("fg-container"), false);
+});
 
 const HEADER = {
   type: "session",
@@ -690,9 +752,17 @@ test("P1.2a: child run usage never changes the session/native totals", () => {
     diagnostics: [],
     runs: [
       {
-        id: "child-run-1",
+        id: `subagent-${"1".repeat(64)}`,
         status: "succeeded",
         confidence: "cooperative",
+        effortCoverage: {
+          duration: "unavailable",
+          generations: "unavailable",
+          tools: "unavailable",
+          errors: "unavailable",
+          usage: "partial",
+          cost: "partial",
+        },
         usage: { totalTokens: 999, cost: 9 },
       },
     ],

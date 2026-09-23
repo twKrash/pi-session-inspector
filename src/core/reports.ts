@@ -64,6 +64,7 @@ export type { AgentToolActivity };
 import type {
   AgentFailure,
   AgentRun,
+  AgentRunEffortCoverage,
   Compaction,
   EvidenceState,
   IntegrationObservation,
@@ -78,6 +79,19 @@ import type {
 import { usageFieldCoverage } from "./events.ts";
 
 const MAX_AGENT_ROWS = 256;
+const OPTIONAL_USAGE_TOKEN_FIELDS = [
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "reasoningTokens",
+] as const;
+const OPTIONAL_USAGE_COST_FIELDS = [
+  "inputCost",
+  "outputCost",
+  "cacheReadCost",
+  "cacheWriteCost",
+] as const;
 /**
  * Hostile-input safety cap for adapter-supplied integration rows. It is
  * deliberately independent of the registry: the *expected* row count is
@@ -1060,6 +1074,33 @@ function projectAgent(value: unknown): AgentRun | undefined {
   const model = boundedProducerLabel(run.model);
   const thinking = boundedProducerLabel(run.thinking);
   const failure = projectAgentFailure(run.failure);
+  const effortCoverage = projectEffortCoverage(run.effortCoverage) ?? {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  };
+  const durationMs = boundedEffortNumber(run.durationMs, 86_400_000_000);
+  const toolCalls = boundedEffortNumber(run.toolCalls, 256);
+  const acceptedDuration =
+    durationMs !== undefined && effortCoverage.duration !== "unavailable";
+  const acceptedTools =
+    toolCalls !== undefined && effortCoverage.tools !== "unavailable";
+  const acceptedUsage =
+    usage !== undefined &&
+    effortCoverage.usage !== "unavailable" &&
+    effortCoverage.cost !== "unavailable";
+  const normalizedCoverage: AgentRunEffortCoverage = {
+    duration: acceptedDuration ? effortCoverage.duration : "unavailable",
+    // No audited producer publishes native generations or per-run errors.
+    generations: "unavailable",
+    tools: acceptedTools ? effortCoverage.tools : "unavailable",
+    errors: "unavailable",
+    usage: acceptedUsage ? effortCoverage.usage : "unavailable",
+    cost: acceptedUsage ? effortCoverage.cost : "unavailable",
+  };
   return {
     id: run.id,
     ...(parentId === undefined ? {} : { parentId }),
@@ -1072,7 +1113,41 @@ function projectAgent(value: unknown): AgentRun | undefined {
     ...(model === undefined ? {} : { model }),
     ...(thinking === undefined ? {} : { thinking }),
     ...(failure === undefined ? {} : { failure }),
-    ...(usage === undefined ? {} : { usage }),
+    ...(acceptedUsage ? { usage } : {}),
+    ...(acceptedDuration ? { durationMs } : {}),
+    ...(acceptedTools ? { toolCalls } : {}),
+    effortCoverage: normalizedCoverage,
+  };
+}
+
+function boundedEffortNumber(
+  value: unknown,
+  maximum: number,
+): number | undefined {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= maximum
+    ? value
+    : undefined;
+}
+
+function projectEffortCoverage(
+  value: unknown,
+): AgentRunEffortCoverage | undefined {
+  const coverage = snapshotRecord(value);
+  if (coverage === undefined) return undefined;
+  const valid = (state: unknown): AgentRunEffortCoverage["duration"] =>
+    state === "complete" || state === "partial" || state === "unavailable"
+      ? state
+      : "unavailable";
+  return {
+    duration: valid(coverage.duration),
+    generations: valid(coverage.generations),
+    tools: valid(coverage.tools),
+    errors: valid(coverage.errors),
+    usage: valid(coverage.usage),
+    cost: valid(coverage.cost),
   };
 }
 
@@ -1142,7 +1217,23 @@ function projectUsage(value: unknown): Usage | undefined {
   ) {
     return undefined;
   }
-  return { totalTokens: usage.totalTokens, cost: usage.cost };
+  const projected: Usage = {
+    totalTokens: usage.totalTokens,
+    cost: usage.cost,
+  };
+  for (const field of OPTIONAL_USAGE_TOKEN_FIELDS) {
+    const candidate = usage[field];
+    if (candidate !== undefined && isTotalTokens(candidate)) {
+      projected[field] = candidate;
+    }
+  }
+  for (const field of OPTIONAL_USAGE_COST_FIELDS) {
+    const candidate = usage[field];
+    if (candidate !== undefined && isCost(candidate)) {
+      projected[field] = candidate;
+    }
+  }
+  return projected;
 }
 
 function projectIntegrations(

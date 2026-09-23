@@ -21,6 +21,8 @@ import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { loadHistorySessionReport } from "../../src/ui/load-history.ts";
 
 const FIXTURE = "tests/fixtures/pi/0.85.1/mixed-usage.jsonl";
+const EFFORT_FIXTURE =
+  "tests/fixtures/pi/0.85.1/subagent-agent-run-effort.jsonl";
 
 /**
  * The report projection keeps a `ReducedSession` branch for pre-0.8
@@ -179,6 +181,39 @@ test("production report call sites are the two canonical loaders", () => {
       `${loader} must not name the legacy ReducedSession shape`,
     );
   }
+});
+
+test("the effort fixture projects one agent set and matching health counts", () => {
+  const parsed = parseSessionJsonl(readFileSync(EFFORT_FIXTURE, "utf8"));
+  const evidence = readSubagentEvidence(parsed.entries, parsed.id);
+  const built = buildCanonicalSession({
+    parsed,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    subagents: evidence,
+  });
+  assert.equal(built.state, "ready");
+  if (built.state !== "ready") throw new Error("unreachable");
+
+  const report = toSessionReport(built.session);
+  const foreground = report.agents.find((run) => run.agent === "agent-a");
+  assert.equal(foreground?.durationMs, 1234);
+  assert.equal(foreground?.toolCalls, 3);
+  assert.equal(foreground?.effortCoverage.duration, "partial");
+  assert.equal(foreground?.effortCoverage.tools, "partial");
+  assert.equal(
+    report.agents.filter((run) => run.durationMs !== undefined).length,
+    2,
+  );
+  assert.equal(
+    report.agents.filter((run) => run.toolCalls !== undefined).length,
+    2,
+  );
+  assert.deepEqual(report.agentUsage, { runsTotal: 10, runsWithUsage: 4 });
+  assert.equal(report.evidenceHealth.joins.agentRuns, 10);
+  assert.equal(report.evidenceHealth.usage.childLines, 4);
+  assert.equal(JSON.stringify(report).includes("fg-container"), false);
 });
 
 test("the current report path projects the CanonicalSession branch", async () => {

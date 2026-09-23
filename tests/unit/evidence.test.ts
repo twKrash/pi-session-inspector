@@ -1,11 +1,53 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   createEvidenceRegistry,
   type EvidenceAdapter,
   type EvidenceRegistry,
 } from "../../src/integrations/evidence.ts";
+import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
 import type { AgentRun } from "../../src/core/events.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+
+test("the audited effort fixture keeps effort foreground-only and bounded", () => {
+  const parsed = parseSessionJsonl(
+    readFileSync(
+      "tests/fixtures/pi/0.85.1/subagent-agent-run-effort.jsonl",
+      "utf8",
+    ),
+  );
+  const evidence = readSubagentEvidence(parsed.entries, parsed.id);
+  const effortRows = evidence.runs.filter(
+    (run) => run.durationMs !== undefined || run.toolCalls !== undefined,
+  );
+
+  assert.deepEqual(
+    effortRows.map((run) => ({
+      agent: run.agent,
+      durationMs: run.durationMs,
+      toolCalls: run.toolCalls,
+    })),
+    [
+      { agent: "agent-a", durationMs: 1234, toolCalls: 3 },
+      { agent: "agent-b", durationMs: 987, toolCalls: 2 },
+    ],
+  );
+  assert.equal(
+    evidence.runs
+      .filter((run) => run.agent === undefined)
+      .every(
+        (run) =>
+          run.durationMs === undefined &&
+          run.toolCalls === undefined &&
+          run.effortCoverage.duration === "unavailable" &&
+          run.effortCoverage.tools === "unavailable",
+      ),
+    true,
+  );
+  assert.equal(JSON.stringify(evidence).includes("fg-container"), false);
+  assert.equal(JSON.stringify(evidence).includes("audit-call-1"), true);
+});
 
 function registry(): EvidenceRegistry {
   return createEvidenceRegistry([
@@ -198,6 +240,14 @@ test("uses canonical cooperative confidence for agent runs", () => {
     id: "child-1",
     status: "succeeded",
     confidence: "cooperative",
+    effortCoverage: {
+      duration: "unavailable",
+      generations: "unavailable",
+      tools: "unavailable",
+      errors: "unavailable",
+      usage: "unavailable",
+      cost: "unavailable",
+    },
   } satisfies AgentRun;
 
   assert.equal(agentRun.confidence, "cooperative");

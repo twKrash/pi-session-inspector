@@ -29,6 +29,7 @@ const MAX_ARCHIVE_PATH = 4096;
 const MAX_COST = 1_000_000_000;
 /** Exit-code detail bound, shared with the report projection (R24). */
 const MAX_EXIT_CODE = 2_147_483_647;
+const MAX_DURATION_MS = 86_400_000_000;
 /** Bounded native tool-call id used to name the publishing result. */
 const TOOL_CALL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 /** Persisted Pi entry timestamps are ISO instants, never free text. */
@@ -187,6 +188,8 @@ type RunAccumulator = {
   thinking?: string;
   failure?: AgentFailure;
   usage?: Usage;
+  durationMs?: number;
+  toolCalls?: number;
 };
 
 type RunCollector = {
@@ -373,11 +376,15 @@ function collectRuns(
   const aggregateParentId =
     aggregateRunId === undefined
       ? undefined
-      : opaqueSubagentId(sessionId, aggregateRunId);
+      : opaqueSubagentId(sessionId, aggregateRunId, "foreground-parent");
+  const workflowParentId =
+    aggregateRunId === undefined
+      ? undefined
+      : opaqueSubagentId(sessionId, aggregateRunId, "workflow-parent");
 
-  // §8.5 within-entry order is `results[]` → `completions[]` →
-  // `workflowChildren.children[]`: completions carry terminal evidence and
-  // therefore win as the later observation.
+  // §8.5 repeated-publication precedence applies only within one publication
+  // surface. Foreground results, completions, and workflow summaries have no
+  // producer-proven cross-surface key, so equal raw ids remain separate rows.
   if (Array.isArray(details.results)) {
     for (const value of details.results.slice(0, MAX_RUNS)) {
       const record = snapshotRecord(value);
@@ -389,13 +396,30 @@ function collectRuns(
       // onto the parent (which would drop every child after the first).
       const rowRunId = readRawRunId(record.runId);
       const index = readChildIndex(record.index);
+      const effortMode =
+        rowRunId === undefined &&
+        aggregateRunId !== undefined &&
+        index !== undefined
+          ? "enabled"
+          : "disabled";
       const id =
         rowRunId !== undefined
-          ? opaqueSubagentId(sessionId, rowRunId)
+          ? opaqueSubagentId(sessionId, rowRunId, "foreground")
           : aggregateRunId === undefined || index === undefined
             ? undefined
-            : opaqueSubagentId(sessionId, `${aggregateRunId}#${index}`);
-      pushRun(record, collector, publication, id, aggregateParentId);
+            : opaqueSubagentId(
+                sessionId,
+                `${aggregateRunId}#${index}`,
+                "foreground",
+              );
+      pushRun(
+        record,
+        collector,
+        publication,
+        id,
+        aggregateParentId,
+        effortMode,
+      );
     }
   }
 
@@ -410,14 +434,17 @@ function collectRuns(
         publication,
         completionRunId === undefined
           ? undefined
-          : opaqueSubagentId(sessionId, completionRunId),
+          : opaqueSubagentId(sessionId, completionRunId, "completion"),
         undefined,
+        "disabled",
       );
       if (!Array.isArray(completion.results)) continue;
       for (const child of completion.results.slice(0, MAX_RUNS)) {
         const record = snapshotRecord(child);
         if (record === undefined) continue;
-        // Nested completion children are identified by their own run id.
+        // Nested completion children retain their own identity, but their
+        // parent is the exact outer completion identity and domain. This is
+        // parentage, not cross-surface correlation.
         const childRunId = readRawRunId(record.runId);
         pushRun(
           record,
@@ -425,17 +452,19 @@ function collectRuns(
           publication,
           childRunId === undefined
             ? undefined
-            : opaqueSubagentId(sessionId, childRunId),
+            : opaqueSubagentId(sessionId, childRunId, "completion-child"),
           completionRunId === undefined
             ? undefined
-            : opaqueSubagentId(sessionId, completionRunId),
+            : opaqueSubagentId(sessionId, completionRunId, "completion"),
+          "disabled",
         );
       }
     }
   }
 
-  // R22's final publication surface. It is intentionally last so it wins over
-  // a results/completions observation of the same run in this Pi entry.
+  // Workflow summaries are a distinct publication surface. They are parsed
+  // after the other arrays for deterministic output order, never to replace a
+  // row from a different surface.
   const workflowChildren = snapshotRecord(details.workflowChildren);
   if (Array.isArray(workflowChildren?.children)) {
     for (const value of workflowChildren.children.slice(0, MAX_RUNS)) {
@@ -445,11 +474,15 @@ function collectRuns(
       const index = readChildIndex(record.index);
       const id =
         rowRunId !== undefined
-          ? opaqueSubagentId(sessionId, rowRunId)
+          ? opaqueSubagentId(sessionId, rowRunId, "workflow")
           : aggregateRunId === undefined || index === undefined
             ? undefined
-            : opaqueSubagentId(sessionId, `${aggregateRunId}#${index}`);
-      pushRun(record, collector, publication, id, aggregateParentId);
+            : opaqueSubagentId(
+                sessionId,
+                `${aggregateRunId}#${index}`,
+                "workflow",
+              );
+      pushRun(record, collector, publication, id, workflowParentId, "disabled");
     }
   }
 }
@@ -460,6 +493,7 @@ function pushRun(
   publication: RunPublication,
   id: string | undefined,
   parentId: string | undefined,
+  effortMode: "enabled" | "disabled",
 ): void {
   if (id === undefined) return;
   let run = collector.byId.get(id);
@@ -475,7 +509,14 @@ function pushRun(
     collector.byId.set(id, run);
     collector.runs.push(run);
   }
-  mergeRunObservation(run, record, publication, parentId, collector);
+  mergeRunObservation(
+    run,
+    record,
+    publication,
+    parentId,
+    collector,
+    effortMode,
+  );
 }
 
 /**
@@ -490,6 +531,7 @@ function mergeRunObservation(
   publication: RunPublication,
   parentId: string | undefined,
   collector: RunCollector,
+  effortMode: "enabled" | "disabled",
 ): void {
   if (!run.parentIdConflict && parentId !== undefined && parentId !== run.id) {
     if (run.parentId === undefined) run.parentId = parentId;
@@ -521,12 +563,39 @@ function mergeRunObservation(
   const usage = readChildUsage(record.usage);
   if (usage !== undefined) run.usage = usage;
 
+  const effort = effortMode === "enabled" ? readEffort(record) : {};
+  if (effort.durationMs !== undefined) run.durationMs = effort.durationMs;
+  if (effort.toolCalls !== undefined) run.toolCalls = effort.toolCalls;
+
   if (publication.observedAt !== undefined) {
     run.observedAt = publication.observedAt;
   }
   if (publication.evidenceToolId !== undefined) {
     run.evidenceToolId = publication.evidenceToolId;
   }
+}
+
+function readEffort(record: Readonly<Record<string, unknown>>): {
+  durationMs?: number;
+  toolCalls?: number;
+} {
+  const progress = snapshotRecord(record.progressSummary);
+  const durationMs = progress?.durationMs;
+  const toolCalls = progress?.toolCount;
+  return {
+    ...(typeof durationMs === "number" &&
+    Number.isSafeInteger(durationMs) &&
+    durationMs >= 0 &&
+    durationMs <= MAX_DURATION_MS
+      ? { durationMs }
+      : {}),
+    ...(typeof toolCalls === "number" &&
+    Number.isSafeInteger(toolCalls) &&
+    toolCalls >= 0 &&
+    toolCalls <= MAX_RUNS
+      ? { toolCalls }
+      : {}),
+  };
 }
 
 /** Non-terminal `running` is progress; any other resolved status is terminal. */
@@ -592,6 +661,16 @@ function toAgentRun(run: RunAccumulator): AgentRun {
     ...(run.model === undefined ? {} : { model: run.model }),
     ...(run.thinking === undefined ? {} : { thinking: run.thinking }),
     ...(run.failure === undefined ? {} : { failure: run.failure }),
+    ...(run.durationMs === undefined ? {} : { durationMs: run.durationMs }),
+    ...(run.toolCalls === undefined ? {} : { toolCalls: run.toolCalls }),
+    effortCoverage: {
+      duration: run.durationMs === undefined ? "unavailable" : "partial",
+      generations: "unavailable",
+      tools: run.toolCalls === undefined ? "unavailable" : "partial",
+      errors: "unavailable",
+      usage: run.usage === undefined ? "unavailable" : "partial",
+      cost: run.usage === undefined ? "unavailable" : "partial",
+    },
   };
 }
 
@@ -602,6 +681,13 @@ function toAgentRun(run: RunAccumulator): AgentRun {
 function mapRunStatus(
   record: Readonly<Record<string, unknown>>,
 ): AgentRun["status"] {
+  if (
+    record.interrupted === true ||
+    record.timedOut === true ||
+    record.stopped === true
+  ) {
+    return "interrupted";
+  }
   if (record.success === true) return "succeeded";
   if (record.success === false) return "failed";
   if (typeof record.state === "string") {
@@ -725,7 +811,7 @@ function collectArchiveReferences(
       const runId = readRawRunId(completion.runId);
       const path = readArchivePath(completion.archivePath);
       if (runId === undefined || path === undefined) continue;
-      const id = opaqueSubagentId(sessionId, runId);
+      const id = opaqueSubagentId(sessionId, runId, "completion");
       if (!references.has(id)) references.set(id, { path, runId });
     }
   }
@@ -766,8 +852,14 @@ function readChildIndex(value: unknown): number | undefined {
  * reports retain explicit parentage without copying or cross-session-colliding
  * IDs.
  */
-function opaqueSubagentId(sessionId: string, id: string): string {
-  return `subagent-${canonicalOpaqueDigest("subagent-run", sessionId, id)}`;
+function opaqueSubagentId(
+  sessionId: string,
+  id: string,
+  surface = "run",
+): string {
+  return surface === "run"
+    ? `subagent-${canonicalOpaqueDigest("subagent-run", sessionId, id)}`
+    : `subagent-${canonicalOpaqueDigest("subagent-run", sessionId, `${surface}:${id}`)}`;
 }
 
 function isBoundedTokens(value: unknown): value is number {
