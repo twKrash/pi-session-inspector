@@ -398,8 +398,8 @@ export function createCurrentTuiComponent({
         ...(agent.usage == null
           ? []
           : [
-              `Tokens: ${agent.usage.totalTokens}`,
-              `Cost: ${agent.usage.cost}`,
+              `Tokens: ${agent.usage.totalTokens ?? "Unavailable"}`,
+              `Cost: ${agent.usage.cost ?? "Unavailable"}`,
               "Child usage is a breakdown only; never added to session totals.",
             ]),
       ]),

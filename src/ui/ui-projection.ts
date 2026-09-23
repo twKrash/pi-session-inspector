@@ -945,23 +945,36 @@ function childUsageBreakdown(runs: readonly AgentRow[]): UiChildUsage {
   let totalTokens = 0;
   let cost = 0;
   let failedCost = 0;
+  let hasTokens = false;
+  let hasCost = false;
+  let hasFailedCost = false;
   for (const run of runs) {
     byStatus[run.status] += 1;
     if (run.usage === null) continue;
+    const hasRunUsage =
+      run.usage.totalTokens !== undefined || run.usage.cost !== undefined;
+    if (!hasRunUsage) continue;
     runsWithUsage += 1;
-    totalTokens += run.usage.totalTokens;
-    cost = roundCost(cost + run.usage.cost);
-    if (run.status === "failed") {
+    if (run.usage.totalTokens !== undefined) {
+      hasTokens = true;
+      totalTokens += run.usage.totalTokens;
+    }
+    if (run.usage.cost !== undefined) {
+      hasCost = true;
+      cost = roundCost(cost + run.usage.cost);
+    }
+    if (run.status === "failed" && run.usage.cost !== undefined) {
       failedRunsWithUsage += 1;
+      hasFailedCost = true;
       failedCost = roundCost(failedCost + run.usage.cost);
     }
   }
   return {
     runsTotal: runs.length,
     runsWithUsage,
-    totalTokens: runsWithUsage === 0 ? null : totalTokens,
-    cost: runsWithUsage === 0 ? null : cost,
-    failedCost: failedRunsWithUsage === 0 ? null : failedCost,
+    totalTokens: hasTokens ? totalTokens : null,
+    cost: hasCost ? cost : null,
+    failedCost: hasFailedCost ? failedCost : null,
     failedRunsWithUsage,
     byStatus,
   };

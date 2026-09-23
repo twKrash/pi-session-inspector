@@ -48,6 +48,35 @@ const resultEntry = (
   },
 });
 
+test("fixture publishes audited effort only for final foreground rows", async () => {
+  const fixture = await readFile(
+    new URL(
+      "../fixtures/pi/0.85.1/subagent-agent-run-effort.jsonl",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const evidence = readSubagentEvidence(parseSessionJsonl(fixture).entries);
+  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  assert.equal(byAgent.get("agent-a")?.durationMs, 1234);
+  assert.equal(byAgent.get("agent-a")?.toolCalls, 3);
+  assert.equal(byAgent.get("agent-a")?.effortCoverage.duration, "partial");
+  assert.equal(byAgent.get("agent-a")?.effortCoverage.tools, "partial");
+  assert.equal(byAgent.get("agent-b")?.status, "interrupted");
+  assert.equal(byAgent.get("agent-b")?.durationMs, 987);
+  assert.equal(byAgent.get("agent-c")?.status, "running");
+  assert.equal(byAgent.get("agent-c")?.effortCoverage.duration, "unavailable");
+  assert.equal(byAgent.get("agent-timeout")?.status, "interrupted");
+  assert.equal(byAgent.get("agent-stopped")?.status, "interrupted");
+  assert.equal(byAgent.get("agent-d")?.effortCoverage.usage, "unavailable");
+  assert.equal(byAgent.get("agent-d")?.effortCoverage.cost, "partial");
+  assert.equal(byAgent.get("agent-d")?.durationMs, undefined);
+  assert.equal(byAgent.get("agent-d")?.toolCalls, undefined);
+  assert.equal(byAgent.get("agent-a")?.observedAt, "2026-09-22T10:00:03.000Z");
+  assert.equal(byAgent.get("agent-a")?.evidenceToolId, "tool:audit-call-1");
+  assert.equal(JSON.stringify(evidence).includes("audit-call-1"), true);
+  assert.equal(JSON.stringify(evidence).includes("archive"), false);
+});
 test("derives native tool activity and cooperative runs from persisted results", async () => {
   const fixture = await readFile(
     new URL(
@@ -85,12 +114,13 @@ test("derives native tool activity and cooperative runs from persisted results",
   assert.deepEqual(completed?.usage, { totalTokens: 700, cost: 0.1 });
   assert.equal(completed?.agent, "reviewer");
 
-  // The persisted foreground `results[]` row: `exitCode: 1` maps to failed, a
-  // partial usage group yields no usage, and the row is parented by its run.
+  // The persisted foreground `results[]` row: `exitCode: 1` maps to failed,
+  // token usage is unavailable while the published cost remains known, and
+  // the row is parented by its run.
   const foreground = evidence.runs.find((run) => run.agent === "worker");
   assert.ok(foreground);
   assert.equal(foreground.status, "failed");
-  assert.equal(foreground.usage, undefined);
+  assert.deepEqual(foreground.usage, { cost: 0.05 });
   assert.match(foreground.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.notEqual(foreground.parentId, foreground.id);
 });
@@ -225,22 +255,22 @@ test("maps nested completion children with bounded parents and unknown statuses"
 
   const evidence = readSubagentEvidence(entries);
 
-  // The nested entry repeating the completion's own run id is not a second run:
-  // it merges as a repeated observation. Its conflicting agent is dropped with a
-  // `cooperative-evidence-conflict` diagnostic rather than overwriting the first.
-  assert.equal(evidence.runs.length, 2);
-  const [completion, child] = evidence.runs;
+  // Publication surfaces have independent identities: the completion row and
+  // its nested children are separate bounded rows even when raw ids repeat.
+  assert.equal(evidence.runs.length, 3);
+  const [completion, child, duplicate] = evidence.runs;
   assert.match(completion?.id ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(completion?.parentId, undefined);
-  assert.equal(completion?.agent, undefined);
+  assert.equal(completion?.agent, "workflow");
   assert.equal(completion?.status, "succeeded");
-  assert.deepEqual(evidence.diagnostics, [
-    { code: "cooperative-evidence-conflict", count: 1 },
-  ]);
+  assert.deepEqual(evidence.diagnostics, []);
   assert.equal(child?.parentId, completion?.id);
   assert.equal(child?.agent, undefined);
   assert.equal(child?.status, "unknown");
   assert.deepEqual(child?.usage, { totalTokens: 10, cost: 0.5 });
+  assert.equal(duplicate?.parentId, completion?.id);
+  assert.equal(duplicate?.agent, "duplicate-run-id");
+  assert.equal(duplicate?.status, "unknown");
   assert.equal(evidence.state, "supported");
   assert.equal(JSON.stringify(evidence).includes("future-state"), false);
   assert.equal(JSON.stringify(evidence).includes("PRIVATE"), false);
@@ -456,7 +486,7 @@ test("identifies two foreground children of one parallel run by index", () => {
   assert.equal(complete?.status, "succeeded");
   assert.equal(partial?.status, "failed");
   assert.deepEqual(complete?.usage, { totalTokens: 350, cost: 0.2 });
-  assert.equal(partial?.usage, undefined);
+  assert.deepEqual(partial?.usage, { cost: 0.05 });
   // Both children share the opaque aggregate run id as their parent.
   assert.match(complete?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(complete?.parentId, partial?.parentId);
@@ -742,7 +772,7 @@ test("run carries publication time, evidence tool id, model and failure", () => 
   assert.deepEqual(evidence.diagnostics, []);
 });
 
-test("repeated publications keep the latest observation exactly once", () => {
+test("same-surface publications keep the latest observation exactly once", () => {
   const evidence = readSubagentEvidence([
     assistantEntry("a", "call_1"),
     resultEntry(
@@ -755,10 +785,11 @@ test("repeated publications keep the latest observation exactly once", () => {
     resultEntry(
       "r2",
       "call_2",
-      { completions: [{ runId: "run-1", agent: "delegate", success: true }] },
+      { results: [{ runId: "run-1", agent: "delegate", success: true }] },
       "2026-09-12T10:01:00.000Z",
     ),
   ]);
+  // Same-surface replacement remains precedence-based.
   assert.equal(evidence.runs.length, 1);
   assert.equal(evidence.runs[0]?.observedAt, "2026-09-12T10:01:00.000Z");
   assert.equal(evidence.runs[0]?.evidenceToolId, "tool:call_2");
@@ -782,14 +813,16 @@ test("drops conflicting identity fields with a conflict diagnostic", () => {
       "2026-09-12T10:01:00.000Z",
     ),
   ]);
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.agent, undefined);
-  assert.deepEqual(evidence.diagnostics, [
-    { code: "cooperative-evidence-conflict", count: 1 },
-  ]);
+  // Different publication surfaces remain separate and do not create a false
+  // identity conflict when raw producer ids coincide.
+  assert.equal(evidence.runs.length, 2);
+  assert.notEqual(evidence.runs[0]?.id, evidence.runs[1]?.id);
+  assert.equal(evidence.runs[0]?.agent, "delegate");
+  assert.equal(evidence.runs[1]?.agent, "reviewer");
+  assert.deepEqual(evidence.diagnostics, []);
 });
 
-test("terminal-to-running regression yields unknown plus a diagnostic", () => {
+test("terminal-to-running regression on one surface yields unknown plus a diagnostic", () => {
   const evidence = readSubagentEvidence([
     assistantEntry("a", "call_1"),
     resultEntry(
@@ -803,7 +836,7 @@ test("terminal-to-running regression yields unknown plus a diagnostic", () => {
       "r2",
       "call_2",
       {
-        completions: [{ runId: "run-1", agent: "delegate", state: "running" }],
+        results: [{ runId: "run-1", agent: "delegate", state: "running" }],
       },
       "2026-09-12T10:01:00.000Z",
     ),
@@ -962,9 +995,9 @@ test("classifies a payload carrying both a signal and an exit code as process-si
   });
 });
 
-test("a later completions row wins over an earlier results row in the same entry", () => {
-  // R22 within-entry order: `results[]` is applied first and `completions[]`
-  // last, so the completion's terminal status and usage win with no conflict.
+test("different surfaces stay separate while same-surface replacement remains ordered", () => {
+  // Cross-surface rows are not correlated, even when their raw ids match.
+  // Same-surface publications keep the latest accepted observation.
   const usage = (input: number, cost: number) => ({
     input,
     output: 0,
@@ -998,10 +1031,17 @@ test("a later completions row wins over an earlier results row in the same entry
       "2026-09-12T10:00:05.000Z",
     ),
   ]);
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.status, "succeeded");
-  assert.deepEqual(evidence.runs[0]?.usage, { totalTokens: 20, cost: 0.2 });
-  assert.equal(evidence.runs[0]?.observedAt, "2026-09-12T10:00:05.000Z");
+  // Distinct surfaces remain distinct bounded rows.
+  assert.equal(evidence.runs.length, 2);
+  assert.equal(evidence.runs[0]?.status, "running");
+  assert.equal(evidence.runs[1]?.status, "succeeded");
+  assert.deepEqual(
+    evidence.runs.map((run) => run.usage),
+    [
+      { totalTokens: 10, cost: 0.1 },
+      { totalTokens: 20, cost: 0.2 },
+    ],
+  );
   assert.deepEqual(evidence.diagnostics, []);
 });
 
@@ -1108,11 +1148,15 @@ test("collects workflowChildren children after results and completions", () => {
     ),
   ];
   const evidence = readSubagentEvidence(entries);
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.status, "succeeded");
+  assert.equal(evidence.runs.length, 2);
+  assert.equal(evidence.runs[0]?.status, "unknown");
+  assert.equal(evidence.runs[1]?.status, "succeeded");
+  assert.notEqual(evidence.runs[0]?.parentId, evidence.runs[1]?.parentId);
+  assert.equal(evidence.runs[0]?.effortCoverage.duration, "unavailable");
+  assert.equal(evidence.runs[1]?.effortCoverage.duration, "unavailable");
 });
 
-test("keeps the latest value of a field omitted by a later publication", () => {
+test("same-surface publications keep omitted fields", () => {
   const evidence = readSubagentEvidence([
     assistantEntry("a", "call_1"),
     resultEntry(
@@ -1135,7 +1179,7 @@ test("keeps the latest value of a field omitted by a later publication", () => {
     resultEntry(
       "r2",
       "call_2",
-      { completions: [{ runId: "run-1", agent: "delegate" }] },
+      { results: [{ runId: "run-1", agent: "delegate" }] },
       "2026-09-12T10:01:00.000Z",
     ),
   ]);
@@ -1148,7 +1192,7 @@ test("keeps the latest value of a field omitted by a later publication", () => {
   });
 });
 
-test("orders publications by entry ordinal, not by timestamp", () => {
+test("same-surface publication order follows entry ordinal", () => {
   const evidence = readSubagentEvidence([
     assistantEntry("a", "call_1"),
     resultEntry(
@@ -1161,7 +1205,7 @@ test("orders publications by entry ordinal, not by timestamp", () => {
     resultEntry(
       "r2",
       "call_2",
-      { completions: [{ runId: "run-1", agent: "delegate", success: true }] },
+      { results: [{ runId: "run-1", agent: "delegate", success: true }] },
       "2026-09-12T10:00:00.000Z",
     ),
   ]);
@@ -1170,7 +1214,7 @@ test("orders publications by entry ordinal, not by timestamp", () => {
   assert.equal(evidence.runs[0]?.evidenceToolId, "tool:call_2");
 });
 
-test("counts two independent field conflicts", () => {
+test("counts same-surface field conflicts", () => {
   const evidence = readSubagentEvidence([
     assistantEntry("a", "call_1"),
     resultEntry(
@@ -1183,7 +1227,7 @@ test("counts two independent field conflicts", () => {
     resultEntry(
       "r2",
       "call_2",
-      { completions: [{ runId: "run-1", agent: "reviewer", success: false }] },
+      { results: [{ runId: "run-1", agent: "reviewer", success: false }] },
       "2026-09-12T10:01:00.000Z",
     ),
   ]);
@@ -1217,4 +1261,87 @@ test("a result that cannot be joined publishes no run", () => {
 test("a call without a result publishes no run while activity still counts it", () => {
   const evidence = readSubagentEvidence([assistantEntry("a1", "call-1")]);
   assert.deepEqual([evidence.runs.length, evidence.activity.calls], [0, 1]);
+});
+
+test("preserves audited tool counts and partial usage independently", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a1", "call-1"),
+    resultEntry(
+      "r1",
+      "call-1",
+      {
+        runId: "aggregate-1",
+        results: [
+          {
+            index: 0,
+            agent: "delegate",
+            success: true,
+            progressSummary: { durationMs: 1, toolCount: 1_000_000 },
+            usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  const run = evidence.runs.find((candidate) => candidate.agent === "delegate");
+  assert.equal(run?.toolCalls, 1_000_000);
+  assert.deepEqual(run?.usage, { totalTokens: 15 });
+  assert.equal(run?.effortCoverage.usage, "partial");
+  assert.equal(run?.effortCoverage.cost, "unavailable");
+});
+
+test("accepts one-billion tool calls and rejects larger counts and token sums", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a1", "call-1"),
+    resultEntry(
+      "r1",
+      "call-1",
+      {
+        runId: "aggregate-1",
+        results: [
+          {
+            index: 0,
+            agent: "accepted-tool-count",
+            success: true,
+            progressSummary: { toolCount: 1_000_000_000 },
+          },
+          {
+            index: 1,
+            agent: "rejected-tool-count",
+            success: true,
+            progressSummary: { toolCount: 1_000_000_001 },
+          },
+          {
+            index: 2,
+            agent: "over-token-sum",
+            success: true,
+            usage: {
+              input: 1_000_000_000,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.5,
+            },
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+
+  const accepted = evidence.runs.find(
+    (run) => run.agent === "accepted-tool-count",
+  );
+  const rejected = evidence.runs.find(
+    (run) => run.agent === "rejected-tool-count",
+  );
+  const overTokenSum = evidence.runs.find(
+    (run) => run.agent === "over-token-sum",
+  );
+  assert.equal(accepted?.toolCalls, 1_000_000_000);
+  assert.equal(rejected?.toolCalls, undefined);
+  assert.deepEqual(overTokenSum?.usage, { cost: 0.5 });
+  assert.equal(overTokenSum?.effortCoverage.usage, "unavailable");
+  assert.equal(overTokenSum?.effortCoverage.cost, "partial");
 });

@@ -795,9 +795,12 @@ nothing about it is fabricated in the meantime.
 | Usage-coverage ratio / estimated unavailable usage | Unsupported | Would fabricate usage; only the session ratio exists, and it is omitted when the denominator is unknown |
 | Tool-error message text | Supported, bounded | Text-only `content` from an errored tool result passes shared secret/path/URL redaction and a 200-byte cap; arguments, non-text blocks, and unusable values render `Message: Unavailable` |
 | Tool result content / arguments in any view | Unsupported by design | Privacy boundary |
-| Agent run duration | Unsupported | No producer duration field; differencing timestamps would be an estimate |
+| Agent run duration | Supported, partial | Only validated persisted `progressSummary.durationMs` is published; timestamps remain publication provenance and never provide duration |
+| Agent run generations | Unsupported | `usage.turns` is usage metadata, not native generation evidence |
+| Agent per-run error count | Unsupported | No persisted producer count exists |
 | Agent free-text failure reason | Unsupported | The producer exposes bounded enums only |
 | Agent task description / summary | Unsupported | Prompt text; privacy boundary |
+| Agent run effort coverage | Supported, independent | Every AgentRun carries bounded duration, generations, tools, errors, usage, and cost coverage; unavailable values are omitted |
 | Agent model / thinking level | Supported, conditional | Present for the pinned producer; validated, optional, `Unavailable` otherwise |
 | Global/history per-model, per-tool, per-agent breakdowns | Deferred (out of scope) | Every scanned session is replayed into a full `SessionReport`, but this milestone does not aggregate across sessions |
 | Inventory invocation counts for commands/prompts | Unsupported | No counter evidence exists; skills have counters, commands do not |

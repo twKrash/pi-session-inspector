@@ -7,13 +7,22 @@ import {
 import { integrations } from "../integrations/index.ts";
 import { readPersistedEvidence } from "../integrations/persisted.ts";
 import { debugLog } from "../debug/log.ts";
-import type { SubagentEvidence } from "../integrations/subagents.ts";
+import {
+  isAgentLabel,
+  isProcessSignal,
+  type SubagentEvidence,
+} from "../integrations/subagents.ts";
 import type { ParsedSession } from "../pi/adapter.ts";
 import { resolveScope } from "../pi/scope.ts";
 import { roundCost } from "./rounding.ts";
 import type {
+  AgentFailure,
   AgentRun,
+  AgentRunEffortCoverage,
+  AgentRunUsage,
+  AgentToolActivity,
   Compaction,
+  Confidence,
   ErrorRecord,
   EvidenceState,
   Generation,
@@ -27,7 +36,7 @@ import type {
   UsageComposition,
   UsageFieldCoverageMap,
 } from "./events.ts";
-import { usageFieldCoverage } from "./events.ts";
+import { MAX_AGENT_RUN_TOOL_CALLS, usageFieldCoverage } from "./events.ts";
 import {
   type AtomicEvidence,
   boundedProducerLabel,
@@ -106,6 +115,31 @@ const OPTIONAL_COST_FIELDS = [
   "cacheWriteCost",
 ] as const;
 const encoder = new TextEncoder();
+const MAX_AGENT_RUN_DURATION_MS = 86_400_000_000;
+const MAX_AGENT_RUN_COUNT = 256;
+const OPAQUE_AGENT_RUN_ID = /^subagent-[a-f0-9]{64}$/;
+const OPAQUE_TOOL_ID = /^tool:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const AGENT_RUN_STATUSES = new Set<AgentRun["status"]>([
+  "running",
+  "succeeded",
+  "failed",
+  "interrupted",
+  "unknown",
+]);
+const AGENT_RUN_CONFIDENCES = new Set<Confidence>([
+  "native",
+  "live",
+  "cooperative",
+  "inferred",
+  "unavailable",
+  "unsupported",
+]);
+const AGENT_FAILURE_REASONS = new Set<AgentFailure["reason"]>([
+  "exit-nonzero",
+  "process-signal",
+  "completion-failed",
+  "output-absent",
+]);
 
 export type CanonicalRelationship =
   | { state: "known"; id: string }
@@ -420,7 +454,8 @@ export function attachSubagentEvidence(
   subagents: SubagentEvidence,
 ): CanonicalSession {
   try {
-    const agents = [...subagents.runs];
+    const normalizedSubagents = normalizeSubagentEvidence(subagents);
+    const agents = [...normalizedSubagents.runs];
     const usage = appendSubagentUsage(session.usage, agents);
     const sources = session.health.sources.filter(
       (source) =>
@@ -430,7 +465,12 @@ export function attachSubagentEvidence(
     sources.push({
       source: "subagent-result",
       authority: "cooperative",
-      state: subagents.state === "supported" ? "supported" : "unavailable",
+      state:
+        normalizedSubagents.state === "supported"
+          ? "supported"
+          : normalizedSubagents.state === "unsupported"
+            ? "unsupported"
+            : "unavailable",
       schemaVersion: 1,
       recordsSeen: agents.length,
       factsAccepted: agents.length,
@@ -454,7 +494,7 @@ export function attachSubagentEvidence(
     }
     const diagnostics = [
       ...session.health.diagnostics,
-      ...subagents.diagnostics.map((diagnostic) => ({
+      ...normalizedSubagents.diagnostics.map((diagnostic) => ({
         source: "subagent-result" as const,
         code: diagnostic.code,
         severity: defaultDiagnosticSeverity(diagnostic.code),
@@ -489,12 +529,353 @@ export function attachSubagentEvidence(
   }
 }
 
+function normalizeSubagentEvidence(value: SubagentEvidence): SubagentEvidence {
+  const input: Readonly<Record<string, unknown>> = isRecord(value) ? value : {};
+  const activityInput: Readonly<Record<string, unknown>> = isRecord(
+    input.activity,
+  )
+    ? input.activity
+    : {};
+  const count = (candidate: unknown): number =>
+    typeof candidate === "number" &&
+    Number.isSafeInteger(candidate) &&
+    candidate >= 0 &&
+    candidate <= MAX_AGENT_RUN_COUNT
+      ? candidate
+      : 0;
+  const activityState =
+    activityInput.state === "supported" ||
+    activityInput.state === "unsupported" ||
+    activityInput.state === "unavailable"
+      ? activityInput.state
+      : "unavailable";
+  const activity: AgentToolActivity = {
+    state: activityState,
+    calls: activityState === "supported" ? count(activityInput.calls) : 0,
+    succeeded:
+      activityState === "supported" ? count(activityInput.succeeded) : 0,
+    failed: activityState === "supported" ? count(activityInput.failed) : 0,
+    interrupted:
+      activityState === "supported" ? count(activityInput.interrupted) : 0,
+    tools:
+      activityState === "supported" && Array.isArray(activityInput.tools)
+        ? (activityInput.tools as readonly unknown[])
+            .slice(0, MAX_AGENT_RUN_COUNT)
+            .flatMap((item: unknown) => {
+              if (!isRecord(item) || !isAgentLabel(item.name)) return [];
+              return [{ name: item.name, calls: count(item.calls) }];
+            })
+        : [],
+  };
+  const diagnostics: SubagentEvidence["diagnostics"] = Array.isArray(
+    input.diagnostics,
+  )
+    ? (input.diagnostics as readonly unknown[]).flatMap(
+        (diagnostic: unknown) => {
+          if (
+            !isRecord(diagnostic) ||
+            diagnostic.code !== "cooperative-evidence-conflict"
+          ) {
+            return [];
+          }
+          const conflictCount =
+            typeof diagnostic.count === "number" &&
+            Number.isSafeInteger(diagnostic.count) &&
+            diagnostic.count > 0
+              ? Math.min(diagnostic.count, MAX_AGENT_RUN_COUNT)
+              : undefined;
+          return conflictCount === undefined
+            ? []
+            : [
+                {
+                  code: "cooperative-evidence-conflict" as const,
+                  count: conflictCount,
+                },
+              ];
+        },
+      )
+    : [];
+  return {
+    activity,
+    runs: normalizeAgentRuns(
+      Array.isArray(input.runs) ? (input.runs as AgentRun[]) : [],
+    ),
+    state:
+      input.state === "supported" ||
+      input.state === "unavailable" ||
+      input.state === "unsupported"
+        ? input.state
+        : "unavailable",
+    diagnostics,
+  };
+}
+
+function normalizeAgentRuns(runs: readonly AgentRun[]): AgentRun[] {
+  const byId = new Map<string, AgentRun>();
+  for (const value of runs.slice(0, MAX_AGENT_RUN_COUNT)) {
+    const run = normalizeAgentRun(value);
+    if (run !== undefined) byId.set(run.id, run);
+  }
+  return [...byId.values()];
+}
+
+function normalizeAgentRun(value: unknown): AgentRun | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = isOpaqueAgentRunId(value.id) ? value.id : undefined;
+  const status = isAgentRunStatus(value.status) ? value.status : undefined;
+  const confidence = isAgentRunConfidence(value.confidence)
+    ? value.confidence
+    : undefined;
+  if (id === undefined || status === undefined || confidence === undefined) {
+    return undefined;
+  }
+  const coverage = normalizeAgentRunCoverage(value.effortCoverage);
+  const effort = normalizeAgentRunEffort(value, coverage);
+  const parentId = isOpaqueAgentRunId(value.parentId)
+    ? value.parentId
+    : undefined;
+  const agent = isAgentLabel(value.agent) ? value.agent : undefined;
+  const artifacts =
+    value.artifacts === "available" || value.artifacts === "missing"
+      ? value.artifacts
+      : undefined;
+  const observedAt = isBoundedTimestamp(value.observedAt)
+    ? value.observedAt
+    : undefined;
+  const evidenceToolId = isOpaqueAgentToolId(value.evidenceToolId)
+    ? value.evidenceToolId
+    : undefined;
+  const model = boundedProducerLabel(value.model);
+  const thinking = boundedProducerLabel(value.thinking);
+  const failure = normalizeAgentFailure(value.failure);
+  return {
+    id,
+    ...(parentId === undefined ? {} : { parentId }),
+    ...(agent === undefined ? {} : { agent }),
+    status,
+    confidence,
+    ...(artifacts === undefined ? {} : { artifacts }),
+    ...(observedAt === undefined ? {} : { observedAt }),
+    ...(evidenceToolId === undefined ? {} : { evidenceToolId }),
+    ...(model === undefined ? {} : { model }),
+    ...(thinking === undefined ? {} : { thinking }),
+    ...(failure === undefined ? {} : { failure }),
+    ...(effort.usage === undefined ? {} : { usage: effort.usage }),
+    ...(effort.durationMs === undefined
+      ? {}
+      : { durationMs: effort.durationMs }),
+    ...(effort.toolCalls === undefined ? {} : { toolCalls: effort.toolCalls }),
+    effortCoverage: effort.coverage,
+  };
+}
+
+function normalizeAgentRunCoverage(value: unknown): AgentRunEffortCoverage {
+  if (!isRecord(value)) return unavailableAgentRunCoverage();
+  const state = (candidate: unknown): AgentRunEffortCoverage["duration"] =>
+    isAgentRunCoverage(candidate) ? candidate : "unavailable";
+  return {
+    duration: state(value.duration),
+    generations: state(value.generations),
+    tools: state(value.tools),
+    errors: state(value.errors),
+    usage: state(value.usage),
+    cost: state(value.cost),
+  };
+}
+
+function unavailableAgentRunCoverage(): AgentRunEffortCoverage {
+  return {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  };
+}
+
+function normalizeAgentRunEffort(
+  value: Readonly<Record<string, unknown>>,
+  coverage: AgentRunEffortCoverage,
+): {
+  durationMs?: number;
+  toolCalls?: number;
+  usage?: AgentRunUsage;
+  coverage: AgentRunEffortCoverage;
+} {
+  const durationMs = boundedAgentRunNumber(
+    value.durationMs,
+    MAX_AGENT_RUN_DURATION_MS,
+  );
+  const toolCalls = boundedAgentRunNumber(
+    value.toolCalls,
+    MAX_AGENT_RUN_TOOL_CALLS,
+  );
+  const usageValue = normalizeAgentUsage(value.usage);
+  const acceptedUsage =
+    usageValue?.totalTokens !== undefined && coverage.usage !== "unavailable";
+  const acceptedCost =
+    usageValue?.cost !== undefined && coverage.cost !== "unavailable";
+  const usage =
+    usageValue === undefined
+      ? undefined
+      : selectAgentUsage(usageValue, acceptedUsage, acceptedCost);
+  const acceptedDuration =
+    durationMs !== undefined && coverage.duration !== "unavailable";
+  const acceptedTools =
+    toolCalls !== undefined && coverage.tools !== "unavailable";
+  return {
+    ...(acceptedDuration ? { durationMs } : {}),
+    ...(acceptedTools ? { toolCalls } : {}),
+    ...(usage === undefined ? {} : { usage }),
+    coverage: {
+      duration: acceptedDuration ? coverage.duration : "unavailable",
+      // No audited producer publishes native generations or per-run errors.
+      generations: "unavailable",
+      tools: acceptedTools ? coverage.tools : "unavailable",
+      errors: "unavailable",
+      usage: acceptedUsage ? coverage.usage : "unavailable",
+      cost: acceptedCost ? coverage.cost : "unavailable",
+    },
+  };
+}
+
+function selectAgentUsage(
+  value: AgentRunUsage,
+  includeTokens: boolean,
+  includeCost: boolean,
+): AgentRunUsage | undefined {
+  const selected: AgentRunUsage = {};
+  if (includeTokens && value.totalTokens !== undefined) {
+    selected.totalTokens = value.totalTokens;
+  }
+  if (includeCost && value.cost !== undefined) selected.cost = value.cost;
+  for (const field of OPTIONAL_TOKEN_FIELDS) {
+    const candidate = value[field];
+    if (includeTokens && candidate !== undefined) selected[field] = candidate;
+  }
+  for (const field of OPTIONAL_COST_FIELDS) {
+    const candidate = value[field];
+    if (includeCost && candidate !== undefined) selected[field] = candidate;
+  }
+  return Object.keys(selected).length === 0 ? undefined : selected;
+}
+
+function normalizeAgentUsage(value: unknown): AgentRunUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const totalTokens = isAgentRunToken(value.totalTokens)
+    ? value.totalTokens
+    : undefined;
+  const cost = isAgentRunCost(value.cost) ? value.cost : undefined;
+  const usage: AgentRunUsage = {
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cost === undefined ? {} : { cost }),
+  };
+  for (const field of OPTIONAL_TOKEN_FIELDS) {
+    const candidate = value[field];
+    if (candidate !== undefined && isAgentRunToken(candidate)) {
+      usage[field] = candidate;
+    }
+  }
+  for (const field of OPTIONAL_COST_FIELDS) {
+    const candidate = value[field];
+    if (candidate !== undefined && isAgentRunCost(candidate)) {
+      usage[field] = candidate;
+    }
+  }
+  return Object.keys(usage).length === 0 ? undefined : usage;
+}
+
+function normalizeAgentFailure(value: unknown): AgentFailure | undefined {
+  if (!isRecord(value) || !isAgentFailureReason(value.reason)) return undefined;
+  if (value.reason === "process-signal") {
+    return isProcessSignal(value.detail)
+      ? { reason: value.reason, detail: value.detail }
+      : { reason: value.reason };
+  }
+  if (value.reason === "exit-nonzero") {
+    return {
+      reason: value.reason,
+      ...(boundedAgentRunNumber(value.detail, 2_147_483_647) === undefined
+        ? {}
+        : { detail: value.detail as number }),
+    };
+  }
+  return { reason: value.reason };
+}
+
+function boundedAgentRunNumber(
+  value: unknown,
+  maximum: number,
+): number | undefined {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= maximum
+    ? value
+    : undefined;
+}
+
+function isAgentRunToken(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_USAGE
+  );
+}
+
+function isAgentRunCost(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= MAX_USAGE
+  );
+}
+
+function isOpaqueAgentRunId(value: unknown): value is string {
+  return typeof value === "string" && OPAQUE_AGENT_RUN_ID.test(value);
+}
+
+function isOpaqueAgentToolId(value: unknown): value is string {
+  return typeof value === "string" && OPAQUE_TOOL_ID.test(value);
+}
+
+function isAgentRunStatus(value: unknown): value is AgentRun["status"] {
+  return (
+    typeof value === "string" &&
+    AGENT_RUN_STATUSES.has(value as AgentRun["status"])
+  );
+}
+
+function isAgentRunConfidence(value: unknown): value is Confidence {
+  return (
+    typeof value === "string" && AGENT_RUN_CONFIDENCES.has(value as Confidence)
+  );
+}
+
+function isAgentRunCoverage(
+  value: unknown,
+): value is AgentRunEffortCoverage["duration"] {
+  return value === "complete" || value === "partial" || value === "unavailable";
+}
+
+function isAgentFailureReason(value: unknown): value is AgentFailure["reason"] {
+  return (
+    typeof value === "string" &&
+    AGENT_FAILURE_REASONS.has(value as AgentFailure["reason"])
+  );
+}
+
 function appendSubagentUsage(
   summary: CanonicalUsageSummary,
   runs: readonly AgentRun[],
 ): CanonicalUsageSummary {
-  const lines = runs.flatMap((run) =>
-    run.usage === undefined
+  const lines = runs.flatMap((run) => {
+    const totalTokens = run.usage?.totalTokens;
+    const cost = run.usage?.cost;
+    return totalTokens === undefined || cost === undefined
       ? []
       : [
           {
@@ -502,7 +883,7 @@ function appendSubagentUsage(
             ownerId: run.id,
             domain: "child-breakdown" as const,
             bucket: "child-run" as const,
-            usage: run.usage,
+            usage: { ...run.usage, totalTokens, cost },
             contributesToSession: false,
             observedAt: timeKnown(run.observedAt, "pi-publication-entry"),
             attributedAt: timeKnown(run.observedAt, "pi-publication-entry"),
@@ -512,8 +893,8 @@ function appendSubagentUsage(
               recordId: run.id,
             },
           },
-        ],
-  );
+        ];
+  });
   return {
     ...summary,
     lines: [
@@ -522,10 +903,7 @@ function appendSubagentUsage(
     ],
     coverage: {
       ...summary.coverage,
-      "child-run": coverageOf(
-        runs.length,
-        runs.filter((run) => run.usage !== undefined).length,
-      ),
+      "child-run": coverageOf(runs.length, lines.length),
     },
   };
 }
@@ -619,7 +997,11 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   });
 
   const reduced = reduceEntries(sessionId, entries);
-  const usage = buildUsage(entries, reduced, input.subagents, diagnostics);
+  const normalizedSubagents =
+    input.subagents === undefined
+      ? undefined
+      : normalizeSubagentEvidence(input.subagents);
+  const usage = buildUsage(entries, reduced, normalizedSubagents, diagnostics);
   const toolResults = entries.filter(
     (entry) =>
       entry.type === "message" &&
@@ -636,8 +1018,8 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   const tools = correlateLiveDuration(sessionId, reduced.tools, liveFacts);
   const stateTransitions = readStateTransitions(entries);
   const integrationEvents = readIntegrationEvents(entries, sessionId);
-  const agents = [...(input.subagents?.runs ?? [])];
-  for (const conflict of input.subagents?.diagnostics ?? []) {
+  const agents = [...(normalizedSubagents?.runs ?? [])];
+  for (const conflict of normalizedSubagents?.diagnostics ?? []) {
     diagnostics.add("subagent-result", conflict.code, conflict.count);
   }
   const inventory = sanitizeInventory(input.inventory);
@@ -676,7 +1058,7 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
     evidence: input.evidence,
     walRecords: input.walRecords,
     inventory,
-    subagents: input.subagents,
+    subagents: normalizedSubagents,
   });
 
   const session: CanonicalSession = {
@@ -1013,13 +1395,15 @@ function buildUsage(
     });
   }
   for (const run of subagents?.runs ?? []) {
-    if (run.usage === undefined) continue;
+    const totalTokens = run.usage?.totalTokens;
+    const cost = run.usage?.cost;
+    if (totalTokens === undefined || cost === undefined) continue;
     lines.push({
       id: `usage-line:child:${run.id}`,
       ownerId: run.id,
       domain: "child-breakdown",
       bucket: "child-run",
-      usage: run.usage,
+      usage: { ...run.usage, totalTokens, cost },
       // Child usage is a breakdown; it never enters a session total.
       contributesToSession: false,
       observedAt: timeKnown(run.observedAt, "pi-publication-entry"),
@@ -1051,7 +1435,7 @@ function buildUsage(
     ),
     "child-run": coverageOf(
       subagents?.runs.length ?? 0,
-      (subagents?.runs ?? []).filter((run) => run.usage !== undefined).length,
+      lines.filter((line) => line.domain === "child-breakdown").length,
     ),
   };
   const fieldCoverage = usageFieldCoverage(nativeUsageOwners(lines, coverage));
@@ -1980,7 +2364,12 @@ function healthFor(context: HealthContext): SessionEvidenceHealth {
     sources.push({
       source: "subagent-result",
       authority: "cooperative",
-      state: subagents.state === "supported" ? "supported" : "unavailable",
+      state:
+        subagents.state === "supported"
+          ? "supported"
+          : subagents.state === "unsupported"
+            ? "unsupported"
+            : "unavailable",
       schemaVersion: 1,
       recordsSeen: subagents.runs.length,
       factsAccepted: subagents.runs.length,

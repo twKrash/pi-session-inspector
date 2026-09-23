@@ -543,8 +543,13 @@ export function assertBundleReconciliation(fixture: BundleFixture): void {
       fail(id, "native-source-reconciliation");
     }
     const childTotal = treeReport.agents.reduce(
-      (total, agent) =>
-        agent.usage === undefined ? total : addUsage(total, agent.usage),
+      (total, agent) => {
+        const totalTokens = agent.usage?.totalTokens;
+        const cost = agent.usage?.cost;
+        return totalTokens === undefined || cost === undefined
+          ? total
+          : addUsage(total, { totalTokens, cost });
+      },
       { totalTokens: 0, cost: 0 },
     );
     if (

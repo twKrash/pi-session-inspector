@@ -608,6 +608,14 @@ test("renders bounded agent and integration evidence", () => {
             parentId: "parent-run",
             status: "succeeded",
             confidence: "cooperative",
+            effortCoverage: {
+              duration: "unavailable",
+              generations: "unavailable",
+              tools: "unavailable",
+              errors: "unavailable",
+              usage: "unavailable",
+              cost: "unavailable",
+            },
             usage: { totalTokens: 20, cost: 3 },
           },
         ],
@@ -814,6 +822,14 @@ function agentRow(
     ...(parentId === undefined ? {} : { parentId }),
     status: "succeeded",
     confidence: "cooperative",
+    effortCoverage: {
+      duration: "unavailable",
+      generations: "unavailable",
+      tools: "unavailable",
+      errors: "unavailable",
+      usage: "unavailable",
+      cost: "unavailable",
+    },
   };
 }
 
@@ -908,6 +924,32 @@ test("keeps partial child-run usage visible", () => {
   ).join("\n");
 
   assert.match(rendered, /usage reported by 1 of 3/);
+});
+
+test("renders unavailable for missing child token or cost", () => {
+  const tokenOnly = renderTab(
+    modelWith({
+      agents: [{ ...agentRow("token-only"), usage: { totalTokens: 20 } }],
+      agentEvidence: "supported",
+      agentUsage: { runsTotal: 1, runsWithUsage: 1 },
+    }),
+    "agents",
+  ).join("\\n");
+  const costOnly = renderTab(
+    modelWith({
+      agents: [{ ...agentRow("cost-only"), usage: { cost: 3 } }],
+      agentEvidence: "supported",
+      agentUsage: { runsTotal: 1, runsWithUsage: 1 },
+    }),
+    "agents",
+  ).join("\\n");
+
+  assert.match(tokenOnly, /Tokens: 20/);
+  assert.match(tokenOnly, /Cost: Unavailable/);
+  assert.match(costOnly, /Tokens: Unavailable/);
+  assert.match(costOnly, /Cost: 3/);
+  assert.ok(!tokenOnly.includes("undefined"));
+  assert.ok(!costOnly.includes("undefined"));
 });
 
 test("keeps child usage wording non-additive", () => {
