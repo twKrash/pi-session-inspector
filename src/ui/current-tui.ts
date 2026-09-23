@@ -7,7 +7,8 @@ import {
 } from "@earendil-works/pi-tui";
 import { cacheHitPercent } from "../core/reports.ts";
 import { buildLedger } from "../core/ledger.ts";
-import { sessionView } from "./report-projection.ts";
+import { sessionView, type AgentRow } from "./report-projection.ts";
+import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
 import { agentParentVerdicts, type UiAgentParent } from "./ui-projection.ts";
 import {
   CURRENT_TABS,
@@ -385,24 +386,36 @@ export function createCurrentTuiComponent({
         ? [evidenceLabel(currentModel.report.agentEvidence)]
         : lines;
     }
+    const effortValue = (
+      value: string | number | null | undefined,
+      coverage: AgentRow["effortCoverage"]["duration"],
+    ): string => {
+      if (value === null || value === undefined || coverage === "unavailable") {
+        return ENGLISH_CATALOG["evidence.unavailable"];
+      }
+      return coverage === "partial"
+        ? `${ENGLISH_CATALOG["agents.effortKnown"]} ${value}`
+        : String(value);
+    };
     return [
       ...lines,
       ...renderChildRunSummary(),
-      ...agents.flatMap((agent) => [
-        `Agent: ${agent.id}`,
-        parentLabel(agent.parent),
-        ...(agent.agent == null ? [] : [`Label: ${agent.agent}`]),
-        `Status: ${agent.status}`,
-        ...(agent.artifacts == null ? [] : [`Artifacts: ${agent.artifacts}`]),
-        `Evidence: ${agent.confidence}`,
-        ...(agent.usage == null
-          ? []
-          : [
-              `Tokens: ${agent.usage.totalTokens ?? "Unavailable"}`,
-              `Cost: ${agent.usage.cost ?? "Unavailable"}`,
-              "Child usage is a breakdown only; never added to session totals.",
-            ]),
-      ]),
+      ...agents.flatMap((agent) => {
+        const coverage = agent.effortCoverage;
+        return [
+          `Agent: ${agent.id}`,
+          parentLabel(agent.parent),
+          ...(agent.agent == null ? [] : [`Label: ${agent.agent}`]),
+          `Status: ${agent.status}`,
+          ...(agent.artifacts == null ? [] : [`Artifacts: ${agent.artifacts}`]),
+          `Evidence: ${agent.confidence}`,
+          `Duration: ${effortValue(agent.durationLabel, coverage.duration)} · Generations: ${effortValue(agent.generations, coverage.generations)}`,
+          `Tool calls: ${effortValue(agent.toolCalls, coverage.tools)} · Error count: ${effortValue(agent.errorCount, coverage.errors)}`,
+          `Effort coverage: duration ${coverage.duration} · generations ${coverage.generations} · tools ${coverage.tools}`,
+          `Effort coverage: errors ${coverage.errors} · usage ${coverage.usage} · cost ${coverage.cost}`,
+          `Tokens: ${effortValue(agent.usage?.totalTokens, coverage.usage)} · Cost: ${effortValue(agent.usage?.cost, coverage.cost)}`,
+        ];
+      }),
     ];
   }
 
@@ -431,6 +444,7 @@ export function createCurrentTuiComponent({
     if (usage.runsTotal === 0) return [];
     return [
       `Child runs: ${usage.runsTotal}  usage reported by ${usage.runsWithUsage} of ${usage.runsTotal}`,
+      "Child usage is a breakdown only; never added to session totals.",
     ];
   }
 

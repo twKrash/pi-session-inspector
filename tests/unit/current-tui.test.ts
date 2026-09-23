@@ -609,13 +609,15 @@ test("renders bounded agent and integration evidence", () => {
             status: "succeeded",
             confidence: "cooperative",
             effortCoverage: {
-              duration: "unavailable",
+              duration: "partial",
               generations: "unavailable",
-              tools: "unavailable",
+              tools: "partial",
               errors: "unavailable",
-              usage: "unavailable",
-              cost: "unavailable",
+              usage: "partial",
+              cost: "partial",
             },
+            durationMs: 1234,
+            toolCalls: 3,
             usage: { totalTokens: 20, cost: 3 },
           },
         ],
@@ -640,7 +642,13 @@ test("renders bounded agent and integration evidence", () => {
   for (let index = 0; index < 4; index++) component.handleInput("\u001B[C");
   const renderedAgents = component.render(120).join("\n");
   assert.ok(renderedAgents.includes("child-run"));
-  assert.ok(renderedAgents.includes("Cost: 3"));
+  assert.ok(renderedAgents.includes("Duration: Known 1.2 s"));
+  assert.ok(renderedAgents.includes("Generations: Unavailable"));
+  assert.ok(renderedAgents.includes("Tool calls: Known 3"));
+  assert.ok(renderedAgents.includes("Error count: Unavailable"));
+  assert.ok(renderedAgents.includes("Effort coverage: duration partial"));
+  assert.ok(renderedAgents.includes("Tokens: Known 20"));
+  assert.ok(renderedAgents.includes("Cost: Known 3"));
   // `parent-run` is not an Inspector-owned run identity, so L2's verdict is
   // `unknown`: the parent cell states Unavailable and never echoes the value.
   assert.ok(renderedAgents.includes(ENGLISH_CATALOG["agents.parentUnknown"]));
@@ -816,6 +824,7 @@ const OPAQUE_ROW_ID = `subagent-${"a".repeat(64)}`;
 function agentRow(
   id: string,
   parentId?: string,
+  usage?: SessionReport["agents"][number]["usage"],
 ): SessionReport["agents"][number] {
   return {
     id,
@@ -827,9 +836,10 @@ function agentRow(
       generations: "unavailable",
       tools: "unavailable",
       errors: "unavailable",
-      usage: "unavailable",
-      cost: "unavailable",
+      usage: usage?.totalTokens === undefined ? "unavailable" : "partial",
+      cost: usage?.cost === undefined ? "unavailable" : "partial",
     },
+    ...(usage === undefined ? {} : { usage }),
   };
 }
 
@@ -865,7 +875,7 @@ test("renders the semantic parent verdict instead of a raw run id", () => {
   );
   // Four runs render more than one page of lines, so the cells are collected
   // from every page: pagination must not drop a verdict.
-  const parentCells = linesAcrossPages(component, 2, "Parent: ");
+  const parentCells = linesAcrossPages(component, 4, "Parent: ");
   assert.equal(parentCells.length, 4);
 
   const rendered = parentCells.join("\n");
@@ -910,10 +920,10 @@ test("keeps unavailable distinct from an observed zero", () => {
 });
 
 test("keeps partial child-run usage visible", () => {
-  const withUsage = {
-    ...agentRow("run-a"),
-    usage: { totalTokens: 20, cost: 3 },
-  };
+  const withUsage = agentRow("run-a", undefined, {
+    totalTokens: 20,
+    cost: 3,
+  });
   const rendered = renderTab(
     modelWith({
       agents: [withUsage, agentRow("run-b"), agentRow("run-c")],
@@ -929,7 +939,7 @@ test("keeps partial child-run usage visible", () => {
 test("renders unavailable for missing child token or cost", () => {
   const tokenOnly = renderTab(
     modelWith({
-      agents: [{ ...agentRow("token-only"), usage: { totalTokens: 20 } }],
+      agents: [agentRow("token-only", undefined, { totalTokens: 20 })],
       agentEvidence: "supported",
       agentUsage: { runsTotal: 1, runsWithUsage: 1 },
     }),
@@ -937,26 +947,26 @@ test("renders unavailable for missing child token or cost", () => {
   ).join("\\n");
   const costOnly = renderTab(
     modelWith({
-      agents: [{ ...agentRow("cost-only"), usage: { cost: 3 } }],
+      agents: [agentRow("cost-only", undefined, { cost: 3 })],
       agentEvidence: "supported",
       agentUsage: { runsTotal: 1, runsWithUsage: 1 },
     }),
     "agents",
   ).join("\\n");
 
-  assert.match(tokenOnly, /Tokens: 20/);
+  assert.match(tokenOnly, /Tokens: Known 20/);
   assert.match(tokenOnly, /Cost: Unavailable/);
   assert.match(costOnly, /Tokens: Unavailable/);
-  assert.match(costOnly, /Cost: 3/);
+  assert.match(costOnly, /Cost: Known 3/);
   assert.ok(!tokenOnly.includes("undefined"));
   assert.ok(!costOnly.includes("undefined"));
 });
 
 test("keeps child usage wording non-additive", () => {
-  const withUsage = {
-    ...agentRow("run-a"),
-    usage: { totalTokens: 20, cost: 3 },
-  };
+  const withUsage = agentRow("run-a", undefined, {
+    totalTokens: 20,
+    cost: 3,
+  });
   const lines = renderTab(
     modelWith({
       agents: [withUsage],

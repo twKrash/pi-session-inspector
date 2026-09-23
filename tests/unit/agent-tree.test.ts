@@ -19,6 +19,10 @@ function run(input: {
   thinking?: string | null;
   tokens?: number | null;
   cost?: number | null;
+  durationMs?: number | null;
+  durationLabel?: string | null;
+  toolCalls?: number | null;
+  effortCoverage?: UiAgentRow["effortCoverage"];
 }): UiAgentRow {
   const tokens = input.tokens === undefined ? null : input.tokens;
   const cost = input.cost === undefined ? null : input.cost;
@@ -38,6 +42,19 @@ function run(input: {
       tokens === null && cost === null
         ? null
         : { totalTokens: tokens ?? 0, cost: cost ?? 0 },
+    durationMs: input.durationMs ?? null,
+    durationLabel: input.durationLabel ?? null,
+    generations: null,
+    toolCalls: input.toolCalls ?? null,
+    errorCount: null,
+    effortCoverage: input.effortCoverage ?? {
+      duration: input.durationMs == null ? "unavailable" : "partial",
+      generations: "unavailable",
+      tools: input.toolCalls == null ? "unavailable" : "partial",
+      errors: "unavailable",
+      usage: tokens === null ? "unavailable" : "partial",
+      cost: cost === null ? "unavailable" : "partial",
+    },
     parent: input.parent ?? "none",
   };
 }
@@ -397,6 +414,57 @@ test("a filtered node's counts describe the subtree that is rendered", () => {
   assert.equal(shown.failed, 0);
   assert.equal(shown.withoutUsage, 0);
   assert.equal(view.total, 4);
+});
+
+test("filtered effort-coverage summaries count only rendered descendant runs", () => {
+  const forest = buildAgentForest([
+    run({ id: "root", agent: "orchestrator" }),
+    run({
+      id: "known",
+      parentId: "root",
+      parent: "in-range",
+      durationMs: 1234,
+      durationLabel: "1.2 s",
+      toolCalls: 2,
+      effortCoverage: {
+        duration: "partial",
+        generations: "unavailable",
+        tools: "partial",
+        errors: "unavailable",
+        usage: "unavailable",
+        cost: "unavailable",
+      },
+    }),
+    run({ id: "missing", parentId: "root", parent: "in-range" }),
+  ]);
+  const whole = forest.entries[0];
+  if (whole === undefined || whole.kind !== "run") {
+    throw new Error("root must be the one top-level entry");
+  }
+  assert.deepEqual(
+    [
+      whole.durationPartial,
+      whole.durationUnavailable,
+      whole.toolCallsPartial,
+      whole.toolCallsUnavailable,
+    ],
+    [1, 1, 1, 1],
+  );
+
+  const view = filterAgentForest(forest, (row) => row.id === "known");
+  const shown = view.entries[0];
+  if (shown === undefined || shown.kind !== "run") {
+    throw new Error("the kept ancestor must stay a run entry");
+  }
+  assert.deepEqual(
+    [
+      shown.durationPartial,
+      shown.durationUnavailable,
+      shown.toolCallsPartial,
+      shown.toolCallsUnavailable,
+    ],
+    [1, 0, 1, 0],
+  );
 });
 
 test("a hundred-odd runs build and filter once, without quadratic work", () => {

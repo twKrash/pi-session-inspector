@@ -97,6 +97,12 @@ export type AgentRow = {
   thinking: SessionReport["agents"][number]["thinking"] | null;
   failure: SessionReport["agents"][number]["failure"] | null;
   usage: SafeAgentUsage | null;
+  durationMs: number | null;
+  durationLabel: string | null;
+  generations: number | null;
+  toolCalls: number | null;
+  errorCount: number | null;
+  effortCoverage: SessionReport["agents"][number]["effortCoverage"];
 };
 export type IntegrationRow = {
   integration: string;
@@ -694,6 +700,13 @@ function agentRows(report: SessionReport): AgentRow[] {
     thinking: agent.thinking ?? null,
     failure: agent.failure ?? null,
     usage: agent.usage === undefined ? null : { ...agent.usage },
+    durationMs: agent.durationMs ?? null,
+    durationLabel:
+      agent.durationMs === undefined ? null : formatDuration(agent.durationMs),
+    generations: agent.generations ?? null,
+    toolCalls: agent.toolCalls ?? null,
+    errorCount: agent.errorCount ?? null,
+    effortCoverage: { ...agent.effortCoverage },
   }));
 }
 

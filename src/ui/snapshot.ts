@@ -1219,6 +1219,29 @@ function agentExecutionSection(content: string): string {
   );
 }
 
+function agentEffortValue(
+  value: string | number | null | undefined,
+  coverage: UiAgentRow["effortCoverage"]["duration"],
+): string {
+  if (value === null || value === undefined || coverage === "unavailable") {
+    return ENGLISH_CATALOG["evidence.unavailable"];
+  }
+  return coverage === "partial"
+    ? `${ENGLISH_CATALOG["agents.effortKnown"]} ${value}`
+    : String(value);
+}
+
+function agentEffortCoverage(coverage: UiAgentRow["effortCoverage"]): string {
+  return [
+    `duration ${coverage.duration}`,
+    `generations ${coverage.generations}`,
+    `tools ${coverage.tools}`,
+    `errors ${coverage.errors}`,
+    `usage ${coverage.usage}`,
+    `cost ${coverage.cost}`,
+  ].join(" · ");
+}
+
 function agentsSections(
   report: SessionReportView,
   range: SnapshotRange | undefined,
@@ -1242,8 +1265,13 @@ function agentsSections(
                   catalog["table.role"],
                   catalog["table.status"],
                   catalog["table.model"],
+                  catalog["table.duration"],
+                  catalog["table.generations"],
+                  catalog["table.tools"],
+                  catalog["table.errorCount"],
                   catalog["table.tokens"],
                   catalog["table.cost"],
+                  catalog["agents.effortCoverage"],
                   catalog["table.artifacts"],
                   catalog["table.parent"],
                 ],
@@ -1258,12 +1286,29 @@ function agentsSections(
                     ),
                   ),
                   orUnavailable(run.model),
-                  run.usage === null || run.usage.totalTokens === undefined
-                    ? catalog["evidence.unavailable"]
-                    : count(run.usage.totalTokens),
-                  run.usage === null || run.usage.cost === undefined
-                    ? catalog["evidence.unavailable"]
-                    : money(run.usage.cost),
+                  agentEffortValue(
+                    run.durationLabel,
+                    run.effortCoverage.duration,
+                  ),
+                  agentEffortValue(
+                    run.generations,
+                    run.effortCoverage.generations,
+                  ),
+                  agentEffortValue(run.toolCalls, run.effortCoverage.tools),
+                  agentEffortValue(run.errorCount, run.effortCoverage.errors),
+                  agentEffortValue(
+                    run.usage?.totalTokens === undefined
+                      ? null
+                      : count(run.usage.totalTokens),
+                    run.effortCoverage.usage,
+                  ),
+                  agentEffortValue(
+                    run.usage?.cost === undefined
+                      ? null
+                      : money(run.usage.cost),
+                    run.effortCoverage.cost,
+                  ),
+                  agentEffortCoverage(run.effortCoverage),
                   orUnavailable(run.artifacts),
                   parentLabel(run, runs),
                 ]),
@@ -1271,8 +1316,13 @@ function agentsSections(
                   "status-cell",
                   "status-cell",
                   "status-cell",
+                  "status-cell",
                   "num",
                   "num",
+                  "num",
+                  "num",
+                  "num",
+                  "status-cell",
                   "status-cell",
                   "status-cell",
                 ],
@@ -1380,6 +1430,10 @@ function treeCounts(node: {
   failed: number;
   interrupted: number;
   withoutUsage: number;
+  durationPartial: number;
+  durationUnavailable: number;
+  toolCallsPartial: number;
+  toolCallsUnavailable: number;
 }): string {
   const parts: string[] = [];
   if (node.children.length > 0) {
@@ -1393,6 +1447,28 @@ function treeCounts(node: {
   }
   if (node.withoutUsage > 0) {
     parts.push(t("agents.tree.withoutUsage", { count: node.withoutUsage }));
+  }
+  if (node.durationPartial > 0) {
+    parts.push(
+      t("agents.tree.durationPartial", { count: node.durationPartial }),
+    );
+  }
+  if (node.durationUnavailable > 0) {
+    parts.push(
+      t("agents.tree.durationUnavailable", { count: node.durationUnavailable }),
+    );
+  }
+  if (node.toolCallsPartial > 0) {
+    parts.push(
+      t("agents.tree.toolCallsPartial", { count: node.toolCallsPartial }),
+    );
+  }
+  if (node.toolCallsUnavailable > 0) {
+    parts.push(
+      t("agents.tree.toolCallsUnavailable", {
+        count: node.toolCallsUnavailable,
+      }),
+    );
   }
   return parts.join(" · ");
 }
@@ -1420,19 +1496,30 @@ function treeRunItem(
   if (run.thinking !== null && run.thinking !== undefined) {
     parts.push(run.thinking);
   }
-  if (run.usage === null) {
-    parts.push(catalog["agents.tree.usageUnavailable"]);
-  } else {
-    const tokenLabel =
-      run.usage.totalTokens === undefined
-        ? catalog["evidence.unavailable"]
-        : t("agents.tree.tokens", { count: run.usage.totalTokens });
-    const costLabel =
-      run.usage.cost === undefined
-        ? catalog["evidence.unavailable"]
-        : money(run.usage.cost);
-    parts.push(`${tokenLabel} · ${costLabel}`);
-  }
+  const tokenLabel =
+    run.usage?.totalTokens === undefined
+      ? null
+      : t("agents.tree.tokens", { count: run.usage.totalTokens });
+  const costLabel =
+    run.usage?.cost === undefined ? null : money(run.usage.cost);
+  parts.push(
+    `${catalog["table.tokens"]}: ${agentEffortValue(tokenLabel, run.effortCoverage.usage)} · ${catalog["table.cost"]}: ${agentEffortValue(costLabel, run.effortCoverage.cost)}`,
+  );
+  parts.push(
+    `${catalog["table.duration"]}: ${agentEffortValue(run.durationLabel, run.effortCoverage.duration)}`,
+  );
+  parts.push(
+    `${catalog["table.generations"]}: ${agentEffortValue(run.generations, run.effortCoverage.generations)}`,
+  );
+  parts.push(
+    `${catalog["table.tools"]}: ${agentEffortValue(run.toolCalls, run.effortCoverage.tools)}`,
+  );
+  parts.push(
+    `${catalog["table.errorCount"]}: ${agentEffortValue(run.errorCount, run.effortCoverage.errors)}`,
+  );
+  parts.push(
+    `${catalog["agents.effortCoverage"]}: ${agentEffortCoverage(run.effortCoverage)}`,
+  );
   if (run.artifacts !== null) {
     parts.push(`${catalog["table.artifacts"]}: ${run.artifacts}`);
   }

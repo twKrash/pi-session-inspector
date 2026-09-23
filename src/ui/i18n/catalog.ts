@@ -210,6 +210,8 @@ export const ENGLISH_CATALOG = {
   "agents.knownCost": "Known child cost",
   "agents.knownFailedCost": "Known failed-run cost",
   "agents.usageFraction": "{withUsage} of {total} runs reported usage",
+  "agents.effortKnown": "Known",
+  "agents.effortCoverage": "Effort coverage",
   // The Agents execution view. One presentation owns two readings of the same
   // runs: the tree is where the execution topology lives, and the table is the
   // flat breakdown it always was. The session root and a run container are
@@ -252,6 +254,20 @@ export const ENGLISH_CATALOG = {
   "agents.tree.failed": "{count, number} failed",
   "agents.tree.interrupted": "{count, number} interrupted",
   "agents.tree.withoutUsage": "{count, number} without usage",
+  "agents.tree.durationPartial": "{count, number} runs with Known duration",
+  "agents.tree.durationPartial_one": "{count, number} run with Known duration",
+  "agents.tree.durationUnavailable":
+    "{count, number} runs with duration Unavailable",
+  "agents.tree.durationUnavailable_one":
+    "{count, number} run with duration Unavailable",
+  "agents.tree.toolCallsPartial":
+    "{count, number} runs with Known tool-call counts",
+  "agents.tree.toolCallsPartial_one":
+    "{count, number} run with Known tool-call count",
+  "agents.tree.toolCallsUnavailable":
+    "{count, number} runs with tool-call counts Unavailable",
+  "agents.tree.toolCallsUnavailable_one":
+    "{count, number} run with tool-call count Unavailable",
   "agents.tree.context": "context",
   "agents.tree.filterAll": "All",
   "agents.tree.filtered":
@@ -305,6 +321,7 @@ export const ENGLISH_CATALOG = {
   "env.note":
     "Current environment · Inventory is availability, never activity, and is not filtered by the selected range.",
   "table.error": "Error",
+  "table.errorCount": "Error count",
   "table.name": "Name",
   "table.invocations": "Invocations",
   "table.scope": "Scope",

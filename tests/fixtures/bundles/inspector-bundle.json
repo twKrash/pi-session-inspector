@@ -316,7 +316,15 @@
             "id": "subagent-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "status": "succeeded",
             "confidence": "cooperative",
-            "usage": { "totalTokens": 50, "cost": 0.01 }
+            "usage": { "totalTokens": 50, "cost": 0.01 },
+            "effortCoverage": {
+              "duration": "unavailable",
+              "generations": "unavailable",
+              "tools": "unavailable",
+              "errors": "unavailable",
+              "usage": "partial",
+              "cost": "partial"
+            }
           }
         ],
         "agentUsage": { "runsTotal": 1, "runsWithUsage": 1 },

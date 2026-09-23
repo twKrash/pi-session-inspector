@@ -1964,6 +1964,32 @@
         tr("agents.tree.withoutUsage", { count: counts.withoutUsage }),
       );
     }
+    if (counts.durationPartial > 0) {
+      parts.push(
+        tr("agents.tree.durationPartial", { count: counts.durationPartial }),
+      );
+    }
+    if (counts.durationUnavailable > 0) {
+      parts.push(
+        tr("agents.tree.durationUnavailable", {
+          count: counts.durationUnavailable,
+        }),
+      );
+    }
+    if (counts.toolCallsPartial > 0) {
+      parts.push(
+        tr("agents.tree.toolCallsPartial", {
+          count: counts.toolCallsPartial,
+        }),
+      );
+    }
+    if (counts.toolCallsUnavailable > 0) {
+      parts.push(
+        tr("agents.tree.toolCallsUnavailable", {
+          count: counts.toolCallsUnavailable,
+        }),
+      );
+    }
     return parts;
   };
 
@@ -1998,23 +2024,71 @@
       ? state.entity.id
       : null;
 
+  const agentEffortValue = (value, coverage) => {
+    if (value === null || value === undefined || coverage === "unavailable") {
+      return COPY["evidence.unavailable"];
+    }
+    return coverage === "partial"
+      ? COPY["agents.effortKnown"] + " " + value
+      : String(value);
+  };
+
+  const agentEffortCoverage = (coverage) =>
+    [
+      "duration " + coverage.duration,
+      "generations " + coverage.generations,
+      "tools " + coverage.tools,
+      "errors " + coverage.errors,
+      "usage " + coverage.usage,
+      "cost " + coverage.cost,
+    ].join(" · ");
+
   /** A run row's own figures, each one a field the DTO published. */
   const runMeta = (run) => {
     const parts = [orUnavailable(run.model)];
     if (run.thinking !== null) parts.push(run.thinking);
-    if (run.usage === null) {
-      parts.push(COPY["agents.tree.usageUnavailable"]);
-    } else {
-      const tokenLabel =
-        run.usage.totalTokens === undefined
-          ? COPY["evidence.unavailable"]
-          : tr("agents.tree.tokens", { count: run.usage.totalTokens });
-      const costLabel =
-        run.usage.cost === undefined
-          ? COPY["evidence.unavailable"]
-          : money(run.usage.cost);
-      parts.push(tokenLabel + " · " + costLabel);
-    }
+    const tokenLabel =
+      run.usage === null || run.usage.totalTokens === undefined
+        ? null
+        : tr("agents.tree.tokens", { count: run.usage.totalTokens });
+    const costLabel =
+      run.usage === null || run.usage.cost === undefined
+        ? null
+        : money(run.usage.cost);
+    parts.push(
+      COPY["table.tokens"] +
+        ": " +
+        agentEffortValue(tokenLabel, run.effortCoverage.usage) +
+        " · " +
+        COPY["table.cost"] +
+        ": " +
+        agentEffortValue(costLabel, run.effortCoverage.cost),
+    );
+    parts.push(
+      COPY["table.duration"] +
+        ": " +
+        agentEffortValue(run.durationLabel, run.effortCoverage.duration),
+    );
+    parts.push(
+      COPY["table.generations"] +
+        ": " +
+        agentEffortValue(run.generations, run.effortCoverage.generations),
+    );
+    parts.push(
+      COPY["table.tools"] +
+        ": " +
+        agentEffortValue(run.toolCalls, run.effortCoverage.tools),
+    );
+    parts.push(
+      COPY["table.errorCount"] +
+        ": " +
+        agentEffortValue(run.errorCount, run.effortCoverage.errors),
+    );
+    parts.push(
+      COPY["agents.effortCoverage"] +
+        ": " +
+        agentEffortCoverage(run.effortCoverage),
+    );
     if (run.artifacts !== null) {
       parts.push(COPY["table.artifacts"] + ": " + run.artifacts);
     }
@@ -2445,8 +2519,13 @@
           COPY["table.role"],
           COPY["table.status"],
           COPY["table.model"],
+          COPY["table.duration"],
+          COPY["table.generations"],
+          COPY["table.tools"],
+          COPY["table.errorCount"],
           COPY["table.tokens"],
           COPY["table.cost"],
+          COPY["agents.effortCoverage"],
           COPY["table.artifacts"],
           COPY["table.parent"],
         ],
@@ -2460,12 +2539,23 @@
                 : "neutral",
             ),
             orUnavailable(run.model),
-            run.usage === null || run.usage.totalTokens === undefined
-              ? COPY["evidence.unavailable"]
-              : number(run.usage.totalTokens),
-            run.usage === null || run.usage.cost === undefined
-              ? COPY["evidence.unavailable"]
-              : money(run.usage.cost),
+            agentEffortValue(run.durationLabel, run.effortCoverage.duration),
+            agentEffortValue(run.generations, run.effortCoverage.generations),
+            agentEffortValue(run.toolCalls, run.effortCoverage.tools),
+            agentEffortValue(run.errorCount, run.effortCoverage.errors),
+            agentEffortValue(
+              run.usage === null || run.usage.totalTokens === undefined
+                ? null
+                : number(run.usage.totalTokens),
+              run.effortCoverage.usage,
+            ),
+            agentEffortValue(
+              run.usage === null || run.usage.cost === undefined
+                ? null
+                : money(run.usage.cost),
+              run.effortCoverage.cost,
+            ),
+            agentEffortCoverage(run.effortCoverage),
             orUnavailable(run.artifacts),
             parentCell(run, rendered),
           ],
@@ -2474,8 +2564,13 @@
           "status-cell",
           "status-cell",
           "status-cell",
+          "status-cell",
           "num",
           "num",
+          "num",
+          "num",
+          "num",
+          "status-cell",
           "status-cell",
           "status-cell",
         ],
