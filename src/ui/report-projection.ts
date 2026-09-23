@@ -28,6 +28,7 @@ const t = createTranslator();
  */
 
 type SafeUsage = NonNullable<SessionReport["usage"]>;
+type SafeAgentUsage = NonNullable<SessionReport["agents"][number]["usage"]>;
 type CompositionKey =
   | "generations"
   | "toolResults"
@@ -95,7 +96,7 @@ export type AgentRow = {
   model: SessionReport["agents"][number]["model"] | null;
   thinking: SessionReport["agents"][number]["thinking"] | null;
   failure: SessionReport["agents"][number]["failure"] | null;
-  usage: SafeUsage | null;
+  usage: SafeAgentUsage | null;
 };
 export type IntegrationRow = {
   integration: string;
@@ -692,7 +693,7 @@ function agentRows(report: SessionReport): AgentRow[] {
     model: agent.model ?? null,
     thinking: agent.thinking ?? null,
     failure: agent.failure ?? null,
-    usage: agent.usage === undefined ? null : safeUsage(agent.usage),
+    usage: agent.usage === undefined ? null : { ...agent.usage },
   }));
 }
 

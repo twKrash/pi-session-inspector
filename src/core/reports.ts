@@ -65,6 +65,7 @@ import type {
   AgentFailure,
   AgentRun,
   AgentRunEffortCoverage,
+  AgentRunUsage,
   Compaction,
   EvidenceState,
   IntegrationObservation,
@@ -76,7 +77,7 @@ import type {
   UsageCoverageState,
   UsageFieldCoverageMap,
 } from "./events.ts";
-import { usageFieldCoverage } from "./events.ts";
+import { MAX_AGENT_RUN_TOOL_CALLS, usageFieldCoverage } from "./events.ts";
 
 const MAX_AGENT_ROWS = 256;
 const OPTIONAL_USAGE_TOKEN_FIELDS = [
@@ -697,7 +698,8 @@ export function toSessionReport(
   // and none may be invented.
   const runsTotal = projectedEvidence.agents.length;
   const runsWithUsage = projectedEvidence.agents.filter(
-    (run) => run.usage !== undefined,
+    (run) =>
+      run.usage?.totalTokens !== undefined && run.usage?.cost !== undefined,
   ).length;
   const agentUsage = { runsTotal, runsWithUsage };
   return {
@@ -1065,7 +1067,7 @@ function projectAgent(value: unknown): AgentRun | undefined {
   }
   const parentId = isOpaqueSubagentId(run.parentId) ? run.parentId : undefined;
   const agent = isAgentLabel(run.agent) ? run.agent : undefined;
-  const usage = projectUsage(run.usage);
+  const usage = projectAgentUsage(run.usage);
   const artifacts = isArchiveState(run.artifacts) ? run.artifacts : undefined;
   const observedAt = isObservedAt(run.observedAt) ? run.observedAt : undefined;
   const evidenceToolId = isOpaqueToolId(run.evidenceToolId)
@@ -1083,15 +1085,20 @@ function projectAgent(value: unknown): AgentRun | undefined {
     cost: "unavailable",
   };
   const durationMs = boundedEffortNumber(run.durationMs, 86_400_000_000);
-  const toolCalls = boundedEffortNumber(run.toolCalls, 256);
+  const toolCalls = boundedEffortNumber(
+    run.toolCalls,
+    MAX_AGENT_RUN_TOOL_CALLS,
+  );
   const acceptedDuration =
     durationMs !== undefined && effortCoverage.duration !== "unavailable";
   const acceptedTools =
     toolCalls !== undefined && effortCoverage.tools !== "unavailable";
   const acceptedUsage =
-    usage !== undefined &&
-    effortCoverage.usage !== "unavailable" &&
-    effortCoverage.cost !== "unavailable";
+    usage?.totalTokens !== undefined && effortCoverage.usage !== "unavailable";
+  const acceptedCost =
+    usage?.cost !== undefined && effortCoverage.cost !== "unavailable";
+  const acceptedAgentUsage = acceptedUsage || acceptedCost;
+  const normalizedUsage = acceptedAgentUsage ? usage : undefined;
   const normalizedCoverage: AgentRunEffortCoverage = {
     duration: acceptedDuration ? effortCoverage.duration : "unavailable",
     // No audited producer publishes native generations or per-run errors.
@@ -1099,7 +1106,7 @@ function projectAgent(value: unknown): AgentRun | undefined {
     tools: acceptedTools ? effortCoverage.tools : "unavailable",
     errors: "unavailable",
     usage: acceptedUsage ? effortCoverage.usage : "unavailable",
-    cost: acceptedUsage ? effortCoverage.cost : "unavailable",
+    cost: acceptedCost ? effortCoverage.cost : "unavailable",
   };
   return {
     id: run.id,
@@ -1113,7 +1120,7 @@ function projectAgent(value: unknown): AgentRun | undefined {
     ...(model === undefined ? {} : { model }),
     ...(thinking === undefined ? {} : { thinking }),
     ...(failure === undefined ? {} : { failure }),
-    ...(acceptedUsage ? { usage } : {}),
+    ...(normalizedUsage === undefined ? {} : { usage: normalizedUsage }),
     ...(acceptedDuration ? { durationMs } : {}),
     ...(acceptedTools ? { toolCalls } : {}),
     effortCoverage: normalizedCoverage,
@@ -1206,6 +1213,32 @@ function projectFailureDetail(
       : undefined;
   }
   return undefined;
+}
+
+function projectAgentUsage(value: unknown): AgentRunUsage | undefined {
+  const usage = snapshotRecord(value);
+  if (usage === undefined) return undefined;
+  const totalTokens = isTotalTokens(usage.totalTokens)
+    ? usage.totalTokens
+    : undefined;
+  const cost = isCost(usage.cost) ? usage.cost : undefined;
+  const projected: AgentRunUsage = {
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cost === undefined ? {} : { cost }),
+  };
+  for (const field of OPTIONAL_USAGE_TOKEN_FIELDS) {
+    const candidate = usage[field];
+    if (candidate !== undefined && isTotalTokens(candidate)) {
+      projected[field] = candidate;
+    }
+  }
+  for (const field of OPTIONAL_USAGE_COST_FIELDS) {
+    const candidate = usage[field];
+    if (candidate !== undefined && isCost(candidate)) {
+      projected[field] = candidate;
+    }
+  }
+  return Object.keys(projected).length === 0 ? undefined : projected;
 }
 
 function projectUsage(value: unknown): Usage | undefined {

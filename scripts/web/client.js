@@ -2002,13 +2002,19 @@
   const runMeta = (run) => {
     const parts = [orUnavailable(run.model)];
     if (run.thinking !== null) parts.push(run.thinking);
-    parts.push(
-      run.usage === null
-        ? COPY["agents.tree.usageUnavailable"]
-        : tr("agents.tree.tokens", { count: run.usage.totalTokens }) +
-            " · " +
-            money(run.usage.cost),
-    );
+    if (run.usage === null) {
+      parts.push(COPY["agents.tree.usageUnavailable"]);
+    } else {
+      const tokenLabel =
+        run.usage.totalTokens === undefined
+          ? COPY["evidence.unavailable"]
+          : tr("agents.tree.tokens", { count: run.usage.totalTokens });
+      const costLabel =
+        run.usage.cost === undefined
+          ? COPY["evidence.unavailable"]
+          : money(run.usage.cost);
+      parts.push(tokenLabel + " · " + costLabel);
+    }
     if (run.artifacts !== null) {
       parts.push(COPY["table.artifacts"] + ": " + run.artifacts);
     }
@@ -2454,10 +2460,10 @@
                 : "neutral",
             ),
             orUnavailable(run.model),
-            run.usage === null
+            run.usage === null || run.usage.totalTokens === undefined
               ? COPY["evidence.unavailable"]
               : number(run.usage.totalTokens),
-            run.usage === null
+            run.usage === null || run.usage.cost === undefined
               ? COPY["evidence.unavailable"]
               : money(run.usage.cost),
             orUnavailable(run.artifacts),

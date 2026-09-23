@@ -59,6 +59,22 @@ export type AgentRunEffortCoverage = {
   cost: AgentRunCoverage;
 };
 
+export type AgentRunUsage = {
+  totalTokens?: number;
+  cost?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  inputCost?: number;
+  outputCost?: number;
+  cacheReadCost?: number;
+  cacheWriteCost?: number;
+};
+
+export const MAX_AGENT_RUN_TOOL_CALLS = 1_000_000_000;
+
 export type AgentRun = {
   id: string;
   parentId?: string;
@@ -86,7 +102,7 @@ export type AgentRun = {
   /** Bounded thinking/reasoning-effort label. */
   thinking?: string;
   failure?: AgentFailure;
-  usage?: Usage;
+  usage?: AgentRunUsage;
   durationMs?: number;
   generations?: number;
   toolCalls?: number;

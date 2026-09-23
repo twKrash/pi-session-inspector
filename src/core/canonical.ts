@@ -19,6 +19,7 @@ import type {
   AgentFailure,
   AgentRun,
   AgentRunEffortCoverage,
+  AgentRunUsage,
   AgentToolActivity,
   Compaction,
   Confidence,
@@ -35,7 +36,7 @@ import type {
   UsageComposition,
   UsageFieldCoverageMap,
 } from "./events.ts";
-import { usageFieldCoverage } from "./events.ts";
+import { MAX_AGENT_RUN_TOOL_CALLS, usageFieldCoverage } from "./events.ts";
 import {
   type AtomicEvidence,
   boundedProducerLabel,
@@ -699,21 +700,23 @@ function normalizeAgentRunEffort(
 ): {
   durationMs?: number;
   toolCalls?: number;
-  usage?: Usage;
+  usage?: AgentRunUsage;
   coverage: AgentRunEffortCoverage;
 } {
   const durationMs = boundedAgentRunNumber(
     value.durationMs,
     MAX_AGENT_RUN_DURATION_MS,
   );
-  const toolCalls = boundedAgentRunNumber(value.toolCalls, MAX_AGENT_RUN_COUNT);
+  const toolCalls = boundedAgentRunNumber(
+    value.toolCalls,
+    MAX_AGENT_RUN_TOOL_CALLS,
+  );
   const usageValue = normalizeAgentUsage(value.usage);
-  const usage =
-    usageValue !== undefined &&
-    coverage.usage !== "unavailable" &&
-    coverage.cost !== "unavailable"
-      ? usageValue
-      : undefined;
+  const acceptedUsage =
+    usageValue?.totalTokens !== undefined && coverage.usage !== "unavailable";
+  const acceptedCost =
+    usageValue?.cost !== undefined && coverage.cost !== "unavailable";
+  const usage = acceptedUsage || acceptedCost ? usageValue : undefined;
   const acceptedDuration =
     durationMs !== undefined && coverage.duration !== "unavailable";
   const acceptedTools =
@@ -728,20 +731,21 @@ function normalizeAgentRunEffort(
       generations: "unavailable",
       tools: acceptedTools ? coverage.tools : "unavailable",
       errors: "unavailable",
-      usage: usage === undefined ? "unavailable" : coverage.usage,
-      cost: usage === undefined ? "unavailable" : coverage.cost,
+      usage: acceptedUsage ? coverage.usage : "unavailable",
+      cost: acceptedCost ? coverage.cost : "unavailable",
     },
   };
 }
 
-function normalizeAgentUsage(value: unknown): Usage | undefined {
+function normalizeAgentUsage(value: unknown): AgentRunUsage | undefined {
   if (!isRecord(value)) return undefined;
-  if (!isAgentRunToken(value.totalTokens) || !isAgentRunCost(value.cost)) {
-    return undefined;
-  }
-  const usage: Usage = {
-    totalTokens: value.totalTokens,
-    cost: value.cost,
+  const totalTokens = isAgentRunToken(value.totalTokens)
+    ? value.totalTokens
+    : undefined;
+  const cost = isAgentRunCost(value.cost) ? value.cost : undefined;
+  const usage: AgentRunUsage = {
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cost === undefined ? {} : { cost }),
   };
   for (const field of OPTIONAL_TOKEN_FIELDS) {
     const candidate = value[field];
@@ -755,7 +759,7 @@ function normalizeAgentUsage(value: unknown): Usage | undefined {
       usage[field] = candidate;
     }
   }
-  return usage;
+  return Object.keys(usage).length === 0 ? undefined : usage;
 }
 
 function normalizeAgentFailure(value: unknown): AgentFailure | undefined {
@@ -844,8 +848,10 @@ function appendSubagentUsage(
   summary: CanonicalUsageSummary,
   runs: readonly AgentRun[],
 ): CanonicalUsageSummary {
-  const lines = runs.flatMap((run) =>
-    run.usage === undefined
+  const lines = runs.flatMap((run) => {
+    const totalTokens = run.usage?.totalTokens;
+    const cost = run.usage?.cost;
+    return totalTokens === undefined || cost === undefined
       ? []
       : [
           {
@@ -853,7 +859,7 @@ function appendSubagentUsage(
             ownerId: run.id,
             domain: "child-breakdown" as const,
             bucket: "child-run" as const,
-            usage: run.usage,
+            usage: { ...run.usage, totalTokens, cost },
             contributesToSession: false,
             observedAt: timeKnown(run.observedAt, "pi-publication-entry"),
             attributedAt: timeKnown(run.observedAt, "pi-publication-entry"),
@@ -863,8 +869,8 @@ function appendSubagentUsage(
               recordId: run.id,
             },
           },
-        ],
-  );
+        ];
+  });
   return {
     ...summary,
     lines: [
@@ -873,10 +879,7 @@ function appendSubagentUsage(
     ],
     coverage: {
       ...summary.coverage,
-      "child-run": coverageOf(
-        runs.length,
-        runs.filter((run) => run.usage !== undefined).length,
-      ),
+      "child-run": coverageOf(runs.length, lines.length),
     },
   };
 }
@@ -1368,13 +1371,15 @@ function buildUsage(
     });
   }
   for (const run of subagents?.runs ?? []) {
-    if (run.usage === undefined) continue;
+    const totalTokens = run.usage?.totalTokens;
+    const cost = run.usage?.cost;
+    if (totalTokens === undefined || cost === undefined) continue;
     lines.push({
       id: `usage-line:child:${run.id}`,
       ownerId: run.id,
       domain: "child-breakdown",
       bucket: "child-run",
-      usage: run.usage,
+      usage: { ...run.usage, totalTokens, cost },
       // Child usage is a breakdown; it never enters a session total.
       contributesToSession: false,
       observedAt: timeKnown(run.observedAt, "pi-publication-entry"),
@@ -1406,7 +1411,7 @@ function buildUsage(
     ),
     "child-run": coverageOf(
       subagents?.runs.length ?? 0,
-      (subagents?.runs ?? []).filter((run) => run.usage !== undefined).length,
+      lines.filter((line) => line.domain === "child-breakdown").length,
     ),
   };
   const fieldCoverage = usageFieldCoverage(nativeUsageOwners(lines, coverage));

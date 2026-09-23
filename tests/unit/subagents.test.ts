@@ -69,7 +69,7 @@ test("fixture publishes audited effort only for final foreground rows", async ()
   assert.equal(byAgent.get("agent-timeout")?.status, "interrupted");
   assert.equal(byAgent.get("agent-stopped")?.status, "interrupted");
   assert.equal(byAgent.get("agent-d")?.effortCoverage.usage, "unavailable");
-  assert.equal(byAgent.get("agent-d")?.effortCoverage.cost, "unavailable");
+  assert.equal(byAgent.get("agent-d")?.effortCoverage.cost, "partial");
   assert.equal(byAgent.get("agent-d")?.durationMs, undefined);
   assert.equal(byAgent.get("agent-d")?.toolCalls, undefined);
   assert.equal(byAgent.get("agent-a")?.observedAt, "2026-09-22T10:00:03.000Z");
@@ -114,12 +114,13 @@ test("derives native tool activity and cooperative runs from persisted results",
   assert.deepEqual(completed?.usage, { totalTokens: 700, cost: 0.1 });
   assert.equal(completed?.agent, "reviewer");
 
-  // The persisted foreground `results[]` row: `exitCode: 1` maps to failed, a
-  // partial usage group yields no usage, and the row is parented by its run.
+  // The persisted foreground `results[]` row: `exitCode: 1` maps to failed,
+  // token usage is unavailable while the published cost remains known, and
+  // the row is parented by its run.
   const foreground = evidence.runs.find((run) => run.agent === "worker");
   assert.ok(foreground);
   assert.equal(foreground.status, "failed");
-  assert.equal(foreground.usage, undefined);
+  assert.deepEqual(foreground.usage, { cost: 0.05 });
   assert.match(foreground.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.notEqual(foreground.parentId, foreground.id);
 });
@@ -485,7 +486,7 @@ test("identifies two foreground children of one parallel run by index", () => {
   assert.equal(complete?.status, "succeeded");
   assert.equal(partial?.status, "failed");
   assert.deepEqual(complete?.usage, { totalTokens: 350, cost: 0.2 });
-  assert.equal(partial?.usage, undefined);
+  assert.deepEqual(partial?.usage, { cost: 0.05 });
   // Both children share the opaque aggregate run id as their parent.
   assert.match(complete?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(complete?.parentId, partial?.parentId);
@@ -1260,4 +1261,32 @@ test("a result that cannot be joined publishes no run", () => {
 test("a call without a result publishes no run while activity still counts it", () => {
   const evidence = readSubagentEvidence([assistantEntry("a1", "call-1")]);
   assert.deepEqual([evidence.runs.length, evidence.activity.calls], [0, 1]);
+});
+
+test("preserves audited tool counts and partial usage independently", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a1", "call-1"),
+    resultEntry(
+      "r1",
+      "call-1",
+      {
+        runId: "aggregate-1",
+        results: [
+          {
+            index: 0,
+            agent: "delegate",
+            success: true,
+            progressSummary: { durationMs: 1, toolCount: 1_000_000 },
+            usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  const run = evidence.runs.find((candidate) => candidate.agent === "delegate");
+  assert.equal(run?.toolCalls, 1_000_000);
+  assert.deepEqual(run?.usage, { totalTokens: 15 });
+  assert.equal(run?.effortCoverage.usage, "partial");
+  assert.equal(run?.effortCoverage.cost, "unavailable");
 });

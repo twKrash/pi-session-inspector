@@ -1676,3 +1676,31 @@ test("an agent set with no usage reports zero of N, never a fabricated total", (
 
   assert.deepEqual(report.agentUsage, { runsTotal: 1, runsWithUsage: 0 });
 });
+
+test("projects agent tokens when agent cost is unavailable", () => {
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [
+        {
+          id: `subagent-${"e".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          usage: { totalTokens: 42 } as never,
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "partial",
+            cost: "unavailable",
+          },
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(report.agents[0]?.usage, { totalTokens: 42 });
+  assert.equal(report.agents[0]?.effortCoverage.usage, "partial");
+  assert.equal(report.agents[0]?.effortCoverage.cost, "unavailable");
+});

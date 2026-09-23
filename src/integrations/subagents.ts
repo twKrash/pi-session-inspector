@@ -1,11 +1,13 @@
 import type {
   AgentFailure,
   AgentRun,
+  AgentRunUsage,
   AgentToolActivity,
   SessionEntry,
   SubagentEvidence,
   Usage,
 } from "../core/events.ts";
+import { MAX_AGENT_RUN_TOOL_CALLS } from "../core/events.ts";
 import { boundedProducerLabel } from "../core/evidence.ts";
 import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { roundCost } from "../core/rounding.ts";
@@ -187,7 +189,7 @@ type RunAccumulator = {
   model?: string;
   thinking?: string;
   failure?: AgentFailure;
-  usage?: Usage;
+  usage?: AgentRunUsage;
   durationMs?: number;
   toolCalls?: number;
 };
@@ -592,7 +594,7 @@ function readEffort(record: Readonly<Record<string, unknown>>): {
     ...(typeof toolCalls === "number" &&
     Number.isSafeInteger(toolCalls) &&
     toolCalls >= 0 &&
-    toolCalls <= MAX_RUNS
+    toolCalls <= MAX_AGENT_RUN_TOOL_CALLS
       ? { toolCalls }
       : {}),
   };
@@ -647,6 +649,8 @@ function readAgentFailure(
 }
 
 function toAgentRun(run: RunAccumulator): AgentRun {
+  const hasTokens = run.usage?.totalTokens !== undefined;
+  const hasCost = run.usage?.cost !== undefined;
   return {
     id: run.id,
     ...(run.parentId === undefined ? {} : { parentId: run.parentId }),
@@ -668,8 +672,8 @@ function toAgentRun(run: RunAccumulator): AgentRun {
       generations: "unavailable",
       tools: run.toolCalls === undefined ? "unavailable" : "partial",
       errors: "unavailable",
-      usage: run.usage === undefined ? "unavailable" : "partial",
-      cost: run.usage === undefined ? "unavailable" : "partial",
+      usage: hasTokens ? "partial" : "unavailable",
+      cost: hasCost ? "partial" : "unavailable",
     },
   };
 }
@@ -746,25 +750,24 @@ function readPersistedUsage(value: unknown): Usage | undefined {
  * a numeric cost must be present, and the total is their sum. Partial groups
  * yield no usage rather than a zero-filled row.
  */
-function readChildUsage(value: unknown): Usage | undefined {
+function readChildUsage(value: unknown): AgentRunUsage | undefined {
   const usage = snapshotRecord(value);
   if (usage === undefined) return undefined;
-  const input = usage.input;
-  const output = usage.output;
-  const cacheRead = usage.cacheRead;
-  const cacheWrite = usage.cacheWrite;
-  if (
-    !isBoundedTokens(input) ||
-    !isBoundedTokens(output) ||
-    !isBoundedTokens(cacheRead) ||
-    !isBoundedTokens(cacheWrite) ||
-    !isBoundedCost(usage.cost)
-  ) {
-    return undefined;
-  }
-  const totalTokens = input + output + cacheRead + cacheWrite;
-  if (!isBoundedTokens(totalTokens)) return undefined;
-  return { totalTokens, cost: roundCost(usage.cost) };
+  const tokenParts = [
+    usage.input,
+    usage.output,
+    usage.cacheRead,
+    usage.cacheWrite,
+  ];
+  const totalTokens = tokenParts.every(isBoundedTokens)
+    ? tokenParts.reduce((total, part) => total + part, 0)
+    : undefined;
+  const cost = isBoundedCost(usage.cost) ? roundCost(usage.cost) : undefined;
+  if (totalTokens === undefined && cost === undefined) return undefined;
+  return {
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cost === undefined ? {} : { cost }),
+  };
 }
 
 function readCostTotal(value: unknown): number | undefined {
