@@ -1948,21 +1948,22 @@
     return parts.concat(treeStateCounts(node)).join(" · ");
   };
 
+  const treeStateCountFields = [
+    ["failed", "agents.tree.failed"],
+    ["interrupted", "agents.tree.interrupted"],
+    ["withoutUsage", "agents.tree.withoutUsage"],
+    ["durationPartial", "agents.tree.durationPartial"],
+    ["durationUnavailable", "agents.tree.durationUnavailable"],
+    ["toolCallsPartial", "agents.tree.toolCallsPartial"],
+    ["toolCallsUnavailable", "agents.tree.toolCallsUnavailable"],
+  ];
+
   /** What a set of runs contains that must never be hidden by a summary. */
   const treeStateCounts = (counts) => {
     const parts = [];
-    if (counts.failed > 0) {
-      parts.push(tr("agents.tree.failed", { count: counts.failed }));
-    }
-    if (counts.interrupted > 0) {
-      parts.push(
-        tr("agents.tree.interrupted", { count: counts.interrupted }),
-      );
-    }
-    if (counts.withoutUsage > 0) {
-      parts.push(
-        tr("agents.tree.withoutUsage", { count: counts.withoutUsage }),
-      );
+    for (const [field, key] of treeStateCountFields) {
+      const count = counts[field];
+      if (count > 0) parts.push(tr(key, { count }));
     }
     return parts;
   };
@@ -1998,23 +1999,89 @@
       ? state.entity.id
       : null;
 
+  const agentEffortValue = (value, coverage) => {
+    if (value === null || value === undefined || coverage === "unavailable") {
+      return COPY["evidence.unavailable"];
+    }
+    return coverage === "partial"
+      ? COPY["agents.effortKnown"] + " " + value
+      : String(value);
+  };
+
+  const agentEffortColumns = [
+    {
+      label: "table.duration",
+      field: "durationLabel",
+      coverage: "duration",
+      className: "status-cell",
+    },
+    {
+      label: "table.generations",
+      field: "generations",
+      coverage: "generations",
+      className: "num",
+    },
+    {
+      label: "table.tools",
+      field: "toolCalls",
+      coverage: "tools",
+      className: "num",
+    },
+    {
+      label: "table.errorCount",
+      field: "errorCount",
+      coverage: "errors",
+      className: "num",
+    },
+  ];
+  const agentEffortColumnValue = (run, column) =>
+    agentEffortValue(
+      run[column.field],
+      run.effortCoverage[column.coverage],
+    );
+
+  const agentEffortCoverage = (coverage) =>
+    [
+      "duration " + coverage.duration,
+      "generations " + coverage.generations,
+      "tools " + coverage.tools,
+      "errors " + coverage.errors,
+      "usage " + coverage.usage,
+      "cost " + coverage.cost,
+    ].join(" · ");
+
   /** A run row's own figures, each one a field the DTO published. */
   const runMeta = (run) => {
     const parts = [orUnavailable(run.model)];
     if (run.thinking !== null) parts.push(run.thinking);
-    if (run.usage === null) {
-      parts.push(COPY["agents.tree.usageUnavailable"]);
-    } else {
-      const tokenLabel =
-        run.usage.totalTokens === undefined
-          ? COPY["evidence.unavailable"]
-          : tr("agents.tree.tokens", { count: run.usage.totalTokens });
-      const costLabel =
-        run.usage.cost === undefined
-          ? COPY["evidence.unavailable"]
-          : money(run.usage.cost);
-      parts.push(tokenLabel + " · " + costLabel);
-    }
+    const tokenLabel =
+      run.usage === null || run.usage.totalTokens === undefined
+        ? null
+        : tr("agents.tree.tokens", { count: run.usage.totalTokens });
+    const costLabel =
+      run.usage === null || run.usage.cost === undefined
+        ? null
+        : money(run.usage.cost);
+    parts.push(
+      COPY["table.tokens"] +
+        ": " +
+        agentEffortValue(tokenLabel, run.effortCoverage.usage) +
+        " · " +
+        COPY["table.cost"] +
+        ": " +
+        agentEffortValue(costLabel, run.effortCoverage.cost),
+    );
+    parts.push(
+      ...agentEffortColumns.map(
+        (column) =>
+          COPY[column.label] + ": " + agentEffortColumnValue(run, column),
+      ),
+    );
+    parts.push(
+      COPY["agents.effortCoverage"] +
+        ": " +
+        agentEffortCoverage(run.effortCoverage),
+    );
     if (run.artifacts !== null) {
       parts.push(COPY["table.artifacts"] + ": " + run.artifacts);
     }
@@ -2445,8 +2512,10 @@
           COPY["table.role"],
           COPY["table.status"],
           COPY["table.model"],
+          ...agentEffortColumns.map((column) => COPY[column.label]),
           COPY["table.tokens"],
           COPY["table.cost"],
+          COPY["agents.effortCoverage"],
           COPY["table.artifacts"],
           COPY["table.parent"],
         ],
@@ -2460,12 +2529,22 @@
                 : "neutral",
             ),
             orUnavailable(run.model),
-            run.usage === null || run.usage.totalTokens === undefined
-              ? COPY["evidence.unavailable"]
-              : number(run.usage.totalTokens),
-            run.usage === null || run.usage.cost === undefined
-              ? COPY["evidence.unavailable"]
-              : money(run.usage.cost),
+            ...agentEffortColumns.map((column) =>
+              agentEffortColumnValue(run, column),
+            ),
+            agentEffortValue(
+              run.usage === null || run.usage.totalTokens === undefined
+                ? null
+                : number(run.usage.totalTokens),
+              run.effortCoverage.usage,
+            ),
+            agentEffortValue(
+              run.usage === null || run.usage.cost === undefined
+                ? null
+                : money(run.usage.cost),
+              run.effortCoverage.cost,
+            ),
+            agentEffortCoverage(run.effortCoverage),
             orUnavailable(run.artifacts),
             parentCell(run, rendered),
           ],
@@ -2474,8 +2553,10 @@
           "status-cell",
           "status-cell",
           "status-cell",
+          ...agentEffortColumns.map((column) => column.className),
           "num",
           "num",
+          "status-cell",
           "status-cell",
           "status-cell",
         ],

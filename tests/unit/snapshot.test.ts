@@ -1013,12 +1013,22 @@ test("prints the DTO's child breakdown instead of summing the rendered runs", ()
             id: "run-one",
             status: "failed",
             usage: { totalTokens: 11, cost: 0.11 },
+            effortCoverage: {
+              ...run.effortCoverage,
+              usage: "partial",
+              cost: "partial",
+            },
           },
           {
             ...run,
             id: "run-two",
             status: "running",
             usage: { totalTokens: 22, cost: 0.22 },
+            effortCoverage: {
+              ...run.effortCoverage,
+              usage: "partial",
+              cost: "partial",
+            },
           },
         ],
         childUsage: {
@@ -1647,6 +1657,12 @@ function runRow(input: {
   artifacts?: UiAgentRow["artifacts"];
   tokens?: number | null;
   cost?: number | null;
+  durationMs?: number | null;
+  durationLabel?: string | null;
+  generations?: number | null;
+  toolCalls?: number | null;
+  errorCount?: number | null;
+  effortCoverage?: UiAgentRow["effortCoverage"];
 }): UiAgentRow {
   const tokens = input.tokens === undefined ? null : input.tokens;
   const cost = input.cost === undefined ? null : input.cost;
@@ -1666,6 +1682,19 @@ function runRow(input: {
       tokens === null && cost === null
         ? null
         : { totalTokens: tokens ?? 0, cost: cost ?? 0 },
+    durationMs: input.durationMs ?? null,
+    durationLabel: input.durationLabel ?? null,
+    generations: input.generations ?? null,
+    toolCalls: input.toolCalls ?? null,
+    errorCount: input.errorCount ?? null,
+    effortCoverage: input.effortCoverage ?? {
+      duration: input.durationMs == null ? "unavailable" : "partial",
+      generations: input.generations == null ? "unavailable" : "partial",
+      tools: input.toolCalls == null ? "unavailable" : "partial",
+      errors: input.errorCount == null ? "unavailable" : "partial",
+      usage: tokens === null ? "unavailable" : "partial",
+      cost: cost === null ? "unavailable" : "partial",
+    },
     parent: input.parent ?? "none",
   };
 }
@@ -1741,7 +1770,9 @@ test("renders the execution hierarchy expanded, with no control to imitate discl
   assert.equal(card.includes("aria-expanded"), false);
   assert.equal(card.includes("<button"), false);
   // A child states its own model evidence and honest small cost.
-  assert.equal(card.includes("alpha · high · 34,477 tokens · $0.0049"), true);
+  assert.equal(card.includes("alpha · high"), true);
+  assert.equal(card.includes("Known 34,477 tokens"), true);
+  assert.equal(card.includes("Known $0.0049"), true);
   assert.equal(/\$0\.00(?!\d)/.test(card), false);
 });
 
@@ -1829,7 +1860,18 @@ test("keeps partial child usage and an unavailable model stated in the hierarchy
     ]),
   );
   const card = cardOf(html, CATALOG["tab.agents"]);
-  assert.equal(card.includes(CATALOG["agents.tree.usageUnavailable"]), true);
+  assert.equal(
+    card.includes(
+      `${CATALOG["table.tokens"]}: ${CATALOG["evidence.unavailable"]}`,
+    ),
+    true,
+  );
+  assert.equal(
+    card.includes(
+      `${CATALOG["table.cost"]}: ${CATALOG["evidence.unavailable"]}`,
+    ),
+    true,
+  );
   assert.equal(card.includes(CATALOG["evidence.unavailable"]), true);
   assert.equal(card.includes(`${CATALOG["table.artifacts"]}: missing`), true);
   // The coverage fraction is L2's own figure, and a known run's own figures are
@@ -1842,6 +1884,81 @@ test("keeps partial child usage and an unavailable model stated in the hierarchy
     ),
     true,
   );
+});
+
+test("renders partial and unavailable AgentRun effort in tree and table", () => {
+  const parentId = `subagent-${"d".repeat(64)}`;
+  const card = cardOf(
+    renderSnapshot(
+      agentsDto([
+        runRow({ id: parentId, agent: "reviewer" }),
+        runRow({
+          id: `subagent-${"e".repeat(64)}`,
+          parentId,
+          parent: "in-range",
+          agent: "scout",
+          durationMs: 1234,
+          durationLabel: "1.2 s",
+          toolCalls: 3,
+          tokens: 5,
+          cost: 0.01,
+          effortCoverage: {
+            duration: "partial",
+            generations: "unavailable",
+            tools: "partial",
+            errors: "unavailable",
+            usage: "partial",
+            cost: "partial",
+          },
+        }),
+        runRow({
+          id: `subagent-${"f".repeat(64)}`,
+          parentId,
+          parent: "in-range",
+          agent: "worker",
+        }),
+      ]),
+    ),
+    CATALOG["tab.agents"],
+  );
+  for (const value of [
+    "Known 1.2 s",
+    "Known 3",
+    "Generations: Unavailable",
+    "Error count: Unavailable",
+    "Known 5 tokens",
+    "Known $0.01",
+    "1 run with Known duration",
+    "1 run with Known tool-call count",
+    "1 run with duration Unavailable",
+    "1 run with tool-call count Unavailable",
+    "Tool calls",
+    "Effort coverage",
+  ]) {
+    assert.equal(card.includes(value), true, value);
+  }
+  const durationHeader = card.indexOf(">Duration<");
+  const tableStart = card.lastIndexOf("<table", durationHeader);
+  const tableEnd = card.indexOf("</table>", durationHeader);
+  if (tableStart < 0 || tableEnd < 0) {
+    throw new Error("the Agent table must be rendered");
+  }
+  const table = card.slice(tableStart, tableEnd + "</table>".length);
+  for (const value of [
+    "Known 1.2 s",
+    "Unavailable",
+    "Known 3",
+    "Known 5",
+    "Known $0.01",
+    "duration partial",
+    "generations unavailable",
+    "tools partial",
+    "errors unavailable",
+    "usage partial",
+    "cost partial",
+  ]) {
+    assert.equal(table.includes(value), true, `table: ${value}`);
+  }
 });
 
 test("a partial or capped session root states what it cannot complete", () => {

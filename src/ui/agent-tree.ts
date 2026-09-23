@@ -32,6 +32,14 @@ type Counts = {
   failed: number;
   /** Descendant runs whose published status is `interrupted`. */
   interrupted: number;
+  /** Descendant runs with partial duration coverage. */
+  durationPartial: number;
+  /** Descendant runs with unavailable duration. */
+  durationUnavailable: number;
+  /** Descendant runs with partial tool-call coverage. */
+  toolCallsPartial: number;
+  /** Descendant runs with unavailable tool-call counts. */
+  toolCallsUnavailable: number;
   /** Descendant runs that published no usage at all. */
   withoutUsage: number;
 };
@@ -98,8 +106,23 @@ const EMPTY: Counts = {
   descendants: 0,
   failed: 0,
   interrupted: 0,
+  durationPartial: 0,
+  durationUnavailable: 0,
+  toolCallsPartial: 0,
+  toolCallsUnavailable: 0,
   withoutUsage: 0,
 };
+
+function countEffortCoverage(counts: Counts, run: UiAgentRow): void {
+  if (run.effortCoverage.duration === "partial") counts.durationPartial += 1;
+  if (run.effortCoverage.duration === "unavailable") {
+    counts.durationUnavailable += 1;
+  }
+  if (run.effortCoverage.tools === "partial") counts.toolCallsPartial += 1;
+  if (run.effortCoverage.tools === "unavailable") {
+    counts.toolCallsUnavailable += 1;
+  }
+}
 
 /** Bottom-up totals over already-built children, so no node is walked twice. */
 function summarize(children: readonly UiAgentTreeNode[]): Counts {
@@ -109,8 +132,13 @@ function summarize(children: readonly UiAgentTreeNode[]): Counts {
     counts.failed += child.failed + (child.run.status === "failed" ? 1 : 0);
     counts.interrupted +=
       child.interrupted + (child.run.status === "interrupted" ? 1 : 0);
+    counts.durationPartial += child.durationPartial;
+    counts.durationUnavailable += child.durationUnavailable;
+    counts.toolCallsPartial += child.toolCallsPartial;
+    counts.toolCallsUnavailable += child.toolCallsUnavailable;
     counts.withoutUsage +=
       child.withoutUsage + (child.run.usage === null ? 1 : 0);
+    countEffortCoverage(counts, child.run);
   }
   return counts;
 }
@@ -126,9 +154,14 @@ function totalOf(entries: readonly UiAgentTreeEntry[]): Counts {
       if (entry.run.status === "failed") counts.failed += 1;
       if (entry.run.status === "interrupted") counts.interrupted += 1;
       if (entry.run.usage === null) counts.withoutUsage += 1;
+      countEffortCoverage(counts, entry.run);
     }
     counts.failed += entry.failed;
     counts.interrupted += entry.interrupted;
+    counts.durationPartial += entry.durationPartial;
+    counts.durationUnavailable += entry.durationUnavailable;
+    counts.toolCallsPartial += entry.toolCallsPartial;
+    counts.toolCallsUnavailable += entry.toolCallsUnavailable;
     counts.withoutUsage += entry.withoutUsage;
   }
   return counts;

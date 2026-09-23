@@ -540,7 +540,7 @@ Until the upstream telemetry seam exists:
 
 ### 13. Subagent run outcome and effort breakdown
 
-**Status:** Research / product follow-up.
+**Status:** Active; 13A evidence audit and 13B contract complete; 13C projection implementation ready for integration.
 **Depends on:** existing Agent execution evidence and subagent run attribution.
 
 **Motivation:** token and cost totals answer which subagent runs were expensive,
@@ -567,10 +567,12 @@ the second "wandered". It reports execution outcome and effort only. Semantic
 task quality remains unavailable unless a producer publishes an explicit,
 bounded semantic-evaluation contract.
 
-**Current state:** Agent execution already exposes persisted subagent topology,
-model, producer-reported status, usage/cost where available, and explicit
-coverage/partiality. It does not yet provide a complete per-run effort breakdown
-that answers how much execution activity occurred before that terminal state.
+**Current state:** 13A's evidence audit is complete. 13B defines a bounded per-run
+DTO with independent effort coverage; unsupported generations and error counts
+remain unavailable. 13C projects that DTO through shared Tree/Table, JSON,
+immutable snapshot, browser, and TUI surfaces. Its implementation is complete on
+an isolated branch, pending integration. 13D remains conditional on its evidence
+gate and is not included in this slice.
 
 **13A evidence audit (research-only, 2026-09-22):** Four bounded audit lanes are complete as documentation and sanitized fixture evidence: (1) outcome/error surfaces, (2) duration/generations/tools, (3) usage/cost/nesting and double-counting, and (4) producer version/provenance/privacy. The Pi/session fixture baseline is `0.85.1`; local `pi-subagents` `0.70.1` observations and historical `0.59.0` research remain separate. Producer terminal state means execution completion, not semantic task success. `observedAt` is not a duration source; unsupported attribution remains unavailable. No production behavior or status/outcome coverage mechanism is added by 13A.
 

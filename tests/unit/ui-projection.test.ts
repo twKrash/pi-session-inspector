@@ -175,13 +175,15 @@ const CHILD_RUN: AgentRun = {
   status: "succeeded",
   confidence: "cooperative",
   effortCoverage: {
-    duration: "unavailable",
+    duration: "partial",
     generations: "unavailable",
-    tools: "unavailable",
+    tools: "partial",
     errors: "unavailable",
     usage: "partial",
     cost: "partial",
   },
+  durationMs: 1234,
+  toolCalls: 3,
   observedAt: "2026-02-03T00:00:05.000Z",
   evidenceToolId: "tool:call_bash",
   model: "alpha",
@@ -718,6 +720,18 @@ test("child usage stays a breakdown and never enters the native range total", as
   assert.deepEqual(
     range.agents.map((row) => [row.id, row.usage?.totalTokens]),
     [[CHILD_RUN.id, 50]],
+  );
+  assert.deepEqual(
+    range.agents.map((row) => [
+      row.durationMs,
+      row.toolCalls,
+      row.effortCoverage,
+    ]),
+    [[1234, 3, CHILD_RUN.effortCoverage]],
+  );
+  assert.equal(
+    JSON.stringify(range.agents).includes('"durationMs":1234'),
+    true,
   );
   assert.equal(
     range.agents.reduce((sum, row) => sum + (row.usage?.totalTokens ?? 0), 0),
@@ -1546,6 +1560,19 @@ test("the parent verdict ladder keeps every identity state distinct", () => {
     thinking: null,
     failure: null,
     usage: null,
+    durationMs: null,
+    durationLabel: null,
+    generations: null,
+    toolCalls: null,
+    errorCount: null,
+    effortCoverage: {
+      duration: "unavailable",
+      generations: "unavailable",
+      tools: "unavailable",
+      errors: "unavailable",
+      usage: "unavailable",
+      cost: "unavailable",
+    },
   });
   const parent = row(materializedId, null);
   const inRange = row(`subagent-${"d".repeat(64)}`, materializedId);

@@ -2141,6 +2141,19 @@ test("an in-range parent link navigates, and back and forward restore its focus"
     thinking: null,
     failure: null,
     usage: null,
+    durationMs: null,
+    durationLabel: null,
+    generations: null,
+    toolCalls: null,
+    errorCount: null,
+    effortCoverage: {
+      duration: "unavailable",
+      generations: "unavailable",
+      tools: "unavailable",
+      errors: "unavailable",
+      usage: "unavailable",
+      cost: "unavailable",
+    },
     parent: input.parent,
   });
   range.agents = [
@@ -2244,6 +2257,19 @@ test("a known parent with no materialized row never renders as Unavailable", asy
     thinking: null,
     failure: null,
     usage: null,
+    durationMs: null,
+    durationLabel: null,
+    generations: null,
+    toolCalls: null,
+    errorCount: null,
+    effortCoverage: {
+      duration: "unavailable",
+      generations: "unavailable",
+      tools: "unavailable",
+      errors: "unavailable",
+      usage: "unavailable",
+      cost: "unavailable",
+    },
     parent: input.parent,
   });
   range.agents = [
@@ -2331,6 +2357,19 @@ test("ErrorRow references are entity links wherever the DTO publishes an id", as
       thinking: null,
       failure: null,
       usage: null,
+      durationMs: null,
+      durationLabel: null,
+      generations: null,
+      toolCalls: null,
+      errorCount: null,
+      effortCoverage: {
+        duration: "unavailable",
+        generations: "unavailable",
+        tools: "unavailable",
+        errors: "unavailable",
+        usage: "unavailable",
+        cost: "unavailable",
+      },
       parent: "none",
     },
     {
@@ -2346,6 +2385,19 @@ test("ErrorRow references are entity links wherever the DTO publishes an id", as
       thinking: null,
       failure: null,
       usage: null,
+      durationMs: null,
+      durationLabel: null,
+      generations: null,
+      toolCalls: null,
+      errorCount: null,
+      effortCoverage: {
+        duration: "unavailable",
+        generations: "unavailable",
+        tools: "unavailable",
+        errors: "unavailable",
+        usage: "unavailable",
+        cost: "unavailable",
+      },
       parent: "in-range",
     },
   ];
@@ -3121,6 +3173,12 @@ function agentRow(input: {
   artifacts?: UiAgentRow["artifacts"];
   tokens?: number | null;
   cost?: number | null;
+  durationMs?: number | null;
+  durationLabel?: string | null;
+  generations?: number | null;
+  toolCalls?: number | null;
+  errorCount?: number | null;
+  effortCoverage?: UiAgentRow["effortCoverage"];
 }): UiAgentRow {
   const tokens = input.tokens === undefined ? null : input.tokens;
   const cost = input.cost === undefined ? null : input.cost;
@@ -3140,6 +3198,19 @@ function agentRow(input: {
       tokens === null && cost === null
         ? null
         : { totalTokens: tokens ?? 0, cost: cost ?? 0 },
+    durationMs: input.durationMs ?? null,
+    durationLabel: input.durationLabel ?? null,
+    generations: input.generations ?? null,
+    toolCalls: input.toolCalls ?? null,
+    errorCount: input.errorCount ?? null,
+    effortCoverage: input.effortCoverage ?? {
+      duration: input.durationMs == null ? "unavailable" : "partial",
+      generations: input.generations == null ? "unavailable" : "partial",
+      tools: input.toolCalls == null ? "unavailable" : "partial",
+      errors: input.errorCount == null ? "unavailable" : "partial",
+      usage: tokens === null ? "unavailable" : "partial",
+      cost: cost === null ? "unavailable" : "partial",
+    },
     parent: input.parent ?? "none",
   };
 }
@@ -3232,6 +3303,25 @@ test("the Agents view is a Tree by default and keeps the table one click away", 
           agent: "scout",
           parentId,
           parent: "in-range",
+          durationMs: 1234,
+          durationLabel: "1.2 s",
+          toolCalls: 3,
+          tokens: 5,
+          cost: 0.01,
+          effortCoverage: {
+            duration: "partial",
+            generations: "unavailable",
+            tools: "partial",
+            errors: "unavailable",
+            usage: "partial",
+            cost: "partial",
+          },
+        }),
+        agentRow({
+          id: `subagent-${"6".repeat(64)}`,
+          agent: "writer",
+          parentId,
+          parent: "in-range",
         }),
       ]),
     ],
@@ -3252,6 +3342,42 @@ test("the Agents view is a Tree by default and keeps the table one click away", 
   if (child === undefined) throw new Error("the nested run must be rendered");
   const parentRow = child.parentNode?.parentNode;
   assert.equal(parentRow?.dataset.treeRow, parentId);
+  for (const value of [
+    "Known 1.2 s",
+    "Known 3",
+    "Known 5 tokens",
+    "Known $0.01",
+    "1 run with Known duration",
+    "1 run with Known tool-call count",
+    "1 run with duration Unavailable",
+    "1 run with tool-call count Unavailable",
+  ]) {
+    assert.equal(viewText(harness).includes(value), true, value);
+  }
+
+  // Table keeps the same run values and coverage as the tree.
+  harness.click(viewButton(harness, "table"));
+  const tableText = viewText(harness);
+  for (const value of [
+    "Duration",
+    "Generations",
+    "Tool calls",
+    "Error count",
+    "Effort coverage",
+    "Known 1.2 s",
+    "Known 3",
+    "Known 5",
+    "Known $0.01",
+    "Unavailable",
+    "duration partial",
+    "generations unavailable",
+    "tools partial",
+    "errors unavailable",
+    "usage partial",
+    "cost partial",
+  ]) {
+    assert.equal(tableText.includes(value), true, value);
+  }
 
   // Table is a real route: it survives a reload and Back restores the tree.
   harness.click(viewButton(harness, "table"));
@@ -3572,7 +3698,8 @@ test("an unavailable child model and partial child usage stay stated, never blan
   await harness.start();
   const text = viewText(harness);
   assert.equal(text.includes("Unavailable"), true);
-  assert.equal(text.includes("usage Unavailable"), true);
+  assert.equal(text.includes("Tokens: Unavailable"), true);
+  assert.equal(text.includes("Cost (USD): Unavailable"), true);
   // The coverage fraction is L2's own figure and is never implied complete.
   assert.equal(text.includes("0 of 2 runs reported usage"), true);
 });

@@ -19,6 +19,7 @@ import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { countersFrom } from "../../src/ui/l2-projection.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { loadHistorySessionReport } from "../../src/ui/load-history.ts";
+import { sessionView } from "../../src/ui/report-projection.ts";
 
 const FIXTURE = "tests/fixtures/pi/0.85.1/mixed-usage.jsonl";
 const EFFORT_FIXTURE =
@@ -198,10 +199,37 @@ test("the effort fixture projects one agent set and matching health counts", () 
 
   const report = toSessionReport(built.session);
   const foreground = report.agents.find((run) => run.agent === "agent-a");
+  const projected = sessionView(report);
+  const projectedForeground = projected.agents.find(
+    (run) => run.agent === "agent-a",
+  );
   assert.equal(foreground?.durationMs, 1234);
   assert.equal(foreground?.toolCalls, 3);
   assert.equal(foreground?.effortCoverage.duration, "partial");
   assert.equal(foreground?.effortCoverage.tools, "partial");
+  assert.equal(projectedForeground?.durationMs, 1234);
+  assert.equal(projectedForeground?.durationLabel, "1.2 s");
+  assert.equal(projectedForeground?.toolCalls, 3);
+  assert.deepEqual(
+    projectedForeground?.effortCoverage,
+    foreground?.effortCoverage,
+  );
+  const withoutDuration = report.agents.find(
+    (run) => run.durationMs === undefined,
+  );
+  assert.ok(withoutDuration);
+  assert.equal(
+    projected.agents.find((run) => run.id === withoutDuration.id)?.durationMs,
+    null,
+  );
+  const withoutToolCalls = report.agents.find(
+    (run) => run.toolCalls === undefined,
+  );
+  assert.ok(withoutToolCalls);
+  assert.equal(
+    projected.agents.find((run) => run.id === withoutToolCalls.id)?.toolCalls,
+    null,
+  );
   assert.equal(
     report.agents.filter((run) => run.durationMs !== undefined).length,
     2,
@@ -213,7 +241,11 @@ test("the effort fixture projects one agent set and matching health counts", () 
   assert.deepEqual(report.agentUsage, { runsTotal: 10, runsWithUsage: 5 });
   assert.equal(report.evidenceHealth.joins.agentRuns, 10);
   assert.equal(report.evidenceHealth.usage.childLines, 4);
-  assert.equal(JSON.stringify(report).includes("fg-container"), false);
+  const serialized = JSON.stringify(report);
+  assert.match(serialized, /"durationMs":1234/);
+  assert.match(serialized, /"toolCalls":3/);
+  assert.match(serialized, /"effortCoverage"/);
+  assert.equal(serialized.includes("fg-container"), false);
 });
 
 test("the current report path projects the CanonicalSession branch", async () => {
