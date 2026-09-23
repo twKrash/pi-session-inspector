@@ -762,10 +762,15 @@ function readChildUsage(value: unknown): AgentRunUsage | undefined {
   const totalTokens = tokenParts.every(isBoundedTokens)
     ? tokenParts.reduce((total, part) => total + part, 0)
     : undefined;
+  const boundedTotalTokens = isBoundedTokens(totalTokens)
+    ? totalTokens
+    : undefined;
   const cost = isBoundedCost(usage.cost) ? roundCost(usage.cost) : undefined;
-  if (totalTokens === undefined && cost === undefined) return undefined;
+  if (boundedTotalTokens === undefined && cost === undefined) return undefined;
   return {
-    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(boundedTotalTokens === undefined
+      ? {}
+      : { totalTokens: boundedTotalTokens }),
     ...(cost === undefined ? {} : { cost }),
   };
 }

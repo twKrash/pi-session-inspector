@@ -699,7 +699,7 @@ export function toSessionReport(
   const runsTotal = projectedEvidence.agents.length;
   const runsWithUsage = projectedEvidence.agents.filter(
     (run) =>
-      run.usage?.totalTokens !== undefined && run.usage?.cost !== undefined,
+      run.usage?.totalTokens !== undefined || run.usage?.cost !== undefined,
   ).length;
   const agentUsage = { runsTotal, runsWithUsage };
   return {
@@ -1097,8 +1097,10 @@ function projectAgent(value: unknown): AgentRun | undefined {
     usage?.totalTokens !== undefined && effortCoverage.usage !== "unavailable";
   const acceptedCost =
     usage?.cost !== undefined && effortCoverage.cost !== "unavailable";
-  const acceptedAgentUsage = acceptedUsage || acceptedCost;
-  const normalizedUsage = acceptedAgentUsage ? usage : undefined;
+  const normalizedUsage =
+    usage === undefined
+      ? undefined
+      : selectAgentUsage(usage, acceptedUsage, acceptedCost);
   const normalizedCoverage: AgentRunEffortCoverage = {
     duration: acceptedDuration ? effortCoverage.duration : "unavailable",
     // No audited producer publishes native generations or per-run errors.
@@ -1213,6 +1215,27 @@ function projectFailureDetail(
       : undefined;
   }
   return undefined;
+}
+
+function selectAgentUsage(
+  value: AgentRunUsage,
+  includeTokens: boolean,
+  includeCost: boolean,
+): AgentRunUsage | undefined {
+  const selected: AgentRunUsage = {};
+  if (includeTokens && value.totalTokens !== undefined) {
+    selected.totalTokens = value.totalTokens;
+  }
+  if (includeCost && value.cost !== undefined) selected.cost = value.cost;
+  for (const field of OPTIONAL_USAGE_TOKEN_FIELDS) {
+    const candidate = value[field];
+    if (includeTokens && candidate !== undefined) selected[field] = candidate;
+  }
+  for (const field of OPTIONAL_USAGE_COST_FIELDS) {
+    const candidate = value[field];
+    if (includeCost && candidate !== undefined) selected[field] = candidate;
+  }
+  return Object.keys(selected).length === 0 ? undefined : selected;
 }
 
 function projectAgentUsage(value: unknown): AgentRunUsage | undefined {

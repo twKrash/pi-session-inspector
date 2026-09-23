@@ -210,7 +210,7 @@ test("the effort fixture projects one agent set and matching health counts", () 
     report.agents.filter((run) => run.toolCalls !== undefined).length,
     2,
   );
-  assert.deepEqual(report.agentUsage, { runsTotal: 10, runsWithUsage: 4 });
+  assert.deepEqual(report.agentUsage, { runsTotal: 10, runsWithUsage: 5 });
   assert.equal(report.evidenceHealth.joins.agentRuns, 10);
   assert.equal(report.evidenceHealth.usage.childLines, 4);
   assert.equal(JSON.stringify(report).includes("fg-container"), false);

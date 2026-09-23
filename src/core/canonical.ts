@@ -612,7 +612,7 @@ function normalizeSubagentEvidence(value: SubagentEvidence): SubagentEvidence {
 
 function normalizeAgentRuns(runs: readonly AgentRun[]): AgentRun[] {
   const byId = new Map<string, AgentRun>();
-  for (const value of runs) {
+  for (const value of runs.slice(0, MAX_AGENT_RUN_COUNT)) {
     const run = normalizeAgentRun(value);
     if (run !== undefined) byId.set(run.id, run);
   }
@@ -716,7 +716,10 @@ function normalizeAgentRunEffort(
     usageValue?.totalTokens !== undefined && coverage.usage !== "unavailable";
   const acceptedCost =
     usageValue?.cost !== undefined && coverage.cost !== "unavailable";
-  const usage = acceptedUsage || acceptedCost ? usageValue : undefined;
+  const usage =
+    usageValue === undefined
+      ? undefined
+      : selectAgentUsage(usageValue, acceptedUsage, acceptedCost);
   const acceptedDuration =
     durationMs !== undefined && coverage.duration !== "unavailable";
   const acceptedTools =
@@ -735,6 +738,27 @@ function normalizeAgentRunEffort(
       cost: acceptedCost ? coverage.cost : "unavailable",
     },
   };
+}
+
+function selectAgentUsage(
+  value: AgentRunUsage,
+  includeTokens: boolean,
+  includeCost: boolean,
+): AgentRunUsage | undefined {
+  const selected: AgentRunUsage = {};
+  if (includeTokens && value.totalTokens !== undefined) {
+    selected.totalTokens = value.totalTokens;
+  }
+  if (includeCost && value.cost !== undefined) selected.cost = value.cost;
+  for (const field of OPTIONAL_TOKEN_FIELDS) {
+    const candidate = value[field];
+    if (includeTokens && candidate !== undefined) selected[field] = candidate;
+  }
+  for (const field of OPTIONAL_COST_FIELDS) {
+    const candidate = value[field];
+    if (includeCost && candidate !== undefined) selected[field] = candidate;
+  }
+  return Object.keys(selected).length === 0 ? undefined : selected;
 }
 
 function normalizeAgentUsage(value: unknown): AgentRunUsage | undefined {

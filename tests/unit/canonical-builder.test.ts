@@ -1269,3 +1269,43 @@ test("P1.A: a lone usage-bearing branch summary reconciles its own usage", () =>
   assert.equal(branchLine.usage.totalTokens, 17);
   assert.deepEqual(session.usage.known, { totalTokens: 17, cost: 0.017 });
 });
+
+test("caps canonical agent-run input at 256 rows", () => {
+  const subagents: SubagentEvidence = {
+    activity: {
+      state: "supported",
+      calls: 300,
+      succeeded: 300,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    },
+    state: "supported",
+    diagnostics: [],
+    runs: Array.from({ length: 300 }, (_, index) => ({
+      id: `subagent-${index.toString(16).padStart(64, "0")}`,
+      status: "succeeded" as const,
+      confidence: "cooperative" as const,
+      effortCoverage: {
+        duration: "unavailable" as const,
+        generations: "unavailable" as const,
+        tools: "unavailable" as const,
+        errors: "unavailable" as const,
+        usage: "unavailable" as const,
+        cost: "unavailable" as const,
+      },
+    })),
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER]),
+    scope: "tree",
+    leafId: null,
+    subagents,
+    evidence: { atomic: [], folded: [] },
+  });
+
+  assert.equal(result.state, "ready");
+  if (result.state !== "ready") return;
+  assert.equal(result.session.agents.length, 256);
+  assert.equal(result.session.health.joins.agentRuns, 256);
+});

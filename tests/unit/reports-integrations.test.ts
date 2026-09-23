@@ -1704,3 +1704,69 @@ test("projects agent tokens when agent cost is unavailable", () => {
   assert.equal(report.agents[0]?.effortCoverage.usage, "partial");
   assert.equal(report.agents[0]?.effortCoverage.cost, "unavailable");
 });
+
+test("counts token-only and cost-only agent usage independently", () => {
+  const coverage = (
+    usage: "partial" | "unavailable",
+    cost: "partial" | "unavailable",
+  ) => ({
+    duration: "unavailable" as const,
+    generations: "unavailable" as const,
+    tools: "unavailable" as const,
+    errors: "unavailable" as const,
+    usage,
+    cost,
+  });
+  const run = (
+    id: string,
+    usage: { totalTokens?: number; cost?: number },
+    effortCoverage: ReturnType<typeof coverage>,
+  ) => ({
+    id: `subagent-${id}`,
+    status: "succeeded" as const,
+    confidence: "cooperative" as const,
+    usage,
+    effortCoverage,
+  });
+  const report = toSessionReport(parent, {
+    agents: {
+      state: "supported",
+      runs: [
+        run(
+          "1".repeat(64),
+          { totalTokens: 10 },
+          coverage("partial", "unavailable"),
+        ),
+        run("2".repeat(64), { cost: 1 }, coverage("unavailable", "partial")),
+        run(
+          "3".repeat(64),
+          { totalTokens: 20, cost: 2 },
+          coverage("unavailable", "partial"),
+        ),
+        run(
+          "4".repeat(64),
+          { totalTokens: 30, cost: 3 },
+          coverage("partial", "unavailable"),
+        ),
+      ],
+    },
+  });
+
+  assert.deepEqual(report.agentUsage, { runsTotal: 4, runsWithUsage: 4 });
+  assert.deepEqual(
+    report.agents.map((agent) => agent.usage),
+    [{ totalTokens: 10 }, { cost: 1 }, { cost: 2 }, { totalTokens: 30 }],
+  );
+  assert.deepEqual(
+    report.agents.map((agent) => [
+      agent.effortCoverage.usage,
+      agent.effortCoverage.cost,
+    ]),
+    [
+      ["partial", "unavailable"],
+      ["unavailable", "partial"],
+      ["unavailable", "partial"],
+      ["partial", "unavailable"],
+    ],
+  );
+});

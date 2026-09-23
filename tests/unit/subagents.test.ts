@@ -1290,3 +1290,58 @@ test("preserves audited tool counts and partial usage independently", () => {
   assert.equal(run?.effortCoverage.usage, "partial");
   assert.equal(run?.effortCoverage.cost, "unavailable");
 });
+
+test("accepts one-billion tool calls and rejects larger counts and token sums", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("a1", "call-1"),
+    resultEntry(
+      "r1",
+      "call-1",
+      {
+        runId: "aggregate-1",
+        results: [
+          {
+            index: 0,
+            agent: "accepted-tool-count",
+            success: true,
+            progressSummary: { toolCount: 1_000_000_000 },
+          },
+          {
+            index: 1,
+            agent: "rejected-tool-count",
+            success: true,
+            progressSummary: { toolCount: 1_000_000_001 },
+          },
+          {
+            index: 2,
+            agent: "over-token-sum",
+            success: true,
+            usage: {
+              input: 1_000_000_000,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.5,
+            },
+          },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+
+  const accepted = evidence.runs.find(
+    (run) => run.agent === "accepted-tool-count",
+  );
+  const rejected = evidence.runs.find(
+    (run) => run.agent === "rejected-tool-count",
+  );
+  const overTokenSum = evidence.runs.find(
+    (run) => run.agent === "over-token-sum",
+  );
+  assert.equal(accepted?.toolCalls, 1_000_000_000);
+  assert.equal(rejected?.toolCalls, undefined);
+  assert.deepEqual(overTokenSum?.usage, { cost: 0.5 });
+  assert.equal(overTokenSum?.effortCoverage.usage, "unavailable");
+  assert.equal(overTokenSum?.effortCoverage.cost, "partial");
+});
