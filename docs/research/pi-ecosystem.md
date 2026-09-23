@@ -187,3 +187,17 @@ Hook names and payload fields must be checked against the exact `0.85.1` declara
 - Record declaration symbol and line range for each used Pi hook/type.
 - Add sanitized real JSONL fixtures; never check prompts, outputs, paths, secrets, or account IDs into Git.
 - Revalidate package versions, Pi API surfaces, npm name availability, trusted publishing rules, current Hermes API, and benchmark baselines at release time.
+
+## Installed pi-subagents 0.71.0 workflow-key follow-up (2026-09-23)
+
+This is a separate observation from the 13A audit above, which remains pinned to `pi-subagents@0.70.1` and its historical fixtures. The locally installed producer was `0.71.0`; individual persisted tool results do not stamp producer version, so this is environment-level provenance, not an event field.
+
+In the 0.71.0 contract, `SingleResult.workflowKey` names the workflow child that owns a result. `workflowDetailsResults()` carries that key from `child.key`, and `workflowChildSummary()` publishes the same key as `childId`. Since the result publisher flattens each workflow child’s `results[]`, Inspector requires exactly one result row and one child-summary row per valid key rather than assuming one-to-one array cardinality.
+
+The real local Pi JSONL contained two workflow publications with two unique exact `workflowKey`/`childId` matches each. The later publication’s result rows carried `progressSummary.durationMs`, `progressSummary.toolCount`, and usage/cost; corresponding workflow child summaries carried the producer-required parent tool-call ID, workflow state, complete-inventory flag, identity, run ID, agent, and child state, but no effort or usage. Result rows had an explicit `index` but no own run ID. The 85-character workflow container run ID was below the 128-character bound but rejected by Inspector’s allowed-character grammar because it contained `%`; this prevented the result rows’ fallback identities, not the exact child-key evidence. The workflow child rows retained their own accepted run IDs.
+
+The producer v1 parser requires child `childId` and `state`; `runId`, `agent`, and other descriptive child fields are optional bounded metadata. The real values above are observations, not additional correlation requirements.
+
+Adapter attribution requires the supported version-1 summary envelope, including `inventoryComplete: true`, recognized workflow state and fields, bounded producer IDs, supported child rows, and arrays within bounds. `mode` must be `"workflow"` and `workflowRunId` must exactly equal `details.runId`; `parentToolCallId` is validated but not compared with the current tool-call ID because async publication can differ. Within one result, bounded `workflowKey` values must exactly match unique `childId` values. Missing, mismatched, or duplicate keys withhold only that key; unrelated exact keys remain eligible. Unsupported summary or child shapes produce no correlation. No effort is inferred from child summaries, and the adapter never correlates by index, order, agent, task, timestamp, or fuzzy run ID. Existing workflow/result `AgentRun` identities and statuses remain separate and unchanged; child usage remains non-additive. No producer identifiers, prompts, outputs, or raw session entries are recorded here.
+
+This observation does not revise the 0.70.1 declaration map or infer that older producer versions publish the same fields. That historical evidence remains unchanged.

@@ -1133,7 +1133,355 @@ test("bounds the accepted exit-code failure detail", () => {
   assert.equal(byAgent.get("c")?.failure, undefined);
 });
 
+test("attributes workflow result metrics to exact child keys without leaking ids", async () => {
+  // Sanitized 0.71.0-style shape; real events do not persist producerVersion.
+  const fixture = await readFile(
+    new URL(
+      "../fixtures/pi/0.85.1/subagent-workflow-key-correlation.jsonl",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const evidence = readSubagentEvidence(parseSessionJsonl(fixture).entries);
+
+  assert.equal(evidence.runs.length, 2);
+  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  assert.deepEqual(
+    {
+      durationMs: byAgent.get("summary-agent-a")?.durationMs,
+      toolCalls: byAgent.get("summary-agent-a")?.toolCalls,
+      usage: byAgent.get("summary-agent-a")?.usage,
+      status: byAgent.get("summary-agent-a")?.status,
+      parentId: byAgent.get("summary-agent-a")?.parentId,
+    },
+    {
+      durationMs: 1200,
+      toolCalls: 3,
+      usage: { totalTokens: 126, cost: 0.001 },
+      status: "succeeded",
+      parentId: undefined,
+    },
+  );
+  assert.deepEqual(
+    {
+      durationMs: byAgent.get("summary-agent-b")?.durationMs,
+      toolCalls: byAgent.get("summary-agent-b")?.toolCalls,
+      usage: byAgent.get("summary-agent-b")?.usage,
+    },
+    {
+      durationMs: 800,
+      toolCalls: 1,
+      usage: { totalTokens: 215, cost: 0.002 },
+    },
+  );
+  assert.equal(evidence.activity.usage, undefined);
+  for (const privateValue of [
+    "private-step-a",
+    "private-step-b",
+    "workflow-child-a",
+    "workflow-child-b",
+    "workflow%container",
+  ]) {
+    assert.equal(JSON.stringify(evidence).includes(privateValue), false);
+  }
+});
+
+test("keeps exact workflow identities separate when summary agent is absent", () => {
+  const runId = "workflow-container";
+  const evidence = readSubagentEvidence([
+    assistantEntry("workflow-call", "workflow-tool"),
+    resultEntry(
+      "workflow-result",
+      "workflow-tool",
+      {
+        mode: "workflow",
+        runId,
+        results: [
+          {
+            index: 0,
+            workflowKey: "private-step",
+            agent: "result-agent",
+            progressSummary: { durationMs: 900, toolCount: 2 },
+            usage: {
+              input: 20,
+              output: 5,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.01,
+            },
+          },
+        ],
+        workflowChildren: {
+          version: 1,
+          parentToolCallId: "originating-workflow-call",
+          workflowRunId: runId,
+          inventoryComplete: true,
+          workflowState: "running",
+          children: [
+            {
+              childId: "private-step",
+              runId: "workflow-child-run",
+              state: "running",
+              activity: { currentTool: "bash", durationMs: 5, toolCount: 1 },
+            },
+          ],
+        },
+      },
+      "2026-09-12T10:00:01.000Z",
+    ),
+  ]);
+
+  assert.equal(evidence.runs.length, 2);
+  assert.notEqual(evidence.runs[0]?.id, evidence.runs[1]?.id);
+  assert.equal(evidence.runs[0]?.agent, "result-agent");
+  assert.equal(evidence.runs[1]?.agent, undefined);
+  assert.equal(evidence.runs[1]?.status, "running");
+  assert.equal(evidence.runs[1]?.durationMs, 900);
+  assert.deepEqual(evidence.runs[1]?.usage, { totalTokens: 25, cost: 0.01 });
+  assert.equal(JSON.stringify(evidence).includes("private-step"), false);
+});
+
+test("withholds correlated workflow evidence when exact producer keys are absent or ambiguous", () => {
+  const runId = "workflow%container";
+  const makeResult = (workflowKey?: string) => ({
+    index: 0,
+    ...(workflowKey === undefined ? {} : { workflowKey }),
+    agent: "result-agent",
+    progressSummary: { durationMs: 900, toolCount: 2 },
+    usage: {
+      input: 20,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.01,
+    },
+  });
+  const makeChild = (
+    childId?: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    ...(childId === undefined ? {} : { childId }),
+    runId: "workflow-child-run",
+    agent: "summary-agent",
+    state: "completed",
+    ...extra,
+  });
+  const makeDetails = (
+    options: {
+      mode?: unknown;
+      version?: unknown;
+      workflowRunId?: unknown;
+      results?: unknown;
+      children?: unknown;
+      summaryOverrides?: Record<string, unknown>;
+    } = {},
+  ) => ({
+    mode: options.mode ?? "workflow",
+    runId,
+    results: options.results ?? [makeResult("step-a")],
+    workflowChildren: {
+      version: options.version ?? 1,
+      parentToolCallId: "originating-workflow-call",
+      workflowRunId: options.workflowRunId ?? runId,
+      inventoryComplete: true,
+      workflowState: "completed",
+      children: options.children ?? [makeChild("step-a")],
+      ...options.summaryOverrides,
+    },
+  });
+  const withoutSummaryField = (field: string) => {
+    const details = makeDetails();
+    const workflowChildren = { ...details.workflowChildren };
+    delete (workflowChildren as Record<string, unknown>)[field];
+    return { ...details, workflowChildren };
+  };
+  const oversizedResults = Array.from({ length: 257 }, (_, index) =>
+    makeResult(`step-${index}`),
+  );
+  const oversizedChildren = Array.from({ length: 257 }, (_, index) =>
+    makeChild(index === 0 ? "step-a" : `step-${index}`),
+  );
+  const cases: Array<[string, ReturnType<typeof makeDetails>]> = [
+    ["missing workflowKey", makeDetails({ results: [makeResult()] })],
+    [
+      "different workflowKey and childId",
+      makeDetails({ results: [makeResult("other-step")] }),
+    ],
+    [
+      "duplicate workflowKey",
+      makeDetails({ results: [makeResult("step-a"), makeResult("step-a")] }),
+    ],
+    [
+      "duplicate childId",
+      makeDetails({
+        children: [makeChild("step-a"), makeChild("step-a")],
+      }),
+    ],
+    [
+      "malformed key",
+      makeDetails({
+        results: [makeResult("bad%key")],
+        children: [makeChild("bad%key")],
+      }),
+    ],
+    [
+      "unbounded key",
+      makeDetails({
+        results: [makeResult("x".repeat(129))],
+        children: [makeChild("x".repeat(129))],
+      }),
+    ],
+    ["non-workflow publication", makeDetails({ mode: "single" })],
+    ["unsupported workflow summary version", makeDetails({ version: 2 })],
+    [
+      "missing parent tool-call identity",
+      withoutSummaryField("parentToolCallId"),
+    ],
+    [
+      "missing inventory completeness",
+      withoutSummaryField("inventoryComplete"),
+    ],
+    ["missing workflow state", withoutSummaryField("workflowState")],
+    [
+      "incomplete workflow inventory",
+      makeDetails({ summaryOverrides: { inventoryComplete: false } }),
+    ],
+    [
+      "unsupported workflow state",
+      makeDetails({ summaryOverrides: { workflowState: "unknown" } }),
+    ],
+    [
+      "unsupported workflow summary field",
+      makeDetails({ summaryOverrides: { futureField: true } }),
+    ],
+    [
+      "parent tool-call ID over byte bound",
+      makeDetails({
+        summaryOverrides: { parentToolCallId: "é".repeat(2049) },
+      }),
+    ],
+    [
+      "unknown child field",
+      makeDetails({ children: [makeChild("step-a", { futureField: true })] }),
+    ],
+    [
+      "oversized optional child label",
+      makeDetails({
+        children: [makeChild("step-a", { model: "é".repeat(129) })],
+      }),
+    ],
+    [
+      "invalid running-child activity",
+      makeDetails({
+        children: [
+          makeChild("step-a", {
+            state: "running",
+            activity: { futureField: 1 },
+          }),
+        ],
+      }),
+    ],
+    [
+      "invalid child state",
+      makeDetails({ children: [makeChild("step-a", { state: "unknown" })] }),
+    ],
+    [
+      "conflicting workflow run identity",
+      makeDetails({ workflowRunId: "another-container" }),
+    ],
+    ["result array over bound", makeDetails({ results: oversizedResults })],
+    ["child array over bound", makeDetails({ children: oversizedChildren })],
+  ];
+
+  for (const [name, details] of cases) {
+    const evidence = readSubagentEvidence([
+      assistantEntry("workflow-call", "workflow-tool"),
+      resultEntry(
+        "workflow-result",
+        "workflow-tool",
+        details,
+        "2026-09-12T10:00:01.000Z",
+      ),
+    ]);
+    const child = evidence.runs.find((run) => run.agent === "summary-agent");
+    assert.ok(child, name);
+    assert.equal(child?.durationMs, undefined, name);
+    assert.equal(child?.toolCalls, undefined, name);
+    assert.equal(child?.usage, undefined, name);
+    assert.equal(child?.effortCoverage.duration, "unavailable", name);
+    assert.equal(child?.effortCoverage.tools, "unavailable", name);
+  }
+});
+
+test("preserves unrelated workflow groups when one result key is ambiguous", () => {
+  const runId = "workflow%container";
+  const makeResult = (workflowKey: string, durationMs: number) => ({
+    workflowKey,
+    progressSummary: { durationMs, toolCount: 2 },
+    usage: {
+      input: 20,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.01,
+    },
+  });
+  const evidence = readSubagentEvidence([
+    assistantEntry("workflow-call", "workflow-tool"),
+    resultEntry(
+      "workflow-result",
+      "workflow-tool",
+      {
+        mode: "workflow",
+        runId,
+        results: [
+          makeResult("step-a", 900),
+          makeResult("step-a", 901),
+          makeResult("step-b", 800),
+        ],
+        workflowChildren: {
+          version: 1,
+          parentToolCallId: "originating-workflow-call",
+          workflowRunId: runId,
+          inventoryComplete: true,
+          workflowState: "completed",
+          children: [
+            {
+              childId: "step-a",
+              runId: "workflow-child-a",
+              agent: "summary-agent-a",
+              state: "completed",
+            },
+            {
+              childId: "step-b",
+              runId: "workflow-child-b",
+              agent: "summary-agent-b",
+              state: "completed",
+            },
+          ],
+        },
+      },
+      "2026-09-12T10:00:01.000Z",
+    ),
+  ]);
+  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  const ambiguous = byAgent.get("summary-agent-a");
+  const exact = byAgent.get("summary-agent-b");
+  assert.equal(evidence.runs.length, 2);
+  assert.ok(ambiguous);
+  assert.ok(exact);
+  assert.equal(ambiguous.durationMs, undefined);
+  assert.equal(ambiguous.toolCalls, undefined);
+  assert.equal(ambiguous.usage, undefined);
+  assert.equal(ambiguous.effortCoverage.duration, "unavailable");
+  assert.equal(exact.durationMs, 800);
+  assert.equal(exact.toolCalls, 2);
+  assert.deepEqual(exact.usage, { totalTokens: 25, cost: 0.01 });
+});
+
 test("collects workflowChildren children after results and completions", () => {
+  // This legacy fixture lacks the workflowKey/childId contract; equal
+  // container/index values therefore stay surface-scoped.
   const entries = [
     assistantEntry("call", "tool"),
     resultEntry(

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type {
   AgentFailure,
   AgentRun,
@@ -22,9 +23,64 @@ const SUBAGENT_TOOL_NAMES = [
 const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(SUBAGENT_TOOL_NAMES);
 /** Producer run ids are hashed before they leave this adapter. */
 const RAW_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const WORKFLOW_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** Bounded agent label token; an unusable producer value stays absent. */
 const AGENT_LABEL = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$/;
 const MAX_RUNS = 256;
+const MAX_WORKFLOW_ID_BYTES = 4096;
+const WORKFLOW_SUMMARY_FIELDS: ReadonlySet<string> = new Set([
+  "version",
+  "parentToolCallId",
+  "workflowRunId",
+  "inventoryComplete",
+  "workflowState",
+  "children",
+]);
+const WORKFLOW_SUMMARY_STATES: ReadonlySet<string> = new Set([
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "paused",
+  "stopped",
+]);
+const WORKFLOW_CHILD_FIELDS: ReadonlySet<string> = new Set([
+  "childId",
+  "runId",
+  "agent",
+  "sessionName",
+  "model",
+  "thinking",
+  "state",
+  "activity",
+]);
+const WORKFLOW_CHILD_STATES: ReadonlySet<string> = new Set([
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "paused",
+  "stopped",
+  "rejected",
+  "detached",
+]);
+const WORKFLOW_ACTIVITY_COUNTERS: ReadonlySet<string> = new Set([
+  "currentToolStartedAt",
+  "lastActivityAt",
+  "durationMs",
+  "toolCount",
+  "turnCount",
+  "tokens",
+  "inputTokens",
+  "outputTokens",
+]);
+const WORKFLOW_CHILD_TEXT_LIMITS = {
+  runId: 256,
+  agent: 256,
+  sessionName: 256,
+  model: 256,
+  thinking: 32,
+} as const;
 const MAX_TOTAL_TOKENS = 1_000_000_000;
 /** Bound on a published archive path so a corrupt session cannot retain an arbitrarily large string. */
 const MAX_ARCHIVE_PATH = 4096;
@@ -384,9 +440,15 @@ function collectRuns(
       ? undefined
       : opaqueSubagentId(sessionId, aggregateRunId, "workflow-parent");
 
-  // §8.5 repeated-publication precedence applies only within one publication
-  // surface. Foreground results, completions, and workflow summaries have no
-  // producer-proven cross-surface key, so equal raw ids remain separate rows.
+  // §8.5 replacement stays scoped to one publication surface. Workflow
+  // result keys below attribute evidence to child rows; they never deduplicate
+  // the result and workflow AgentRun identities.
+  const workflowChildren = snapshotRecord(details.workflowChildren);
+  const workflowChildRows = workflowChildren?.children;
+  const workflowResultsByKey = readWorkflowResultMatches(
+    details,
+    workflowChildren,
+  );
   if (Array.isArray(details.results)) {
     for (const value of details.results.slice(0, MAX_RUNS)) {
       const record = snapshotRecord(value);
@@ -464,14 +526,36 @@ function collectRuns(
     }
   }
 
-  // Workflow summaries are a distinct publication surface. They are parsed
-  // after the other arrays for deterministic output order, never to replace a
-  // row from a different surface.
-  const workflowChildren = snapshotRecord(details.workflowChildren);
-  if (Array.isArray(workflowChildren?.children)) {
-    for (const value of workflowChildren.children.slice(0, MAX_RUNS)) {
+  // Workflow summaries remain a distinct publication surface. Parse them
+  // after other arrays for deterministic output order; correlated evidence
+  // does not replace a row from another surface.
+  if (Array.isArray(workflowChildRows)) {
+    for (const value of workflowChildRows.slice(0, MAX_RUNS)) {
       const record = snapshotRecord(value);
       if (record === undefined) continue;
+      const workflowKey = readWorkflowKey(record.childId);
+      const matchedResult =
+        workflowKey === undefined
+          ? undefined
+          : workflowResultsByKey.get(workflowKey);
+      const hasCorrelatedEffort =
+        matchedResult !== undefined &&
+        !Object.hasOwn(record, "progressSummary") &&
+        Object.hasOwn(matchedResult, "progressSummary");
+      const hasCorrelatedUsage =
+        matchedResult !== undefined &&
+        !Object.hasOwn(record, "usage") &&
+        Object.hasOwn(matchedResult, "usage");
+      const attributedRecord =
+        matchedResult === undefined
+          ? record
+          : {
+              ...record,
+              ...(hasCorrelatedEffort
+                ? { progressSummary: matchedResult.progressSummary }
+                : {}),
+              ...(hasCorrelatedUsage ? { usage: matchedResult.usage } : {}),
+            };
       const rowRunId = readRawRunId(record.runId);
       const index = readChildIndex(record.index);
       const id =
@@ -484,7 +568,14 @@ function collectRuns(
                 `${aggregateRunId}#${index}`,
                 "workflow",
               );
-      pushRun(record, collector, publication, id, workflowParentId, "disabled");
+      pushRun(
+        attributedRecord,
+        collector,
+        publication,
+        id,
+        workflowParentId,
+        hasCorrelatedEffort ? "enabled" : "disabled",
+      );
     }
   }
 }
@@ -844,8 +935,119 @@ function readRawRunId(value: unknown): string | undefined {
     : undefined;
 }
 
-/**
- * A foreground child's stable identity within its aggregate run. Only a safe
+function readWorkflowKey(value: unknown): string | undefined {
+  return typeof value === "string" && WORKFLOW_KEY.test(value)
+    ? value
+    : undefined;
+}
+
+function readWorkflowResultMatches(
+  details: Readonly<Record<string, unknown>>,
+  workflowChildren: Readonly<Record<string, unknown>> | undefined,
+): Map<string, Readonly<Record<string, unknown>>> {
+  const results = details.results;
+  const children = workflowChildren?.children;
+  if (
+    details.mode !== "workflow" ||
+    workflowChildren === undefined ||
+    Object.keys(workflowChildren).some(
+      (field) => !WORKFLOW_SUMMARY_FIELDS.has(field),
+    ) ||
+    workflowChildren.version !== 1 ||
+    !isBoundedWorkflowText(details.runId, MAX_WORKFLOW_ID_BYTES) ||
+    !isBoundedWorkflowText(
+      workflowChildren.parentToolCallId,
+      MAX_WORKFLOW_ID_BYTES,
+    ) ||
+    workflowChildren.workflowRunId !== details.runId ||
+    workflowChildren.inventoryComplete !== true ||
+    typeof workflowChildren.workflowState !== "string" ||
+    !WORKFLOW_SUMMARY_STATES.has(workflowChildren.workflowState) ||
+    !Array.isArray(results) ||
+    !Array.isArray(children) ||
+    results.length > MAX_RUNS ||
+    children.length > MAX_RUNS
+  ) {
+    return new Map();
+  }
+
+  const resultsByKey = new Map<string, Readonly<Record<string, unknown>>>();
+  const duplicateResultKeys = new Set<string>();
+  for (const value of results) {
+    const record = snapshotRecord(value);
+    const key = readWorkflowKey(record?.workflowKey);
+    if (record === undefined || key === undefined) continue;
+    if (resultsByKey.has(key)) duplicateResultKeys.add(key);
+    else resultsByKey.set(key, record);
+  }
+
+  const childCounts = new Map<string, number>();
+  for (const value of children) {
+    const record = snapshotRecord(value);
+    if (!isSupportedWorkflowChild(record)) return new Map();
+    const key = readWorkflowKey(record.childId);
+    if (key === undefined) return new Map();
+    childCounts.set(key, (childCounts.get(key) ?? 0) + 1);
+  }
+  for (const key of resultsByKey.keys()) {
+    if (duplicateResultKeys.has(key) || childCounts.get(key) !== 1) {
+      resultsByKey.delete(key);
+    }
+  }
+  return resultsByKey;
+}
+
+function isBoundedWorkflowText(
+  value: unknown,
+  maxBytes: number,
+): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    Buffer.byteLength(value, "utf8") <= maxBytes
+  );
+}
+
+function isSupportedWorkflowChild(
+  value: Readonly<Record<string, unknown>> | undefined,
+): value is Readonly<Record<string, unknown>> {
+  if (
+    value === undefined ||
+    Object.keys(value).some((field) => !WORKFLOW_CHILD_FIELDS.has(field)) ||
+    readWorkflowKey(value.childId) === undefined ||
+    typeof value.state !== "string" ||
+    !WORKFLOW_CHILD_STATES.has(value.state)
+  ) {
+    return false;
+  }
+  for (const [field, maxBytes] of Object.entries(WORKFLOW_CHILD_TEXT_LIMITS)) {
+    if (
+      value[field] !== undefined &&
+      !isBoundedWorkflowText(value[field], maxBytes)
+    ) {
+      return false;
+    }
+  }
+  return (
+    value.activity === undefined ||
+    (value.state === "running" && isSupportedWorkflowActivity(value.activity))
+  );
+}
+
+function isSupportedWorkflowActivity(value: unknown): boolean {
+  const activity = snapshotRecord(value);
+  if (activity === undefined) return false;
+  return Object.entries(activity).every(([field, counter]) =>
+    field === "currentTool"
+      ? isBoundedWorkflowText(counter, 256)
+      : WORKFLOW_ACTIVITY_COUNTERS.has(field) &&
+        typeof counter === "number" &&
+        Number.isFinite(counter) &&
+        counter >= 0,
+  );
+}
+
+/** A foreground child's stable identity within its aggregate run. Only a safe
  * non-negative integer is usable; anything else leaves the row unidentifiable.
  */
 function readChildIndex(value: unknown): number | undefined {
