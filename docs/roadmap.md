@@ -540,7 +540,7 @@ Until the upstream telemetry seam exists:
 
 ### 13. Subagent run outcome and effort breakdown
 
-**Status:** Active; 13A evidence audit, 13B contract, and 13C projections complete; 13D UX cleanup implemented on an isolated branch, pending integration.
+**Status:** Active; 13A evidence audit, 13B contract, 13C projections, and 13D UX cleanup are complete and integrated (PR #47).
 **Depends on:** existing Agent execution evidence and subagent run attribution.
 
 **Motivation:** token and cost totals answer which subagent runs were expensive,
@@ -574,8 +574,8 @@ immutable snapshot, browser, and TUI surfaces. The 13D evidence gate passed;
 its UX cleanup adds stable duration sorting and duration-coverage filtering to
 the existing Agents view, preserving ancestor context and native totals.
 Side-by-side comparison UI is deferred; no new comparison arithmetic or
-semantic score is introduced. The 13D implementation is complete on an
-isolated branch, pending integration; Item 13 remains active.
+semantic score is introduced. The 13D implementation is complete and
+integrated (PR #47); Item 13 remains active.
 
 **13A evidence audit (research-only, 2026-09-22):** Four bounded audit lanes are complete as documentation and sanitized fixture evidence: (1) outcome/error surfaces, (2) duration/generations/tools, (3) usage/cost/nesting and double-counting, and (4) producer version/provenance/privacy. The Pi/session fixture baseline is `0.85.1`; local `pi-subagents` `0.70.1` observations and historical `0.59.0` research remain separate. Producer terminal state means execution completion, not semantic task success. `observedAt` is not a duration source; unsupported attribution remains unavailable. No production behavior or status/outcome coverage mechanism is added by 13A.
 

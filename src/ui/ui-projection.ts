@@ -369,20 +369,14 @@ export function projectHistoricalSession(
     return noSessionProjection(session.reason);
   }
   const report = sessionView(session.report);
-  const daily = session.usageByDate.map((row) =>
-    attachUsageFieldCoverage(
-      {
-        date: row.date,
-        sessions: 1,
-        totalTokens: row.totalTokens,
-        cost: row.cost,
-        generations: row.generations,
-        tools: row.tools,
-        composition: row.composition,
-      },
+  const daily = session.usageByDate.map((row) => {
+    const { errors, ...dailyRow } = row;
+    void errors;
+    return attachUsageFieldCoverage(
+      { ...dailyRow, sessions: 1 },
       usageFieldCoverageOf(row) ?? usageFieldCoverage([row]),
-    ),
-  );
+    );
+  });
   return {
     availability: "available",
     capabilities: CAPABILITIES.historySession,

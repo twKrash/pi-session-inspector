@@ -2,6 +2,14 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Historical session projections retain optional token and per-bucket cost
+  values alongside their existing coverage, keeping selected-session
+  breakdowns and cache reuse consistent without fabricating unavailable values.
+
 ## [1.4.0]
 
 ### Added
