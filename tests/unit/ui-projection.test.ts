@@ -10,7 +10,11 @@ import {
 import { reduceEntries } from "../../src/core/reduce.ts";
 import { toSessionReport, type SessionReport } from "../../src/core/reports.ts";
 import type { SessionCoverage } from "../../src/core/session-coverage.ts";
-import type { AgentRun, SessionEntry } from "../../src/core/events.ts";
+import {
+  usageFieldCoverage,
+  type AgentRun,
+  type SessionEntry,
+} from "../../src/core/events.ts";
 import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
@@ -22,6 +26,7 @@ import {
   type CurrentTuiModel,
 } from "../../src/ui/current.ts";
 import {
+  attachUsageFieldCoverage,
   sessionDatedUsage,
   type DateUsageRow,
 } from "../../src/ui/dated-usage.ts";
@@ -584,6 +589,201 @@ test("projects shared token economics into session, range, history and global vi
   const globalView = projectGlobalReport(global);
   assert.equal(globalView.totals.outputCost, 0.094);
   assert.equal(globalView.usageEconomics?.cacheReuse.percent, 3.4);
+});
+
+test("historical session projection preserves detailed usage and coverage", () => {
+  const report = economicsReport();
+  const owners = [
+    {
+      totalTokens: 20,
+      cost: 0.1,
+      inputTokens: 17,
+      outputTokens: 8,
+      cacheReadTokens: 1,
+      cacheWriteTokens: 1,
+      reasoningTokens: 3,
+      inputCost: 0.04,
+      outputCost: 0.06,
+      cacheReadCost: 0.01,
+      cacheWriteCost: 0.005,
+    },
+    {
+      totalTokens: 21,
+      cost: 0.082,
+      inputTokens: 10,
+      outputTokens: 4,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      inputCost: 0.025,
+      outputCost: 0.034,
+      cacheWriteCost: 0.008,
+    },
+  ];
+  const dated = attachUsageFieldCoverage(
+    {
+      ...dateRow({
+        date: "2026-02-02",
+        totalTokens: 41,
+        cost: 0.182,
+        generations: 1,
+      }),
+      inputTokens: 27,
+      outputTokens: 12,
+      reasoningTokens: 3,
+      cacheReadTokens: 1,
+      cacheWriteTokens: 1,
+      inputCost: 0.065,
+      outputCost: 0.094,
+      cacheReadCost: 0.01,
+      cacheWriteCost: 0.013,
+    },
+    usageFieldCoverage(owners),
+  );
+  const historicalSession = {
+    availability: "available" as const,
+    sessionId: report.sessionId,
+    usageByDate: [dated],
+    usageByDateTruncated: false,
+    datedModels: [],
+    modelsTruncated: false,
+    report,
+  };
+  const current = projectCurrentView(
+    {
+      availability: "available",
+      report,
+      daily: foldedDaily([dated], report.sessionId),
+    },
+    "active",
+    FIRST_DAY,
+  );
+  const historical = projectHistoricalSession(historicalSession, FIRST_DAY);
+  const totals = historical.range?.totals;
+
+  assert.deepEqual(current.range?.daily, historical.range?.daily);
+  assert.deepEqual(current.range?.totals, historical.range?.totals);
+  assert.deepEqual(
+    current.range?.usageEconomics,
+    historical.range?.usageEconomics,
+  );
+  assert.deepEqual(
+    {
+      totalTokens: totals?.totalTokens,
+      cost: totals?.cost,
+      inputTokens: totals?.inputTokens,
+      outputTokens: totals?.outputTokens,
+      reasoningTokens: totals?.reasoningTokens,
+      cacheReadTokens: totals?.cacheReadTokens,
+      cacheWriteTokens: totals?.cacheWriteTokens,
+      inputCost: totals?.inputCost,
+      outputCost: totals?.outputCost,
+      cacheReadCost: totals?.cacheReadCost,
+      cacheWriteCost: totals?.cacheWriteCost,
+    },
+    {
+      totalTokens: 41,
+      cost: 0.182,
+      inputTokens: 27,
+      outputTokens: 12,
+      reasoningTokens: 3,
+      cacheReadTokens: 1,
+      cacheWriteTokens: 1,
+      inputCost: 0.065,
+      outputCost: 0.094,
+      cacheReadCost: 0.01,
+      cacheWriteCost: 0.013,
+    },
+  );
+  assert.deepEqual(historical.range?.usageEconomics, {
+    input: {
+      tokens: 27,
+      cost: 0.065,
+      tokenCoverage: "complete",
+      costCoverage: "complete",
+    },
+    output: {
+      tokens: 12,
+      cost: 0.094,
+      tokenCoverage: "complete",
+      costCoverage: "complete",
+    },
+    cacheRead: {
+      tokens: 1,
+      cost: 0.01,
+      tokenCoverage: "complete",
+      costCoverage: "partial",
+    },
+    cacheWrite: {
+      tokens: 1,
+      cost: 0.013,
+      tokenCoverage: "complete",
+      costCoverage: "complete",
+    },
+    reasoning: { tokens: 3, coverage: "partial" },
+    cacheReuse: {
+      denominatorTokens: 29,
+      percent: 3.4,
+      coverage: "complete",
+    },
+  });
+
+  const unavailableRow = attachUsageFieldCoverage(
+    dateRow({
+      date: "2026-02-02",
+      totalTokens: 41,
+      cost: 0.182,
+      generations: 1,
+    }),
+    usageFieldCoverage([{ totalTokens: 41, cost: 0.182 }]),
+  );
+  const unavailable = projectHistoricalSession(
+    { ...historicalSession, usageByDate: [unavailableRow] },
+    FIRST_DAY,
+  );
+  assert.deepEqual(
+    {
+      inputTokens: unavailable.range?.totals.inputTokens,
+      outputTokens: unavailable.range?.totals.outputTokens,
+      reasoningTokens: unavailable.range?.totals.reasoningTokens,
+      cacheReadTokens: unavailable.range?.totals.cacheReadTokens,
+      cacheWriteTokens: unavailable.range?.totals.cacheWriteTokens,
+      inputCost: unavailable.range?.totals.inputCost,
+      outputCost: unavailable.range?.totals.outputCost,
+      cacheReadCost: unavailable.range?.totals.cacheReadCost,
+      cacheWriteCost: unavailable.range?.totals.cacheWriteCost,
+    },
+    {
+      inputTokens: undefined,
+      outputTokens: undefined,
+      reasoningTokens: undefined,
+      cacheReadTokens: undefined,
+      cacheWriteTokens: undefined,
+      inputCost: undefined,
+      outputCost: undefined,
+      cacheReadCost: undefined,
+      cacheWriteCost: undefined,
+    },
+  );
+  assert.equal(
+    unavailable.range?.usageEconomics?.input.tokenCoverage,
+    "unavailable",
+  );
+  assert.equal(
+    unavailable.range?.usageEconomics?.input.costCoverage,
+    "unavailable",
+  );
+  assert.equal(
+    unavailable.range?.usageEconomics?.reasoning.coverage,
+    "unavailable",
+  );
+  assert.equal(
+    unavailable.range?.usageEconomics?.cacheReuse.denominatorTokens,
+    undefined,
+  );
+  assert.equal(
+    unavailable.range?.usageEconomics?.cacheReuse.coverage,
+    "unavailable",
+  );
 });
 
 test("each current view resolves a preset against its own observed dates", async () => {
