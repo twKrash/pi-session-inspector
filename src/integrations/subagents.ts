@@ -546,15 +546,17 @@ function collectRuns(
         matchedResult !== undefined &&
         !Object.hasOwn(record, "usage") &&
         Object.hasOwn(matchedResult, "usage");
+      // Workflow child summaries carry identity/state only; usage comes from
+      // an exact-key-matched result row.
       const attributedRecord =
         matchedResult === undefined
-          ? record
+          ? { ...record, usage: undefined }
           : {
               ...record,
+              usage: hasCorrelatedUsage ? matchedResult.usage : undefined,
               ...(hasCorrelatedEffort
                 ? { progressSummary: matchedResult.progressSummary }
                 : {}),
-              ...(hasCorrelatedUsage ? { usage: matchedResult.usage } : {}),
             };
       const rowRunId = readRawRunId(record.runId);
       const index = readChildIndex(record.index);

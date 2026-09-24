@@ -1303,6 +1303,7 @@ test("withholds correlated workflow evidence when exact producer keys are absent
   );
   const cases: Array<[string, ReturnType<typeof makeDetails>]> = [
     ["missing workflowKey", makeDetails({ results: [makeResult()] })],
+    ["missing childId", makeDetails({ children: [makeChild()] })],
     [
       "different workflowKey and childId",
       makeDetails({ results: [makeResult("other-step")] }),
@@ -1363,6 +1364,22 @@ test("withholds correlated workflow evidence when exact producer keys are absent
     [
       "unknown child field",
       makeDetails({ children: [makeChild("step-a", { futureField: true })] }),
+    ],
+    [
+      "unsupported child usage field",
+      makeDetails({
+        children: [
+          makeChild("step-a", {
+            usage: {
+              input: 20,
+              output: 6,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.2,
+            },
+          }),
+        ],
+      }),
     ],
     [
       "oversized optional child label",
