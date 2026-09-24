@@ -443,7 +443,11 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
   assert.equal((format.cost as (value: number) => string)(0), "$0.00");
   // The execution topology is the shared projection too.
   const agentTree = namespace.agentTree as Record<string, unknown>;
-  assert.deepEqual(Object.keys(agentTree).sort(), ["build", "filter"]);
+  assert.deepEqual(Object.keys(agentTree).sort(), [
+    "build",
+    "filter",
+    "sortByDuration",
+  ]);
   // The chart namespace is the adapter: create, recolor, palette.
   const chart = namespace.chart as Record<string, unknown>;
   assert.deepEqual(Object.keys(chart).sort(), [
@@ -3291,6 +3295,37 @@ function treeRows(harness: Harness): string[] {
     .map((row) => row.dataset.treeRow ?? "");
 }
 
+function durationSortControl(
+  harness: ReturnType<typeof createWebClient>,
+): StubElement {
+  const found = harness
+    .element("view")
+    .querySelectorAll("select")
+    .find((select) =>
+      select
+        .querySelectorAll("option")
+        .some((option) => option.value === "duration-desc"),
+    );
+  if (found === undefined) throw new Error("no duration sort control");
+  return found;
+}
+
+function agentTableRunNames(
+  harness: ReturnType<typeof createWebClient>,
+  candidates: readonly string[],
+): string[] {
+  return harness
+    .element("view")
+    .querySelectorAll("tr")
+    .flatMap((row) => {
+      const firstCell = row.querySelectorAll("td")[0];
+      if (firstCell === undefined) return [];
+      const text = harness.texts(firstCell).join(" ").trim();
+      const name = candidates.find((candidate) => candidate === text);
+      return name === undefined ? [] : [name];
+    });
+}
+
 test("the Agents view is a Tree by default and keeps the table one click away", async () => {
   const parentId = `subagent-${"1".repeat(64)}`;
   const childId = `subagent-${"2".repeat(64)}`;
@@ -3702,6 +3737,122 @@ test("an unavailable child model and partial child usage stay stated, never blan
   assert.equal(text.includes("Cost (USD): Unavailable"), true);
   // The coverage fraction is L2's own figure and is never implied complete.
   assert.equal(text.includes("0 of 2 runs reported usage"), true);
+});
+
+test("duration coverage filtering keeps ancestor context and narrows visible coverage counts", async () => {
+  const parentId = `subagent-${"31".repeat(32)}`;
+  const snapshot = treeSnapshot([
+    agentRow({ id: parentId, agent: "reviewer" }),
+    agentRow({
+      id: `subagent-${"32".repeat(32)}`,
+      agent: "scout",
+      parentId,
+      parent: "in-range",
+      durationMs: 1234,
+      durationLabel: "1.2 s",
+    }),
+    agentRow({ id: `subagent-${"33".repeat(32)}`, agent: "worker" }),
+  ]);
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const originalAgents = structuredClone(range.agents);
+  const originalTotals = structuredClone(range.totals);
+  const originalChildUsage = structuredClone(range.childUsage);
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+
+  const coverage = harness.element("agent-duration-coverage");
+  coverage.value = "known";
+  harness.change(coverage);
+
+  const text = viewText(harness);
+  assert.equal(text.includes("reviewer"), true);
+  assert.equal(text.includes("scout"), true);
+  assert.equal(text.includes("worker"), false);
+  assert.equal(text.includes("context"), true);
+  assert.equal(text.includes("1 of 3 runs match"), true);
+  assert.equal(text.includes("1 run with Known duration"), true);
+  assert.equal(text.includes("2 runs with duration Unavailable"), false);
+  assert.deepEqual(range.agents, originalAgents);
+  assert.deepEqual(range.totals, originalTotals);
+  assert.deepEqual(range.childUsage, originalChildUsage);
+
+  coverage.value = "unavailable";
+  harness.change(coverage);
+  const unavailableText = viewText(harness);
+  assert.equal(unavailableText.includes("reviewer"), true);
+  assert.equal(unavailableText.includes("scout"), false);
+  assert.equal(unavailableText.includes("worker"), true);
+  assert.equal(unavailableText.includes("2 of 3 runs match"), true);
+  assert.deepEqual(range.agents, originalAgents);
+  assert.deepEqual(range.totals, originalTotals);
+  assert.deepEqual(range.childUsage, originalChildUsage);
+  assert.deepEqual(range.totals, originalTotals);
+  assert.deepEqual(range.childUsage, originalChildUsage);
+});
+
+test("duration sort is route-backed, unavailable-last, stable, and reloadable", async () => {
+  const rows = [
+    agentRow({
+      id: "duration-z",
+      agent: "Tie Z",
+      durationMs: 25,
+      durationLabel: "25 ms",
+    }),
+    agentRow({ id: "duration-missing", agent: "Missing" }),
+    agentRow({
+      id: "duration-a",
+      agent: "Tie A",
+      durationMs: 25,
+      durationLabel: "25 ms",
+    }),
+    agentRow({ id: "duration-unavailable", agent: "Unavailable" }),
+    agentRow({
+      id: "duration-short",
+      agent: "Short",
+      durationMs: 5,
+      durationLabel: "5 ms",
+    }),
+  ];
+  const snapshot = treeSnapshot(rows);
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const originalAgents = structuredClone(range.agents);
+  const names = ["Tie A", "Tie Z", "Short", "Missing", "Unavailable"];
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&view=table",
+  });
+  await harness.start();
+
+  const sort = durationSortControl(harness);
+  sort.value = "duration-desc";
+  harness.change(sort);
+
+  assert.equal(
+    harness.location.hash,
+    "#/current/llm?scope=tree&view=table&sort=duration-desc",
+  );
+  assert.deepEqual(agentTableRunNames(harness, names), names);
+  assert.deepEqual(range.agents, originalAgents);
+
+  const reloaded = createWebClient({
+    responses: [treeSnapshot(rows)],
+    hash: harness.location.hash,
+  });
+  await reloaded.start();
+  const reloadedSort = durationSortControl(reloaded);
+  assert.equal(reloaded.location.hash, harness.location.hash);
+  assert.equal(
+    reloadedSort
+      .querySelectorAll("option")
+      .some((option) => option.value === "duration-desc" && option.selected),
+    true,
+  );
+  assert.deepEqual(agentTableRunNames(reloaded, names), names);
 });
 
 test("a nested agent is revealed by its route, even in a collapsed forest", async () => {

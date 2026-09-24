@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   buildAgentForest,
   filterAgentForest,
+  sortAgentRowsByDuration,
   type UiAgentTreeEntry,
 } from "../../src/ui/agent-tree.ts";
 import type { UiAgentParent, UiAgentRow } from "../../src/ui/ui-projection.ts";
@@ -69,6 +70,52 @@ function runsOf(entries: readonly UiAgentTreeEntry[]): string[] {
       : [entry.run.id],
   );
 }
+
+test("duration sorting orders observed values first, breaks ties by id, and preserves input", () => {
+  const unavailable = {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  } as const;
+  const rows = [
+    run({ id: "duration-z", durationMs: 5 }),
+    run({ id: "duration-b", durationMs: 5 }),
+    run({ id: "duration-zero", durationMs: 0 }),
+    run({
+      id: "duration-inconsistent",
+      durationMs: 1000,
+      effortCoverage: unavailable,
+    }),
+    run({ id: "duration-missing" }),
+  ];
+
+  const sorted = sortAgentRowsByDuration(rows);
+
+  assert.deepEqual(
+    sorted.map((row) => row.id),
+    [
+      "duration-b",
+      "duration-z",
+      "duration-zero",
+      "duration-inconsistent",
+      "duration-missing",
+    ],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    [
+      "duration-z",
+      "duration-b",
+      "duration-zero",
+      "duration-inconsistent",
+      "duration-missing",
+    ],
+  );
+  assert.notEqual(sorted, rows);
+});
 
 test("a run whose parent is materialized nests under that run", () => {
   const forest = buildAgentForest([

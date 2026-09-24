@@ -723,7 +723,16 @@
    * itself calls unreportable, always with its control, its counts and a way
    * back.
    */
-  const table = (title, note, headers, rows, classes, filter, control) => {
+  const table = (
+    title,
+    note,
+    headers,
+    rows,
+    classes,
+    filter,
+    control,
+    additionalSortOptions = [],
+  ) => {
     const section = card(title, note, control);
     const toolbar = el("div", "toolbar");
     const searchLabel = el("label", "", COPY.search);
@@ -736,11 +745,13 @@
     const sortLabel = el("label", "", COPY.sort);
     const sort = document.createElement("select");
     sort.id = "sort";
-    [
+    const sortOptions = [
       ["default", "sort.default"],
       ["name", "sort.name"],
       ["reverse", "sort.reverse"],
-    ].forEach((item) => {
+      ...additionalSortOptions,
+    ];
+    sortOptions.forEach((item) => {
       const option = el("option", "", COPY[item[1]]);
       option.value = item[0];
       option.selected = activeSort() === item[0];
@@ -1849,19 +1860,33 @@
   };
 
   /**
-   * The status and model filters, as one predicate over the rows the DTO
-   * published. They narrow which runs the view shows; they never rewrite a row,
-   * and a filtered-out ancestor is kept by the projection as context instead of
-   * being detached from the topology that gives a match its meaning.
+   * Status, model, and duration-coverage filters narrow published runs without
+   * rewriting rows; the shared forest projection keeps matching ancestors as
+   * context rather than detaching nested results.
    */
   const agentSelectionFilter = () => {
     const status = selectedOption("agentStatus");
     const model = selectedOption("agentModel");
+    const durationCoverage = selectedOption("agentDurationCoverage");
     return (run) => {
       if (status !== "" && run.status !== status) return false;
-      if (model === "") return true;
-      if (model === NO_MODEL_FILTER) return run.model === null;
-      return run.model === model;
+      if (model === NO_MODEL_FILTER && run.model !== null) return false;
+      if (model !== "" && model !== NO_MODEL_FILTER && run.model !== model) {
+        return false;
+      }
+      if (
+        durationCoverage === "known" &&
+        run.effortCoverage.duration === "unavailable"
+      ) {
+        return false;
+      }
+      if (
+        durationCoverage === "unavailable" &&
+        run.effortCoverage.duration !== "unavailable"
+      ) {
+        return false;
+      }
+      return true;
     };
   };
 
@@ -2333,7 +2358,8 @@
     const filtering =
       query !== "" ||
       selectedOption("agentStatus") !== "" ||
-      selectedOption("agentModel") !== "";
+      selectedOption("agentModel") !== "" ||
+      selectedOption("agentDurationCoverage") !== "";
     const select = agentSelectionFilter();
     const search = agentQueryFilter();
     const view = executions.filter(executions.build(runs), (run) =>
@@ -2404,7 +2430,25 @@
       modelSelect.append(option);
     }
     modelLabel.append(modelSelect);
-    toolbar.append(statusLabel, modelLabel, searchLabel);
+    const durationLabel = el("label", "", COPY["agents.tree.durationCoverage"]);
+    const durationSelect = document.createElement("select");
+    durationSelect.id = "agent-duration-coverage";
+    const durationCoverage = selectedOption("agentDurationCoverage");
+    const anyDuration = el("option", "", COPY["agents.tree.filterAll"]);
+    anyDuration.value = "";
+    anyDuration.selected = durationCoverage === "";
+    durationSelect.append(anyDuration);
+    [
+      ["known", "agents.effortKnown"],
+      ["unavailable", "evidence.unavailable"],
+    ].forEach(([value, key]) => {
+      const option = el("option", "", COPY[key]);
+      option.value = value;
+      option.selected = durationCoverage === value;
+      durationSelect.append(option);
+    });
+    durationLabel.append(durationSelect);
+    toolbar.append(statusLabel, modelLabel, durationLabel, searchLabel);
     section.append(toolbar);
     if (filtering) {
       section.append(
@@ -2503,6 +2547,10 @@
     if (agentsInTree()) {
       return [metrics(cards), agentsTreeSection(target)];
     }
+    const agentRows =
+      activeSort() === "duration-desc"
+        ? executions.sortByDuration(meta.agents)
+        : meta.agents;
     return [
       metrics(cards),
       table(
@@ -2519,7 +2567,7 @@
           COPY["table.artifacts"],
           COPY["table.parent"],
         ],
-        meta.agents.map((run) => ({
+        agentRows.map((run) => ({
           cells: [
             entitySpan("agent", run.id, orUnavailable(run.agent)),
             badgeCell(
@@ -2562,6 +2610,7 @@
         ],
         undefined,
         agentsViewControl(),
+        [["duration-desc", "sort.duration-desc"]],
       ),
     ];
   };
@@ -3740,6 +3789,9 @@
   const onDocumentChange = (event) => {
     const target = event.target;
     if (target === undefined || target === null) return;
+    if (target.id === "agent-duration-coverage") {
+      setSetting("agentDurationCoverage", target.value);
+    }
     if (target.id === "agent-status" || target.id === "agent-model") {
       setSetting(
         target.id === "agent-status" ? "agentStatus" : "agentModel",

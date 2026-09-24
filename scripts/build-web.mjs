@@ -23,12 +23,20 @@ const resolveDir = fileURLToPath(new URL("../", import.meta.url));
 // TypeScript renderers use, rather than through a second implementation.
 const prelude = `import { formatCost } from "./src/ui/format.ts";
 import { createTranslator } from "./src/ui/i18n.ts";
-import { buildAgentForest, filterAgentForest } from "./src/ui/agent-tree.ts";
+import {
+  buildAgentForest,
+  filterAgentForest,
+  sortAgentRowsByDuration,
+} from "./src/ui/agent-tree.ts";
 import { applyChartTheme, chartTheme, createDailyChart } from "./scripts/web/chart.ts";
 const web = (globalThis.SessionInspectorWeb = globalThis.SessionInspectorWeb || {});
 web.i18n = { t: createTranslator("en") };
 web.format = { cost: formatCost };
-web.agentTree = { build: buildAgentForest, filter: filterAgentForest };
+web.agentTree = {
+  build: buildAgentForest,
+  filter: filterAgentForest,
+  sortByDuration: sortAgentRowsByDuration,
+};
 web.chart = { applyChartTheme, chartTheme, createDailyChart };`;
 const input = [
   prelude,
