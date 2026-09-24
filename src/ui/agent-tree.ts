@@ -341,3 +341,23 @@ export function filterAgentForest(
     counts: totalOf(entries),
   };
 }
+
+/** Runs ordered by observed duration; unknown coverage sorts after known values. */
+export function sortAgentRowsByDuration(
+  runs: readonly UiAgentRow[],
+): UiAgentRow[] {
+  const durationOf = (run: UiAgentRow): number | null =>
+    run.effortCoverage.duration === "unavailable" ? null : run.durationMs;
+  const compareId = (left: string, right: string): number =>
+    left < right ? -1 : left > right ? 1 : 0;
+
+  return runs.slice().sort((left, right) => {
+    const leftDuration = durationOf(left);
+    const rightDuration = durationOf(right);
+    if (leftDuration === null) {
+      return rightDuration === null ? compareId(left.id, right.id) : 1;
+    }
+    if (rightDuration === null) return -1;
+    return rightDuration - leftDuration || compareId(left.id, right.id);
+  });
+}

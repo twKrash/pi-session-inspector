@@ -270,6 +270,7 @@ export const ENGLISH_CATALOG = {
     "{count, number} run with tool-call count Unavailable",
   "agents.tree.context": "context",
   "agents.tree.filterAll": "All",
+  "agents.tree.durationCoverage": "Duration coverage",
   "agents.tree.filtered":
     "{matched} of {total} runs match · {context} kept for context",
   "agents.tree.empty": "No run matches the current filter.",
@@ -402,6 +403,7 @@ export const ENGLISH_CATALOG = {
   "sort.default": "Source order",
   "sort.name": "Name A–Z",
   "sort.reverse": "Reverse source order",
+  "sort.duration-desc": "Duration longest first",
   "chart.metric": "Chart metrics",
   "chart.sessions": "Sessions",
   "chart.cost": "Cost",
