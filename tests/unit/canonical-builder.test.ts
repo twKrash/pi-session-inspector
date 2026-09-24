@@ -66,13 +66,14 @@ test("audited effort fixture is normalized once before canonical health and usag
     session.agents.filter((run) => run.toolCalls !== undefined).length,
     2,
   );
+  // Historical workflow-summary usage is unvalidated and remains unavailable.
   assert.equal(
     session.usage.lines.filter((line) => line.domain === "child-breakdown")
       .length,
-    4,
+    3,
   );
   assert.equal(session.health.joins.agentRuns, session.agents.length);
-  assert.equal(session.health.usage.childLines, 4);
+  assert.equal(session.health.usage.childLines, 3);
   assert.equal(
     session.usage.lines
       .filter((line) => line.domain === "child-breakdown")
