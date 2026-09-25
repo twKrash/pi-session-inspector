@@ -1047,6 +1047,9 @@ async function readSubagentContribution(
       return {
         state: contribution.state,
         observations: contribution.observations ?? [],
+        ...(contribution.aliases === undefined
+          ? {}
+          : { aliases: contribution.aliases }),
         activity: contribution.activity,
         diagnostics: contribution.diagnostics ?? [],
       };

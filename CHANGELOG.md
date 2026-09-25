@@ -6,6 +6,8 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Fixed
 
+- Preserve exact C1 subagent launch/completion aliases in history projections.
+
 - Persisted pi-subagents async launches and `bg_wait` completions stay visible
   with opaque IDs; exact identities reconcile when both surfaces exist, and
   missing parents remain unavailable.
