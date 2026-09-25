@@ -47,11 +47,13 @@ const observation = (
 });
 
 const observationA = observation(sourceA, 1, publicIdA, "running", {
+  executionKind: "async",
   agent: "shared-agent",
   observedAt: "2026-09-24T19:00:00.000Z",
   usage: { totalTokens: 10 },
 });
 const observationB = observation(sourceB, 2, publicIdB, "succeeded", {
+  executionKind: "async",
   agent: "shared-agent",
   observedAt: "2026-09-24T19:00:00.000Z",
   usage: { totalTokens: 20 },
@@ -77,6 +79,7 @@ test("exact aliases merge while preserving an observed public ID", () => {
   assert.equal(result.runs.length, 1);
   assert.equal(result.runs[0]?.id, publicIdA);
   assert.equal(result.runs[0]?.status, "succeeded");
+  assert.equal(result.runs[0]?.executionKind, "async");
   assert.deepEqual(result.runs[0]?.usage, { totalTokens: 20 });
   assert.deepEqual(reconcile([observationA, observationB], aliases), result);
 });

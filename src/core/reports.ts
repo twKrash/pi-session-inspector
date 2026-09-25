@@ -1066,6 +1066,7 @@ function projectAgent(value: unknown): AgentRun | undefined {
     return undefined;
   }
   const parentId = isOpaqueSubagentId(run.parentId) ? run.parentId : undefined;
+  const executionKind = run.executionKind === "async" ? "async" : undefined;
   const agent = isAgentLabel(run.agent) ? run.agent : undefined;
   const usage = projectAgentUsage(run.usage);
   const artifacts = isArchiveState(run.artifacts) ? run.artifacts : undefined;
@@ -1113,6 +1114,7 @@ function projectAgent(value: unknown): AgentRun | undefined {
   return {
     id: run.id,
     ...(parentId === undefined ? {} : { parentId }),
+    ...(executionKind === undefined ? {} : { executionKind }),
     ...(agent === undefined ? {} : { agent }),
     status: run.status,
     confidence: run.confidence,

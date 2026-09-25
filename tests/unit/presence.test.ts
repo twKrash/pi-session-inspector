@@ -33,6 +33,18 @@ test("maps native inventory signals to presence without guessing", () => {
   });
 });
 
+test("detects subagents presence from legacy and current wait tools", () => {
+  for (const tool of ["subagent_wait", "bg_wait"]) {
+    const rows = readIntegrationPresence({
+      extensionCommands: [],
+      tools: [tool],
+      observed: [],
+      inventoryAvailable: true,
+    });
+    assert.equal(rows.subagents, "present");
+  }
+});
+
 test("reports absence only with an available inventory, and presence from a ready bus", () => {
   const rows = readIntegrationPresence({
     extensionCommands: [],

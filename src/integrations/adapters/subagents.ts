@@ -10,7 +10,12 @@ import type {
 } from "../contract.ts";
 
 /** Native subagent tool names; the presence signal for this integration. */
-const SUBAGENT_TOOLS = ["subagent", "subagent_wait", "subagent_supervisor"];
+const SUBAGENT_TOOLS = [
+  "subagent",
+  "subagent_wait",
+  "bg_wait",
+  "subagent_supervisor",
+];
 
 /**
  * Subagents keeps a rich evidence path beside its Integrations row: presence is
@@ -53,6 +58,9 @@ export const subagentsIntegration = defineIntegration({
       return {
         state: evidence.state,
         observations: evidence.observations,
+        ...(evidence.aliases === undefined
+          ? {}
+          : { aliases: evidence.aliases }),
         activity: evidence.activity,
         diagnostics: evidence.diagnostics,
       };

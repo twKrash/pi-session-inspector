@@ -9,7 +9,12 @@ import type {
   AgentRunSourceObservation,
   SessionEntry,
 } from "../../src/core/events.ts";
+import {
+  attachSubagentEvidence,
+  buildCanonicalSession,
+} from "../../src/core/canonical.ts";
 import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
+import { subagentsIntegration } from "../../src/integrations/adapters/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
 /** A fixed session id: identity is session-scoped but tests only need determinism. */
@@ -19,15 +24,21 @@ const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
 const readSubagentEvidenceWithArchives = (entries: readonly SessionEntry[]) =>
   readSubagentEvidenceWithArchivesForSession(entries, SESSION_ID);
 const runsOf = (evidence: ReturnType<typeof readSubagentEvidence>) =>
-  reconcileAgentRuns(evidence.observations).runs;
+  reconcileAgentRuns(evidence.observations, evidence.aliases).runs;
+const executionKindOf = (run: unknown) =>
+  typeof run === "object" && run !== null
+    ? (run as { executionKind?: string }).executionKind
+    : undefined;
 const externallyRelevantEvidence = (
   evidence: ReturnType<typeof readSubagentEvidence>,
 ) => {
   const observations = [...evidence.observations];
-  const reconciled = reconcileAgentRuns(observations);
+  const reconciled = reconcileAgentRuns(observations, evidence.aliases);
   return {
-    ...evidence,
+    activity: evidence.activity,
     observations,
+    state: evidence.state,
+    diagnostics: evidence.diagnostics,
     canonicalRuns: reconciled.runs,
     reconciliationDiagnostics: reconciled.diagnostics,
   };
@@ -108,6 +119,9 @@ const resultEntry = (
   callId: string,
   details: unknown,
   timestamp: string,
+  toolName = "subagent",
+  isError = false,
+  includeIsError = true,
 ): SessionEntry => ({
   id,
   parentId: null,
@@ -115,8 +129,9 @@ const resultEntry = (
   type: "message",
   message: {
     role: "toolResult",
+    ...(includeIsError ? { isError } : {}),
     toolCallId: callId,
-    toolName: "subagent",
+    toolName,
     details,
   },
 });
@@ -189,6 +204,7 @@ test("derives native tool activity and cooperative runs from persisted results",
   const completed = runsOf(evidence).find((run) => run.agent === "reviewer");
   assert.deepEqual(completed?.usage, { totalTokens: 700, cost: 0.1 });
   assert.equal(completed?.agent, "reviewer");
+  assert.equal(executionKindOf(completed), "async");
 
   // The persisted foreground `results[]` row: `exitCode: 1` maps to failed,
   // token usage is unavailable while the published cost remains known, and
@@ -199,6 +215,515 @@ test("derives native tool activity and cooperative runs from persisted results",
   assert.deepEqual(foreground.usage, { cost: 0.05 });
   assert.match(foreground.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.notEqual(foreground.parentId, foreground.id);
+});
+
+test("replays exact async launch and bg_wait publications without changing foreground IDs", async () => {
+  const fixture = await readFile(
+    new URL(
+      "../fixtures/pi-subagents/persisted-async-visibility.jsonl",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const parsed = parseSessionJsonl(fixture);
+  assert.equal(parsed.hasMalformedJson, false);
+  const evidence = readSubagentEvidenceWithSession(parsed.entries, parsed.id);
+  const canonical = await subagentsIntegration.hooks?.canonical?.({
+    entries: parsed.entries,
+    sessionId: parsed.id,
+  });
+  assert.deepEqual(canonical?.aliases, evidence.aliases);
+  if (canonical?.aliases === undefined) {
+    throw new Error("the canonical adapter must return exact async aliases");
+  }
+  const base = buildCanonicalSession({
+    parsed,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  if (base.state !== "ready") throw new Error("the fixture session must build");
+  const canonicalSession = attachSubagentEvidence(base.session, {
+    ...evidence,
+    aliases: canonical.aliases,
+  });
+  assert.equal(
+    canonicalSession.agents.filter((run) => run.executionKind === "async")
+      .length,
+    2,
+  );
+  const observations = [...evidence.observations];
+  const aliases = evidence.aliases ?? [];
+  const reconciled = reconcileAgentRuns(observations, aliases);
+  const runs = reconciled.runs;
+  const asyncRuns = runs.filter((run) => executionKindOf(run) === "async");
+  assert.equal(aliases.length, 4);
+  assert.deepEqual(
+    reconcileAgentRuns([...observations].reverse(), aliases),
+    reconciled,
+  );
+
+  assert.equal(evidence.activity.calls, 5);
+  assert.deepEqual(evidence.activity.tools, [
+    { name: "subagent", calls: 3 },
+    { name: "bg_wait", calls: 2 },
+  ]);
+  assert.equal(runs.length, 6);
+  assert.deepEqual(
+    asyncRuns.map((run) => run.agent),
+    ["async-worker-a", "async-worker-b"],
+  );
+  assert.deepEqual(
+    asyncRuns.map((run) => run.status),
+    ["succeeded", "failed"],
+  );
+  assert.equal(
+    asyncRuns.every((run) => run.parentId === undefined),
+    true,
+  );
+  for (const agent of ["async-worker-a", "async-worker-b"]) {
+    assert.equal(
+      asyncRuns.find((run) => run.agent === agent)?.id,
+      observations.find((observation) => observation.run.agent === agent)?.run
+        .id,
+    );
+  }
+  const foreground = runs.filter((run) => run.agent?.startsWith("worker-"));
+  assert.deepEqual(
+    foreground.map((run) => run.id),
+    [
+      "subagent-be07ecfc5cc29e241e690fd7e628185abb1e51ebfc4a12d05d09414eecb3bbc3",
+      "subagent-d0f09809845048e597767b24c92247114fadc0f4980bb4e84dfcf6d994c74a90",
+      "subagent-a9b0ff88ef48da91505d2dfa81796d2e380e86d14f16ef1830fccc8c853348d0",
+      "subagent-d8653b9a5093fbdd7e92f2e55a6684f41ada2e1ca8d79cce8131617592bca3d7",
+    ],
+  );
+  assert.equal(
+    foreground.some((run) => executionKindOf(run) !== undefined),
+    false,
+  );
+  const serialized = serializeEvidence(evidence);
+  for (const sentinel of [
+    "async-run-a",
+    "async-run-b",
+    "PRIVATE_ASYNC_DIR",
+    "PRIVATE_BODY",
+  ]) {
+    assert.equal(serialized.includes(sentinel), false, `leaked ${sentinel}`);
+  }
+});
+
+test("reconciles more exact async pairs than the distinct-source limit", async () => {
+  const entries: SessionEntry[] = [];
+  for (let index = 0; index < 129; index++) {
+    const suffix = String(index);
+    const runId = `async-cap-${suffix}`;
+    const launchCallId = `async-cap-launch-${suffix}`;
+    const waitCallId = `async-cap-wait-${suffix}`;
+    entries.push(
+      assistantEntry(`async-cap-launch-call-${suffix}`, launchCallId),
+      resultEntry(
+        `async-cap-launch-result-${suffix}`,
+        launchCallId,
+        { mode: "single", runId, asyncId: runId, results: [] },
+        "2026-09-12T10:00:01.000Z",
+      ),
+      assistantEntry(`async-cap-wait-call-${suffix}`, waitCallId, "bg_wait"),
+      resultEntry(
+        `async-cap-wait-result-${suffix}`,
+        waitCallId,
+        {
+          completions: [
+            {
+              runId,
+              mode: "single",
+              agent: `cap-worker-${suffix}`,
+              state: "complete",
+              success: true,
+              results: [],
+            },
+          ],
+        },
+        "2026-09-12T10:00:02.000Z",
+        "bg_wait",
+      ),
+    );
+  }
+
+  const sessionId = "async-cap-session";
+  const evidence = readSubagentEvidenceWithSession(entries, sessionId);
+  const parsed = parseSessionJsonl(
+    `${[
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: "2026-09-12T10:00:00.000Z",
+        cwd: "synthetic",
+      }),
+      JSON.stringify({
+        type: "custom",
+        id: "async-cap-marker",
+        parentId: null,
+        timestamp: "2026-09-12T10:00:00.500Z",
+        customType: "session-inspector:tracking-start",
+        data: { schemaVersion: 1 },
+      }),
+    ].join("\n")}\n`,
+  );
+  const base = await buildCanonicalSession({
+    parsed,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(base.state, "ready");
+  if (base.state !== "ready") return;
+  const session = attachSubagentEvidence(base.session, evidence);
+  const asyncRuns = session.agents.filter(
+    (run) => run.executionKind === "async",
+  );
+  assert.equal(asyncRuns.length, 129);
+  assert.equal(new Set(asyncRuns.map((run) => run.id)).size, 129);
+  assert.equal(
+    asyncRuns.every((run) => run.status === "succeeded"),
+    true,
+  );
+});
+
+test("keeps an exact async launch visible without completion as unknown and unparented", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("launch-only-call", "launch-only-call-id"),
+    resultEntry(
+      "launch-only-result",
+      "launch-only-call-id",
+      {
+        mode: "single",
+        runId: "launch-only-run",
+        asyncId: "launch-only-run",
+        asyncDir: "PRIVATE_ASYNC_DIR",
+        results: [],
+      },
+      "2026-09-12T10:00:01.000Z",
+    ),
+  ]);
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  const run = runs[0];
+  assert.ok(run);
+  assert.equal(executionKindOf(run), "async");
+  assert.equal(run.status, "unknown");
+  assert.equal(run.parentId, undefined);
+  assert.deepEqual(run.effortCoverage, {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  });
+  assert.equal(run.usage, undefined);
+  assert.equal(run.durationMs, undefined);
+  assert.equal(run.generations, undefined);
+  assert.equal(run.toolCalls, undefined);
+  assert.equal(run.errorCount, undefined);
+});
+
+const asyncWaitEntries = (resultToolName: string, isError: boolean) => {
+  const runId = "wait-validation-run";
+  return [
+    assistantEntry(
+      "wait-validation-launch-call",
+      "wait-validation-launch-call-id",
+    ),
+    resultEntry(
+      "wait-validation-launch-result",
+      "wait-validation-launch-call-id",
+      {
+        mode: "single",
+        runId,
+        asyncId: runId,
+        asyncDir: "PRIVATE_ASYNC_DIR",
+        results: [],
+      },
+      "2026-09-12T10:00:01.000Z",
+    ),
+    assistantEntry(
+      "wait-validation-call",
+      "wait-validation-call-id",
+      "bg_wait",
+    ),
+    resultEntry(
+      "wait-validation-result",
+      "wait-validation-call-id",
+      {
+        completions: [
+          {
+            runId,
+            mode: "single",
+            agent: "wait-worker",
+            state: "complete",
+            success: true,
+            results: [],
+          },
+        ],
+      },
+      "2026-09-12T10:00:02.000Z",
+      resultToolName,
+      isError,
+    ),
+  ];
+};
+
+test("ignores async completion published by errored wait result", () => {
+  const evidence = readSubagentEvidence(asyncWaitEntries("bg_wait", true));
+  const runs = runsOf(evidence);
+  assert.equal(evidence.aliases?.length ?? 0, 0);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "unknown");
+});
+
+test("ignores async completion published under mismatched result tool name", () => {
+  const evidence = readSubagentEvidence(asyncWaitEntries("subagent", false));
+  const runs = runsOf(evidence);
+  assert.equal(evidence.aliases?.length ?? 0, 0);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "unknown");
+});
+
+test("keeps an exact bg_wait completion visible without launch or asyncId", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry(
+      "standalone-wait-call",
+      "standalone-wait-call-id",
+      "bg_wait",
+    ),
+    resultEntry(
+      "standalone-wait-result",
+      "standalone-wait-call-id",
+      {
+        completions: [
+          {
+            runId: "standalone-completion-run",
+            mode: "single",
+            agent: "standalone-worker",
+            state: "complete",
+            success: true,
+            results: [],
+          },
+        ],
+      },
+      "2026-09-12T10:00:02.000Z",
+      "bg_wait",
+    ),
+  ]);
+  const runs = runsOf(evidence);
+  assert.equal(
+    evidence.activity.tools.find((tool) => tool.name === "bg_wait")?.calls,
+    1,
+  );
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.agent, "standalone-worker");
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(executionKindOf(runs[0]), "async");
+  assert.equal(runs[0]?.parentId, undefined);
+});
+
+test("rejects async launches without an explicit successful result", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("missing-success-call", "missing-success-call-id"),
+    resultEntry(
+      "missing-success-result",
+      "missing-success-call-id",
+      {
+        mode: "single",
+        runId: "missing-success-run",
+        asyncId: "missing-success-run",
+        results: [],
+      },
+      "2026-09-12T10:00:03.250Z",
+      "subagent",
+      false,
+      false,
+    ),
+  ]);
+  assert.deepEqual(runsOf(evidence), []);
+});
+
+test("rejects async launches when tool result name mismatches its call", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("mismatched-tool-call", "mismatched-tool-call-id"),
+    resultEntry(
+      "mismatched-tool-result",
+      "mismatched-tool-call-id",
+      {
+        mode: "single",
+        runId: "mismatched-tool-run",
+        asyncId: "mismatched-tool-run",
+        results: [],
+      },
+      "2026-09-12T10:00:03.375Z",
+      "bg_wait",
+    ),
+  ]);
+  assert.deepEqual(runsOf(evidence), []);
+});
+
+test("rejects incomplete async launches and keeps nonempty foreground results unchanged", () => {
+  const invalidLaunches = [
+    { mode: "single", runId: "run-a", asyncId: "run-b", results: [] },
+    { mode: "single", runId: "run-a", results: [] },
+    { mode: "workflow", runId: "run-a", asyncId: "run-a", results: [] },
+    { mode: "single", runId: "unsafe id", asyncId: "unsafe id", results: [] },
+  ];
+  for (const [index, details] of invalidLaunches.entries()) {
+    const evidence = readSubagentEvidence([
+      assistantEntry(`invalid-call-${index}`, `invalid-call-id-${index}`),
+      resultEntry(
+        `invalid-result-${index}`,
+        `invalid-call-id-${index}`,
+        details,
+        "2026-09-12T10:00:03.000Z",
+      ),
+    ]);
+    assert.deepEqual(runsOf(evidence), []);
+  }
+
+  const erroredLaunch = readSubagentEvidence([
+    assistantEntry("errored-launch-call", "errored-launch-call-id"),
+    resultEntry(
+      "errored-launch-result",
+      "errored-launch-call-id",
+      {
+        mode: "single",
+        runId: "errored-launch-run",
+        asyncId: "errored-launch-run",
+        results: [],
+      },
+      "2026-09-12T10:00:03.500Z",
+      "subagent",
+      true,
+    ),
+  ]);
+  assert.deepEqual(runsOf(erroredLaunch), []);
+
+  const foreground = readSubagentEvidence([
+    assistantEntry("nonempty-call", "nonempty-call-id"),
+    resultEntry(
+      "nonempty-result",
+      "nonempty-call-id",
+      {
+        mode: "single",
+        runId: "foreground-parent",
+        asyncId: "foreground-parent",
+        results: [
+          {
+            index: 0,
+            agent: "ordinary-worker",
+            state: "complete",
+            success: true,
+          },
+        ],
+      },
+      "2026-09-12T10:00:04.000Z",
+    ),
+  ]);
+  const rows = runsOf(foreground);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.agent, "ordinary-worker");
+  assert.equal(executionKindOf(rows[0]), undefined);
+});
+
+test("suppresses only explicit workflow and parallel outer wait completions", () => {
+  for (const toolName of ["subagent_wait", "bg_wait"] as const) {
+    for (const mode of ["workflow", "parallel"] as const) {
+      const callId = `wait-${toolName}-${mode}-call-id`;
+      const evidence = readSubagentEvidence([
+        assistantEntry(`wait-${mode}-call`, callId, toolName),
+        resultEntry(
+          `wait-${mode}-result`,
+          callId,
+          {
+            completions: [
+              {
+                runId: `wait-${mode}-container`,
+                mode,
+                state: "complete",
+                success: true,
+                results: [{ agent: "unidentified-child", state: "complete" }],
+              },
+            ],
+          },
+          "2026-09-12T10:00:05.000Z",
+          toolName,
+        ),
+      ]);
+      assert.equal(evidence.activity.calls, 1);
+      assert.deepEqual(evidence.activity.tools, [{ name: toolName, calls: 1 }]);
+      assert.deepEqual(runsOf(evidence), []);
+    }
+  }
+});
+
+test("keeps foreground workflow results outside wait-container suppression", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("workflow-call", "workflow-call-id"),
+    resultEntry(
+      "workflow-result",
+      "workflow-call-id",
+      {
+        mode: "workflow",
+        runId: "workflow-container",
+        results: [
+          {
+            index: 0,
+            runId: "workflow-worker-run",
+            agent: "workflow-worker",
+            state: "complete",
+            success: true,
+          },
+        ],
+      },
+      "2026-09-12T10:00:06.000Z",
+    ),
+  ]);
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.agent, "workflow-worker");
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(executionKindOf(runs[0]), undefined);
+  assert.match(runs[0]?.parentId ?? "", /^subagent-[a-f0-9]{64}$/);
+});
+
+test("does not apply wait-container suppression to other persisted publications", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry(
+      "other-completion-call",
+      "other-completion-call-id",
+      "subagent",
+    ),
+    resultEntry(
+      "other-completion-result",
+      "other-completion-call-id",
+      {
+        completions: [
+          {
+            runId: "other-surface-workflow",
+            mode: "workflow",
+            state: "complete",
+            success: true,
+            results: [],
+          },
+        ],
+      },
+      "2026-09-12T10:00:06.000Z",
+      "subagent",
+    ),
+  ]);
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(executionKindOf(runs[0]), undefined);
 });
 
 test("attaches validated archive presence only to runs that published one", async () => {
@@ -894,6 +1419,7 @@ test("drops conflicting identity fields with a conflict diagnostic", () => {
       "call_2",
       { completions: [{ runId: "run-1", agent: "reviewer", success: true }] },
       "2026-09-12T10:01:00.000Z",
+      "subagent_wait",
     ),
   ]);
   // Different publication surfaces remain separate and do not create a false
@@ -1050,6 +1576,7 @@ test("selects the latest child usage instead of summing repeated publications", 
         ],
       },
       "2026-09-12T10:01:00.000Z",
+      "subagent_wait",
     ),
   ]);
   assert.deepEqual(runsOf(evidence)[0]?.usage, { totalTokens: 20, cost: 0.2 });

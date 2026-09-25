@@ -1418,6 +1418,98 @@ test("fails closed when an over-cap source duplicates an admitted public ID", ()
   assert.equal(JSON.stringify(collisionDiagnostics).includes(firstId), false);
 });
 
+test("keeps the logical run cap when an exact async pair follows 256 runs", () => {
+  const effortCoverage = {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  } as const;
+  const ordinaryObservations = Array.from({ length: 256 }, (_, order) => {
+    const digest = order.toString(16).padStart(64, "0");
+    return {
+      sourceIdentity: `subagent-source-${digest}`,
+      order,
+      run: {
+        id: `subagent-${digest}`,
+        status: "succeeded" as const,
+        confidence: "cooperative" as const,
+        effortCoverage,
+      },
+    };
+  });
+  const launchSource = `subagent-source-${"a".repeat(64)}`;
+  const completionSource = `subagent-source-${"b".repeat(64)}`;
+  const canonicalIdentity = `subagent-canonical-${"c".repeat(64)}`;
+  const completionId = `subagent-${"d".repeat(64)}`;
+  const subagents: SubagentSourceEvidence = {
+    activity: {
+      state: "supported",
+      calls: 1,
+      succeeded: 1,
+      failed: 0,
+      interrupted: 0,
+      tools: [{ name: "subagent", calls: 1 }],
+    },
+    observations: [
+      ...ordinaryObservations,
+      {
+        sourceIdentity: launchSource,
+        order: 256,
+        run: {
+          id: `subagent-${"e".repeat(64)}`,
+          status: "unknown",
+          confidence: "cooperative",
+          executionKind: "async",
+          effortCoverage,
+        },
+      },
+      {
+        sourceIdentity: completionSource,
+        order: 257,
+        run: {
+          id: completionId,
+          status: "succeeded",
+          confidence: "cooperative",
+          executionKind: "async",
+          agent: "async-worker",
+          effortCoverage,
+        },
+      },
+    ],
+    aliases: [
+      {
+        sourceIdentity: launchSource,
+        canonicalIdentity,
+        publicId: completionId,
+      },
+      {
+        sourceIdentity: completionSource,
+        canonicalIdentity,
+        publicId: completionId,
+      },
+    ],
+    state: "supported",
+    diagnostics: [],
+  };
+  const base = buildCanonicalSession({
+    parsed: parsed([MARKER]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(base.state, "ready");
+  if (base.state !== "ready") return;
+  const session = attachSubagentEvidence(base.session, subagents);
+  assert.equal(session.agents.length, 256);
+  assert.equal(
+    session.agents.some((run) => run.id === completionId),
+    false,
+  );
+});
+
 test("caps canonical agent-run input at 256 distinct rows and keeps admitted updates", () => {
   const subagents: SubagentSourceEvidence = {
     activity: {

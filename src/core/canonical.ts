@@ -15,6 +15,7 @@ import type {
   AgentFailure,
   AgentRun,
   AgentRunEffortCoverage,
+  AgentRunIdentityAlias,
   AgentRunSourceObservation,
   AgentRunUsage,
   AgentToolActivity,
@@ -66,7 +67,10 @@ import {
   MAX_SKILL_KEYS,
   mergeFoldedCounters,
 } from "./live-counter-fold.ts";
-import { reconcileAgentRuns } from "./subagent-reconciliation.ts";
+import {
+  agentRunLogicalIdentityBySource,
+  reconcileAgentRuns,
+} from "./subagent-reconciliation.ts";
 import { canonicalOpaqueDigest } from "./opaque-id.ts";
 import { boundedDescription, secretLikeValue } from "./redact.ts";
 import { readUsage, reduceEntries } from "./reduce.ts";
@@ -117,6 +121,7 @@ const OPTIONAL_COST_FIELDS = [
 const encoder = new TextEncoder();
 const MAX_AGENT_RUN_DURATION_MS = 86_400_000_000;
 const MAX_AGENT_RUN_COUNT = 256;
+const MAX_AGENT_RUN_SOURCES = MAX_AGENT_RUN_COUNT * 2;
 const OPAQUE_AGENT_RUN_ID = /^subagent-[a-f0-9]{64}$/;
 const OPAQUE_AGENT_SOURCE_ID = /^subagent-source-[a-f0-9]{64}$/;
 const OPAQUE_TOOL_ID = /^tool:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -530,12 +535,13 @@ export function attachSubagentEvidence(
   }
 }
 
-// Keep the historical 256-distinct-run cap while still reconciling later updates
-// for admitted sources and detecting skipped rows that collide with their IDs.
+// Preserve the 256 logical-row cap while admitting both sources of valid async aliases.
 function* boundedSourceObservations(
   observations: Iterable<AgentRunSourceObservation>,
   skippedPublicIdCollisions: Set<string>,
+  aliasGroupBySource: ReadonlyMap<string, string>,
 ): IterableIterator<AgentRunSourceObservation> {
+  const logicalIdentities = new Set<string>();
   const sourceIdentities = new Map<string, string | undefined>();
   const admittedPublicIds = new Set<string>();
   for (const observation of observations) {
@@ -546,13 +552,21 @@ function* boundedSourceObservations(
     }
     const admitted = sourceIdentities.has(sourceIdentity);
     const previousPublicId = sourceIdentities.get(sourceIdentity);
-    if (!admitted && sourceIdentities.size >= MAX_AGENT_RUN_COUNT) {
+    const logicalIdentity =
+      aliasGroupBySource.get(sourceIdentity) ?? sourceIdentity;
+    const logicalAdmitted = logicalIdentities.has(logicalIdentity);
+    if (
+      !admitted &&
+      ((!logicalAdmitted && logicalIdentities.size >= MAX_AGENT_RUN_COUNT) ||
+        sourceIdentities.size >= MAX_AGENT_RUN_SOURCES)
+    ) {
       const publicId = observationPublicRunId(observation);
       if (publicId !== undefined && admittedPublicIds.has(publicId)) {
         skippedPublicIdCollisions.add(publicId);
       }
       continue;
     }
+    if (!logicalAdmitted) logicalIdentities.add(logicalIdentity);
     if (!admitted || previousPublicId === undefined) {
       const publicId = observationPublicRunId(observation);
       if (!admitted || publicId !== undefined) {
@@ -566,9 +580,7 @@ function* boundedSourceObservations(
 
 function sourceIdentityOf(value: unknown): string | undefined {
   try {
-    const sourceIdentity = isRecord(value)
-      ? value["sourceIdentity"]
-      : undefined;
+    const sourceIdentity = isRecord(value) ? value.sourceIdentity : undefined;
     return typeof sourceIdentity === "string" &&
       OPAQUE_AGENT_SOURCE_ID.test(sourceIdentity)
       ? sourceIdentity
@@ -581,8 +593,8 @@ function sourceIdentityOf(value: unknown): string | undefined {
 function observationPublicRunId(value: unknown): string | undefined {
   try {
     if (!isRecord(value)) return undefined;
-    const order = value["order"];
-    const run = value["run"];
+    const order = value.order;
+    const run = value.run;
     if (
       typeof order !== "number" ||
       !Number.isSafeInteger(order) ||
@@ -675,9 +687,18 @@ function normalizeSubagentEvidence(
     ] === "function"
       ? (observationInput as Iterable<AgentRunSourceObservation>)
       : [];
+  const aliases = Array.isArray(input.aliases)
+    ? (input.aliases as readonly AgentRunIdentityAlias[])
+    : [];
+  const aliasGroupBySource = agentRunLogicalIdentityBySource(aliases);
   const skippedPublicIdCollisions = new Set<string>();
   const reconciled = reconcileAgentRuns(
-    boundedSourceObservations(observations, skippedPublicIdCollisions),
+    boundedSourceObservations(
+      observations,
+      skippedPublicIdCollisions,
+      aliasGroupBySource,
+    ),
+    aliases,
   );
   const publicIdCollisions = new Set(
     reconciled.runs
@@ -745,6 +766,7 @@ function normalizeAgentRun(value: unknown): AgentRun | undefined {
   const parentId = isOpaqueAgentRunId(value.parentId)
     ? value.parentId
     : undefined;
+  const executionKind = value.executionKind === "async" ? "async" : undefined;
   const agent = isAgentLabel(value.agent) ? value.agent : undefined;
   const artifacts =
     value.artifacts === "available" || value.artifacts === "missing"
@@ -762,6 +784,7 @@ function normalizeAgentRun(value: unknown): AgentRun | undefined {
   return {
     id,
     ...(parentId === undefined ? {} : { parentId }),
+    ...(executionKind === undefined ? {} : { executionKind }),
     ...(agent === undefined ? {} : { agent }),
     status,
     confidence,

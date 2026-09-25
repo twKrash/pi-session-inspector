@@ -86,6 +86,7 @@ export type ToolRow = Omit<ToolCallRow, "usage"> & {
 export type AgentRow = {
   id: string;
   parentId: string | null;
+  executionKind?: SessionReport["agents"][number]["executionKind"];
   agent: SessionReport["agents"][number]["agent"] | null;
   status: SessionReport["agents"][number]["status"];
   confidence: SessionReport["agents"][number]["confidence"];
@@ -690,6 +691,9 @@ function agentRows(report: SessionReport): AgentRow[] {
   return report.agents.map((agent) => ({
     id: agent.id,
     parentId: agent.parentId ?? null,
+    ...(agent.executionKind === undefined
+      ? {}
+      : { executionKind: agent.executionKind }),
     agent: agent.agent ?? null,
     status: agent.status,
     confidence: agent.confidence,

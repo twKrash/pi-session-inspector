@@ -991,7 +991,9 @@ export function agentParentVerdicts(
     ...run,
     parent:
       run.parentId === null
-        ? "none"
+        ? run.executionKind === "async"
+          ? "unknown"
+          : "none"
         : !OPAQUE_SUBAGENT_ID.test(run.parentId)
           ? "unknown"
           : rendered.has(run.parentId)

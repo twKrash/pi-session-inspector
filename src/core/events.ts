@@ -78,6 +78,8 @@ export const MAX_AGENT_RUN_TOOL_CALLS = 1_000_000_000;
 export type AgentRun = {
   id: string;
   parentId?: string;
+  /** Present only when persisted producer evidence proves async execution. */
+  executionKind?: "async";
   /** Bounded agent label token; absent when the producer value is unusable. */
   agent?: string;
   status: "running" | "succeeded" | "failed" | "interrupted" | "unknown";
@@ -167,6 +169,8 @@ export type SubagentEvidence = {
 export type SubagentSourceEvidence = {
   activity: AgentToolActivity;
   observations: Iterable<AgentRunSourceObservation>;
+  /** Private exact aliases consumed by L1; never part of public SubagentEvidence. */
+  aliases?: readonly AgentRunIdentityAlias[];
   state: EvidenceState;
   diagnostics: readonly SubagentEvidenceDiagnostic[];
 };

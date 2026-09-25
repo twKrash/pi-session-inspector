@@ -6,6 +6,10 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Fixed
 
+- Persisted pi-subagents async launches and `bg_wait` completions stay visible
+  with opaque IDs; exact identities reconcile when both surfaces exist, and
+  missing parents remain unavailable.
+
 - Historical session projections retain optional token and per-bucket cost
   values alongside their existing coverage, keeping selected-session
   breakdowns and cache reuse consistent without fabricating unavailable values.

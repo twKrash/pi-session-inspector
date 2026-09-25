@@ -867,16 +867,22 @@ test("renders the semantic parent verdict instead of a raw run id", () => {
         agentRow("run-with-malformed-parent", MALFORMED_PARENT_RUN),
         agentRow("run-in-container", `subagent-${"b".repeat(64)}`),
         agentRow("run-with-report-parent", OPAQUE_ROW_ID),
+        {
+          ...agentRow(`subagent-${"f".repeat(64)}`),
+          executionKind: "async",
+        },
       ],
       agentEvidence: "supported",
-      agentUsage: { runsTotal: 4, runsWithUsage: 0 },
+      agentUsage: { runsTotal: 5, runsWithUsage: 0 },
     }),
     "agents",
   );
-  // Four runs render more than one page of lines, so the cells are collected
+  // Five runs render more than one page of lines, so the cells are collected
   // from every page: pagination must not drop a verdict.
   const parentCells = linesAcrossPages(component, 4, "Parent: ");
-  assert.equal(parentCells.length, 4);
+  assert.equal(parentCells.length, 5);
+  assert.ok(parentCells[0]?.includes(ENGLISH_CATALOG["agents.parentNone"]));
+  assert.ok(parentCells[4]?.includes(ENGLISH_CATALOG["agents.parentUnknown"]));
 
   const rendered = parentCells.join("\n");
   assert.ok(rendered.includes(ENGLISH_CATALOG["agents.parentNone"]));

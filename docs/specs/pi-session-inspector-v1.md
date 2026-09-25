@@ -463,7 +463,7 @@ Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, cor
 | Integration | v1 handling | Non-claim |
 | --- | --- | --- |
 | Pi core | mandatory replay + live observer | exact provider retry spans |
-| pi-subagents | automatic discovery from persisted tool results: native tool activity plus rich runs from `details.completions[]`/`details.results[]`, with archive references followed only from `details.completions[]` after strict validation | timestamp-guessed parentage; no manual `--subagents-artifact` input; child Pi session files not replayed |
+| pi-subagents | automatic discovery from persisted tool results: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; child Pi session files not replayed |
 | Permission System | public bus counters (`permissions:ready\|ui_prompt\|decision`) folded into durable aggregates; additive hashed `attribution.request` metadata only | internal parser import; no raw producer payload fields; raw request ID never read |
 | RTK | persisted `rtkCompaction` details | rewrite decision/savings not persisted |
 | Context Mode | `ctx_*` use | exact Context Mode savings |
@@ -472,6 +472,15 @@ Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, cor
 | Generic resources | sanitized `(sourceLabel, scope, origin)` inventory from `getCommands()` + `getAllTools()` | loaded/available resources, never activity or installation status |
 | Lens | generic native tool use | rich Lens dashboard in v1 |
 | Hermes | unsupported | adapter implementation |
+
+For pi-subagents, `executionKind: "async"` is present only for (a) a
+successful `subagent` tool result (`isError: false`, with result `toolName`
+matching the call) publishing a validated single-run launch (`mode: "single"`,
+matching validated `runId` and `asyncId`, empty `results[]`), or (b) a
+`bg_wait`/`subagent_wait` completion with a validated `runId`. Its absence means
+async execution is unproven, not foreground. A run without an explicit parent
+keeps `parentId` absent; shared projections render its existing parent verdict
+as `unknown`. No parent is inferred.
 
 ## 11. Failure behavior, migrations, and risks
 
