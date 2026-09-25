@@ -406,6 +406,9 @@ export function createCurrentTuiComponent({
           `Agent: ${agent.id}`,
           parentLabel(agent.parent),
           ...(agent.agent == null ? [] : [`Label: ${agent.agent}`]),
+          ...(agent.executionDisposition === "detached"
+            ? [`Disposition: ${ENGLISH_CATALOG["agents.detached"]}`]
+            : []),
           `Status: ${agent.status}`,
           ...(agent.artifacts == null ? [] : [`Artifacts: ${agent.artifacts}`]),
           `Evidence: ${agent.confidence}`,

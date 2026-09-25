@@ -783,6 +783,18 @@
     span.append(badge(label, tone));
     return span;
   };
+  const agentStatusCell = (run) => {
+    const span = el("span");
+    if (run.executionDisposition === "detached")
+      span.append(badge(COPY["agents.detached"], "neutral"));
+    span.append(
+      badge(
+        COPY["agents." + run.status],
+        run.status === "failed" || run.status === "interrupted" ? "warn" : "neutral",
+      ),
+    );
+    return span;
+  };
 
   // -------------------------------------------------------------------------
   // Section rendering (each figure is a published DTO field)
@@ -1924,7 +1936,11 @@
    */
   const runToggle = (run, open) =>
     treeToggle(
-      orUnavailable(run.agent) + " · " + COPY["agents." + run.status],
+      orUnavailable(run.agent) +
+        (run.executionDisposition === "detached"
+          ? " · " + COPY["agents.detached"]
+          : "") +
+        " · " + COPY["agents." + run.status],
       open,
       run.id,
     );
@@ -2209,14 +2225,7 @@
     const main = el("div", "tree-main");
     const title = el("div", "tree-title");
     title.append(entitySpan("agent", run.id, label));
-    title.append(
-      badgeCell(
-        COPY["agents." + run.status],
-        run.status === "failed" || run.status === "interrupted"
-          ? "warn"
-          : "neutral",
-      ),
-    );
+    title.append(agentStatusCell(run));
     // A row kept only because a descendant matched says so, so a reader never
     // reads a context row as a result.
     if (node.state === "context") {
@@ -2570,12 +2579,7 @@
         agentRows.map((run) => ({
           cells: [
             entitySpan("agent", run.id, orUnavailable(run.agent)),
-            badgeCell(
-              COPY["agents." + run.status],
-              run.status === "failed" || run.status === "interrupted"
-                ? "warn"
-                : "neutral",
-            ),
+            agentStatusCell(run),
             orUnavailable(run.model),
             ...agentEffortColumns.map((column) =>
               agentEffortColumnValue(run, column),

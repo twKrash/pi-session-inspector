@@ -1278,12 +1278,15 @@ function agentsSections(
                 runs.map((run) => [
                   orUnavailable(run.agent),
                   raw(
-                    badge(
-                      catalogEntry(`agents.${run.status}`),
-                      run.status === "failed" || run.status === "interrupted"
-                        ? "warn"
-                        : "neutral",
-                    ),
+                    (run.executionDisposition === "detached"
+                      ? badge(catalog["agents.detached"], "neutral")
+                      : "") +
+                      badge(
+                        catalogEntry(`agents.${run.status}`),
+                        run.status === "failed" || run.status === "interrupted"
+                          ? "warn"
+                          : "neutral",
+                      ),
                   ),
                   orUnavailable(run.model),
                   agentEffortValue(
@@ -1487,6 +1490,9 @@ function treeRunItem(
       : "neutral";
   const title =
     `<span class="mono">${text(orUnavailable(run.agent))}</span>` +
+    (run.executionDisposition === "detached"
+      ? badge(catalog["agents.detached"], "neutral")
+      : "") +
     badge(catalogEntry(`agents.${run.status}`), tone) +
     (node.state === "context"
       ? badge(catalog["agents.tree.context"], "neutral")

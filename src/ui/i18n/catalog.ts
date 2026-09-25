@@ -204,6 +204,7 @@ export const ENGLISH_CATALOG = {
   "agents.succeeded": "Succeeded",
   "agents.failed": "Failed",
   "agents.interrupted": "Interrupted",
+  "agents.detached": "Detached",
   "agents.running": "Running",
   "agents.unknown": "Unknown",
   "agents.knownTokens": "Known child tokens",

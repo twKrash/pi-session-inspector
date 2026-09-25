@@ -483,6 +483,29 @@ test("renders one resolved current snapshot with its title, range and rows", () 
   }
 });
 
+test("snapshot renders detached disposition separately from terminal status", () => {
+  const source = report();
+  const detachedReport: SessionReport = {
+    ...source,
+    agents: source.agents.map((run) => ({
+      ...run,
+      executionDisposition: "detached",
+    })),
+  };
+  const html = renderSnapshot({
+    kind: "current",
+    schemaVersion: 1,
+    theme: "dark",
+    projection: projectCurrentView(
+      currentView({ report: detachedReport }),
+      "tree",
+      PRESET_7,
+    ),
+  });
+  assert.equal(html.includes(CATALOG["agents.detached"]), true);
+  assert.equal(html.includes(CATALOG["agents.succeeded"]), true);
+});
+
 test("renders a history snapshot with coverage, daily and session rows", () => {
   const html = renderSnapshot(historyDto());
 

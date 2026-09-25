@@ -15,6 +15,10 @@ import { boundedProducerLabel } from "../core/evidence.ts";
 import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
+import {
+  readForegroundHistoryOutcomes,
+  type ForegroundHistoryRequest,
+} from "./subagent-foreground-history.ts";
 import { readReferencedLifecycleEnrichment } from "./subagent-lifecycle.ts";
 
 /** Persisted pi-subagents tool names, in the report's fixed column order. */
@@ -169,7 +173,7 @@ export async function readSubagentEvidenceWithArchives(
   if (references.size === 0) {
     return sessionFile === undefined
       ? evidence
-      : enrichCurrentLifecycle(entries, sessionId, sessionFile, evidence);
+      : enrichCurrentSession(entries, sessionId, sessionFile, evidence);
   }
 
   const artifactsBySource = new Map<string, "available" | "missing">();
@@ -205,7 +209,152 @@ export async function readSubagentEvidenceWithArchives(
   };
   return sessionFile === undefined
     ? archivedEvidence
-    : enrichCurrentLifecycle(entries, sessionId, sessionFile, archivedEvidence);
+    : enrichCurrentSession(entries, sessionId, sessionFile, archivedEvidence);
+}
+
+async function enrichCurrentSession(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+  sessionFile: string,
+  evidence: SubagentSourceEvidence,
+): Promise<SubagentSourceEvidence> {
+  const lifecycle = await enrichCurrentLifecycle(
+    entries,
+    sessionId,
+    sessionFile,
+    evidence,
+  );
+  return enrichCurrentForegroundHistory(entries, sessionId, lifecycle);
+}
+
+async function enrichCurrentForegroundHistory(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+  evidence: SubagentSourceEvidence,
+): Promise<SubagentSourceEvidence> {
+  try {
+    const observations = [...evidence.observations];
+    const terminalSources = new Set(
+      observations
+        .filter(({ run }) => run.status !== "unknown")
+        .map(({ sourceIdentity }) => sourceIdentity),
+    );
+    const detachedSources = new Set(
+      observations
+        .filter(
+          ({ run, sourceIdentity }) =>
+            run.executionDisposition === "detached" &&
+            run.status === "unknown" &&
+            !terminalSources.has(sourceIdentity),
+        )
+        .map(({ sourceIdentity }) => sourceIdentity),
+    );
+    if (detachedSources.size === 0) return evidence;
+    const references = collectDetachedForegroundReferences(
+      entries,
+      sessionId,
+      detachedSources,
+    );
+    if (references.size === 0) return evidence;
+    const outcomes = await readForegroundHistoryOutcomes(
+      sessionId,
+      [...references.values()].map(({ runId, index }) => ({ runId, index })),
+    );
+    return {
+      ...evidence,
+      observations: observations.map((observation) => {
+        const reference = references.get(observation.sourceIdentity);
+        const outcome =
+          reference === undefined
+            ? undefined
+            : outcomes.get(`${reference.runId}#${reference.index}`);
+        return outcome === undefined
+          ? observation
+          : { ...observation, run: { ...observation.run, status: outcome } };
+      }),
+    };
+  } catch {
+    return evidence;
+  }
+}
+
+function collectDetachedForegroundReferences(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+  detachedSources: ReadonlySet<string>,
+): Map<string, ForegroundHistoryRequest> {
+  const calls = new Set<string>();
+  for (const entry of entries) {
+    const message = snapshotRecord(entry.message);
+    if (message?.role !== "assistant" || !Array.isArray(message.content))
+      continue;
+    for (const value of message.content) {
+      const call = snapshotRecord(value);
+      if (
+        call?.type !== "toolCall" ||
+        call.name !== "subagent" ||
+        typeof call.id !== "string" ||
+        call.id.length === 0
+      )
+        continue;
+      calls.add(call.id);
+      if (calls.size > MAX_RUNS) return new Map();
+    }
+  }
+
+  const results = new Map<string, JoinedResult>();
+  entries.forEach((entry, ordinal) => {
+    const message = snapshotRecord(entry.message);
+    const callId = message?.toolCallId;
+    if (
+      message?.role !== "toolResult" ||
+      typeof callId !== "string" ||
+      !calls.has(callId) ||
+      results.has(callId)
+    )
+      return;
+    results.set(callId, {
+      message,
+      ordinal,
+      timestamp: entry.timestamp,
+    });
+  });
+
+  const references = new Map<string, ForegroundHistoryRequest>();
+  for (const callId of calls) {
+    const result = results.get(callId)?.message;
+    const details = snapshotRecord(result?.details);
+    const runId = readRawRunId(details?.runId);
+    if (
+      result?.toolName !== "subagent" ||
+      details === undefined ||
+      runId === undefined ||
+      !Array.isArray(details.results)
+    )
+      continue;
+    for (const value of details.results.slice(0, MAX_RUNS)) {
+      const record = snapshotRecord(value);
+      if (
+        record === undefined ||
+        record.detached !== true ||
+        record.runId !== undefined
+      )
+        continue;
+      const index = readChildIndex(record.index);
+      if (index === undefined) continue;
+      const sourceIdentity = opaqueSubagentSourceIdentity(
+        sessionId,
+        `${runId}#${index}`,
+        "foreground",
+      );
+      if (!detachedSources.has(sourceIdentity)) continue;
+      if (!references.has(sourceIdentity)) {
+        if (references.size === MAX_RUNS) return new Map();
+        references.set(sourceIdentity, { runId, index });
+      }
+    }
+  }
+  return references;
 }
 
 async function enrichCurrentLifecycle(
@@ -772,6 +921,10 @@ function* collectRuns(
         aggregateParentId,
         effortMode,
         cursor,
+        undefined,
+        toolName === "subagent" && record.detached === true
+          ? "detached"
+          : undefined,
       );
     }
   }
@@ -917,6 +1070,7 @@ function* pushRun(
   effortMode: "enabled" | "disabled",
   cursor: ObservationCursor,
   executionKind?: "async",
+  executionDisposition?: "detached",
 ): Generator<AgentRunSourceObservation> {
   if (id === undefined || sourceIdentity === undefined) return;
   yield {
@@ -929,6 +1083,7 @@ function* pushRun(
       parentId,
       effortMode,
       executionKind,
+      executionDisposition,
     ),
   };
 }
@@ -992,6 +1147,7 @@ function toAgentRun(
   parentId: string | undefined,
   effortMode: "enabled" | "disabled",
   executionKind?: "async",
+  executionDisposition?: "detached",
 ): AgentRun {
   const agent = isAgentLabel(record.agent) ? record.agent : undefined;
   const model = boundedProducerLabel(record.model);
@@ -1005,8 +1161,9 @@ function toAgentRun(
     id,
     ...(parentId === undefined ? {} : { parentId }),
     ...(executionKind === undefined ? {} : { executionKind }),
+    ...(executionDisposition === undefined ? {} : { executionDisposition }),
     ...(agent === undefined ? {} : { agent }),
-    status: mapRunStatus(record),
+    status: mapRunStatus(record, executionDisposition),
     confidence: "cooperative",
     ...(usage === undefined ? {} : { usage }),
     ...(publication.observedAt === undefined
@@ -1039,6 +1196,7 @@ function toAgentRun(
  */
 function mapRunStatus(
   record: Readonly<Record<string, unknown>>,
+  executionDisposition?: "detached",
 ): AgentRun["status"] {
   if (
     record.interrupted === true ||
@@ -1062,7 +1220,7 @@ function mapRunStatus(
       case "queued":
       case "pending":
       case "started":
-        return "running";
+        return executionDisposition === "detached" ? "unknown" : "running";
       case "cancelled":
       case "canceled":
       case "interrupted":
@@ -1078,7 +1236,11 @@ function mapRunStatus(
     typeof record.exitCode === "number" &&
     Number.isSafeInteger(record.exitCode)
   ) {
-    return record.exitCode === 0 ? "succeeded" : "failed";
+    return executionDisposition === "detached" && record.exitCode === -2
+      ? "unknown"
+      : record.exitCode === 0
+        ? "succeeded"
+        : "failed";
   }
   if (record.isError === true) return "failed";
   if (record.isError === false) return "succeeded";

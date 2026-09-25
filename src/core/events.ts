@@ -80,6 +80,8 @@ export type AgentRun = {
   parentId?: string;
   /** Present only when persisted producer evidence proves async execution. */
   executionKind?: "async";
+  /** Present only when a proven foreground launch detached from its caller. */
+  executionDisposition?: "detached";
   /** Bounded agent label token; absent when the producer value is unusable. */
   agent?: string;
   status: "running" | "succeeded" | "failed" | "interrupted" | "unknown";

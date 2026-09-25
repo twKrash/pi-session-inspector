@@ -14,6 +14,7 @@ const PUBLIC_ID = /^subagent-[a-f0-9]{64}$/;
 const MUTABLE_FIELDS = [
   "artifacts",
   "executionKind",
+  "executionDisposition",
   "observedAt",
   "evidenceToolId",
   "model",
