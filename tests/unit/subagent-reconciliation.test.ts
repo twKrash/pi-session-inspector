@@ -81,6 +81,30 @@ test("exact aliases merge while preserving an observed public ID", () => {
   assert.deepEqual(reconcile([observationA, observationB], aliases), result);
 });
 
+test("same-order alias objects with equal bounded fields do not conflict", () => {
+  const result = reconcileAgentRuns(
+    [
+      observation(sourceA, 7, publicIdA, "failed", {
+        usage: { totalTokens: 7, cost: 0.5 },
+        failure: { reason: "exit-nonzero", detail: 1 },
+      }),
+      observation(sourceB, 7, publicIdB, "failed", {
+        usage: { cost: 0.5, totalTokens: 7 },
+        failure: { detail: 1, reason: "exit-nonzero" },
+      }),
+    ],
+    aliases,
+  );
+
+  assert.equal(result.runs.length, 1);
+  assert.deepEqual(result.runs[0]?.usage, { totalTokens: 7, cost: 0.5 });
+  assert.deepEqual(result.runs[0]?.failure, {
+    reason: "exit-nonzero",
+    detail: 1,
+  });
+  assert.deepEqual(result.diagnostics, []);
+});
+
 test("no alias means no merge by shared labels or timestamps", () => {
   const reconcile = reconcileAgentRuns;
   const result = reconcile([observationB, observationA]);

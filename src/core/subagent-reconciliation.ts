@@ -47,6 +47,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function sameBoundedObject(left: unknown, right: unknown): boolean {
+  if (!isRecord(left) || !isRecord(right)) return false;
+  const keys = Object.keys(left);
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every(
+      (key) => Object.hasOwn(right, key) && Object.is(left[key], right[key]),
+    )
+  );
+}
+
+function sameFieldValue(
+  field: MutableField,
+  left: unknown,
+  right: unknown,
+): boolean {
+  return (
+    Object.is(left, right) ||
+    ((field === "failure" || field === "usage") &&
+      sameBoundedObject(left, right))
+  );
+}
+
 function isSourceIdentity(value: unknown): value is string {
   return typeof value === "string" && SOURCE_ID.test(value);
 }
@@ -184,7 +207,7 @@ function updateField(
   } else if (
     order === currentOrder &&
     !accumulator.fieldConflicts.has(field) &&
-    !Object.is(accumulator.run[field], value)
+    !sameFieldValue(field, accumulator.run[field], value)
   ) {
     Object.assign(accumulator.run, { [field]: undefined });
     accumulator.fieldConflicts.add(field);

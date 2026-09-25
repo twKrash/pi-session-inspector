@@ -65,6 +65,12 @@ function validatePing(value: unknown): PiSubagentsCompatibility {
 
   const advertised = asRecord(ping.capabilities);
   const events = asRecord(ping.events);
+  if (
+    (Object.hasOwn(ping, "capabilities") && advertised === undefined) ||
+    (Object.hasOwn(ping, "events") && events === undefined)
+  ) {
+    return unsupportedProtocol();
+  }
   return {
     protocol: "supported",
     capabilities: {

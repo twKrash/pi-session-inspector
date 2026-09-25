@@ -74,6 +74,38 @@ test("projects the supported pinned v1 capability matrix", async () => {
   });
 });
 
+test("rejects a malformed present capabilities container", async () => {
+  const validate = await getValidator();
+  const ping = fixture("ping-supported.json");
+  assert.ok(typeof ping === "object" && ping !== null && !Array.isArray(ping));
+  const result = validate({ ...ping, capabilities: [] });
+  assert.equal(result.protocol, "unsupported");
+  assert.deepEqual(result.capabilities, {
+    statusProjection: "unsupported",
+    asyncStatusSnapshot: "unsupported",
+    fleetStatus: "unsupported",
+    cost: "unsupported",
+    processTerminalProof: "unsupported",
+    childStatusEvent: "unsupported",
+  });
+});
+
+test("rejects a malformed present events container", async () => {
+  const validate = await getValidator();
+  const ping = fixture("ping-supported.json");
+  assert.ok(typeof ping === "object" && ping !== null && !Array.isArray(ping));
+  const result = validate({ ...ping, events: [] });
+  assert.equal(result.protocol, "unsupported");
+  assert.deepEqual(result.capabilities, {
+    statusProjection: "unsupported",
+    asyncStatusSnapshot: "unsupported",
+    fleetStatus: "unsupported",
+    cost: "unsupported",
+    processTerminalProof: "unsupported",
+    childStatusEvent: "unsupported",
+  });
+});
+
 test("unknown protocol version disables the whole live contract", async () => {
   const validate = await getValidator();
   const result = validate(fixture("ping-unsupported-protocol.json"));
