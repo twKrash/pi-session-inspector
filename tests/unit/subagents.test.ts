@@ -454,6 +454,228 @@ test("reconciles more exact async pairs than the distinct-source limit", async (
   );
 });
 
+test("keeps one stable public id for an async run from launch through persisted completion", () => {
+  const runId = "private-run-id-a";
+  const otherRunId = "private-run-id-b";
+  const launch = (id: string, tag: string): SessionEntry[] => [
+    assistantEntry(`${tag}-launch-call`, `${tag}-launch-call-id`),
+    resultEntry(
+      `${tag}-launch-result`,
+      `${tag}-launch-call-id`,
+      {
+        mode: "single",
+        runId: id,
+        asyncId: id,
+        asyncDir: "PRIVATE_ASYNC_DIR",
+        results: [],
+      },
+      "2026-09-25T10:00:01.000Z",
+    ),
+  ];
+  const completion = (
+    id: string,
+    tag: string,
+    success: boolean,
+  ): SessionEntry[] => [
+    assistantEntry(`${tag}-wait-call`, `${tag}-wait-call-id`, "bg_wait"),
+    resultEntry(
+      `${tag}-wait-result`,
+      `${tag}-wait-call-id`,
+      {
+        completions: [
+          {
+            runId: id,
+            mode: "single",
+            agent: "async-worker-a",
+            state: success ? "complete" : "failed",
+            success,
+            results: [],
+          },
+        ],
+      },
+      "2026-09-25T10:00:02.000Z",
+      "bg_wait",
+    ),
+  ];
+
+  const launchOnly = runsOf(readSubagentEvidence(launch(runId, "stable")));
+  assert.equal(launchOnly.length, 1);
+  assert.equal(executionKindOf(launchOnly[0]), "async");
+  assert.equal(launchOnly[0]?.status, "unknown");
+  const launchId = launchOnly[0]?.id;
+  assert.ok(launchId);
+
+  const launchAndCompletion = [
+    ...launch(runId, "stable"),
+    ...completion(runId, "stable", true),
+  ];
+  const completed = runsOf(readSubagentEvidence(launchAndCompletion));
+  assert.equal(completed.length, 1);
+  assert.equal(executionKindOf(completed[0]), "async");
+  assert.equal(completed[0]?.status, "succeeded");
+  assert.equal(completed[0]?.id, launchId);
+
+  // Completion-only evidence derives the same public id as the launch row.
+  const completionOnly = runsOf(
+    readSubagentEvidence(completion(runId, "stable", true)),
+  );
+  assert.equal(completionOnly.length, 1);
+  assert.equal(completionOnly[0]?.id, launchId);
+
+  // A failed async completion preserves the launch identity too.
+  const failed = runsOf(
+    readSubagentEvidence([
+      ...launch(runId, "stable"),
+      ...completion(runId, "stable", false),
+    ]),
+  );
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0]?.status, "failed");
+  assert.equal(failed[0]?.id, launchId);
+
+  // A completion for another producer run neither collides with nor rewrites
+  // the launch identity of a run that has no completion yet.
+  const crossed = runsOf(
+    readSubagentEvidence([
+      ...launch(runId, "stable"),
+      ...launch(otherRunId, "other"),
+      ...completion(otherRunId, "other", true),
+    ]),
+  );
+  assert.equal(crossed.length, 2);
+  assert.equal(crossed[0]?.id, launchId);
+  assert.equal(crossed[0]?.status, "unknown");
+  assert.equal(crossed[1]?.status, "succeeded");
+  assert.notEqual(crossed[1]?.id, launchId);
+  assert.equal(JSON.stringify(crossed).includes(runId), false);
+  assert.equal(JSON.stringify(crossed).includes(otherRunId), false);
+
+  // Private source identities stay exact and distinct from the public id, and
+  // the launch/completion aliases settle on that same public id.
+  const evidence = readSubagentEvidence(launchAndCompletion);
+  const observations = [...evidence.observations];
+  assert.equal(observations.length, 2);
+  assert.equal(observations[0]?.run.id, launchId);
+  assert.notEqual(observations[0]?.sourceIdentity, observations[0]?.run.id);
+  assert.equal(evidence.aliases?.length, 2);
+  assert.equal(
+    evidence.aliases?.every((alias) => alias.publicId === launchId),
+    true,
+  );
+
+  // Foreground identities keep their own surface and are unaffected.
+  const foreground = runsOf(
+    readSubagentEvidence([
+      assistantEntry("fg-launch-call", "fg-launch-call-id"),
+      resultEntry(
+        "fg-launch-result",
+        "fg-launch-call-id",
+        {
+          runId,
+          results: [
+            { index: 0, agent: "worker", state: "complete", success: true },
+          ],
+        },
+        "2026-09-25T10:00:03.000Z",
+      ),
+    ]),
+  );
+  assert.equal(foreground.length, 1);
+  assert.equal(executionKindOf(foreground[0]), undefined);
+  assert.notEqual(foreground[0]?.id, launchId);
+});
+
+test("async launch plus completion stays non-additive against native totals", async () => {
+  const runId = "non-additive-async-run";
+  const entries: SessionEntry[] = [
+    assistantEntry("non-additive-launch-call", "non-additive-launch-call-id"),
+    resultEntry(
+      "non-additive-launch-result",
+      "non-additive-launch-call-id",
+      { mode: "single", runId, asyncId: runId, results: [] },
+      "2026-09-25T10:00:01.000Z",
+    ),
+    assistantEntry(
+      "non-additive-wait-call",
+      "non-additive-wait-call-id",
+      "bg_wait",
+    ),
+    resultEntry(
+      "non-additive-wait-result",
+      "non-additive-wait-call-id",
+      {
+        completions: [
+          {
+            runId,
+            mode: "single",
+            agent: "async-worker-a",
+            state: "complete",
+            success: true,
+            usage: {
+              input: 800,
+              output: 200,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.5,
+            },
+            results: [],
+          },
+        ],
+      },
+      "2026-09-25T10:00:02.000Z",
+      "bg_wait",
+    ),
+  ];
+
+  const runs = runsOf(readSubagentEvidence(entries));
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.usage?.totalTokens, 1000);
+
+  const parsed = parseSessionJsonl(
+    `${[
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "non-additive-async-session",
+        timestamp: "2026-09-25T10:00:00.000Z",
+        cwd: "synthetic",
+      }),
+      JSON.stringify({
+        type: "custom",
+        id: "non-additive-marker",
+        parentId: null,
+        timestamp: "2026-09-25T10:00:00.500Z",
+        customType: "session-inspector:tracking-start",
+        data: { schemaVersion: 1 },
+      }),
+    ].join("\n")}\n`,
+  );
+  const base = await buildCanonicalSession({
+    parsed,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  assert.equal(base.state, "ready");
+  if (base.state !== "ready") return;
+
+  const nativeTotal = (summary: typeof base.session.usage) =>
+    summary.state === "known" ? summary.known.totalTokens : undefined;
+  const attached = attachSubagentEvidence(
+    base.session,
+    readSubagentEvidence(entries),
+  );
+  assert.equal(nativeTotal(attached.usage), nativeTotal(base.session.usage));
+  assert.equal(attached.agents.length, 1);
+  assert.equal(attached.agents[0]?.usage?.totalTokens, 1000);
+  const childLines = attached.usage.lines.filter(
+    (line) => line.domain === "child-breakdown",
+  );
+  assert.equal(childLines.length, 1);
+  assert.equal(childLines[0]?.contributesToSession, false);
+  assert.equal(childLines[0]?.usage.totalTokens, 1000);
+});
+
 test("keeps an exact async launch visible without completion as unknown and unparented", () => {
   const evidence = readSubagentEvidence([
     assistantEntry("launch-only-call", "launch-only-call-id"),
