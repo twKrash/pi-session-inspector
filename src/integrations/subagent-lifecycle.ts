@@ -9,6 +9,17 @@ import { boundedProducerLabel } from "../core/evidence.ts";
 const MAX_STATUS_BYTES = 128 * 1024;
 const MAX_ASYNC_DIR_BYTES = 4096;
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+const STEP_STATUSES = new Set([
+  "pending",
+  "running",
+  "complete",
+  "completed",
+  "failed",
+  "partial",
+  "paused",
+  "stopped",
+  "rejected",
+]);
 
 /** Returns only approved bounded step fields; every failure is no enrichment. */
 export async function readReferencedLifecycleEnrichment(
@@ -95,6 +106,10 @@ export async function readReferencedLifecycleEnrichment(
         return undefined;
       }
       const record = step as Record<string, unknown>;
+      const stepStatus = record.status;
+      if (typeof stepStatus !== "string" || !STEP_STATUSES.has(stepStatus)) {
+        return undefined;
+      }
       const toolCount = record.toolCount;
       if (
         Object.hasOwn(record, "toolCount") &&
@@ -106,11 +121,11 @@ export async function readReferencedLifecycleEnrichment(
         return undefined;
       }
       const model =
-        record.status === "complete"
+        stepStatus === "complete"
           ? boundedProducerLabel(record.model)
           : undefined;
       if (
-        record.status === "complete" &&
+        stepStatus === "complete" &&
         Object.hasOwn(record, "model") &&
         model === undefined
       ) {

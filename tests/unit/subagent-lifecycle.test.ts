@@ -174,10 +174,12 @@ test("non-complete lifecycle steps never fill model", async (t) => {
   for (const stepStatus of [
     "pending",
     "running",
+    "completed",
     "failed",
     "paused",
     "stopped",
     "partial",
+    "rejected",
   ]) {
     await t.test(stepStatus, async () => {
       const input = await setup(
@@ -343,6 +345,47 @@ test("missing, malformed, oversized, or unsupported artifacts preserve C1 row", 
     });
 });
 
+test("missing or unsupported step status rejects lifecycle enrichment", async (t) => {
+  for (const [name, step] of [
+    ["missing status", { toolCount: 7 }],
+    ["unsupported status", { status: "unknown", toolCount: 7 }],
+  ] as const)
+    await t.test(name, async () => {
+      const input = await setup(status(step));
+      try {
+        const { run } = await readRun(input);
+        assert.equal(run.toolCalls, undefined);
+        assert.equal(run.model, undefined);
+      } finally {
+        await input.cleanup();
+      }
+    });
+});
+
+test("published step statuses permit bounded tool counts", async (t) => {
+  for (const stepStatus of [
+    "pending",
+    "running",
+    "complete",
+    "completed",
+    "failed",
+    "partial",
+    "paused",
+    "stopped",
+    "rejected",
+  ])
+    await t.test(stepStatus, async () => {
+      const input = await setup(status({ status: stepStatus, toolCount: 7 }));
+      try {
+        const { run } = await readRun(input);
+        assert.equal(run.toolCalls, 7);
+        assert.equal(run.effortCoverage.tools, "partial");
+      } finally {
+        await input.cleanup();
+      }
+    });
+});
+
 test("invalid toolCount or eligible model rejects the artifact without partial enrichment", async (t) => {
   for (const [name, step] of [
     ["negative count", { status: "running", toolCount: -1 }],
@@ -368,40 +411,75 @@ test("invalid toolCount or eligible model rejects the artifact without partial e
     });
 });
 
-test("current loader supplies parent session-file identity to its evidence reader", async () => {
+test("published v3 fixture enriches current report only", async () => {
   const input = await setup({});
   try {
-    const fixture = await readFile(
+    const piSession = await readFile(
       new URL("../fixtures/pi/0.85.1/token-economics.jsonl", import.meta.url),
       "utf8",
     );
-    const parsed = parseSessionJsonl(fixture);
-    parsed.entries.push(...launchEntries(input.asyncDir));
+    const parsed = parseSessionJsonl(piSession);
+    const launches = launchEntries(input.asyncDir);
+    parsed.entries.push(...launches);
     input.sessionFile = join(input.root, "current-session.jsonl");
     await writeFile(
       input.sessionFile,
-      `${fixture.trimEnd()}\n${parsed.entries
-        .slice(-2)
+      `${piSession.trimEnd()}\n${launches
         .map((entry) => JSON.stringify(entry))
         .join("\n")}\n`,
+    );
+
+    // Sanitized v3 artifact shape from pi-subagents@0.71.0, tag v0.71.0,
+    // release commit 4af5e85a427b9f87334585ae8d0eb365d4dd2a1e.
+    const artifact = JSON.parse(
+      await readFile(
+        new URL(
+          "../fixtures/pi-subagents/0.71.0/status-single-complete-v3.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
     );
     await writeFile(
       join(input.asyncDir, "status.json"),
       JSON.stringify({
-        ...status({ status: "running", toolCount: 2 }),
+        ...artifact,
+        runId: producerRunId,
         sessionId: input.sessionFile,
       }),
     );
-    let receivedSessionFile: string | undefined;
-    const model = await loadCurrentSessionReport(input.sessionFile, "tree", {
+
+    const current = await loadCurrentSessionReport(input.sessionFile, "tree", {
       leafId: null,
-      subagentEvidence: (entries, sessionId, sessionFile) => {
-        receivedSessionFile = sessionFile;
-        return readCurrent(entries, sessionId, sessionFile);
-      },
+      subagentEvidence: readCurrent,
     });
-    assert.ok(model);
-    assert.equal(receivedSessionFile, input.sessionFile);
+    const withoutLifecycle = await loadCurrentSessionReport(
+      input.sessionFile,
+      "tree",
+      { leafId: null },
+    );
+    assert.ok(current);
+    assert.ok(withoutLifecycle);
+    const currentRun = current.report.agents[0];
+    const baselineRun = withoutLifecycle.report.agents[0];
+    assert.ok(currentRun);
+    assert.ok(baselineRun);
+    assert.equal(currentRun.id, baselineRun.id);
+    assert.equal(currentRun.status, baselineRun.status);
+    assert.equal(currentRun.parentId, baselineRun.parentId);
+    assert.equal(currentRun.toolCalls, 2);
+    assert.equal(currentRun.effortCoverage.tools, "partial");
+    assert.equal(currentRun.model, "provider/model-a");
+    assert.equal(baselineRun.toolCalls, undefined);
+    assert.equal(baselineRun.model, undefined);
+    assert.deepEqual(current.report.usage, withoutLifecycle.report.usage);
+
+    const history = await readCurrent(parsed.entries, parsed.id);
+    const historyRun = reconcileAgentRuns(history.observations, history.aliases)
+      .runs[0];
+    assert.equal(historyRun?.id, currentRun.id);
+    assert.equal(historyRun?.toolCalls, undefined);
+    assert.equal(historyRun?.model, undefined);
   } finally {
     await input.cleanup();
   }
