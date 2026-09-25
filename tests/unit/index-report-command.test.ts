@@ -1259,6 +1259,133 @@ test("history preserves exact async launch/completion aliases from production ev
   }
 });
 
+test("keeps one async public id from launch-only current report through completion and history", async () => {
+  const harness = await createHarness();
+  try {
+    const fixtureSource = await readFile(
+      "tests/fixtures/pi-subagents/persisted-async-visibility.jsonl",
+      "utf8",
+    );
+    const fixtureRows = fixtureSource
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { id?: string });
+    const slice = (ids: ReadonlySet<string>) =>
+      fixtureRows
+        .filter((entry) => ids.has(entry.id ?? ""))
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n";
+    const sessionId = "persisted-async-visibility";
+    const launchOnlyIds = new Set([
+      "persisted-async-visibility",
+      "marker",
+      "fg-call",
+      "fg-result",
+      "launch-call-a",
+      "launch-result-a",
+      "launch-call-b",
+      "launch-result-b",
+    ]);
+    const fullIds = new Set([
+      ...launchOnlyIds,
+      "wait-call-a",
+      "wait-result-a",
+      "wait-call-b",
+      "wait-result-b",
+    ]);
+    const sessionDirectory = join(harness.root, "sessions", sessionId);
+    await mkdir(sessionDirectory, { recursive: true });
+    await writeFile(
+      join(sessionDirectory, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        sessionId,
+        sourceFile: "session.jsonl",
+        state: "tracking",
+      }),
+    );
+    type Report = {
+      agents: Array<{
+        id: string;
+        agent?: string;
+        status: string;
+        executionKind?: string;
+      }>;
+    };
+    const exportCurrent = async (name: string) => {
+      const path = join(harness.directory, `${name}.json`);
+      await harness.handler()(
+        `json --scope tree --output ${JSON.stringify(path)}`,
+        harness.context({ mode: "interactive" }),
+      );
+      return JSON.parse(await readFile(path, "utf8")) as Report;
+    };
+
+    // Phase 1: launch-only persisted evidence, no completion for either run.
+    await writeFile(harness.sessionFile, slice(launchOnlyIds));
+    harness.replaceSession({
+      sessionId,
+      sessionFile: harness.sessionFile,
+      leafId: "launch-result-b",
+    });
+    const launchReport = await exportCurrent("async-launch-only");
+    const launchRuns = launchReport.agents.filter(
+      (run) => run.executionKind === "async",
+    );
+    assert.equal(launchRuns.length, 2);
+    assert.deepEqual(
+      launchRuns.map((run) => [run.status, run.agent]),
+      [
+        ["unknown", undefined],
+        ["unknown", undefined],
+      ],
+    );
+
+    // Phase 2: the exact persisted completions for those same producer runs.
+    await writeFile(harness.sessionFile, slice(fullIds));
+    harness.replaceSession({
+      sessionId,
+      sessionFile: harness.sessionFile,
+      leafId: "wait-result-b",
+    });
+    const completed = await exportCurrent("async-complete");
+    const completedRuns = completed.agents.filter(
+      (run) => run.executionKind === "async",
+    );
+    assert.equal(completedRuns.length, 2);
+    assert.deepEqual(
+      completedRuns.map((run) => [run.agent, run.status]),
+      [
+        ["async-worker-a", "succeeded"],
+        ["async-worker-b", "failed"],
+      ],
+    );
+    // The one invariant this regression locks: completion never renames a run.
+    assert.deepEqual(
+      completedRuns.map((run) => run.id),
+      launchRuns.map((run) => run.id),
+    );
+
+    await harness.handler()(
+      "json history",
+      harness.context({ mode: "interactive" }),
+    );
+    const history = JSON.parse(
+      await readFile(join(harness.cache, "history.json"), "utf8"),
+    ) as { sessions: Array<{ report: Report }> };
+    const historicalRuns =
+      history.sessions[0]?.report.agents.filter(
+        (run) => run.executionKind === "async",
+      ) ?? [];
+    assert.deepEqual(
+      historicalRuns.map((run) => run.id),
+      launchRuns.map((run) => run.id),
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 test("json session exports one requested historical session through the snapshot loader", async () => {
   const harness = await createHarness();
   try {

@@ -867,10 +867,16 @@ function* collectRuns(
   );
   const asyncLaunchRunId = readAsyncLaunchRunId(toolName, result, details);
   if (asyncLaunchRunId !== undefined) {
+    // One producer async run id owns one public identity for its whole
+    // lifecycle: the launch-only row already carries the settled `completion`
+    // public id, which is exactly the canonical id the launch/completion
+    // aliases below pin, so arriving completion evidence never renames the
+    // row. The source identity keeps its distinct `async` surface, so the two
+    // publications stay exact and separately addressable in private state.
     yield* pushRun(
       {},
       publication,
-      opaqueSubagentId(sessionId, asyncLaunchRunId, "async"),
+      opaqueSubagentId(sessionId, asyncLaunchRunId, "completion"),
       opaqueSubagentSourceIdentity(sessionId, asyncLaunchRunId, "async"),
       undefined,
       "disabled",
