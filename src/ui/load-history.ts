@@ -11,6 +11,7 @@ import type { L0Evidence } from "../core/evidence.ts";
 import {
   type Scope,
   type SessionEntry,
+  type SubagentSourceEvidence,
   type Usage,
   type UsageFieldCoverageMap,
   usageFieldCoverage,
@@ -27,10 +28,7 @@ import {
   buildSessionCoverage,
   type SessionCoverage,
 } from "../core/session-coverage.ts";
-import {
-  readSubagentEvidence,
-  type SubagentEvidence,
-} from "../integrations/subagents.ts";
+import { readSubagentEvidence } from "../integrations/subagents.ts";
 import { parseSessionJsonl, type ParsedSession } from "../pi/adapter.ts";
 import { hasTrackingStartMarker } from "../pi/sessions.ts";
 import {
@@ -84,7 +82,7 @@ export type HistorySessionEvidence = {
   /** Sanitized inventory snapshot plus the explicit presence model. */
   observation?: SessionObservation;
   /** Cooperative evidence assembled by the composition-root provider. */
-  subagents?: SubagentEvidence;
+  subagents?: SubagentSourceEvidence;
 };
 
 /**
@@ -242,7 +240,7 @@ export type HistoryReplayInput = {
   session: CanonicalSession;
   entries: readonly SessionEntry[];
   observation: SessionObservation | undefined;
-  subagentEvidence: SubagentEvidence;
+  subagentEvidence: SubagentSourceEvidence;
   sealed: boolean;
 };
 
@@ -514,7 +512,7 @@ function defaultReplay(input: HistoryReplayInput): SessionReport {
   return toSessionReport(input.session, {
     agents: {
       state: input.subagentEvidence.state,
-      runs: input.subagentEvidence.runs,
+      runs: input.session.agents,
     },
     agentActivity: input.subagentEvidence.activity,
     presence: input.observation?.presence,

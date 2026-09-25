@@ -256,7 +256,7 @@ test("the current report path projects the CanonicalSession branch", async () =>
   );
   const attached = attachSubagentEvidence(session, subagents);
   const expected = toSessionReport(attached, {
-    agents: { state: subagents.state, runs: subagents.runs },
+    agents: { state: subagents.state, runs: attached.agents },
     agentActivity: subagents.activity,
     ...countersFrom(attached),
   });

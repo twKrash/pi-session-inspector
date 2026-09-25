@@ -7,11 +7,7 @@ import {
 import { integrations } from "../integrations/index.ts";
 import { readPersistedEvidence } from "../integrations/persisted.ts";
 import { debugLog } from "../debug/log.ts";
-import {
-  isAgentLabel,
-  isProcessSignal,
-  type SubagentEvidence,
-} from "../integrations/subagents.ts";
+import { isAgentLabel, isProcessSignal } from "../integrations/subagents.ts";
 import type { ParsedSession } from "../pi/adapter.ts";
 import { resolveScope } from "../pi/scope.ts";
 import { roundCost } from "./rounding.ts";
@@ -19,6 +15,7 @@ import type {
   AgentFailure,
   AgentRun,
   AgentRunEffortCoverage,
+  AgentRunSourceObservation,
   AgentRunUsage,
   AgentToolActivity,
   Compaction,
@@ -31,6 +28,8 @@ import type {
   IntegrationRowKey,
   Scope,
   SessionEntry,
+  SubagentEvidence,
+  SubagentSourceEvidence,
   Tool,
   Usage,
   UsageComposition,
@@ -67,6 +66,7 @@ import {
   MAX_SKILL_KEYS,
   mergeFoldedCounters,
 } from "./live-counter-fold.ts";
+import { reconcileAgentRuns } from "./subagent-reconciliation.ts";
 import { canonicalOpaqueDigest } from "./opaque-id.ts";
 import { boundedDescription, secretLikeValue } from "./redact.ts";
 import { readUsage, reduceEntries } from "./reduce.ts";
@@ -118,6 +118,7 @@ const encoder = new TextEncoder();
 const MAX_AGENT_RUN_DURATION_MS = 86_400_000_000;
 const MAX_AGENT_RUN_COUNT = 256;
 const OPAQUE_AGENT_RUN_ID = /^subagent-[a-f0-9]{64}$/;
+const OPAQUE_AGENT_SOURCE_ID = /^subagent-source-[a-f0-9]{64}$/;
 const OPAQUE_TOOL_ID = /^tool:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const AGENT_RUN_STATUSES = new Set<AgentRun["status"]>([
   "running",
@@ -400,7 +401,7 @@ export type CanonicalSessionInput = {
   walRecords?: readonly RetainedWalRecord[];
   /** Saturating dropped-tool-start count from the live registration (R29). */
   liveOverflow?: number;
-  subagents?: SubagentEvidence;
+  subagents?: SubagentSourceEvidence;
   inventory?: InventoryObservationInput;
   parentSession?: CanonicalRelationship;
   /** Bounded diagnostics contributed by the caller's source adapters. */
@@ -451,7 +452,7 @@ export function projectEvidenceHealth(
  */
 export function attachSubagentEvidence(
   session: CanonicalSession,
-  subagents: SubagentEvidence,
+  subagents: SubagentSourceEvidence,
 ): CanonicalSession {
   try {
     const normalizedSubagents = normalizeSubagentEvidence(subagents);
@@ -529,7 +530,77 @@ export function attachSubagentEvidence(
   }
 }
 
-function normalizeSubagentEvidence(value: SubagentEvidence): SubagentEvidence {
+// Keep the historical 256-distinct-run cap while still reconciling later updates
+// for admitted sources and detecting skipped rows that collide with their IDs.
+function* boundedSourceObservations(
+  observations: Iterable<AgentRunSourceObservation>,
+  skippedPublicIdCollisions: Set<string>,
+): IterableIterator<AgentRunSourceObservation> {
+  const sourceIdentities = new Map<string, string | undefined>();
+  const admittedPublicIds = new Set<string>();
+  for (const observation of observations) {
+    const sourceIdentity = sourceIdentityOf(observation);
+    if (sourceIdentity === undefined) {
+      yield observation;
+      continue;
+    }
+    const admitted = sourceIdentities.has(sourceIdentity);
+    const previousPublicId = sourceIdentities.get(sourceIdentity);
+    if (!admitted && sourceIdentities.size >= MAX_AGENT_RUN_COUNT) {
+      const publicId = observationPublicRunId(observation);
+      if (publicId !== undefined && admittedPublicIds.has(publicId)) {
+        skippedPublicIdCollisions.add(publicId);
+      }
+      continue;
+    }
+    if (!admitted || previousPublicId === undefined) {
+      const publicId = observationPublicRunId(observation);
+      if (!admitted || publicId !== undefined) {
+        sourceIdentities.set(sourceIdentity, publicId);
+      }
+      if (publicId !== undefined) admittedPublicIds.add(publicId);
+    }
+    yield observation;
+  }
+}
+
+function sourceIdentityOf(value: unknown): string | undefined {
+  try {
+    const sourceIdentity = isRecord(value)
+      ? value["sourceIdentity"]
+      : undefined;
+    return typeof sourceIdentity === "string" &&
+      OPAQUE_AGENT_SOURCE_ID.test(sourceIdentity)
+      ? sourceIdentity
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function observationPublicRunId(value: unknown): string | undefined {
+  try {
+    if (!isRecord(value)) return undefined;
+    const order = value["order"];
+    const run = value["run"];
+    if (
+      typeof order !== "number" ||
+      !Number.isSafeInteger(order) ||
+      order < 0 ||
+      !isRecord(run)
+    ) {
+      return undefined;
+    }
+    const { id, status } = run;
+    return isOpaqueAgentRunId(id) && isAgentRunStatus(status) ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeSubagentEvidence(
+  value: SubagentSourceEvidence,
+): SubagentEvidence {
   const input: Readonly<Record<string, unknown>> = isRecord(value) ? value : {};
   const activityInput: Readonly<Record<string, unknown>> = isRecord(
     input.activity,
@@ -595,28 +666,68 @@ function normalizeSubagentEvidence(value: SubagentEvidence): SubagentEvidence {
         },
       )
     : [];
+  const observationInput = input.observations;
+  const observations =
+    observationInput !== null &&
+    typeof observationInput === "object" &&
+    typeof (observationInput as { [Symbol.iterator]?: unknown })[
+      Symbol.iterator
+    ] === "function"
+      ? (observationInput as Iterable<AgentRunSourceObservation>)
+      : [];
+  const skippedPublicIdCollisions = new Set<string>();
+  const reconciled = reconcileAgentRuns(
+    boundedSourceObservations(observations, skippedPublicIdCollisions),
+  );
+  const publicIdCollisions = new Set(
+    reconciled.runs
+      .filter((run) => skippedPublicIdCollisions.has(run.id))
+      .map((run) => run.id),
+  );
+  const normalizedRuns = normalizeAgentRuns(
+    reconciled.runs,
+    publicIdCollisions,
+  );
   return {
     activity,
-    runs: normalizeAgentRuns(
-      Array.isArray(input.runs) ? (input.runs as AgentRun[]) : [],
-    ),
+    runs: normalizedRuns.runs,
     state:
       input.state === "supported" ||
       input.state === "unavailable" ||
       input.state === "unsupported"
         ? input.state
         : "unavailable",
-    diagnostics,
+    diagnostics: [
+      ...diagnostics,
+      ...reconciled.diagnostics,
+      ...(normalizedRuns.conflictCount === 0
+        ? []
+        : [
+            {
+              code: "cooperative-evidence-conflict" as const,
+              count: normalizedRuns.conflictCount,
+            },
+          ]),
+    ],
   };
 }
 
-function normalizeAgentRuns(runs: readonly AgentRun[]): AgentRun[] {
+function normalizeAgentRuns(
+  runs: readonly AgentRun[],
+  conflictingIds: Set<string>,
+): { runs: AgentRun[]; conflictCount: number } {
   const byId = new Map<string, AgentRun>();
   for (const value of runs.slice(0, MAX_AGENT_RUN_COUNT)) {
     const run = normalizeAgentRun(value);
-    if (run !== undefined) byId.set(run.id, run);
+    if (run === undefined || conflictingIds.has(run.id)) continue;
+    if (byId.has(run.id)) {
+      byId.delete(run.id);
+      conflictingIds.add(run.id);
+    } else {
+      byId.set(run.id, run);
+    }
   }
-  return [...byId.values()];
+  return { runs: [...byId.values()], conflictCount: conflictingIds.size };
 }
 
 function normalizeAgentRun(value: unknown): AgentRun | undefined {

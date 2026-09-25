@@ -45,7 +45,7 @@ import {
 } from "./config/settings.ts";
 import {
   readSubagentEvidenceWithArchives,
-  type SubagentEvidence,
+  type SubagentSourceEvidence,
 } from "./integrations/subagents.ts";
 import { readCanonicalContributions } from "./integrations/contributions.ts";
 import { presenceKeys } from "./core/presence.ts";
@@ -1036,7 +1036,7 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
 async function readSubagentContribution(
   entries: readonly SessionEntry[],
   sessionId: string,
-): Promise<SubagentEvidence> {
+): Promise<SubagentSourceEvidence> {
   try {
     const { contributions } = await readCanonicalContributions({
       entries,
@@ -1046,7 +1046,7 @@ async function readSubagentContribution(
     if (contribution?.activity !== undefined) {
       return {
         state: contribution.state,
-        runs: contribution.runs ?? [],
+        observations: contribution.observations ?? [],
         activity: contribution.activity,
         diagnostics: contribution.diagnostics ?? [],
       };

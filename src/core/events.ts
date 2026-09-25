@@ -110,6 +110,25 @@ export type AgentRun = {
   effortCoverage: AgentRunEffortCoverage;
 };
 
+/** One validated run row observed from one exact source identity. */
+export type AgentRunSourceObservation = {
+  /** Bounded opaque digest, never a raw producer identity or filesystem path. */
+  sourceIdentity: string;
+  /** Persisted precedence; never inferred from iterable position. */
+  order: number;
+  run: AgentRun;
+};
+
+/** Explicit exact-key mapping between source observations. */
+export type AgentRunIdentityAlias = {
+  /** Exact bounded private source identity. */
+  sourceIdentity: string;
+  /** Exact bounded private canonical identity. */
+  canonicalIdentity: string;
+  /** An existing public run ID, selected without rewriting it. */
+  publicId: string;
+};
+
 /** Native subagent tool activity; usage is a breakdown, never a session total. */
 export type AgentToolActivity = {
   state: EvidenceState;
@@ -141,6 +160,14 @@ export type SubagentEvidence = {
    * Bounded, closed-code diagnostics. Repeated observations of one run that
    * disagree on identity or regress a terminal status are counted here.
    */
+  diagnostics: readonly SubagentEvidenceDiagnostic[];
+};
+
+/** L0-only input. Private source identities stop at the canonical boundary. */
+export type SubagentSourceEvidence = {
+  activity: AgentToolActivity;
+  observations: Iterable<AgentRunSourceObservation>;
+  state: EvidenceState;
   diagnostics: readonly SubagentEvidenceDiagnostic[];
 };
 

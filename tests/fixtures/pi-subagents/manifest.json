@@ -1,0 +1,13 @@
+{
+  "producer": "pi-subagents",
+  "version": "0.71.0",
+  "commit": "6f16d586bef814d74b3a2683cf297450ebfccb09",
+  "dialect": "rpc-ping-data-v1",
+  "synthetic": true,
+  "fixtures": [
+    "rpc-v1/ping-supported.json",
+    "rpc-v1/ping-unsupported-protocol.json",
+    "rpc-v1/ping-partial-capabilities.json",
+    "rpc-v1/ping-additive-fields.json"
+  ]
+}

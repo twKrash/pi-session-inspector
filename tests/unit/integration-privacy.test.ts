@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
+import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 import type { PresenceContext } from "../../src/integrations/contract.ts";
 import { createEvidenceRegistry } from "../../src/integrations/evidence.ts";
@@ -35,6 +36,8 @@ const readPiEntryEvidence = (entries: readonly SessionEntry[]) =>
 const SUBAGENT_SESSION_ID = "session-privacy-test";
 const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
   readSubagentEvidenceWithSession(entries, SUBAGENT_SESSION_ID);
+const runsOf = (evidence: ReturnType<typeof readSubagentEvidence>) =>
+  reconcileAgentRuns(evidence.observations).runs;
 
 const secret = "m5-seeded-secret";
 /** Raw producer identity for the opaque `permission-request` domain (§18.7). */
@@ -136,9 +139,10 @@ test("privacy corpus excludes seeded secrets from every integration adapter and 
       ].join("\n"),
     ).entries,
   );
+  const subagentObservations = [...subagentEvidence.observations];
   const subagentOutput = {
     state: subagentEvidence.state,
-    runs: subagentEvidence.runs,
+    runs: reconcileAgentRuns(subagentObservations).runs,
   };
   const report = toSessionReport(parent, {
     agents: subagentOutput,
@@ -156,6 +160,7 @@ test("privacy corpus excludes seeded secrets from every integration adapter and 
     registryOutput,
     piEntryOutput,
     subagentEvidence,
+    subagentObservations,
     report,
     renderJson(report),
   ]) {
@@ -324,6 +329,8 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
   );
   const uatEntries = parseSessionJsonl(await readFile(uatFile, "utf8")).entries;
   const subagentOutput = readSubagentEvidence(uatEntries);
+  const sourceObservations = [...subagentOutput.observations];
+  assertNoSentinels(sentinels, sourceObservations, "subagent observations");
   assertNoSentinels(sentinels, subagentOutput, "subagent adapter");
 
   // 5. Production report path: observation + UAT fixture -> SessionReport and
@@ -439,12 +446,13 @@ test("missing subagent tool results remain unavailable rather than supported", (
     ].join("\n"),
   ).entries;
   const evidence = readSubagentEvidence(entries);
+  const runs = runsOf(evidence);
   const report = toSessionReport(parent, {
-    agents: { state: evidence.state, runs: evidence.runs },
+    agents: { state: evidence.state, runs },
   });
 
   assert.equal(evidence.state, "unavailable");
-  assert.deepEqual(evidence.runs, []);
+  assert.deepEqual(runs, []);
   assert.equal(evidence.activity.calls, 0);
   assert.equal(report.agentEvidence, "unavailable");
   assert.deepEqual(report.agents, []);

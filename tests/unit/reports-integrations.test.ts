@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
+import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import {
   buildEvidenceHealth,
   MAX_EVIDENCE_COUNT,
@@ -25,6 +26,8 @@ const readPiEntryEvidence = (entries: readonly SessionEntry[]) =>
 const SESSION_ID = "session-reports-test";
 const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
   readSubagentEvidenceWithSession(entries, SESSION_ID);
+const runsOf = (evidence: ReturnType<typeof readSubagentEvidence>) =>
+  reconcileAgentRuns(evidence.observations).runs;
 
 const parent: ReducedSession = {
   sessionId: "session-1",
@@ -61,8 +64,9 @@ test("projects explicit integration evidence without adding child usage", async 
     } satisfies SessionEntry,
   ]);
 
+  const subagentRuns = runsOf(subagents);
   const report = toSessionReport(parent, {
-    agents: { state: subagents.state, runs: subagents.runs },
+    agents: { state: subagents.state, runs: subagentRuns },
     integrations,
   });
 
@@ -658,7 +662,7 @@ const nativeSubagentEntries: SessionEntry[] = [
 test("carries native subagent activity even when rich runs are unavailable", () => {
   const native = readSubagentEvidence(nativeSubagentEntries);
   const report = toSessionReport(parent, {
-    agents: { state: native.state, runs: native.runs },
+    agents: { state: native.state, runs: runsOf(native) },
     agentActivity: native.activity,
   });
 

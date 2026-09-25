@@ -16,6 +16,7 @@ import {
   type SessionEntry,
 } from "../../src/core/events.ts";
 import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
+import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
   loadInspectorBundle,
@@ -241,7 +242,13 @@ function treeModel(): CurrentTuiModel {
   if (built.state !== "ready") throw new Error("tree build failed");
   const session = attachSubagentEvidence(built.session, {
     state: "supported",
-    runs: [CHILD_RUN],
+    observations: [
+      {
+        sourceIdentity: `subagent-source-${"b".repeat(64)}`,
+        order: 0,
+        run: CHILD_RUN,
+      },
+    ],
     activity: {
       state: "unavailable",
       calls: 0,
@@ -1844,22 +1851,23 @@ test("the UAT aggregate shape keeps a known parent distinct from unknown", () =>
     },
   ];
   const evidence = readSubagentEvidence(entries, sessionId);
-  assert.equal(evidence.runs.length, 1);
-  const child = evidence.runs[0];
+  const runs = reconcileAgentRuns(evidence.observations).runs;
+  assert.equal(runs.length, 1);
+  const child = runs[0];
   const parentId = child?.parentId;
   if (child === undefined || parentId === undefined) {
     throw new Error("the aggregate child must carry a parent identity");
   }
   // No synthetic parent AgentRun is materialized for the run container.
   assert.equal(
-    evidence.runs.some((run) => run.id === parentId),
+    runs.some((run) => run.id === parentId),
     false,
   );
   assert.equal(child.agent, "worker");
   assert.equal(child.status, "succeeded");
 
   const report = toSessionReport(reduceEntries(sessionId, entries), {
-    agents: { state: evidence.state, runs: evidence.runs },
+    agents: { state: evidence.state, runs },
   });
   const view = {
     availability: "available" as const,

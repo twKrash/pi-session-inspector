@@ -9,7 +9,7 @@ import type { Scope } from "../core/events.ts";
 import { toSessionReport } from "../core/reports.ts";
 import {
   readSubagentEvidence,
-  type SubagentEvidence,
+  type SubagentSourceEvidence,
 } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
@@ -41,7 +41,7 @@ export type LoadCurrentSessionReportOptions = {
   subagentEvidence?: (
     entries: readonly import("../core/events.ts").SessionEntry[],
     sessionId: string,
-  ) => Promise<SubagentEvidence>;
+  ) => Promise<SubagentSourceEvidence>;
 };
 
 const NO_EVIDENCE: L0Evidence = { atomic: [], folded: [] };
@@ -105,7 +105,7 @@ export async function loadCurrentSessionReport(
       toSessionReport(session, {
         agents: {
           state: subagentEvidence.state,
-          runs: subagentEvidence.runs,
+          runs: session.agents,
         },
         agentActivity: subagentEvidence.activity,
         presence: observation?.presence,

@@ -14,7 +14,7 @@ import type {
   SkillInvocationObservation,
 } from "../../src/core/evidence.ts";
 import { MAX_FOLDED_COUNT } from "../../src/core/live-counter-fold.ts";
-import type { SubagentEvidence } from "../../src/integrations/subagents.ts";
+import type { SubagentSourceEvidence } from "../../src/core/events.ts";
 import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
@@ -740,7 +740,7 @@ test("P1.1: a usage-less assistant never creates a zero-valued line", () => {
 });
 
 test("P1.2a: child run usage never changes the session/native totals", () => {
-  const subagents: SubagentEvidence = {
+  const subagents: SubagentSourceEvidence = {
     activity: {
       state: "supported",
       calls: 1,
@@ -751,20 +751,24 @@ test("P1.2a: child run usage never changes the session/native totals", () => {
     },
     state: "supported",
     diagnostics: [],
-    runs: [
+    observations: [
       {
-        id: `subagent-${"1".repeat(64)}`,
-        status: "succeeded",
-        confidence: "cooperative",
-        effortCoverage: {
-          duration: "unavailable",
-          generations: "unavailable",
-          tools: "unavailable",
-          errors: "unavailable",
-          usage: "partial",
-          cost: "partial",
+        sourceIdentity: `subagent-source-${"a".repeat(64)}`,
+        order: 0,
+        run: {
+          id: `subagent-${"1".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "partial",
+            cost: "partial",
+          },
+          usage: { totalTokens: 999, cost: 9 },
         },
-        usage: { totalTokens: 999, cost: 9 },
       },
     ],
   };
@@ -818,6 +822,75 @@ test("P1.2a: child run usage never changes the session/native totals", () => {
   const health = projectEvidenceHealth(session);
   assert.equal(health.usage.childLines, 1);
   assert.equal(health.usage.nativeLines, 2);
+});
+
+test("fails closed and diagnoses duplicate public run IDs without aliases", () => {
+  const publicId = `subagent-${"1".repeat(64)}`;
+  const effortCoverage = {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  } as const;
+  const subagents: SubagentSourceEvidence = {
+    activity: {
+      state: "supported",
+      calls: 1,
+      succeeded: 1,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    },
+    observations: [
+      {
+        sourceIdentity: `subagent-source-${"a".repeat(64)}`,
+        order: 0,
+        run: {
+          id: publicId,
+          status: "succeeded",
+          confidence: "cooperative",
+          effortCoverage,
+        },
+      },
+      {
+        sourceIdentity: `subagent-source-${"b".repeat(64)}`,
+        order: 1,
+        run: {
+          id: publicId,
+          status: "failed",
+          confidence: "cooperative",
+          effortCoverage,
+        },
+      },
+    ],
+    state: "supported",
+    diagnostics: [],
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    subagents,
+  });
+
+  assert.equal(result.state, "ready");
+  if (result.state !== "ready") return;
+  assert.deepEqual(result.session.agents, []);
+  assert.deepEqual(
+    result.session.health.diagnostics
+      .filter((diagnostic) => diagnostic.source === "subagent-result")
+      .filter(
+        (diagnostic) => diagnostic.code === "cooperative-evidence-conflict",
+      )
+      .map(({ code, count }) => ({ code, count })),
+    [{ code: "cooperative-evidence-conflict", count: 1 }],
+  );
+  const serialized = JSON.stringify(result.session.health.diagnostics);
+  assert.equal(serialized.includes(publicId), false);
+  assert.equal(serialized.includes(`subagent-source-${"a".repeat(64)}`), false);
 });
 
 test("P1.2b: aggregate overflow publishes unavailable usage and bounded lines", () => {
@@ -1271,8 +1344,82 @@ test("P1.A: a lone usage-bearing branch summary reconciles its own usage", () =>
   assert.deepEqual(session.usage.known, { totalTokens: 17, cost: 0.017 });
 });
 
-test("caps canonical agent-run input at 256 rows", () => {
-  const subagents: SubagentEvidence = {
+test("fails closed when an over-cap source duplicates an admitted public ID", () => {
+  const firstId = `subagent-${"0".repeat(64)}`;
+  const effortCoverage = {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  } as const;
+  const subagents: SubagentSourceEvidence = {
+    activity: {
+      state: "supported",
+      calls: 256,
+      succeeded: 256,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    },
+    observations: [
+      ...Array.from({ length: 256 }, (_, order) => {
+        const digest = order.toString(16).padStart(64, "0");
+        return {
+          sourceIdentity: `subagent-source-${digest}`,
+          order,
+          run: {
+            id: `subagent-${digest}`,
+            status: "succeeded" as const,
+            confidence: "cooperative" as const,
+            effortCoverage,
+          },
+        };
+      }),
+      {
+        sourceIdentity: `subagent-source-${"f".repeat(64)}`,
+        order: 256,
+        run: {
+          id: firstId,
+          status: "failed" as const,
+          confidence: "cooperative" as const,
+          effortCoverage,
+        },
+      },
+    ],
+    state: "supported",
+    diagnostics: [],
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    subagents,
+  });
+
+  assert.equal(result.state, "ready");
+  if (result.state !== "ready") return;
+  assert.equal(result.session.agents.length, 255);
+  assert.equal(
+    result.session.agents.some((run) => run.id === firstId),
+    false,
+  );
+  const collisionDiagnostics = result.session.health.diagnostics
+    .filter((diagnostic) => diagnostic.source === "subagent-result")
+    .filter(
+      (diagnostic) => diagnostic.code === "cooperative-evidence-conflict",
+    );
+  assert.deepEqual(
+    collisionDiagnostics.map(({ code, count }) => ({ code, count })),
+    [{ code: "cooperative-evidence-conflict", count: 1 }],
+  );
+  assert.equal(JSON.stringify(collisionDiagnostics).includes(firstId), false);
+});
+
+test("caps canonical agent-run input at 256 distinct rows and keeps admitted updates", () => {
+  const subagents: SubagentSourceEvidence = {
     activity: {
       state: "supported",
       calls: 300,
@@ -1283,19 +1430,46 @@ test("caps canonical agent-run input at 256 rows", () => {
     },
     state: "supported",
     diagnostics: [],
-    runs: Array.from({ length: 300 }, (_, index) => ({
-      id: `subagent-${index.toString(16).padStart(64, "0")}`,
-      status: "succeeded" as const,
-      confidence: "cooperative" as const,
-      effortCoverage: {
-        duration: "unavailable" as const,
-        generations: "unavailable" as const,
-        tools: "unavailable" as const,
-        errors: "unavailable" as const,
-        usage: "unavailable" as const,
-        cost: "unavailable" as const,
+    observations: [
+      ...Array.from({ length: 300 }, (_, index) => {
+        const id = index.toString(16).padStart(64, "0");
+        return {
+          sourceIdentity: `subagent-source-${id}`,
+          order: index,
+          run: {
+            id: `subagent-${id}`,
+            status: "succeeded" as const,
+            confidence: "cooperative" as const,
+            effortCoverage: {
+              duration: "unavailable" as const,
+              generations: "unavailable" as const,
+              tools: "unavailable" as const,
+              errors: "unavailable" as const,
+              usage: "unavailable" as const,
+              cost: "unavailable" as const,
+            },
+          },
+        };
+      }),
+      {
+        sourceIdentity: `subagent-source-${"0".repeat(64)}`,
+        order: 300,
+        run: {
+          id: `subagent-${"0".repeat(64)}`,
+          status: "succeeded" as const,
+          confidence: "cooperative" as const,
+          effortCoverage: {
+            duration: "unavailable" as const,
+            generations: "unavailable" as const,
+            tools: "unavailable" as const,
+            errors: "unavailable" as const,
+            usage: "partial" as const,
+            cost: "unavailable" as const,
+          },
+          usage: { totalTokens: 300 },
+        },
       },
-    })),
+    ],
   };
   const result = buildCanonicalSession({
     parsed: parsed([MARKER]),
@@ -1308,5 +1482,6 @@ test("caps canonical agent-run input at 256 rows", () => {
   assert.equal(result.state, "ready");
   if (result.state !== "ready") return;
   assert.equal(result.session.agents.length, 256);
+  assert.equal(result.session.agents[0]?.usage?.totalTokens, 300);
   assert.equal(result.session.health.joins.agentRuns, 256);
 });

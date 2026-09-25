@@ -5,7 +5,11 @@ import {
   readSubagentEvidence as readSubagentEvidenceWithSession,
   readSubagentEvidenceWithArchives as readSubagentEvidenceWithArchivesForSession,
 } from "../../src/integrations/subagents.ts";
-import type { SessionEntry } from "../../src/core/events.ts";
+import type {
+  AgentRunSourceObservation,
+  SessionEntry,
+} from "../../src/core/events.ts";
+import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
 /** A fixed session id: identity is session-scoped but tests only need determinism. */
@@ -14,6 +18,75 @@ const readSubagentEvidence = (entries: readonly SessionEntry[]) =>
   readSubagentEvidenceWithSession(entries, SESSION_ID);
 const readSubagentEvidenceWithArchives = (entries: readonly SessionEntry[]) =>
   readSubagentEvidenceWithArchivesForSession(entries, SESSION_ID);
+const runsOf = (evidence: ReturnType<typeof readSubagentEvidence>) =>
+  reconcileAgentRuns(evidence.observations).runs;
+const externallyRelevantEvidence = (
+  evidence: ReturnType<typeof readSubagentEvidence>,
+) => {
+  const observations = [...evidence.observations];
+  const reconciled = reconcileAgentRuns(observations);
+  return {
+    ...evidence,
+    observations,
+    canonicalRuns: reconciled.runs,
+    reconciliationDiagnostics: reconciled.diagnostics,
+  };
+};
+const serializeEvidence = (evidence: ReturnType<typeof readSubagentEvidence>) =>
+  JSON.stringify(externallyRelevantEvidence(evidence));
+
+test("L0 emits ordered opaque observations for L1 reconciliation", () => {
+  const entries = [
+    assistantEntry("assistant-1", "call-1"),
+    resultEntry(
+      "result-1",
+      "call-1",
+      {
+        results: [
+          { runId: "private-run-raw-id", agent: "worker", state: "running" },
+        ],
+      },
+      "2026-09-12T10:00:01.000Z",
+    ),
+    assistantEntry("assistant-2", "call-2"),
+    resultEntry(
+      "result-2",
+      "call-2",
+      {
+        results: [
+          { runId: "private-run-raw-id", agent: "worker", state: "completed" },
+        ],
+      },
+      "2026-09-12T10:00:02.000Z",
+    ),
+  ];
+  const evidence = readSubagentEvidence(entries) as unknown as {
+    state: string;
+    observations: Iterable<AgentRunSourceObservation>;
+  };
+  const observations = [...evidence.observations];
+  assert.equal(evidence.state, "supported");
+  assert.deepEqual(
+    observations.map(({ order }) => order),
+    [0, 1],
+  );
+  assert.equal(
+    observations[0]?.sourceIdentity,
+    observations[1]?.sourceIdentity,
+  );
+  assert.notEqual(observations[0]?.sourceIdentity, observations[0]?.run.id);
+  assert.equal(
+    JSON.stringify(observations).includes("private-run-raw-id"),
+    false,
+  );
+  const runs = reconcileAgentRuns(observations).runs;
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(
+    JSON.stringify(runs).includes(observations[0]?.sourceIdentity ?? "missing"),
+    false,
+  );
+});
 
 const assistantEntry = (
   id: string,
@@ -57,7 +130,7 @@ test("fixture publishes audited effort only for final foreground rows", async ()
     "utf8",
   );
   const evidence = readSubagentEvidence(parseSessionJsonl(fixture).entries);
-  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  const byAgent = new Map(runsOf(evidence).map((run) => [run.agent, run]));
   assert.equal(byAgent.get("agent-a")?.durationMs, 1234);
   assert.equal(byAgent.get("agent-a")?.toolCalls, 3);
   assert.equal(byAgent.get("agent-a")?.effortCoverage.duration, "partial");
@@ -74,8 +147,8 @@ test("fixture publishes audited effort only for final foreground rows", async ()
   assert.equal(byAgent.get("agent-d")?.toolCalls, undefined);
   assert.equal(byAgent.get("agent-a")?.observedAt, "2026-09-22T10:00:03.000Z");
   assert.equal(byAgent.get("agent-a")?.evidenceToolId, "tool:audit-call-1");
-  assert.equal(JSON.stringify(evidence).includes("audit-call-1"), true);
-  assert.equal(JSON.stringify(evidence).includes("archive"), false);
+  assert.equal(serializeEvidence(evidence).includes("audit-call-1"), true);
+  assert.equal(serializeEvidence(evidence).includes("archive"), false);
 });
 test("derives native tool activity and cooperative runs from persisted results", async () => {
   const fixture = await readFile(
@@ -101,23 +174,26 @@ test("derives native tool activity and cooperative runs from persisted results",
   assert.deepEqual(evidence.activity.usage, { totalTokens: 1500, cost: 0.25 });
 
   assert.equal(evidence.state, "supported");
-  assert.equal(evidence.runs.length, 2);
+  assert.equal(runsOf(evidence).length, 2);
   assert.equal(
-    evidence.runs.every((run) => /^subagent-[a-f0-9]{64}$/.test(run.id)),
+    runsOf(evidence).every((run) => /^subagent-[a-f0-9]{64}$/.test(run.id)),
     true,
   );
-  assert.equal(JSON.stringify(evidence).includes("PRIVATE_TASK"), false);
-  assert.equal(JSON.stringify(evidence).includes("run-raw-id"), false);
-  assert.equal(JSON.stringify(evidence).includes("/home/dev/PRIVATE"), false);
+  assert.equal(serializeEvidence(evidence).includes("PRIVATE_TASK"), false);
+  assert.equal(serializeEvidence(evidence).includes("run-raw-id"), false);
+  assert.equal(
+    serializeEvidence(evidence).includes("/home/dev/PRIVATE"),
+    false,
+  );
 
-  const completed = evidence.runs.find((run) => run.agent === "reviewer");
+  const completed = runsOf(evidence).find((run) => run.agent === "reviewer");
   assert.deepEqual(completed?.usage, { totalTokens: 700, cost: 0.1 });
   assert.equal(completed?.agent, "reviewer");
 
   // The persisted foreground `results[]` row: `exitCode: 1` maps to failed,
   // token usage is unavailable while the published cost remains known, and
   // the row is parented by its run.
-  const foreground = evidence.runs.find((run) => run.agent === "worker");
+  const foreground = runsOf(evidence).find((run) => run.agent === "worker");
   assert.ok(foreground);
   assert.equal(foreground.status, "failed");
   assert.deepEqual(foreground.usage, { cost: 0.05 });
@@ -138,21 +214,25 @@ test("attaches validated archive presence only to runs that published one", asyn
   const evidence = await readSubagentEvidenceWithArchives(entries);
 
   // The completion publishes `/home/dev/PRIVATE/archive.json`, which is absent.
-  const reviewer = evidence.runs.find((run) => run.agent === "reviewer");
+  const reviewer = runsOf(evidence).find((run) => run.agent === "reviewer");
   assert.equal(reviewer?.artifacts, "missing");
   // A foreground row without a published reference keeps the field absent.
-  const worker = evidence.runs.find((run) => run.agent === "worker");
+  const worker = runsOf(evidence).find((run) => run.agent === "worker");
   assert.equal(worker?.artifacts, undefined);
   assert.equal(evidence.activity.calls, 3);
   assert.equal(evidence.state, "supported");
 
-  const serialized = JSON.stringify(evidence);
+  const serialized = serializeEvidence(evidence);
   assert.equal(serialized.includes("/home/dev/PRIVATE"), false);
   assert.equal(serialized.includes("archive.json"), false);
   assert.equal(serialized.includes("run-raw-id"), false);
 
-  // Identical entries produce identical ordering and evidence.
-  assert.deepEqual(await readSubagentEvidenceWithArchives(entries), evidence);
+  // Identical entries preserve the complete L0 and canonical evidence contract.
+  const repeated = await readSubagentEvidenceWithArchives(entries);
+  assert.deepEqual(
+    externallyRelevantEvidence(repeated),
+    externallyRelevantEvidence(evidence),
+  );
 });
 
 test("degrades to native activity when details are absent or malformed", () => {
@@ -191,7 +271,7 @@ test("degrades to native activity when details are absent or malformed", () => {
   const evidence = readSubagentEvidence(entries);
   assert.equal(evidence.activity.calls, 1);
   assert.equal(evidence.activity.failed, 1);
-  assert.deepEqual(evidence.runs, []);
+  assert.deepEqual(runsOf(evidence), []);
   assert.equal(evidence.state, "unavailable");
 });
 
@@ -257,8 +337,8 @@ test("maps nested completion children with bounded parents and unknown statuses"
 
   // Publication surfaces have independent identities: the completion row and
   // its nested children are separate bounded rows even when raw ids repeat.
-  assert.equal(evidence.runs.length, 3);
-  const [completion, child, duplicate] = evidence.runs;
+  assert.equal(runsOf(evidence).length, 3);
+  const [completion, child, duplicate] = runsOf(evidence);
   assert.match(completion?.id ?? "", /^subagent-[a-f0-9]{64}$/);
   assert.equal(completion?.parentId, undefined);
   assert.equal(completion?.agent, "workflow");
@@ -272,8 +352,8 @@ test("maps nested completion children with bounded parents and unknown statuses"
   assert.equal(duplicate?.agent, "duplicate-run-id");
   assert.equal(duplicate?.status, "unknown");
   assert.equal(evidence.state, "supported");
-  assert.equal(JSON.stringify(evidence).includes("future-state"), false);
-  assert.equal(JSON.stringify(evidence).includes("PRIVATE"), false);
+  assert.equal(serializeEvidence(evidence).includes("future-state"), false);
+  assert.equal(serializeEvidence(evidence).includes("PRIVATE"), false);
 });
 
 test("counts only subagent tool calls and their joined results", () => {
@@ -349,7 +429,7 @@ test("counts only subagent tool calls and their joined results", () => {
     { name: "subagent_supervisor", calls: 1 },
   ]);
   assert.deepEqual(evidence.activity.usage, { totalTokens: 2, cost: 0.02 });
-  assert.deepEqual(evidence.runs, []);
+  assert.deepEqual(runsOf(evidence), []);
 });
 
 test("never throws on malformed entries and yields no fabricated rows", () => {
@@ -411,7 +491,7 @@ test("never throws on malformed entries and yields no fabricated rows", () => {
   assert.equal(evidence.activity.calls, 1);
   assert.equal(evidence.activity.interrupted, 1);
   assert.deepEqual(evidence.activity.usage, undefined);
-  assert.deepEqual(evidence.runs, []);
+  assert.deepEqual(runsOf(evidence), []);
   assert.equal(evidence.state, "unavailable");
 });
 
@@ -478,8 +558,8 @@ test("identifies two foreground children of one parallel run by index", () => {
   const evidence = readSubagentEvidence(entries);
 
   assert.equal(evidence.state, "supported");
-  assert.equal(evidence.runs.length, 2);
-  const [complete, partial] = evidence.runs;
+  assert.equal(runsOf(evidence).length, 2);
+  const [complete, partial] = runsOf(evidence);
   assert.notEqual(complete?.id, partial?.id);
   assert.equal(complete?.agent, "worker");
   assert.equal(partial?.agent, "builder");
@@ -494,11 +574,14 @@ test("identifies two foreground children of one parallel run by index", () => {
   // The publishing run container is a relationship, not a run: no synthetic
   // AgentRun is materialized for the identity it names.
   assert.equal(
-    evidence.runs.some((run) => run.id === complete?.parentId),
+    runsOf(evidence).some((run) => run.id === complete?.parentId),
     false,
   );
-  assert.equal(JSON.stringify(evidence).includes("PRIVATE_TASK"), false);
-  assert.equal(JSON.stringify(evidence).includes("/home/dev/PRIVATE"), false);
+  assert.equal(serializeEvidence(evidence).includes("PRIVATE_TASK"), false);
+  assert.equal(
+    serializeEvidence(evidence).includes("/home/dev/PRIVATE"),
+    false,
+  );
 });
 
 test("skips foreground result rows without a usable run id and index", () => {
@@ -575,9 +658,9 @@ test("skips foreground result rows without a usable run id and index", () => {
   const evidence = readSubagentEvidence(entries);
 
   assert.equal(evidence.activity.calls, 2);
-  assert.equal(evidence.runs.length, 2);
+  assert.equal(runsOf(evidence).length, 2);
   assert.equal(
-    evidence.runs.every(
+    runsOf(evidence).every(
       (run) =>
         /^subagent-[a-f0-9]{64}$/.test(run.id) &&
         run.parentId !== undefined &&
@@ -585,11 +668,11 @@ test("skips foreground result rows without a usable run id and index", () => {
     ),
     true,
   );
-  const [complete, partial] = evidence.runs;
+  const [complete, partial] = runsOf(evidence);
   assert.notEqual(complete?.id, partial?.id);
   assert.equal(complete?.parentId, partial?.parentId);
   assert.equal(
-    evidence.runs.some((run) => run.id === complete?.parentId),
+    runsOf(evidence).some((run) => run.id === complete?.parentId),
     false,
   );
   assert.equal(complete?.agent, "worker");
@@ -597,8 +680,8 @@ test("skips foreground result rows without a usable run id and index", () => {
   assert.equal(partial?.agent, "other");
   assert.equal(partial?.status, "failed");
   assert.equal(partial?.usage, undefined);
-  assert.equal(JSON.stringify(evidence).includes("no-index"), false);
-  assert.equal(JSON.stringify(evidence).includes("orphan"), false);
+  assert.equal(serializeEvidence(evidence).includes("no-index"), false);
+  assert.equal(serializeEvidence(evidence).includes("orphan"), false);
 });
 
 test("a malformed aggregate run id never becomes a parent identity", () => {
@@ -644,11 +727,11 @@ test("a malformed aggregate run id never becomes a parent identity", () => {
 
   // The row the unusable aggregate identity was the only identity for is
   // skipped; the row with an identity of its own stays, with no parent.
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.agent, "self-identified");
-  assert.equal(evidence.runs[0]?.parentId, undefined);
-  assert.equal(JSON.stringify(evidence).includes("not a run id!"), false);
-  assert.equal(JSON.stringify(evidence).includes("container-only"), false);
+  assert.equal(runsOf(evidence).length, 1);
+  assert.equal(runsOf(evidence)[0]?.agent, "self-identified");
+  assert.equal(runsOf(evidence)[0]?.parentId, undefined);
+  assert.equal(serializeEvidence(evidence).includes("not a run id!"), false);
+  assert.equal(serializeEvidence(evidence).includes("container-only"), false);
 });
 
 test("counts a joined call id's tool-result usage exactly once", () => {
@@ -729,7 +812,7 @@ test("reports unavailable activity for a session without subagent calls", () => 
       interrupted: 0,
       tools: [],
     },
-    runs: [],
+    observations: [],
     state: "unavailable",
     diagnostics: [],
   });
@@ -763,7 +846,7 @@ test("run carries publication time, evidence tool id, model and failure", () => 
       "2026-09-12T10:00:05.000Z",
     ),
   ]);
-  const run = evidence.runs[0];
+  const run = runsOf(evidence)[0];
   assert.equal(run?.observedAt, "2026-09-12T10:00:05.000Z");
   assert.equal(run?.evidenceToolId, "tool:call_1");
   assert.equal(run?.model, "gpt-5");
@@ -790,9 +873,9 @@ test("same-surface publications keep the latest observation exactly once", () =>
     ),
   ]);
   // Same-surface replacement remains precedence-based.
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.observedAt, "2026-09-12T10:01:00.000Z");
-  assert.equal(evidence.runs[0]?.evidenceToolId, "tool:call_2");
+  assert.equal(runsOf(evidence).length, 1);
+  assert.equal(runsOf(evidence)[0]?.observedAt, "2026-09-12T10:01:00.000Z");
+  assert.equal(runsOf(evidence)[0]?.evidenceToolId, "tool:call_2");
   assert.deepEqual(evidence.diagnostics, []);
 });
 
@@ -815,10 +898,10 @@ test("drops conflicting identity fields with a conflict diagnostic", () => {
   ]);
   // Different publication surfaces remain separate and do not create a false
   // identity conflict when raw producer ids coincide.
-  assert.equal(evidence.runs.length, 2);
-  assert.notEqual(evidence.runs[0]?.id, evidence.runs[1]?.id);
-  assert.equal(evidence.runs[0]?.agent, "delegate");
-  assert.equal(evidence.runs[1]?.agent, "reviewer");
+  assert.equal(runsOf(evidence).length, 2);
+  assert.notEqual(runsOf(evidence)[0]?.id, runsOf(evidence)[1]?.id);
+  assert.equal(runsOf(evidence)[0]?.agent, "delegate");
+  assert.equal(runsOf(evidence)[1]?.agent, "reviewer");
   assert.deepEqual(evidence.diagnostics, []);
 });
 
@@ -841,9 +924,9 @@ test("terminal-to-running regression on one surface yields unknown plus a diagno
       "2026-09-12T10:01:00.000Z",
     ),
   ]);
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.status, "unknown");
-  assert.deepEqual(evidence.diagnostics, [
+  assert.equal(runsOf(evidence).length, 1);
+  assert.equal(runsOf(evidence)[0]?.status, "unknown");
+  assert.deepEqual(reconcileAgentRuns(evidence.observations).diagnostics, [
     { code: "cooperative-evidence-conflict", count: 1 },
   ]);
 });
@@ -880,7 +963,7 @@ test("derives only closed bounded failure reasons", () => {
       "2026-09-12T10:00:05.000Z",
     ),
   ]);
-  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  const byAgent = new Map(runsOf(evidence).map((run) => [run.agent, run]));
   assert.deepEqual(byAgent.get("a")?.failure, {
     reason: "process-signal",
     detail: "SIGTERM",
@@ -888,7 +971,10 @@ test("derives only closed bounded failure reasons", () => {
   assert.deepEqual(byAgent.get("b")?.failure, { reason: "completion-failed" });
   assert.deepEqual(byAgent.get("c")?.failure, { reason: "output-absent" });
   assert.equal(byAgent.get("d")?.failure, undefined);
-  assert.equal(JSON.stringify(evidence).includes("PRIVATE free text"), false);
+  assert.equal(
+    serializeEvidence(evidence).includes("PRIVATE free text"),
+    false,
+  );
 });
 
 test("bounds model and thinking producer labels", () => {
@@ -916,12 +1002,12 @@ test("bounds model and thinking producer labels", () => {
       "2026-09-12T10:00:05.000Z",
     ),
   ]);
-  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  const byAgent = new Map(runsOf(evidence).map((run) => [run.agent, run]));
   assert.equal(byAgent.get("a")?.model, undefined);
   assert.equal(byAgent.get("a")?.thinking, "high");
   assert.equal(byAgent.get("b")?.model, "gpt-5");
   assert.equal(byAgent.get("b")?.thinking, undefined);
-  assert.equal(JSON.stringify(evidence).includes("PRIVATE"), false);
+  assert.equal(serializeEvidence(evidence).includes("PRIVATE"), false);
 });
 
 test("selects the latest child usage instead of summing repeated publications", () => {
@@ -966,7 +1052,7 @@ test("selects the latest child usage instead of summing repeated publications", 
       "2026-09-12T10:01:00.000Z",
     ),
   ]);
-  assert.deepEqual(evidence.runs[0]?.usage, { totalTokens: 20, cost: 0.2 });
+  assert.deepEqual(runsOf(evidence)[0]?.usage, { totalTokens: 20, cost: 0.2 });
 });
 
 test("classifies a payload carrying both a signal and an exit code as process-signal", () => {
@@ -989,7 +1075,7 @@ test("classifies a payload carrying both a signal and an exit code as process-si
       "2026-09-12T10:00:05.000Z",
     ),
   ]);
-  assert.deepEqual(evidence.runs[0]?.failure, {
+  assert.deepEqual(runsOf(evidence)[0]?.failure, {
     reason: "process-signal",
     detail: "SIGKILL",
   });
@@ -1032,11 +1118,11 @@ test("different surfaces stay separate while same-surface replacement remains or
     ),
   ]);
   // Distinct surfaces remain distinct bounded rows.
-  assert.equal(evidence.runs.length, 2);
-  assert.equal(evidence.runs[0]?.status, "running");
-  assert.equal(evidence.runs[1]?.status, "succeeded");
+  assert.equal(runsOf(evidence).length, 2);
+  assert.equal(runsOf(evidence)[0]?.status, "running");
+  assert.equal(runsOf(evidence)[1]?.status, "succeeded");
   assert.deepEqual(
-    evidence.runs.map((run) => run.usage),
+    runsOf(evidence).map((run) => run.usage),
     [
       { totalTokens: 10, cost: 0.1 },
       { totalTokens: 20, cost: 0.2 },
@@ -1059,10 +1145,13 @@ test("run identity is session-scoped and deterministic", () => {
   const first = readSubagentEvidenceWithSession(entries, "session-a");
   const again = readSubagentEvidenceWithSession(entries, "session-a");
   const second = readSubagentEvidenceWithSession(entries, "session-b");
-  assert.equal(first.runs.length, 1);
-  assert.match(first.runs[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
-  assert.equal(first.runs[0]?.id, again.runs[0]?.id);
-  assert.notEqual(first.runs[0]?.id, second.runs[0]?.id);
+  const firstRuns = reconcileAgentRuns(first.observations).runs;
+  const againRuns = reconcileAgentRuns(again.observations).runs;
+  const secondRuns = reconcileAgentRuns(second.observations).runs;
+  assert.equal(firstRuns.length, 1);
+  assert.match(firstRuns[0]?.id ?? "", /^subagent-[a-f0-9]{64}$/);
+  assert.equal(firstRuns[0]?.id, againRuns[0]?.id);
+  assert.notEqual(firstRuns[0]?.id, secondRuns[0]?.id);
 });
 
 test("recognises previously omitted real process signals", () => {
@@ -1098,7 +1187,7 @@ test("recognises previously omitted real process signals", () => {
     ),
   ]);
   assert.deepEqual(
-    evidence.runs.map((run) => run.failure),
+    runsOf(evidence).map((run) => run.failure),
     [
       { reason: "process-signal", detail: "SIGPWR" },
       { reason: "process-signal", detail: "SIGSTKFLT" },
@@ -1124,7 +1213,7 @@ test("bounds the accepted exit-code failure detail", () => {
       "2026-09-12T10:00:05.000Z",
     ),
   ]);
-  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  const byAgent = new Map(runsOf(evidence).map((run) => [run.agent, run]));
   assert.deepEqual(byAgent.get("a")?.failure, {
     reason: "exit-nonzero",
     detail: 2_147_483_647,
@@ -1144,8 +1233,8 @@ test("attributes workflow result metrics to exact child keys without leaking ids
   );
   const evidence = readSubagentEvidence(parseSessionJsonl(fixture).entries);
 
-  assert.equal(evidence.runs.length, 2);
-  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  assert.equal(runsOf(evidence).length, 2);
+  const byAgent = new Map(runsOf(evidence).map((run) => [run.agent, run]));
   assert.deepEqual(
     {
       durationMs: byAgent.get("summary-agent-a")?.durationMs,
@@ -1182,7 +1271,7 @@ test("attributes workflow result metrics to exact child keys without leaking ids
     "workflow-child-b",
     "workflow%container",
   ]) {
-    assert.equal(JSON.stringify(evidence).includes(privateValue), false);
+    assert.equal(serializeEvidence(evidence).includes(privateValue), false);
   }
 });
 
@@ -1231,14 +1320,14 @@ test("keeps exact workflow identities separate when summary agent is absent", ()
     ),
   ]);
 
-  assert.equal(evidence.runs.length, 2);
-  assert.notEqual(evidence.runs[0]?.id, evidence.runs[1]?.id);
-  assert.equal(evidence.runs[0]?.agent, "result-agent");
-  assert.equal(evidence.runs[1]?.agent, undefined);
-  assert.equal(evidence.runs[1]?.status, "running");
-  assert.equal(evidence.runs[1]?.durationMs, 900);
-  assert.deepEqual(evidence.runs[1]?.usage, { totalTokens: 25, cost: 0.01 });
-  assert.equal(JSON.stringify(evidence).includes("private-step"), false);
+  assert.equal(runsOf(evidence).length, 2);
+  assert.notEqual(runsOf(evidence)[0]?.id, runsOf(evidence)[1]?.id);
+  assert.equal(runsOf(evidence)[0]?.agent, "result-agent");
+  assert.equal(runsOf(evidence)[1]?.agent, undefined);
+  assert.equal(runsOf(evidence)[1]?.status, "running");
+  assert.equal(runsOf(evidence)[1]?.durationMs, 900);
+  assert.deepEqual(runsOf(evidence)[1]?.usage, { totalTokens: 25, cost: 0.01 });
+  assert.equal(serializeEvidence(evidence).includes("private-step"), false);
 });
 
 test("withholds correlated workflow evidence when exact producer keys are absent or ambiguous", () => {
@@ -1420,7 +1509,7 @@ test("withholds correlated workflow evidence when exact producer keys are absent
         "2026-09-12T10:00:01.000Z",
       ),
     ]);
-    const child = evidence.runs.find((run) => run.agent === "summary-agent");
+    const child = runsOf(evidence).find((run) => run.agent === "summary-agent");
     assert.ok(child, name);
     assert.equal(child?.durationMs, undefined, name);
     assert.equal(child?.toolCalls, undefined, name);
@@ -1481,10 +1570,10 @@ test("preserves unrelated workflow groups when one result key is ambiguous", () 
       "2026-09-12T10:00:01.000Z",
     ),
   ]);
-  const byAgent = new Map(evidence.runs.map((run) => [run.agent, run]));
+  const byAgent = new Map(runsOf(evidence).map((run) => [run.agent, run]));
   const ambiguous = byAgent.get("summary-agent-a");
   const exact = byAgent.get("summary-agent-b");
-  assert.equal(evidence.runs.length, 2);
+  assert.equal(runsOf(evidence).length, 2);
   assert.ok(ambiguous);
   assert.ok(exact);
   assert.equal(ambiguous.durationMs, undefined);
@@ -1513,12 +1602,12 @@ test("collects workflowChildren children after results and completions", () => {
     ),
   ];
   const evidence = readSubagentEvidence(entries);
-  assert.equal(evidence.runs.length, 2);
-  assert.equal(evidence.runs[0]?.status, "unknown");
-  assert.equal(evidence.runs[1]?.status, "succeeded");
-  assert.notEqual(evidence.runs[0]?.parentId, evidence.runs[1]?.parentId);
-  assert.equal(evidence.runs[0]?.effortCoverage.duration, "unavailable");
-  assert.equal(evidence.runs[1]?.effortCoverage.duration, "unavailable");
+  assert.equal(runsOf(evidence).length, 2);
+  assert.equal(runsOf(evidence)[0]?.status, "unknown");
+  assert.equal(runsOf(evidence)[1]?.status, "succeeded");
+  assert.notEqual(runsOf(evidence)[0]?.parentId, runsOf(evidence)[1]?.parentId);
+  assert.equal(runsOf(evidence)[0]?.effortCoverage.duration, "unavailable");
+  assert.equal(runsOf(evidence)[1]?.effortCoverage.duration, "unavailable");
 });
 
 test("same-surface publications keep omitted fields", () => {
@@ -1548,10 +1637,10 @@ test("same-surface publications keep omitted fields", () => {
       "2026-09-12T10:01:00.000Z",
     ),
   ]);
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.model, "gpt-5");
-  assert.equal(evidence.runs[0]?.thinking, "high");
-  assert.deepEqual(evidence.runs[0]?.failure, {
+  assert.equal(runsOf(evidence).length, 1);
+  assert.equal(runsOf(evidence)[0]?.model, "gpt-5");
+  assert.equal(runsOf(evidence)[0]?.thinking, "high");
+  assert.deepEqual(runsOf(evidence)[0]?.failure, {
     reason: "exit-nonzero",
     detail: 2,
   });
@@ -1574,9 +1663,9 @@ test("same-surface publication order follows entry ordinal", () => {
       "2026-09-12T10:00:00.000Z",
     ),
   ]);
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.observedAt, "2026-09-12T10:00:00.000Z");
-  assert.equal(evidence.runs[0]?.evidenceToolId, "tool:call_2");
+  assert.equal(runsOf(evidence).length, 1);
+  assert.equal(runsOf(evidence)[0]?.observedAt, "2026-09-12T10:00:00.000Z");
+  assert.equal(runsOf(evidence)[0]?.evidenceToolId, "tool:call_2");
 });
 
 test("counts same-surface field conflicts", () => {
@@ -1596,7 +1685,7 @@ test("counts same-surface field conflicts", () => {
       "2026-09-12T10:01:00.000Z",
     ),
   ]);
-  assert.deepEqual(evidence.diagnostics, [
+  assert.deepEqual(reconcileAgentRuns(evidence.observations).diagnostics, [
     { code: "cooperative-evidence-conflict", count: 2 },
   ]);
 });
@@ -1620,12 +1709,12 @@ test("a result that cannot be joined publishes no run", () => {
       },
     },
   ]);
-  assert.equal(evidence.runs.length, 0);
+  assert.equal(runsOf(evidence).length, 0);
 });
 
 test("a call without a result publishes no run while activity still counts it", () => {
   const evidence = readSubagentEvidence([assistantEntry("a1", "call-1")]);
-  assert.deepEqual([evidence.runs.length, evidence.activity.calls], [0, 1]);
+  assert.deepEqual([runsOf(evidence).length, evidence.activity.calls], [0, 1]);
 });
 
 test("preserves audited tool counts and partial usage independently", () => {
@@ -1649,7 +1738,9 @@ test("preserves audited tool counts and partial usage independently", () => {
       "2026-09-12T10:00:05.000Z",
     ),
   ]);
-  const run = evidence.runs.find((candidate) => candidate.agent === "delegate");
+  const run = runsOf(evidence).find(
+    (candidate) => candidate.agent === "delegate",
+  );
   assert.equal(run?.toolCalls, 1_000_000);
   assert.deepEqual(run?.usage, { totalTokens: 15 });
   assert.equal(run?.effortCoverage.usage, "partial");
@@ -1695,13 +1786,13 @@ test("accepts one-billion tool calls and rejects larger counts and token sums", 
     ),
   ]);
 
-  const accepted = evidence.runs.find(
+  const accepted = runsOf(evidence).find(
     (run) => run.agent === "accepted-tool-count",
   );
-  const rejected = evidence.runs.find(
+  const rejected = runsOf(evidence).find(
     (run) => run.agent === "rejected-tool-count",
   );
-  const overTokenSum = evidence.runs.find(
+  const overTokenSum = runsOf(evidence).find(
     (run) => run.agent === "over-token-sum",
   );
   assert.equal(accepted?.toolCalls, 1_000_000_000);

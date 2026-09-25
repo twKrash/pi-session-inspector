@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import { readPublishedArchiveState } from "../../src/integrations/subagent-archive.ts";
 import { readSubagentEvidenceWithArchives as readSubagentEvidenceWithArchivesForSession } from "../../src/integrations/subagents.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
@@ -21,6 +22,24 @@ const SESSION_ID = "session-archive-test";
 const readSubagentEvidenceWithArchives = (
   entries: Parameters<typeof readSubagentEvidenceWithArchivesForSession>[0],
 ) => readSubagentEvidenceWithArchivesForSession(entries, SESSION_ID);
+const runsOf = (
+  evidence: Awaited<ReturnType<typeof readSubagentEvidenceWithArchives>>,
+) => reconcileAgentRuns(evidence.observations).runs;
+const externallyRelevantEvidence = (
+  evidence: Awaited<ReturnType<typeof readSubagentEvidenceWithArchives>>,
+) => {
+  const observations = [...evidence.observations];
+  const reconciled = reconcileAgentRuns(observations);
+  return {
+    ...evidence,
+    observations,
+    canonicalRuns: reconciled.runs,
+    reconciliationDiagnostics: reconciled.diagnostics,
+  };
+};
+const serializeEvidence = (
+  evidence: Awaited<ReturnType<typeof readSubagentEvidenceWithArchives>>,
+) => JSON.stringify(externallyRelevantEvidence(evidence));
 
 async function readFixture(): Promise<string> {
   return readFile(
@@ -176,20 +195,21 @@ test("attaches archive presence per published reference without retaining values
   const present = parseSessionJsonl(sessionWithArchive(archivePath)).entries;
 
   const available = await readSubagentEvidenceWithArchives(present);
-  assert.equal(available.runs.length, 1);
-  assert.equal(available.runs[0]?.artifacts, "available");
+  const availableRuns = runsOf(available);
+  assert.equal(availableRuns.length, 1);
+  assert.equal(availableRuns[0]?.artifacts, "available");
   assert.equal(available.activity.calls, 1);
   assert.equal(available.state, "supported");
 
   // The published path, raw run id, and archive entry fields never leave.
-  const serialized = JSON.stringify(available);
+  const serialized = serializeEvidence(available);
   assert.equal(serialized.includes(archivePath), false);
   assert.equal(serialized.includes("run-raw"), false);
   assert.equal(serialized.includes("/home/dev/PRIVATE"), false);
 
   await rm(archivePath, { force: true });
   const missing = await readSubagentEvidenceWithArchives(present);
-  assert.equal(missing.runs[0]?.artifacts, "missing");
+  assert.equal(runsOf(missing)[0]?.artifacts, "missing");
   // Absence never fabricates `available`, and native activity is unchanged.
   assert.equal(missing.activity.calls, 1);
   assert.equal(missing.state, "supported");
@@ -232,8 +252,8 @@ test("leaves artifacts absent for runs without a published reference", async () 
   ).entries;
 
   const evidence = await readSubagentEvidenceWithArchives(entries);
-  assert.equal(evidence.runs.length, 1);
-  assert.equal(evidence.runs[0]?.artifacts, undefined);
+  assert.equal(runsOf(evidence).length, 1);
+  assert.equal(runsOf(evidence)[0]?.artifacts, undefined);
 });
 
 test("follows only the completion surface and ignores a results-row archivePath", async () => {
@@ -295,14 +315,14 @@ test("follows only the completion surface and ignores a results-row archivePath"
 
   const evidence = await readSubagentEvidenceWithArchives(entries);
 
-  const reviewer = evidence.runs.find((run) => run.agent === "reviewer");
-  const worker = evidence.runs.find((run) => run.agent === "worker");
-  assert.equal(evidence.runs.length, 2);
+  const reviewer = runsOf(evidence).find((run) => run.agent === "reviewer");
+  const worker = runsOf(evidence).find((run) => run.agent === "worker");
+  assert.equal(runsOf(evidence).length, 2);
   // The completion reference is validated and published.
   assert.equal(reviewer?.artifacts, "available");
   // A results-row reference is deliberately not followed: absent, not "missing".
   assert.equal(worker?.artifacts, undefined);
-  assert.equal(JSON.stringify(evidence).includes(archivePath), false);
+  assert.equal(serializeEvidence(evidence).includes(archivePath), false);
 });
 
 test("a rejected or non-absolute reference yields missing for that run only", async () => {
@@ -371,7 +391,7 @@ test("a rejected or non-absolute reference yields missing for that run only", as
 
   const evidence = await readSubagentEvidenceWithArchives(entries);
   assert.deepEqual(
-    evidence.runs.map((run) => run.artifacts),
+    runsOf(evidence).map((run) => run.artifacts),
     ["available", "missing", "missing", undefined],
   );
 });
@@ -446,7 +466,16 @@ test("production report path consumes archive enrichment", async () => {
   assert.equal(model.report.agents[0]?.artifacts, "available");
   assert.equal(model.report.agentEvidence, "supported");
   assert.equal(model.report.agentActivity.calls, 1);
-  assert.equal(JSON.stringify(model.report).includes(archivePath), false);
+  const serializedReport = JSON.stringify(model.report);
+  for (const privateValue of [
+    archivePath,
+    "run-raw",
+    "run-a",
+    "run-b",
+    "/home/dev/PRIVATE",
+  ]) {
+    assert.equal(serializedReport.includes(privateValue), false);
+  }
   // P1.2: the health the same DTO publishes must see the cooperative evidence
   // class the body reports, not an empty L1 agent list.
   assert.equal(
@@ -475,5 +504,5 @@ test("production report path consumes archive enrichment", async () => {
   ).entries;
   const evidence = await readSubagentEvidenceWithArchives(entries);
   assert.equal(evidence.activity.calls, 1);
-  assert.equal(evidence.runs.length, 1);
+  assert.equal(runsOf(evidence).length, 1);
 });
