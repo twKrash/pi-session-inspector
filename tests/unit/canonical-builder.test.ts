@@ -824,6 +824,75 @@ test("P1.2a: child run usage never changes the session/native totals", () => {
   assert.equal(health.usage.nativeLines, 2);
 });
 
+test("fails closed and diagnoses duplicate public run IDs without aliases", () => {
+  const publicId = `subagent-${"1".repeat(64)}`;
+  const effortCoverage = {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  } as const;
+  const subagents: SubagentSourceEvidence = {
+    activity: {
+      state: "supported",
+      calls: 1,
+      succeeded: 1,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    },
+    observations: [
+      {
+        sourceIdentity: `subagent-source-${"a".repeat(64)}`,
+        order: 0,
+        run: {
+          id: publicId,
+          status: "succeeded",
+          confidence: "cooperative",
+          effortCoverage,
+        },
+      },
+      {
+        sourceIdentity: `subagent-source-${"b".repeat(64)}`,
+        order: 1,
+        run: {
+          id: publicId,
+          status: "failed",
+          confidence: "cooperative",
+          effortCoverage,
+        },
+      },
+    ],
+    state: "supported",
+    diagnostics: [],
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    subagents,
+  });
+
+  assert.equal(result.state, "ready");
+  if (result.state !== "ready") return;
+  assert.deepEqual(result.session.agents, []);
+  assert.deepEqual(
+    result.session.health.diagnostics
+      .filter((diagnostic) => diagnostic.source === "subagent-result")
+      .filter(
+        (diagnostic) => diagnostic.code === "cooperative-evidence-conflict",
+      )
+      .map(({ code, count }) => ({ code, count })),
+    [{ code: "cooperative-evidence-conflict", count: 1 }],
+  );
+  const serialized = JSON.stringify(result.session.health.diagnostics);
+  assert.equal(serialized.includes(publicId), false);
+  assert.equal(serialized.includes(`subagent-source-${"a".repeat(64)}`), false);
+});
+
 test("P1.2b: aggregate overflow publishes unavailable usage and bounded lines", () => {
   const big = (id: string) => ({
     type: "message",

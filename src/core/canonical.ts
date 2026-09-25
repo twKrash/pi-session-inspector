@@ -645,26 +645,48 @@ function normalizeSubagentEvidence(
   const reconciled = reconcileAgentRuns(
     boundedSourceObservations(observations),
   );
+  const normalizedRuns = normalizeAgentRuns(reconciled.runs);
   return {
     activity,
-    runs: normalizeAgentRuns(reconciled.runs),
+    runs: normalizedRuns.runs,
     state:
       input.state === "supported" ||
       input.state === "unavailable" ||
       input.state === "unsupported"
         ? input.state
         : "unavailable",
-    diagnostics: [...diagnostics, ...reconciled.diagnostics],
+    diagnostics: [
+      ...diagnostics,
+      ...reconciled.diagnostics,
+      ...(normalizedRuns.conflictCount === 0
+        ? []
+        : [
+            {
+              code: "cooperative-evidence-conflict" as const,
+              count: normalizedRuns.conflictCount,
+            },
+          ]),
+    ],
   };
 }
 
-function normalizeAgentRuns(runs: readonly AgentRun[]): AgentRun[] {
+function normalizeAgentRuns(runs: readonly AgentRun[]): {
+  runs: AgentRun[];
+  conflictCount: number;
+} {
   const byId = new Map<string, AgentRun>();
+  const conflictingIds = new Set<string>();
   for (const value of runs.slice(0, MAX_AGENT_RUN_COUNT)) {
     const run = normalizeAgentRun(value);
-    if (run !== undefined) byId.set(run.id, run);
+    if (run === undefined || conflictingIds.has(run.id)) continue;
+    if (byId.has(run.id)) {
+      byId.delete(run.id);
+      conflictingIds.add(run.id);
+    } else {
+      byId.set(run.id, run);
+    }
   }
-  return [...byId.values()];
+  return { runs: [...byId.values()], conflictCount: conflictingIds.size };
 }
 
 function normalizeAgentRun(value: unknown): AgentRun | undefined {
