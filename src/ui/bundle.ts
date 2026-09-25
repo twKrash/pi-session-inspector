@@ -132,10 +132,11 @@ export type InspectorBundleInput = {
     walRecords?: readonly RetainedWalRecord[];
     liveOverflow?: number;
   };
-  /** Composition-root provider for validated archive-backed child evidence. */
+  /** Composition-root provider for current-only child evidence. */
   subagentEvidence?: (
     entries: readonly import("../core/events.ts").SessionEntry[],
     sessionId: string,
+    sessionFile?: string,
   ) => Promise<SubagentSourceEvidence>;
   /**
    * Per-session L0 evidence for history/global sections, built by the

@@ -15,6 +15,7 @@ import { boundedProducerLabel } from "../core/evidence.ts";
 import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
+import { readReferencedLifecycleEnrichment } from "./subagent-lifecycle.ts";
 
 /** Persisted pi-subagents tool names, in the report's fixed column order. */
 const SUBAGENT_TOOL_NAMES = [
@@ -153,6 +154,7 @@ export type {
 export async function readSubagentEvidenceWithArchives(
   entries: readonly SessionEntry[],
   sessionId: string,
+  sessionFile?: string,
 ): Promise<SubagentSourceEvidence> {
   const evidence = readSubagentEvidence(entries, sessionId);
   if (evidence.state !== "supported") return evidence;
@@ -160,21 +162,25 @@ export async function readSubagentEvidenceWithArchives(
   try {
     references = collectArchiveReferences(entries, sessionId);
   } catch {
-    return evidence;
+    references = new Map();
   }
-  if (references.size === 0) return evidence;
+  if (references.size === 0) {
+    return sessionFile === undefined
+      ? evidence
+      : enrichCurrentLifecycle(entries, sessionId, sessionFile, evidence);
+  }
 
   const artifactsBySource = new Map<string, "available" | "missing">();
   try {
     await Promise.all(
       [...references].map(async ([sourceIdentity, reference]) => {
         try {
-          artifactsBySource.set(
+          return artifactsBySource.set(
             sourceIdentity,
             await readPublishedArchiveState(reference.path, reference.runId),
           );
         } catch {
-          artifactsBySource.set(sourceIdentity, "missing");
+          return artifactsBySource.set(sourceIdentity, "missing");
         }
       }),
     );
@@ -182,7 +188,7 @@ export async function readSubagentEvidenceWithArchives(
     return evidence;
   }
 
-  return {
+  const archivedEvidence: SubagentSourceEvidence = {
     ...evidence,
     observations: {
       *[Symbol.iterator]() {
@@ -195,6 +201,117 @@ export async function readSubagentEvidenceWithArchives(
       },
     },
   };
+  return sessionFile === undefined
+    ? archivedEvidence
+    : enrichCurrentLifecycle(entries, sessionId, sessionFile, archivedEvidence);
+}
+
+async function enrichCurrentLifecycle(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+  sessionFile: string,
+  evidence: SubagentSourceEvidence,
+): Promise<SubagentSourceEvidence> {
+  try {
+    const observations = [...evidence.observations];
+    const observedSources = new Set(
+      observations.map(({ sourceIdentity }) => sourceIdentity),
+    );
+    const references = collectAsyncLifecycleReferences(entries, sessionId);
+    const jobs = [...references].filter(([sourceIdentity]) =>
+      observedSources.has(sourceIdentity),
+    );
+    const loaded = await Promise.all(
+      jobs.map(async ([sourceIdentity, reference]) => {
+        const enrichment = await readReferencedLifecycleEnrichment(
+          reference.asyncDir,
+          reference.runId,
+          sessionFile,
+        );
+        return [sourceIdentity, enrichment] as const;
+      }),
+    );
+    const enrichmentBySource = new Map(loaded);
+
+    return {
+      ...evidence,
+      observations: observations.map((observation) => {
+        const enrichment = enrichmentBySource.get(observation.sourceIdentity);
+        if (enrichment === undefined) return observation;
+        const model = observation.run.model ?? enrichment.model;
+        const toolCalls = observation.run.toolCalls ?? enrichment.toolCalls;
+        if (
+          model === observation.run.model &&
+          toolCalls === observation.run.toolCalls
+        )
+          return observation;
+        return {
+          ...observation,
+          run: {
+            ...observation.run,
+            ...(model === undefined ? {} : { model }),
+            ...(toolCalls === undefined ? {} : { toolCalls }),
+            ...(observation.run.toolCalls === undefined &&
+            toolCalls !== undefined
+              ? {
+                  effortCoverage: {
+                    ...observation.run.effortCoverage,
+                    tools: "partial" as const,
+                  },
+                }
+              : {}),
+          },
+        };
+      }),
+    };
+  } catch {
+    return evidence;
+  }
+}
+
+function collectAsyncLifecycleReferences(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+): Map<string, { asyncDir: unknown; runId: string }> {
+  const calls: { name: string; callId?: string }[] = [];
+  const results = new Map<string, JoinedResult>();
+  entries.forEach((entry, ordinal) => {
+    const message = snapshotRecord(entry.message);
+    if (message?.role === "assistant") collectCalls(message.content, calls);
+    else if (message?.role === "toolResult")
+      collectResult(message, entry.timestamp, ordinal, results);
+  });
+
+  const byRunId = new Map<string, { asyncDir: unknown; conflicted: boolean }>();
+  for (const call of calls) {
+    if (call.callId === undefined) continue;
+    const result = results.get(call.callId)?.message;
+    if (
+      result === undefined ||
+      result.toolName !== call.name ||
+      result.isError !== false
+    )
+      continue;
+    const details = snapshotRecord(result.details);
+    if (details === undefined) continue;
+    const runId = readAsyncLaunchRunId(call.name, result, details);
+    if (runId === undefined) continue;
+    const previous = byRunId.get(runId);
+    if (previous === undefined)
+      byRunId.set(runId, { asyncDir: details.asyncDir, conflicted: false });
+    else if (previous.asyncDir !== details.asyncDir) previous.conflicted = true;
+  }
+
+  const references = new Map<string, { asyncDir: unknown; runId: string }>();
+  for (const [runId, reference] of byRunId) {
+    if (!reference.conflicted) {
+      references.set(opaqueSubagentSourceIdentity(sessionId, runId, "async"), {
+        asyncDir: reference.asyncDir,
+        runId,
+      });
+    }
+  }
+  return references;
 }
 
 /** Bounded label grammar shared with the report projection. */
