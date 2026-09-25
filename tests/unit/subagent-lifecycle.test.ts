@@ -37,28 +37,28 @@ const readCurrent = readSubagentEvidenceWithArchives as LifecycleReader;
 function launchEntries(
   asyncDir: string,
   details: Record<string, unknown> = {},
+  prefix = "launch",
 ) {
+  const callId = `${prefix}-tool-call`;
   return [
     {
-      id: "launch-call",
+      id: `${prefix}-call`,
       parentId: null,
       timestamp: "2026-09-25T10:00:00.000Z",
       type: "message",
       message: {
         role: "assistant",
-        content: [
-          { type: "toolCall", id: "launch-tool-call", name: "subagent" },
-        ],
+        content: [{ type: "toolCall", id: callId, name: "subagent" }],
       },
     },
     {
-      id: "launch-result",
-      parentId: "launch-call",
+      id: `${prefix}-result`,
+      parentId: `${prefix}-call`,
       timestamp: "2026-09-25T10:00:01.000Z",
       type: "message",
       message: {
         role: "toolResult",
-        toolCallId: "launch-tool-call",
+        toolCallId: callId,
         toolName: "subagent",
         isError: false,
         details: {
@@ -511,6 +511,37 @@ test("published v3 fixture enriches current report only", async () => {
     assert.equal(historyRun?.id, currentRun.id);
     assert.equal(historyRun?.toolCalls, undefined);
     assert.equal(historyRun?.model, undefined);
+  } finally {
+    await input.cleanup();
+  }
+});
+
+test("over-limit async launches skip lifecycle reads and preserve C1 evidence", async () => {
+  const input = await setup(status({ status: "running", toolCount: 7 }));
+  for (let index = 0; index < 256; index++) {
+    const runId = `extra-run-${index}`;
+    input.entries.push(
+      ...launchEntries(
+        join(input.root, `async-${index}`),
+        { runId, asyncId: runId },
+        `extra-${index}`,
+      ),
+    );
+  }
+  try {
+    const persisted = await readCurrent(input.entries, input.sessionId);
+    const current = await readCurrent(
+      input.entries,
+      input.sessionId,
+      input.sessionFile,
+    );
+    const persistedRows = [...persisted.observations];
+    const currentRows = [...current.observations];
+    assert.equal(persistedRows.length, 257);
+    assert.deepEqual(currentRows, persistedRows);
+    assert.deepEqual(current.activity, persisted.activity);
+    assert.deepEqual(current.aliases, persisted.aliases);
+    assert.equal(currentRows[0]?.run.toolCalls, undefined);
   } finally {
     await input.cleanup();
   }

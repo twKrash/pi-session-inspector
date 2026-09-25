@@ -491,7 +491,10 @@ from `steps[0].toolCount` as partial/provisional current-view effort, or absent
 `model` from `steps[0].model` only when the step status is `complete`; model is a
 producer-reported label, not proof of provider generation. Persisted values
 win. Missing, malformed, mismatched, unsupported, or unsafe artifacts leave
-C1 rows unchanged. History never reads lifecycle artifacts. No lifecycle status,
+C1 rows unchanged. The optional reader bounds input to 256 candidate `subagent`
+launch calls and 512 persisted run observations; exceeding either cap skips all
+lifecycle reads and preserves persisted C1 evidence. Status files are read
+serially, one at a time. History never reads lifecycle artifacts. No lifecycle status,
 process proof, duration, turns, usage, cost, requested model, or root aggregate
 count is consumed; native totals and child-usage accounting remain unchanged.
 

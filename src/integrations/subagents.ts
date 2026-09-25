@@ -35,6 +35,8 @@ const WORKFLOW_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** Bounded agent label token; an unusable producer value stays absent. */
 const AGENT_LABEL = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$/;
 const MAX_RUNS = 256;
+// Keep lifecycle materialization within reconciler's two sources per run.
+const MAX_LIFECYCLE_OBSERVATIONS = MAX_RUNS * 2;
 const MAX_WORKFLOW_ID_BYTES = 4096;
 const WORKFLOW_SUMMARY_FIELDS: ReadonlySet<string> = new Set([
   "version",
@@ -213,7 +215,13 @@ async function enrichCurrentLifecycle(
   evidence: SubagentSourceEvidence,
 ): Promise<SubagentSourceEvidence> {
   try {
-    const observations = [...evidence.observations];
+    const references = collectAsyncLifecycleReferences(entries, sessionId);
+    if (references === undefined) return evidence;
+    const observations: AgentRunSourceObservation[] = [];
+    for (const observation of evidence.observations) {
+      if (observations.length >= MAX_LIFECYCLE_OBSERVATIONS) return evidence;
+      observations.push(observation);
+    }
     const publicIdBySource = new Map(
       (evidence.aliases ?? []).map(({ sourceIdentity, publicId }) => [
         sourceIdentity,
@@ -232,21 +240,21 @@ async function enrichCurrentLifecycle(
     const observedSources = new Set(
       observations.map(({ sourceIdentity }) => sourceIdentity),
     );
-    const references = collectAsyncLifecycleReferences(entries, sessionId);
-    const jobs = [...references].filter(([sourceIdentity]) =>
-      observedSources.has(sourceIdentity),
-    );
-    const loaded = await Promise.all(
-      jobs.map(async ([sourceIdentity, reference]) => {
-        const enrichment = await readReferencedLifecycleEnrichment(
+    const enrichmentBySource = new Map<
+      string,
+      Awaited<ReturnType<typeof readReferencedLifecycleEnrichment>>
+    >();
+    for (const [sourceIdentity, reference] of references) {
+      if (!observedSources.has(sourceIdentity)) continue;
+      enrichmentBySource.set(
+        sourceIdentity,
+        await readReferencedLifecycleEnrichment(
           reference.asyncDir,
           reference.runId,
           sessionFile,
-        );
-        return [sourceIdentity, enrichment] as const;
-      }),
-    );
-    const enrichmentBySource = new Map(loaded);
+        ),
+      );
+    }
 
     return {
       ...evidence,
@@ -296,34 +304,61 @@ async function enrichCurrentLifecycle(
 function collectAsyncLifecycleReferences(
   entries: readonly SessionEntry[],
   sessionId: string,
-): Map<string, { asyncDir: unknown; runId: string }> {
-  const calls: { name: string; callId?: string }[] = [];
-  const results = new Map<string, JoinedResult>();
-  entries.forEach((entry, ordinal) => {
+): Map<string, { asyncDir: unknown; runId: string }> | undefined {
+  const callIds = new Set<string>();
+  for (const entry of entries) {
     const message = snapshotRecord(entry.message);
-    if (message?.role === "assistant") collectCalls(message.content, calls);
-    else if (message?.role === "toolResult")
+    if (message?.role !== "assistant" || !Array.isArray(message.content))
+      continue;
+    for (const value of message.content) {
+      const call = snapshotRecord(value);
+      if (
+        call?.type !== "toolCall" ||
+        call.name !== "subagent" ||
+        typeof call.id !== "string" ||
+        call.id.length === 0 ||
+        callIds.has(call.id)
+      ) {
+        continue;
+      }
+      if (callIds.size >= MAX_RUNS) return undefined;
+      callIds.add(call.id);
+    }
+  }
+
+  const results = new Map<string, JoinedResult>();
+  for (const [ordinal, entry] of entries.entries()) {
+    const message = snapshotRecord(entry.message);
+    if (
+      message?.role === "toolResult" &&
+      typeof message.toolCallId === "string" &&
+      callIds.has(message.toolCallId)
+    ) {
       collectResult(message, entry.timestamp, ordinal, results);
-  });
+    }
+  }
 
   const byRunId = new Map<string, { asyncDir: unknown; conflicted: boolean }>();
-  for (const call of calls) {
-    if (call.callId === undefined) continue;
-    const result = results.get(call.callId)?.message;
+  for (const callId of callIds) {
+    const result = results.get(callId)?.message;
     if (
       result === undefined ||
-      result.toolName !== call.name ||
+      result.toolName !== "subagent" ||
       result.isError !== false
-    )
+    ) {
       continue;
+    }
     const details = snapshotRecord(result.details);
     if (details === undefined) continue;
-    const runId = readAsyncLaunchRunId(call.name, result, details);
+    const runId = readAsyncLaunchRunId("subagent", result, details);
     if (runId === undefined) continue;
     const previous = byRunId.get(runId);
-    if (previous === undefined)
+    if (previous === undefined) {
+      if (byRunId.size >= MAX_RUNS) return undefined;
       byRunId.set(runId, { asyncDir: details.asyncDir, conflicted: false });
-    else if (previous.asyncDir !== details.asyncDir) previous.conflicted = true;
+    } else if (previous.asyncDir !== details.asyncDir) {
+      previous.conflicted = true;
+    }
   }
 
   const references = new Map<string, { asyncDir: unknown; runId: string }>();
