@@ -482,6 +482,22 @@ async execution is unproven, not foreground. A run without an explicit parent
 keeps `parentId` absent; shared projections render its existing parent verdict
 as `unknown`. No parent is inferred.
 
+For a current-session report only, a C1-proven async launch may be optionally
+filled from the `status.json` beneath its explicitly persisted `asyncDir`.
+Accept only lifecycle artifact v3, `mode: "single"`, exact persisted launch
+`runId`, one step, and a present `sessionId` equal to the parent Pi session-file
+path. Lifecycle evidence never creates a run. It may fill absent `toolCalls`
+from `steps[0].toolCount` as partial/provisional current-view effort, or absent
+`model` from `steps[0].model` only when the step status is `complete`; model is a
+producer-reported label, not proof of provider generation. Persisted values
+win. Missing, malformed, mismatched, unsupported, or unsafe artifacts leave
+C1 rows unchanged. The optional reader bounds input to 256 candidate `subagent`
+launch calls and 512 persisted run observations; exceeding either cap skips all
+lifecycle reads and preserves persisted C1 evidence. Status files are read
+serially, one at a time. History never reads lifecycle artifacts. No lifecycle status,
+process proof, duration, turns, usage, cost, requested model, or root aggregate
+count is consumed; native totals and child-usage accounting remain unchanged.
+
 ## 11. Failure behavior, migrations, and risks
 
 Unknown Pi entries/fields, telemetry schema, integration version, artifact absence, corrupted WAL tail, stale checkpoint, source rewrite, missing browser, and storage errors must degrade to diagnostics/confidence—not crashes or Pi behavior changes.

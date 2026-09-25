@@ -41,6 +41,7 @@ export type LoadCurrentSessionReportOptions = {
   subagentEvidence?: (
     entries: readonly import("../core/events.ts").SessionEntry[],
     sessionId: string,
+    sessionFile?: string,
   ) => Promise<SubagentSourceEvidence>;
 };
 
@@ -98,8 +99,11 @@ export async function loadCurrentSessionReport(
     // evidence usage stays a child-agent breakdown, never a session total.
     // Only validated published archive references add presence evidence.
     const subagentEvidence =
-      (await options.subagentEvidence?.(entries, resolved.session.sessionId)) ??
-      readSubagentEvidence(entries, resolved.session.sessionId);
+      (await options.subagentEvidence?.(
+        entries,
+        resolved.session.sessionId,
+        sessionFile,
+      )) ?? readSubagentEvidence(entries, resolved.session.sessionId);
     const session = attachSubagentEvidence(resolved.session, subagentEvidence);
     return createCurrentTuiModel(
       toSessionReport(session, {

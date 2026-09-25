@@ -1,0 +1,20 @@
+{
+  "lifecycleArtifactVersion": 3,
+  "runId": "sanitized-producer-run-id",
+  "sessionId": "/sanitized/current-session.jsonl",
+  "mode": "single",
+  "state": "complete",
+  "startedAt": 1790350000000,
+  "lastUpdate": 1790350001000,
+  "endedAt": 1790350001000,
+  "currentStep": 0,
+  "chainStepCount": 1,
+  "steps": [
+    {
+      "agent": "worker",
+      "status": "complete",
+      "model": "provider/model-a",
+      "toolCount": 2
+    }
+  ]
+}

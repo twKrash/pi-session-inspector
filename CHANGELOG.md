@@ -4,6 +4,12 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+### Added
+
+- Current-session C1 async runs may fill missing `toolCalls` and completed-step
+  `model` from the explicitly referenced v3 pi-subagents `status.json`; history,
+  persisted values, status, identity, and native usage accounting stay unchanged.
+
 ### Fixed
 
 - Preserve exact C1 subagent launch/completion aliases in history projections.
