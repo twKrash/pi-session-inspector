@@ -1788,6 +1788,33 @@ test("derives only closed bounded failure reasons", () => {
   );
 });
 
+test("does not read a tool-result error flag as producer row status", () => {
+  // `isError` is a persisted Pi tool-result field, not a producer row field.
+  // The call/result join already consumes it (launch eligibility and activity
+  // counting), so a row that carries a field with that name is not status
+  // evidence and the row stays unknown rather than guessed.
+  const evidence = readSubagentEvidence([
+    assistantEntry("a", "call_1"),
+    resultEntry(
+      "r1",
+      "call_1",
+      {
+        results: [
+          { runId: "run-ok-flag", agent: "a", isError: false },
+          { runId: "run-error-flag", agent: "b", isError: true },
+          { runId: "run-exit-code", agent: "c", isError: true, exitCode: 0 },
+        ],
+      },
+      "2026-09-12T10:00:05.000Z",
+    ),
+  ]);
+  const byAgent = new Map(runsOf(evidence).map((run) => [run.agent, run]));
+  assert.equal(byAgent.get("a")?.status, "unknown");
+  assert.equal(byAgent.get("b")?.status, "unknown");
+  // Real persisted producer evidence still wins over the foreign field.
+  assert.equal(byAgent.get("c")?.status, "succeeded");
+});
+
 test("bounds model and thinking producer labels", () => {
   const evidence = readSubagentEvidence([
     assistantEntry("a", "call_1"),
