@@ -6,11 +6,14 @@ import type {
 } from "./events.ts";
 
 const MAX_RUNS = 256;
+// Exact async launch/completion aliases can contribute two bounded sources per row.
+const MAX_SOURCE_RUNS = MAX_RUNS * 2;
 const SOURCE_ID = /^subagent-source-[a-f0-9]{64}$/;
 const CANONICAL_ID = /^subagent-canonical-[a-f0-9]{64}$/;
 const PUBLIC_ID = /^subagent-[a-f0-9]{64}$/;
 const MUTABLE_FIELDS = [
   "artifacts",
+  "executionKind",
   "observedAt",
   "evidenceToolId",
   "model",
@@ -400,7 +403,7 @@ function buildAliasIndex(
   const bySource = new Map<string, AgentRunIdentityAlias>();
   const ambiguous = new Set<string>();
   if (aliases === undefined) return bySource;
-  if (aliases.length > MAX_RUNS) {
+  if (aliases.length > MAX_SOURCE_RUNS) {
     addConflict(conflicts);
     return bySource;
   }
@@ -432,6 +435,16 @@ function buildAliasIndex(
   return bySource;
 }
 
+export function agentRunLogicalIdentityBySource(
+  aliases: readonly AgentRunIdentityAlias[] | undefined,
+): ReadonlyMap<string, string> {
+  return new Map(
+    [...buildAliasIndex(aliases, { count: 0 })].map(
+      ([sourceIdentity, alias]) => [sourceIdentity, alias.canonicalIdentity],
+    ),
+  );
+}
+
 function diagnostics(
   runs: AgentRun[],
   conflicts: ConflictCounter,
@@ -451,7 +464,9 @@ export function reconcileAgentRuns(
   aliases?: readonly AgentRunIdentityAlias[],
 ): { runs: AgentRun[]; diagnostics: readonly SubagentEvidenceDiagnostic[] } {
   const conflicts = { count: 0 };
+  const byAlias = buildAliasIndex(aliases, conflicts);
   const bySource = new Map<string, RunAccumulator>();
+  const logicalRuns = new Set<string>();
   for (const value of observations) {
     const observation = readObservation(value);
     if (observation === undefined) {
@@ -460,9 +475,19 @@ export function reconcileAgentRuns(
     }
     let accumulator = bySource.get(observation.sourceIdentity);
     if (accumulator === undefined) {
-      if (bySource.size >= MAX_RUNS) {
+      if (bySource.size >= MAX_SOURCE_RUNS) {
         addConflict(conflicts);
         return diagnostics([], conflicts);
+      }
+      const alias = byAlias.get(observation.sourceIdentity);
+      const logicalIdentity =
+        alias?.canonicalIdentity ?? observation.sourceIdentity;
+      if (!logicalRuns.has(logicalIdentity)) {
+        if (logicalRuns.size >= MAX_RUNS) {
+          addConflict(conflicts);
+          return diagnostics([], conflicts);
+        }
+        logicalRuns.add(logicalIdentity);
       }
       accumulator = newAccumulator(
         observation.sourceIdentity,
@@ -491,7 +516,6 @@ export function reconcileAgentRuns(
     return diagnostics(runs, conflicts);
   }
 
-  const byAlias = buildAliasIndex(aliases, conflicts);
   const rows: RunRow[] = [];
   const groups = new Map<
     string,
@@ -547,6 +571,10 @@ export function reconcileAgentRuns(
       a.firstOrder - b.firstOrder ||
       (a.tie < b.tie ? -1 : a.tie > b.tie ? 1 : 0),
   );
+  if (rows.length > MAX_RUNS) {
+    addConflict(conflicts);
+    return diagnostics([], conflicts);
+  }
   return diagnostics(
     rows.slice(0, MAX_RUNS).map((row) => row.run),
     conflicts,

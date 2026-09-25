@@ -1911,6 +1911,8 @@ test("current and historical projections publish the same parent verdict", () =>
   const sessionId = "session-parent-parity";
   const containerId = `subagent-${"c".repeat(64)}`;
   const childId = `subagent-${"d".repeat(64)}`;
+  const rootId = `subagent-${"e".repeat(64)}`;
+  const asyncId = `subagent-${"f".repeat(64)}`;
   const report = toSessionReport(
     reduceEntries(sessionId, [
       {
@@ -1946,6 +1948,37 @@ test("current and historical projections publish the same parent verdict", () =>
               cost: "unavailable",
             },
             observedAt: "2026-03-10T10:00:05.000Z",
+          },
+          {
+            id: asyncId,
+            executionKind: "async",
+            agent: "async-worker",
+            status: "unknown",
+            confidence: "cooperative",
+            effortCoverage: {
+              duration: "unavailable",
+              generations: "unavailable",
+              tools: "unavailable",
+              errors: "unavailable",
+              usage: "unavailable",
+              cost: "unavailable",
+            },
+            observedAt: "2026-03-10T10:00:06.000Z",
+          },
+          {
+            id: rootId,
+            agent: "root-worker",
+            status: "succeeded",
+            confidence: "cooperative",
+            effortCoverage: {
+              duration: "unavailable",
+              generations: "unavailable",
+              tools: "unavailable",
+              errors: "unavailable",
+              usage: "unavailable",
+              cost: "unavailable",
+            },
+            observedAt: "2026-03-10T10:00:07.000Z",
           },
         ],
       },
@@ -1991,8 +2024,106 @@ test("current and historical projections publish the same parent verdict", () =>
   );
   assert.deepEqual(
     current.range?.agents.map((run) => run.parent),
-    ["orchestration-run"],
+    ["orchestration-run", "unknown", "none"],
   );
+});
+
+test("persisted async fixture keeps terminal rows identical across scope and history projections", () => {
+  const parsed = parseSessionJsonl(
+    readFileSync(
+      new URL(
+        "../fixtures/pi-subagents/persisted-async-visibility.jsonl",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const source = readSubagentEvidence(parsed.entries, parsed.id);
+  const expected = reconcileAgentRuns(source.observations, source.aliases)
+    .runs.filter((run) => run.executionKind === "async")
+    .map((run) => [run.id, run.status, run.parentId]);
+  assert.equal(expected.length, 2);
+
+  const intent = {
+    kind: "custom",
+    from: "2026-09-25",
+    to: "2026-09-25",
+  } as const;
+  for (const scope of ["active", "tree"] as const) {
+    const built = buildCanonicalSession({
+      parsed,
+      scope,
+      leafId: scope === "active" ? (parsed.entries.at(-1)?.id ?? null) : null,
+      evidence: { atomic: [], folded: [] },
+      subagents: source,
+    });
+    if (built.state !== "ready") {
+      throw new Error(`persisted async fixture must build for scope ${scope}`);
+    }
+    const report = toSessionReport(built.session);
+    const reportAsync = report.agents.filter(
+      (run) => run.executionKind === "async",
+    );
+    assert.deepEqual(
+      reportAsync.map((run) => [run.id, run.status, run.parentId]),
+      expected,
+    );
+    for (const run of reportAsync) {
+      assert.equal(run.parentId, undefined);
+      assert.equal(
+        report.agents.some((child) => child.parentId === run.id),
+        false,
+      );
+    }
+
+    const dated = sessionDatedUsage(built.session);
+    const current = projectCurrentView(
+      {
+        availability: "available",
+        report,
+        daily: foldedDaily(dated.dates, parsed.id),
+      },
+      scope,
+      intent,
+    );
+    const historical = projectHistoricalSession(
+      {
+        availability: "available",
+        sessionId: parsed.id,
+        usageByDate: dated.dates,
+        usageByDateTruncated: dated.truncated,
+        datedModels: dated.models,
+        modelsTruncated: dated.modelsTruncated,
+        report,
+      },
+      intent,
+    );
+    const currentAsync =
+      current.range?.agents.filter((run) => run.executionKind === "async") ??
+      [];
+    const historicalAsync =
+      historical.range?.agents.filter((run) => run.executionKind === "async") ??
+      [];
+    const projected = (runs: typeof currentAsync) =>
+      runs.map((run) => [
+        run.id,
+        run.status,
+        run.executionKind,
+        run.parentId,
+        run.parent,
+      ]);
+    assert.deepEqual(projected(currentAsync), projected(historicalAsync));
+    assert.deepEqual(
+      currentAsync.map((run) => [run.id, run.status]),
+      expected.map(([id, status]) => [id, status]),
+    );
+    assert.equal(
+      currentAsync.every(
+        (run) => run.parentId === null && run.parent === "unknown",
+      ),
+      true,
+    );
+  }
 });
 
 test("the tools summary reads the newest call of a name, never its last row", () => {

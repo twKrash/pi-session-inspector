@@ -427,6 +427,98 @@ test("seeded privacy sentinels never reach adapters, report, HTML, or every TUI 
   }
 });
 
+test("persisted async identifiers and directories stay out of report, JSON, HTML, and TUI", async () => {
+  const sentinels = [
+    "async-run-a",
+    "async-run-b",
+    "PRIVATE_ASYNC_DIR",
+    "PRIVATE_BODY",
+  ];
+  const parsed = parseSessionJsonl(
+    await readFile(
+      new URL(
+        "../fixtures/pi-subagents/persisted-async-visibility.jsonl",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const source = readSubagentEvidenceWithSession(parsed.entries, parsed.id);
+  const runs = reconcileAgentRuns(source.observations, source.aliases).runs;
+  assert.equal(runs.filter((run) => run.executionKind === "async").length, 2);
+  const report = toSessionReport(
+    { ...parent, sessionId: parsed.id },
+    { agents: { state: "supported", runs } },
+  );
+  assert.deepEqual(report.usage, parent.usage);
+  const json = renderJson(report);
+  const bundle: InspectorBundle = {
+    schemaVersion: 1,
+    theme: "dark",
+    initialScope: "tree",
+    current: {
+      active: {
+        availability: "unavailable",
+        diagnostic: "current-unavailable",
+      },
+      tree: {
+        availability: "available",
+        report,
+        daily: [],
+        dailyTruncated: false,
+      },
+      sameReportProjection: false,
+    },
+    history: { availability: "unavailable", sessions: [], diagnostics: [] },
+    global: {
+      availability: "unavailable",
+      sessions: [],
+      usage: { totalTokens: 0, cost: 0 },
+      dates: [],
+      diagnostics: [],
+      inventory: { commands: null, skills: null, resources: null },
+    },
+  };
+  const { ui, html } = treeSnapshot(bundle);
+  const projected = ui.current.tree.report;
+  if (projected === undefined) throw new Error("the tree report must project");
+  const asyncRows = projected.agents.filter(
+    (run) => run.executionKind === "async",
+  );
+  assert.equal(asyncRows.length, 2);
+  assert.deepEqual(
+    asyncRows.map((run) => run.parentId),
+    [null, null],
+  );
+  assertNoSentinels(
+    sentinels,
+    { source, report, json, html, projected },
+    "persisted async report outputs",
+  );
+  const tuiModel = createCurrentTuiModel(report, "tree");
+  assert.equal(
+    tuiModel.report.agents.filter((run) => run.executionKind === "async")
+      .length,
+    2,
+  );
+  const theme = { fg: (_color: string, text: string) => text };
+  for (const tab of CURRENT_TABS) {
+    const component = createCurrentTuiComponent({
+      model: tuiModel,
+      load: async () => tuiModel,
+      theme,
+      initialTab: tab,
+      requestRender: () => {},
+      done: () => {},
+    });
+    assertNoSentinels(
+      sentinels,
+      component.render(120),
+      `persisted async TUI ${tab}`,
+    );
+  }
+});
+
 test("missing subagent tool results remain unavailable rather than supported", () => {
   const entries = parseSessionJsonl(
     [

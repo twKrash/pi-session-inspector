@@ -1,4 +1,5 @@
 import type {
+  AgentRunIdentityAlias,
   AgentRunSourceObservation,
   AgentToolActivity,
   EvidenceState,
@@ -136,6 +137,7 @@ export type CanonicalIntegrationContext = {
 export type CanonicalIntegrationContribution = {
   state: EvidenceState;
   observations?: Iterable<AgentRunSourceObservation>;
+  aliases?: readonly AgentRunIdentityAlias[];
   activity?: AgentToolActivity;
   diagnostics?: readonly SubagentEvidenceDiagnostic[];
   reason?: IntegrationEvidenceReason;

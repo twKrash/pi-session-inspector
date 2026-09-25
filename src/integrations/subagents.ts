@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import type {
   AgentFailure,
   AgentRun,
+  AgentRunIdentityAlias,
   AgentRunSourceObservation,
   AgentRunUsage,
   AgentToolActivity,
@@ -19,9 +20,14 @@ import { readPublishedArchiveState } from "./subagent-archive.ts";
 const SUBAGENT_TOOL_NAMES = [
   "subagent",
   "subagent_wait",
+  "bg_wait",
   "subagent_supervisor",
 ] as const;
 const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(SUBAGENT_TOOL_NAMES);
+const ASYNC_WAIT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "bg_wait",
+  "subagent_wait",
+]);
 /** Producer run ids are hashed before they leave this adapter. */
 const RAW_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const WORKFLOW_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -256,6 +262,8 @@ function deriveEvidence(
     result: Readonly<Record<string, unknown>>;
     publication: RunPublication;
     ordinal: number;
+    toolName: string;
+    successfulMatchingResult: boolean;
   }[] = [];
   let succeeded = 0;
   let failed = 0;
@@ -296,16 +304,94 @@ function deriveEvidence(
       result,
       publication: publicationOf(joined),
       ordinal: joined.ordinal,
+      toolName: call.name,
+      successfulMatchingResult:
+        result.toolName === call.name && result.isError === false,
     });
   }
 
   // Persisted entry order, then producer row order, defines precedence.
   publications.sort((a, b) => a.ordinal - b.ordinal);
+  const asyncLaunchRunIds = new Set<string>();
+  const asyncCompletionRunIds = new Set<string>();
+  for (const { result, toolName, successfulMatchingResult } of publications) {
+    const details = snapshotRecord(result.details);
+    if (details === undefined) continue;
+    const launchRunId = readAsyncLaunchRunId(toolName, result, details);
+    if (launchRunId !== undefined && asyncLaunchRunIds.size < MAX_RUNS) {
+      asyncLaunchRunIds.add(launchRunId);
+    }
+    if (
+      !successfulMatchingResult ||
+      !ASYNC_WAIT_TOOL_NAMES.has(toolName) ||
+      !Array.isArray(details.completions)
+    ) {
+      continue;
+    }
+    for (const value of details.completions.slice(0, MAX_RUNS)) {
+      const completion = snapshotRecord(value);
+      if (
+        completion === undefined ||
+        isSuppressedAsyncWaitContainer(toolName, completion)
+      ) {
+        continue;
+      }
+      const completionRunId = readRawRunId(completion.runId);
+      if (
+        completionRunId !== undefined &&
+        asyncCompletionRunIds.size < MAX_RUNS
+      ) {
+        asyncCompletionRunIds.add(completionRunId);
+      }
+    }
+  }
+  const aliases: AgentRunIdentityAlias[] = [];
+  for (const runId of [...asyncLaunchRunIds].sort()) {
+    if (!asyncCompletionRunIds.has(runId) || aliases.length >= MAX_RUNS * 2) {
+      continue;
+    }
+    const canonicalIdentity =
+      "subagent-canonical-" +
+      canonicalOpaqueDigest(
+        "subagent-run",
+        sessionId,
+        `canonical:async:${runId}`,
+      );
+    const publicId = opaqueSubagentId(sessionId, runId, "completion");
+    aliases.push(
+      {
+        sourceIdentity: opaqueSubagentSourceIdentity(sessionId, runId, "async"),
+        canonicalIdentity,
+        publicId,
+      },
+      {
+        sourceIdentity: opaqueSubagentSourceIdentity(
+          sessionId,
+          runId,
+          "completion",
+        ),
+        canonicalIdentity,
+        publicId,
+      },
+    );
+  }
   const observations: Iterable<AgentRunSourceObservation> = {
     *[Symbol.iterator]() {
       const cursor = { value: 0 };
-      for (const { result, publication } of publications) {
-        yield* collectRuns(result, publication, sessionId, cursor);
+      for (const {
+        result,
+        publication,
+        toolName,
+        successfulMatchingResult,
+      } of publications) {
+        yield* collectRuns(
+          result,
+          publication,
+          sessionId,
+          cursor,
+          toolName,
+          successfulMatchingResult,
+        );
       }
     },
   };
@@ -325,6 +411,7 @@ function deriveEvidence(
   return {
     activity,
     observations: hasObservations ? observations : [],
+    ...(aliases.length === 0 ? {} : { aliases }),
     state: hasObservations ? "supported" : "unavailable",
     diagnostics: [],
   };
@@ -384,12 +471,45 @@ function collectResult(
     results.set(callId, { message, ordinal, timestamp });
 }
 
+function readAsyncLaunchRunId(
+  toolName: string,
+  result: Readonly<Record<string, unknown>>,
+  details: Readonly<Record<string, unknown>>,
+): string | undefined {
+  if (
+    toolName !== "subagent" ||
+    result.toolName !== toolName ||
+    result.isError !== false ||
+    details.mode !== "single" ||
+    !Array.isArray(details.results) ||
+    details.results.length !== 0
+  ) {
+    return undefined;
+  }
+  const runId = readRawRunId(details.runId);
+  return runId !== undefined && readRawRunId(details.asyncId) === runId
+    ? runId
+    : undefined;
+}
+
+function isSuppressedAsyncWaitContainer(
+  toolName: string,
+  completion: Readonly<Record<string, unknown>>,
+): boolean {
+  return (
+    ASYNC_WAIT_TOOL_NAMES.has(toolName) &&
+    (completion.mode === "workflow" || completion.mode === "parallel")
+  );
+}
+
 /** Reads documented `details.results[]`/`details.completions[]` rows. */
 function* collectRuns(
   result: Readonly<Record<string, unknown>>,
   publication: RunPublication,
   sessionId: string,
   cursor: ObservationCursor,
+  toolName: string,
+  successfulMatchingResult: boolean,
 ): Generator<AgentRunSourceObservation> {
   const details = snapshotRecord(result.details);
   if (details === undefined) return;
@@ -420,6 +540,19 @@ function* collectRuns(
     details,
     workflowChildren,
   );
+  const asyncLaunchRunId = readAsyncLaunchRunId(toolName, result, details);
+  if (asyncLaunchRunId !== undefined) {
+    yield* pushRun(
+      {},
+      publication,
+      opaqueSubagentId(sessionId, asyncLaunchRunId, "async"),
+      opaqueSubagentSourceIdentity(sessionId, asyncLaunchRunId, "async"),
+      undefined,
+      "disabled",
+      cursor,
+      "async",
+    );
+  }
   if (Array.isArray(details.results)) {
     for (const value of details.results.slice(0, MAX_RUNS)) {
       const record = snapshotRecord(value);
@@ -467,7 +600,10 @@ function* collectRuns(
     }
   }
 
-  if (Array.isArray(details.completions)) {
+  if (
+    Array.isArray(details.completions) &&
+    (!ASYNC_WAIT_TOOL_NAMES.has(toolName) || successfulMatchingResult)
+  ) {
     for (const value of details.completions.slice(0, MAX_RUNS)) {
       const completion = snapshotRecord(value);
       if (completion === undefined) continue;
@@ -484,15 +620,18 @@ function* collectRuns(
               completionRunId,
               "completion",
             );
-      yield* pushRun(
-        completion,
-        publication,
-        completionId,
-        completionSourceIdentity,
-        undefined,
-        "disabled",
-        cursor,
-      );
+      if (!isSuppressedAsyncWaitContainer(toolName, completion)) {
+        yield* pushRun(
+          completion,
+          publication,
+          completionId,
+          completionSourceIdentity,
+          undefined,
+          "disabled",
+          cursor,
+          ASYNC_WAIT_TOOL_NAMES.has(toolName) ? "async" : undefined,
+        );
+      }
       if (!Array.isArray(completion.results)) continue;
       for (const child of completion.results.slice(0, MAX_RUNS)) {
         const record = snapshotRecord(child);
@@ -601,12 +740,20 @@ function* pushRun(
   parentId: string | undefined,
   effortMode: "enabled" | "disabled",
   cursor: ObservationCursor,
+  executionKind?: "async",
 ): Generator<AgentRunSourceObservation> {
   if (id === undefined || sourceIdentity === undefined) return;
   yield {
     sourceIdentity,
     order: cursor.value++,
-    run: toAgentRun(record, publication, id, parentId, effortMode),
+    run: toAgentRun(
+      record,
+      publication,
+      id,
+      parentId,
+      effortMode,
+      executionKind,
+    ),
   };
 }
 
@@ -668,6 +815,7 @@ function toAgentRun(
   id: string,
   parentId: string | undefined,
   effortMode: "enabled" | "disabled",
+  executionKind?: "async",
 ): AgentRun {
   const agent = isAgentLabel(record.agent) ? record.agent : undefined;
   const model = boundedProducerLabel(record.model);
@@ -680,6 +828,7 @@ function toAgentRun(
   return {
     id,
     ...(parentId === undefined ? {} : { parentId }),
+    ...(executionKind === undefined ? {} : { executionKind }),
     ...(agent === undefined ? {} : { agent }),
     status: mapRunStatus(record),
     confidence: "cooperative",
