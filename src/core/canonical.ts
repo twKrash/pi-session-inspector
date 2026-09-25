@@ -767,6 +767,8 @@ function normalizeAgentRun(value: unknown): AgentRun | undefined {
     ? value.parentId
     : undefined;
   const executionKind = value.executionKind === "async" ? "async" : undefined;
+  const executionDisposition =
+    value.executionDisposition === "detached" ? "detached" : undefined;
   const agent = isAgentLabel(value.agent) ? value.agent : undefined;
   const artifacts =
     value.artifacts === "available" || value.artifacts === "missing"
@@ -785,6 +787,7 @@ function normalizeAgentRun(value: unknown): AgentRun | undefined {
     id,
     ...(parentId === undefined ? {} : { parentId }),
     ...(executionKind === undefined ? {} : { executionKind }),
+    ...(executionDisposition === undefined ? {} : { executionDisposition }),
     ...(agent === undefined ? {} : { agent }),
     status,
     confidence,
