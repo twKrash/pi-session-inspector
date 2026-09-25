@@ -14,7 +14,7 @@ import type {
   SkillInvocationObservation,
 } from "../../src/core/evidence.ts";
 import { MAX_FOLDED_COUNT } from "../../src/core/live-counter-fold.ts";
-import type { SubagentEvidence } from "../../src/integrations/subagents.ts";
+import type { SubagentSourceEvidence } from "../../src/core/events.ts";
 import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
@@ -740,7 +740,7 @@ test("P1.1: a usage-less assistant never creates a zero-valued line", () => {
 });
 
 test("P1.2a: child run usage never changes the session/native totals", () => {
-  const subagents: SubagentEvidence = {
+  const subagents: SubagentSourceEvidence = {
     activity: {
       state: "supported",
       calls: 1,
@@ -751,20 +751,24 @@ test("P1.2a: child run usage never changes the session/native totals", () => {
     },
     state: "supported",
     diagnostics: [],
-    runs: [
+    observations: [
       {
-        id: `subagent-${"1".repeat(64)}`,
-        status: "succeeded",
-        confidence: "cooperative",
-        effortCoverage: {
-          duration: "unavailable",
-          generations: "unavailable",
-          tools: "unavailable",
-          errors: "unavailable",
-          usage: "partial",
-          cost: "partial",
+        sourceIdentity: `subagent-source-${"a".repeat(64)}`,
+        order: 0,
+        run: {
+          id: `subagent-${"1".repeat(64)}`,
+          status: "succeeded",
+          confidence: "cooperative",
+          effortCoverage: {
+            duration: "unavailable",
+            generations: "unavailable",
+            tools: "unavailable",
+            errors: "unavailable",
+            usage: "partial",
+            cost: "partial",
+          },
+          usage: { totalTokens: 999, cost: 9 },
         },
-        usage: { totalTokens: 999, cost: 9 },
       },
     ],
   };
@@ -1271,8 +1275,8 @@ test("P1.A: a lone usage-bearing branch summary reconciles its own usage", () =>
   assert.deepEqual(session.usage.known, { totalTokens: 17, cost: 0.017 });
 });
 
-test("caps canonical agent-run input at 256 rows", () => {
-  const subagents: SubagentEvidence = {
+test("caps canonical agent-run input at 256 distinct rows and keeps admitted updates", () => {
+  const subagents: SubagentSourceEvidence = {
     activity: {
       state: "supported",
       calls: 300,
@@ -1283,19 +1287,46 @@ test("caps canonical agent-run input at 256 rows", () => {
     },
     state: "supported",
     diagnostics: [],
-    runs: Array.from({ length: 300 }, (_, index) => ({
-      id: `subagent-${index.toString(16).padStart(64, "0")}`,
-      status: "succeeded" as const,
-      confidence: "cooperative" as const,
-      effortCoverage: {
-        duration: "unavailable" as const,
-        generations: "unavailable" as const,
-        tools: "unavailable" as const,
-        errors: "unavailable" as const,
-        usage: "unavailable" as const,
-        cost: "unavailable" as const,
+    observations: [
+      ...Array.from({ length: 300 }, (_, index) => {
+        const id = index.toString(16).padStart(64, "0");
+        return {
+          sourceIdentity: `subagent-source-${id}`,
+          order: index,
+          run: {
+            id: `subagent-${id}`,
+            status: "succeeded" as const,
+            confidence: "cooperative" as const,
+            effortCoverage: {
+              duration: "unavailable" as const,
+              generations: "unavailable" as const,
+              tools: "unavailable" as const,
+              errors: "unavailable" as const,
+              usage: "unavailable" as const,
+              cost: "unavailable" as const,
+            },
+          },
+        };
+      }),
+      {
+        sourceIdentity: `subagent-source-${"0".repeat(64)}`,
+        order: 300,
+        run: {
+          id: `subagent-${"0".repeat(64)}`,
+          status: "succeeded" as const,
+          confidence: "cooperative" as const,
+          effortCoverage: {
+            duration: "unavailable" as const,
+            generations: "unavailable" as const,
+            tools: "unavailable" as const,
+            errors: "unavailable" as const,
+            usage: "partial" as const,
+            cost: "unavailable" as const,
+          },
+          usage: { totalTokens: 300 },
+        },
       },
-    })),
+    ],
   };
   const result = buildCanonicalSession({
     parsed: parsed([MARKER]),
@@ -1308,5 +1339,6 @@ test("caps canonical agent-run input at 256 rows", () => {
   assert.equal(result.state, "ready");
   if (result.state !== "ready") return;
   assert.equal(result.session.agents.length, 256);
+  assert.equal(result.session.agents[0]?.usage?.totalTokens, 300);
   assert.equal(result.session.health.joins.agentRuns, 256);
 });

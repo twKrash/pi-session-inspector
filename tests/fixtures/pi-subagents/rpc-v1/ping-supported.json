@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "methods": ["ping", "status", "manage", "spawn", "steer", "interrupt", "stop", "resume", "cost"],
+  "capabilities": {
+    "status": true,
+    "statusProjection": {
+      "version": 1,
+      "untargeted": "in-memory-when-ready",
+      "targeted": "executor"
+    },
+    "fleetStatus": { "version": 1 },
+    "asyncStatusSnapshot": {
+      "kind": "pi-subagents.async-status-snapshot",
+      "version": 1
+    },
+    "cost": { "version": 1 },
+    "processTerminalProof": {
+      "version": 1,
+      "lifecycleArtifactVersion": 3
+    }
+  },
+  "events": {
+    "childStatus": "subagent:child-status"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "capabilities": {
+    "statusProjection": {
+      "version": 1,
+      "untargeted": "in-memory-when-ready",
+      "targeted": "executor"
+    },
+    "fleetStatus": { "version": 1 },
+    "asyncStatusSnapshot": {
+      "kind": "pi-subagents.async-status-snapshot",
+      "version": 2
+    },
+    "processTerminalProof": {
+      "version": 1,
+      "lifecycleArtifactVersion": 3
+    }
+  },
+  "events": { "childStatus": "subagent:child-status" }
+}

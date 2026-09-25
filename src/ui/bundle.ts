@@ -1,7 +1,7 @@
 import type { RetainedWalRecord } from "../core/canonical.ts";
 import type { Scope } from "../core/events.ts";
 import type { L0Evidence } from "../core/evidence.ts";
-import type { SubagentEvidence } from "../integrations/subagents.ts";
+import type { SubagentSourceEvidence } from "../core/events.ts";
 import type { SessionReport } from "../core/reports.ts";
 import type { CurrentTuiModel } from "./current.ts";
 import { buildDailyRows, type DailyRow } from "./daily.ts";
@@ -136,7 +136,7 @@ export type InspectorBundleInput = {
   subagentEvidence?: (
     entries: readonly import("../core/events.ts").SessionEntry[],
     sessionId: string,
-  ) => Promise<SubagentEvidence>;
+  ) => Promise<SubagentSourceEvidence>;
   /**
    * Per-session L0 evidence for history/global sections, built by the
    * composition root (R51). The default history/global loaders forward it; a

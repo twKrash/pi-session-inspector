@@ -7,11 +7,7 @@ import {
 import { integrations } from "../integrations/index.ts";
 import { readPersistedEvidence } from "../integrations/persisted.ts";
 import { debugLog } from "../debug/log.ts";
-import {
-  isAgentLabel,
-  isProcessSignal,
-  type SubagentEvidence,
-} from "../integrations/subagents.ts";
+import { isAgentLabel, isProcessSignal } from "../integrations/subagents.ts";
 import type { ParsedSession } from "../pi/adapter.ts";
 import { resolveScope } from "../pi/scope.ts";
 import { roundCost } from "./rounding.ts";
@@ -19,6 +15,7 @@ import type {
   AgentFailure,
   AgentRun,
   AgentRunEffortCoverage,
+  AgentRunSourceObservation,
   AgentRunUsage,
   AgentToolActivity,
   Compaction,
@@ -31,6 +28,8 @@ import type {
   IntegrationRowKey,
   Scope,
   SessionEntry,
+  SubagentEvidence,
+  SubagentSourceEvidence,
   Tool,
   Usage,
   UsageComposition,
@@ -67,6 +66,7 @@ import {
   MAX_SKILL_KEYS,
   mergeFoldedCounters,
 } from "./live-counter-fold.ts";
+import { reconcileAgentRuns } from "./subagent-reconciliation.ts";
 import { canonicalOpaqueDigest } from "./opaque-id.ts";
 import { boundedDescription, secretLikeValue } from "./redact.ts";
 import { readUsage, reduceEntries } from "./reduce.ts";
@@ -118,6 +118,7 @@ const encoder = new TextEncoder();
 const MAX_AGENT_RUN_DURATION_MS = 86_400_000_000;
 const MAX_AGENT_RUN_COUNT = 256;
 const OPAQUE_AGENT_RUN_ID = /^subagent-[a-f0-9]{64}$/;
+const OPAQUE_AGENT_SOURCE_ID = /^subagent-source-[a-f0-9]{64}$/;
 const OPAQUE_TOOL_ID = /^tool:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const AGENT_RUN_STATUSES = new Set<AgentRun["status"]>([
   "running",
@@ -400,7 +401,7 @@ export type CanonicalSessionInput = {
   walRecords?: readonly RetainedWalRecord[];
   /** Saturating dropped-tool-start count from the live registration (R29). */
   liveOverflow?: number;
-  subagents?: SubagentEvidence;
+  subagents?: SubagentSourceEvidence;
   inventory?: InventoryObservationInput;
   parentSession?: CanonicalRelationship;
   /** Bounded diagnostics contributed by the caller's source adapters. */
@@ -451,7 +452,7 @@ export function projectEvidenceHealth(
  */
 export function attachSubagentEvidence(
   session: CanonicalSession,
-  subagents: SubagentEvidence,
+  subagents: SubagentSourceEvidence,
 ): CanonicalSession {
   try {
     const normalizedSubagents = normalizeSubagentEvidence(subagents);
@@ -529,7 +530,44 @@ export function attachSubagentEvidence(
   }
 }
 
-function normalizeSubagentEvidence(value: SubagentEvidence): SubagentEvidence {
+// Keep the historical 256-distinct-run cap while still reconciling later updates
+// for runs already admitted; the reducer itself fails closed on overflow.
+function* boundedSourceObservations(
+  observations: Iterable<AgentRunSourceObservation>,
+): IterableIterator<AgentRunSourceObservation> {
+  const sourceIdentities = new Set<string>();
+  for (const observation of observations) {
+    const sourceIdentity = sourceIdentityOf(observation);
+    if (sourceIdentity !== undefined) {
+      if (
+        !sourceIdentities.has(sourceIdentity) &&
+        sourceIdentities.size >= MAX_AGENT_RUN_COUNT
+      ) {
+        continue;
+      }
+      sourceIdentities.add(sourceIdentity);
+    }
+    yield observation;
+  }
+}
+
+function sourceIdentityOf(value: unknown): string | undefined {
+  try {
+    const sourceIdentity = isRecord(value)
+      ? value["sourceIdentity"]
+      : undefined;
+    return typeof sourceIdentity === "string" &&
+      OPAQUE_AGENT_SOURCE_ID.test(sourceIdentity)
+      ? sourceIdentity
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeSubagentEvidence(
+  value: SubagentSourceEvidence,
+): SubagentEvidence {
   const input: Readonly<Record<string, unknown>> = isRecord(value) ? value : {};
   const activityInput: Readonly<Record<string, unknown>> = isRecord(
     input.activity,
@@ -595,18 +633,28 @@ function normalizeSubagentEvidence(value: SubagentEvidence): SubagentEvidence {
         },
       )
     : [];
+  const observationInput = input.observations;
+  const observations =
+    observationInput !== null &&
+    typeof observationInput === "object" &&
+    typeof (observationInput as { [Symbol.iterator]?: unknown })[
+      Symbol.iterator
+    ] === "function"
+      ? (observationInput as Iterable<AgentRunSourceObservation>)
+      : [];
+  const reconciled = reconcileAgentRuns(
+    boundedSourceObservations(observations),
+  );
   return {
     activity,
-    runs: normalizeAgentRuns(
-      Array.isArray(input.runs) ? (input.runs as AgentRun[]) : [],
-    ),
+    runs: normalizeAgentRuns(reconciled.runs),
     state:
       input.state === "supported" ||
       input.state === "unavailable" ||
       input.state === "unsupported"
         ? input.state
         : "unavailable",
-    diagnostics,
+    diagnostics: [...diagnostics, ...reconciled.diagnostics],
   };
 }
 

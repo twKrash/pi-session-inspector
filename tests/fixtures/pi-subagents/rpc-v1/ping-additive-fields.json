@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "futureTopLevel": { "marker": "ADDITIVE_ONLY" },
+  "capabilities": {
+    "status": true,
+    "statusProjection": {
+      "version": 1,
+      "untargeted": "in-memory-when-ready",
+      "targeted": "executor",
+      "futureFlag": "ADDITIVE_ONLY"
+    },
+    "fleetStatus": { "version": 1, "futureLimit": 7 },
+    "asyncStatusSnapshot": {
+      "kind": "pi-subagents.async-status-snapshot",
+      "version": 1,
+      "futureField": "ADDITIVE_ONLY"
+    },
+    "cost": { "version": 1, "futureCostShape": "ADDITIVE_ONLY" },
+    "processTerminalProof": {
+      "version": 1,
+      "lifecycleArtifactVersion": 3,
+      "futureProofField": "ADDITIVE_ONLY"
+    },
+    "futureCapability": { "payload": "ADDITIVE_ONLY" }
+  },
+  "events": {
+    "childStatus": "subagent:child-status",
+    "futureEvent": "future:event"
+  }
+}

@@ -1,7 +1,7 @@
 import {
   readSubagentEvidence,
   readSubagentEvidenceWithArchives,
-  type SubagentEvidence,
+  type SubagentSourceEvidence,
 } from "../subagents.ts";
 import { defineIntegration } from "../catalog.ts";
 import type {
@@ -48,13 +48,11 @@ export const subagentsIntegration = defineIntegration({
      * falls back to the persisted read without archive verdicts when it fails.
      */
     canonical: async ({ entries, sessionId }: CanonicalIntegrationContext) => {
-      const evidence: SubagentEvidence = await readSubagentEvidenceWithArchives(
-        entries,
-        sessionId,
-      );
+      const evidence: SubagentSourceEvidence =
+        await readSubagentEvidenceWithArchives(entries, sessionId);
       return {
         state: evidence.state,
-        runs: evidence.runs,
+        observations: evidence.observations,
         activity: evidence.activity,
         diagnostics: evidence.diagnostics,
       };

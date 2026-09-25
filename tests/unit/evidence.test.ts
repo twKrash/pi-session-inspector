@@ -7,6 +7,7 @@ import {
   type EvidenceRegistry,
 } from "../../src/integrations/evidence.ts";
 import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
+import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import type { AgentRun } from "../../src/core/events.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
@@ -18,7 +19,16 @@ test("the audited effort fixture keeps effort foreground-only and bounded", () =
     ),
   );
   const evidence = readSubagentEvidence(parsed.entries, parsed.id);
-  const effortRows = evidence.runs.filter(
+  const observations = [...evidence.observations];
+  const reconciled = reconcileAgentRuns(observations);
+  const runs = reconciled.runs;
+  const serializedEvidence = JSON.stringify({
+    ...evidence,
+    observations,
+    canonicalRuns: runs,
+    reconciliationDiagnostics: reconciled.diagnostics,
+  });
+  const effortRows = runs.filter(
     (run) => run.durationMs !== undefined || run.toolCalls !== undefined,
   );
 
@@ -34,7 +44,7 @@ test("the audited effort fixture keeps effort foreground-only and bounded", () =
     ],
   );
   assert.equal(
-    evidence.runs
+    runs
       .filter((run) => run.agent === undefined)
       .every(
         (run) =>
@@ -45,8 +55,8 @@ test("the audited effort fixture keeps effort foreground-only and bounded", () =
       ),
     true,
   );
-  assert.equal(JSON.stringify(evidence).includes("fg-container"), false);
-  assert.equal(JSON.stringify(evidence).includes("audit-call-1"), true);
+  assert.equal(serializedEvidence.includes("fg-container"), false);
+  assert.equal(serializedEvidence.includes("audit-call-1"), true);
 });
 
 function registry(): EvidenceRegistry {

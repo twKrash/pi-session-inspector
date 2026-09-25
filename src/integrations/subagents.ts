@@ -2,10 +2,11 @@ import { Buffer } from "node:buffer";
 import type {
   AgentFailure,
   AgentRun,
+  AgentRunSourceObservation,
   AgentRunUsage,
   AgentToolActivity,
   SessionEntry,
-  SubagentEvidence,
+  SubagentSourceEvidence,
   Usage,
 } from "../core/events.ts";
 import { MAX_AGENT_RUN_TOOL_CALLS } from "../core/events.ts";
@@ -134,25 +135,21 @@ const PROCESS_SIGNALS: ReadonlySet<string> = new Set([
 ]);
 
 /** Canonical agent DTOs owned by core (see ADR 0007 and ADR 0019). */
-export type { AgentToolActivity, SubagentEvidence } from "../core/events.ts";
+export type {
+  AgentToolActivity,
+  SubagentSourceEvidence,
+} from "../core/events.ts";
 
 /**
- * Archive-aware subagent evidence: {@link readSubagentEvidence} plus the
- * validated presence of any archive a completion published.
- *
- * At most `MAX_RUNS` validations run concurrently and a rejection from one
- * yields `"missing"` for that run alone. The published path, the raw run id,
- * and every archive field stay inside this adapter: only the bounded
- * `"available" | "missing"` verdict reaches a run. Runs without a published
- * reference keep `artifacts` absent.
+ * Archive-aware source evidence. Archive paths and raw run ids stay in this
+ * adapter; only bounded verdicts are added to observations.
  */
 export async function readSubagentEvidenceWithArchives(
   entries: readonly SessionEntry[],
   sessionId: string,
-): Promise<SubagentEvidence> {
+): Promise<SubagentSourceEvidence> {
   const evidence = readSubagentEvidence(entries, sessionId);
-  if (evidence.runs.length === 0) return evidence;
-
+  if (evidence.state !== "supported") return evidence;
   let references: Map<string, { path: string; runId: string }>;
   try {
     references = collectArchiveReferences(entries, sessionId);
@@ -161,27 +158,37 @@ export async function readSubagentEvidenceWithArchives(
   }
   if (references.size === 0) return evidence;
 
+  const artifactsBySource = new Map<string, "available" | "missing">();
   try {
-    const runs = await Promise.all(
-      evidence.runs.slice(0, MAX_RUNS).map(async (run) => {
-        const reference = references.get(run.id);
-        if (reference === undefined) return run;
-        let artifacts: "available" | "missing";
+    await Promise.all(
+      [...references].map(async ([sourceIdentity, reference]) => {
         try {
-          artifacts = await readPublishedArchiveState(
-            reference.path,
-            reference.runId,
+          artifactsBySource.set(
+            sourceIdentity,
+            await readPublishedArchiveState(reference.path, reference.runId),
           );
         } catch {
-          artifacts = "missing";
+          artifactsBySource.set(sourceIdentity, "missing");
         }
-        return { ...run, artifacts };
       }),
     );
-    return { ...evidence, runs };
   } catch {
     return evidence;
   }
+
+  return {
+    ...evidence,
+    observations: {
+      *[Symbol.iterator]() {
+        for (const observation of evidence.observations) {
+          const artifacts = artifactsBySource.get(observation.sourceIdentity);
+          yield artifacts === undefined
+            ? observation
+            : { ...observation, run: { ...observation.run, artifacts } };
+        }
+      },
+    },
+  };
 }
 
 /** Bounded label grammar shared with the report projection. */
@@ -206,7 +213,7 @@ export function isProcessSignal(value: unknown): value is string {
 export function readSubagentEvidence(
   entries: readonly SessionEntry[],
   sessionId: string,
-): SubagentEvidence {
+): SubagentSourceEvidence {
   try {
     return deriveEvidence(entries, sessionId);
   } catch {
@@ -227,39 +234,12 @@ type RunPublication = {
   evidenceToolId?: string;
 };
 
-/**
- * Mutable accumulator for one hashed run id. Identity-like fields carry an
- * explicit conflict flag so a dropped field can never be restored by a later
- * agreeing observation.
- */
-type RunAccumulator = {
-  id: string;
-  parentId?: string;
-  parentIdConflict: boolean;
-  agent?: string;
-  agentConflict: boolean;
-  status: AgentRun["status"];
-  statusConflict: boolean;
-  observedAt?: string;
-  evidenceToolId?: string;
-  model?: string;
-  thinking?: string;
-  failure?: AgentFailure;
-  usage?: AgentRunUsage;
-  durationMs?: number;
-  toolCalls?: number;
-};
-
-type RunCollector = {
-  runs: RunAccumulator[];
-  byId: Map<string, RunAccumulator>;
-  conflicts: number;
-};
+type ObservationCursor = { value: number };
 
 function deriveEvidence(
   entries: readonly SessionEntry[],
   sessionId: string,
-): SubagentEvidence {
+): SubagentSourceEvidence {
   const calls: { name: string; callId?: string }[] = [];
   const resultsByCallId = new Map<string, JoinedResult>();
   entries.forEach((entry, ordinal) => {
@@ -272,11 +252,6 @@ function deriveEvidence(
   });
 
   const countsByTool = new Map<string, number>();
-  const collector: RunCollector = {
-    runs: [],
-    byId: new Map(),
-    conflicts: 0,
-  };
   const publications: {
     result: Readonly<Record<string, unknown>>;
     publication: RunPublication;
@@ -324,12 +299,17 @@ function deriveEvidence(
     });
   }
 
-  // §8.5: merge repeated observations in publishing-entry order, then producer
-  // row index (preserved by the stable sort within one result).
+  // Persisted entry order, then producer row order, defines precedence.
   publications.sort((a, b) => a.ordinal - b.ordinal);
-  for (const { result, publication } of publications) {
-    collectRuns(result, publication, collector, sessionId);
-  }
+  const observations: Iterable<AgentRunSourceObservation> = {
+    *[Symbol.iterator]() {
+      const cursor = { value: 0 };
+      for (const { result, publication } of publications) {
+        yield* collectRuns(result, publication, sessionId, cursor);
+      }
+    },
+  };
+  const hasObservations = !observations[Symbol.iterator]().next().done;
 
   const activity: AgentToolActivity = {
     state: calls.length > 0 ? "supported" : "unavailable",
@@ -342,20 +322,11 @@ function deriveEvidence(
     ).map((name) => ({ name, calls: countsByTool.get(name) ?? 0 })),
     ...(hasUsage ? { usage: { totalTokens, cost } } : {}),
   };
-  const runs = collector.runs.map(toAgentRun);
   return {
     activity,
-    runs,
-    state: runs.length > 0 ? "supported" : "unavailable",
-    diagnostics:
-      collector.conflicts > 0
-        ? [
-            {
-              code: "cooperative-evidence-conflict",
-              count: collector.conflicts,
-            },
-          ]
-        : [],
+    observations: hasObservations ? observations : [],
+    state: hasObservations ? "supported" : "unavailable",
+    diagnostics: [],
   };
 }
 
@@ -414,12 +385,12 @@ function collectResult(
 }
 
 /** Reads documented `details.results[]`/`details.completions[]` rows. */
-function collectRuns(
+function* collectRuns(
   result: Readonly<Record<string, unknown>>,
   publication: RunPublication,
-  collector: RunCollector,
   sessionId: string,
-): void {
+  cursor: ObservationCursor,
+): Generator<AgentRunSourceObservation> {
   const details = snapshotRecord(result.details);
   if (details === undefined) return;
   // Aggregate run id used to parent rows that carry no run id of their own.
@@ -466,23 +437,32 @@ function collectRuns(
         index !== undefined
           ? "enabled"
           : "disabled";
-      const id =
+      const observationRawId =
         rowRunId !== undefined
-          ? opaqueSubagentId(sessionId, rowRunId, "foreground")
+          ? rowRunId
           : aggregateRunId === undefined || index === undefined
             ? undefined
-            : opaqueSubagentId(
-                sessionId,
-                `${aggregateRunId}#${index}`,
-                "foreground",
-              );
-      pushRun(
+            : `${aggregateRunId}#${index}`;
+      const id =
+        observationRawId === undefined
+          ? undefined
+          : opaqueSubagentId(sessionId, observationRawId, "foreground");
+      const sourceIdentity =
+        observationRawId === undefined
+          ? undefined
+          : opaqueSubagentSourceIdentity(
+              sessionId,
+              observationRawId,
+              "foreground",
+            );
+      yield* pushRun(
         record,
-        collector,
         publication,
         id,
+        sourceIdentity,
         aggregateParentId,
         effortMode,
+        cursor,
       );
     }
   }
@@ -492,15 +472,26 @@ function collectRuns(
       const completion = snapshotRecord(value);
       if (completion === undefined) continue;
       const completionRunId = readRawRunId(completion.runId);
-      pushRun(
-        completion,
-        collector,
-        publication,
+      const completionId =
         completionRunId === undefined
           ? undefined
-          : opaqueSubagentId(sessionId, completionRunId, "completion"),
+          : opaqueSubagentId(sessionId, completionRunId, "completion");
+      const completionSourceIdentity =
+        completionRunId === undefined
+          ? undefined
+          : opaqueSubagentSourceIdentity(
+              sessionId,
+              completionRunId,
+              "completion",
+            );
+      yield* pushRun(
+        completion,
+        publication,
+        completionId,
+        completionSourceIdentity,
         undefined,
         "disabled",
+        cursor,
       );
       if (!Array.isArray(completion.results)) continue;
       for (const child of completion.results.slice(0, MAX_RUNS)) {
@@ -510,17 +501,28 @@ function collectRuns(
         // parent is the exact outer completion identity and domain. This is
         // parentage, not cross-surface correlation.
         const childRunId = readRawRunId(record.runId);
-        pushRun(
-          record,
-          collector,
-          publication,
+        const childId =
           childRunId === undefined
             ? undefined
-            : opaqueSubagentId(sessionId, childRunId, "completion-child"),
+            : opaqueSubagentId(sessionId, childRunId, "completion-child");
+        const childSourceIdentity =
+          childRunId === undefined
+            ? undefined
+            : opaqueSubagentSourceIdentity(
+                sessionId,
+                childRunId,
+                "completion-child",
+              );
+        yield* pushRun(
+          record,
+          publication,
+          childId,
+          childSourceIdentity,
           completionRunId === undefined
             ? undefined
             : opaqueSubagentId(sessionId, completionRunId, "completion"),
           "disabled",
+          cursor,
         );
       }
     }
@@ -560,114 +562,52 @@ function collectRuns(
             };
       const rowRunId = readRawRunId(record.runId);
       const index = readChildIndex(record.index);
-      const id =
+      const observationRawId =
         rowRunId !== undefined
-          ? opaqueSubagentId(sessionId, rowRunId, "workflow")
+          ? rowRunId
           : aggregateRunId === undefined || index === undefined
             ? undefined
-            : opaqueSubagentId(
-                sessionId,
-                `${aggregateRunId}#${index}`,
-                "workflow",
-              );
-      pushRun(
+            : `${aggregateRunId}#${index}`;
+      const id =
+        observationRawId === undefined
+          ? undefined
+          : opaqueSubagentId(sessionId, observationRawId, "workflow");
+      const sourceIdentity =
+        observationRawId === undefined
+          ? undefined
+          : opaqueSubagentSourceIdentity(
+              sessionId,
+              observationRawId,
+              "workflow",
+            );
+      yield* pushRun(
         attributedRecord,
-        collector,
         publication,
         id,
+        sourceIdentity,
         workflowParentId,
         hasCorrelatedEffort ? "enabled" : "disabled",
+        cursor,
       );
     }
   }
 }
 
-function pushRun(
+function* pushRun(
   record: Readonly<Record<string, unknown>>,
-  collector: RunCollector,
   publication: RunPublication,
   id: string | undefined,
+  sourceIdentity: string | undefined,
   parentId: string | undefined,
   effortMode: "enabled" | "disabled",
-): void {
-  if (id === undefined) return;
-  let run = collector.byId.get(id);
-  if (run === undefined) {
-    if (collector.runs.length >= MAX_RUNS) return;
-    run = {
-      id,
-      parentIdConflict: false,
-      agentConflict: false,
-      status: "unknown",
-      statusConflict: false,
-    };
-    collector.byId.set(id, run);
-    collector.runs.push(run);
-  }
-  mergeRunObservation(
-    run,
-    record,
-    publication,
-    parentId,
-    collector,
-    effortMode,
-  );
-}
-
-/**
- * §8.5 merge for repeated observations of one run id. `observedAt` and
- * `evidenceToolId` come from the latest accepted publication; mutable fields
- * take the latest valid value; identity fields must agree or are dropped with
- * `cooperative-evidence-conflict`; usage is selected, never summed.
- */
-function mergeRunObservation(
-  run: RunAccumulator,
-  record: Readonly<Record<string, unknown>>,
-  publication: RunPublication,
-  parentId: string | undefined,
-  collector: RunCollector,
-  effortMode: "enabled" | "disabled",
-): void {
-  if (!run.parentIdConflict && parentId !== undefined && parentId !== run.id) {
-    if (run.parentId === undefined) run.parentId = parentId;
-    else if (run.parentId !== parentId) {
-      run.parentId = undefined;
-      run.parentIdConflict = true;
-      collector.conflicts++;
-    }
-  }
-
-  const agent = isAgentLabel(record.agent) ? record.agent : undefined;
-  if (!run.agentConflict && agent !== undefined) {
-    if (run.agent === undefined) run.agent = agent;
-    else if (run.agent !== agent) {
-      run.agent = undefined;
-      run.agentConflict = true;
-      collector.conflicts++;
-    }
-  }
-
-  mergeRunStatus(run, mapRunStatus(record), collector);
-
-  const model = boundedProducerLabel(record.model);
-  if (model !== undefined) run.model = model;
-  const thinking = boundedProducerLabel(record.thinking);
-  if (thinking !== undefined) run.thinking = thinking;
-  const failure = readAgentFailure(record);
-  if (failure !== undefined) run.failure = failure;
-  const usage = readChildUsage(record.usage);
-  if (usage !== undefined) run.usage = usage;
-
-  const effort = effortMode === "enabled" ? readEffort(record) : {};
-  if (effort.durationMs !== undefined) run.durationMs = effort.durationMs;
-  if (effort.toolCalls !== undefined) run.toolCalls = effort.toolCalls;
-
-  if (publication.observedAt !== undefined) {
-    run.observedAt = publication.observedAt;
-  }
-  if (publication.evidenceToolId !== undefined) {
-    run.evidenceToolId = publication.evidenceToolId;
-  }
+  cursor: ObservationCursor,
+): Generator<AgentRunSourceObservation> {
+  if (id === undefined || sourceIdentity === undefined) return;
+  yield {
+    sourceIdentity,
+    order: cursor.value++,
+    run: toAgentRun(record, publication, id, parentId, effortMode),
+  };
 }
 
 function readEffort(record: Readonly<Record<string, unknown>>): {
@@ -691,25 +631,6 @@ function readEffort(record: Readonly<Record<string, unknown>>): {
       ? { toolCalls }
       : {}),
   };
-}
-
-/** Non-terminal `running` is progress; any other resolved status is terminal. */
-function mergeRunStatus(
-  run: RunAccumulator,
-  next: AgentRun["status"],
-  collector: RunCollector,
-): void {
-  if (run.statusConflict || next === "unknown") return;
-  const nextTerminal = next !== "running";
-  const currentTerminal = run.status !== "unknown" && run.status !== "running";
-  if (currentTerminal && (!nextTerminal || run.status !== next)) {
-    // Conflicting terminal statuses or a terminal-to-running regression.
-    run.status = "unknown";
-    run.statusConflict = true;
-    collector.conflicts++;
-    return;
-  }
-  run.status = next;
 }
 
 /**
@@ -741,29 +662,45 @@ function readAgentFailure(
   return undefined;
 }
 
-function toAgentRun(run: RunAccumulator): AgentRun {
-  const hasTokens = run.usage?.totalTokens !== undefined;
-  const hasCost = run.usage?.cost !== undefined;
+function toAgentRun(
+  record: Readonly<Record<string, unknown>>,
+  publication: RunPublication,
+  id: string,
+  parentId: string | undefined,
+  effortMode: "enabled" | "disabled",
+): AgentRun {
+  const agent = isAgentLabel(record.agent) ? record.agent : undefined;
+  const model = boundedProducerLabel(record.model);
+  const thinking = boundedProducerLabel(record.thinking);
+  const failure = readAgentFailure(record);
+  const usage = readChildUsage(record.usage);
+  const effort = effortMode === "enabled" ? readEffort(record) : {};
+  const hasTokens = usage?.totalTokens !== undefined;
+  const hasCost = usage?.cost !== undefined;
   return {
-    id: run.id,
-    ...(run.parentId === undefined ? {} : { parentId: run.parentId }),
-    ...(run.agent === undefined ? {} : { agent: run.agent }),
-    status: run.status,
+    id,
+    ...(parentId === undefined ? {} : { parentId }),
+    ...(agent === undefined ? {} : { agent }),
+    status: mapRunStatus(record),
     confidence: "cooperative",
-    ...(run.usage === undefined ? {} : { usage: run.usage }),
-    ...(run.observedAt === undefined ? {} : { observedAt: run.observedAt }),
-    ...(run.evidenceToolId === undefined
+    ...(usage === undefined ? {} : { usage }),
+    ...(publication.observedAt === undefined
       ? {}
-      : { evidenceToolId: run.evidenceToolId }),
-    ...(run.model === undefined ? {} : { model: run.model }),
-    ...(run.thinking === undefined ? {} : { thinking: run.thinking }),
-    ...(run.failure === undefined ? {} : { failure: run.failure }),
-    ...(run.durationMs === undefined ? {} : { durationMs: run.durationMs }),
-    ...(run.toolCalls === undefined ? {} : { toolCalls: run.toolCalls }),
+      : { observedAt: publication.observedAt }),
+    ...(publication.evidenceToolId === undefined
+      ? {}
+      : { evidenceToolId: publication.evidenceToolId }),
+    ...(model === undefined ? {} : { model }),
+    ...(thinking === undefined ? {} : { thinking }),
+    ...(failure === undefined ? {} : { failure }),
+    ...(effort.durationMs === undefined
+      ? {}
+      : { durationMs: effort.durationMs }),
+    ...(effort.toolCalls === undefined ? {} : { toolCalls: effort.toolCalls }),
     effortCoverage: {
-      duration: run.durationMs === undefined ? "unavailable" : "partial",
+      duration: effort.durationMs === undefined ? "unavailable" : "partial",
       generations: "unavailable",
-      tools: run.toolCalls === undefined ? "unavailable" : "partial",
+      tools: effort.toolCalls === undefined ? "unavailable" : "partial",
       errors: "unavailable",
       usage: hasTokens ? "partial" : "unavailable",
       cost: hasCost ? "partial" : "unavailable",
@@ -912,8 +849,14 @@ function collectArchiveReferences(
       const runId = readRawRunId(completion.runId);
       const path = readArchivePath(completion.archivePath);
       if (runId === undefined || path === undefined) continue;
-      const id = opaqueSubagentId(sessionId, runId, "completion");
-      if (!references.has(id)) references.set(id, { path, runId });
+      const sourceIdentity = opaqueSubagentSourceIdentity(
+        sessionId,
+        runId,
+        "completion",
+      );
+      if (!references.has(sourceIdentity) && references.size < MAX_RUNS) {
+        references.set(sourceIdentity, { path, runId });
+      }
     }
   }
   return references;
@@ -1074,6 +1017,18 @@ function opaqueSubagentId(
     : `subagent-${canonicalOpaqueDigest("subagent-run", sessionId, `${surface}:${id}`)}`;
 }
 
+function opaqueSubagentSourceIdentity(
+  sessionId: string,
+  id: string,
+  surface = "run",
+): string {
+  return `subagent-source-${canonicalOpaqueDigest(
+    "subagent-run",
+    sessionId,
+    `source:${surface}:${id}`,
+  )}`;
+}
+
 function isBoundedTokens(value: unknown): value is number {
   return (
     typeof value === "number" &&
@@ -1114,7 +1069,7 @@ function snapshotRecord(
   return Object.freeze(snapshot);
 }
 
-function unavailableEvidence(): SubagentEvidence {
+function unavailableEvidence(): SubagentSourceEvidence {
   return {
     activity: {
       state: "unavailable",
@@ -1124,7 +1079,7 @@ function unavailableEvidence(): SubagentEvidence {
       interrupted: 0,
       tools: [],
     },
-    runs: [],
+    observations: [],
     state: "unavailable",
     diagnostics: [],
   };
