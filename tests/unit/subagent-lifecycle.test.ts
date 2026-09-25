@@ -195,7 +195,7 @@ test("non-complete lifecycle steps never fill model", async (t) => {
   }
 });
 
-test("persisted model wins while absent persisted toolCalls may be enriched", async () => {
+test("persisted completion model wins over a later relaunch publication", async () => {
   const input = await setup(
     status({ status: "complete", model: "provider/lifecycle", toolCount: 99 }),
   );
@@ -233,6 +233,37 @@ test("persisted model wins while absent persisted toolCalls may be enriched", as
               progressSummary: { toolCount: 4 },
             },
           ],
+        },
+      },
+    },
+    {
+      id: "relaunch-call",
+      parentId: null,
+      timestamp: "2026-09-25T10:00:04.000Z",
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "relaunch-tool-call", name: "subagent" },
+        ],
+      },
+    },
+    {
+      id: "relaunch-result",
+      parentId: "relaunch-call",
+      timestamp: "2026-09-25T10:00:05.000Z",
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId: "relaunch-tool-call",
+        toolName: "subagent",
+        isError: false,
+        details: {
+          mode: "single",
+          runId: producerRunId,
+          asyncId: producerRunId,
+          results: [],
+          asyncDir: input.asyncDir,
         },
       },
     },

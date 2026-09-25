@@ -214,6 +214,21 @@ async function enrichCurrentLifecycle(
 ): Promise<SubagentSourceEvidence> {
   try {
     const observations = [...evidence.observations];
+    const publicIdBySource = new Map(
+      (evidence.aliases ?? []).map(({ sourceIdentity, publicId }) => [
+        sourceIdentity,
+        publicId,
+      ]),
+    );
+    const persistedModels = new Set<string>();
+    const persistedToolCalls = new Set<string>();
+    for (const observation of observations) {
+      const runId =
+        publicIdBySource.get(observation.sourceIdentity) ?? observation.run.id;
+      if (observation.run.model !== undefined) persistedModels.add(runId);
+      if (observation.run.toolCalls !== undefined)
+        persistedToolCalls.add(runId);
+    }
     const observedSources = new Set(
       observations.map(({ sourceIdentity }) => sourceIdentity),
     );
@@ -238,8 +253,17 @@ async function enrichCurrentLifecycle(
       observations: observations.map((observation) => {
         const enrichment = enrichmentBySource.get(observation.sourceIdentity);
         if (enrichment === undefined) return observation;
-        const model = observation.run.model ?? enrichment.model;
-        const toolCalls = observation.run.toolCalls ?? enrichment.toolCalls;
+        const logicalRunId =
+          publicIdBySource.get(observation.sourceIdentity) ??
+          observation.run.id;
+        const model =
+          observation.run.model ??
+          (persistedModels.has(logicalRunId) ? undefined : enrichment.model);
+        const toolCalls =
+          observation.run.toolCalls ??
+          (persistedToolCalls.has(logicalRunId)
+            ? undefined
+            : enrichment.toolCalls);
         if (
           model === observation.run.model &&
           toolCalls === observation.run.toolCalls
