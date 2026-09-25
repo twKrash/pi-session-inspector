@@ -1248,8 +1248,6 @@ function mapRunStatus(
         ? "succeeded"
         : "failed";
   }
-  if (record.isError === true) return "failed";
-  if (record.isError === false) return "succeeded";
   return "unknown";
 }
 
@@ -1498,22 +1496,21 @@ function readChildIndex(value: unknown): number | undefined {
  * Producer run ids are producer-controlled metadata. Hash them session-scoped
  * through the canonical opaque-id binding before they leave this adapter, so
  * reports retain explicit parentage without copying or cross-session-colliding
- * IDs.
+ * IDs. Every identity is surface-scoped: the pre-ADR-0022 unscoped digest is
+ * not reachable from this adapter.
  */
 function opaqueSubagentId(
   sessionId: string,
   id: string,
-  surface = "run",
+  surface: string,
 ): string {
-  return surface === "run"
-    ? `subagent-${canonicalOpaqueDigest("subagent-run", sessionId, id)}`
-    : `subagent-${canonicalOpaqueDigest("subagent-run", sessionId, `${surface}:${id}`)}`;
+  return `subagent-${canonicalOpaqueDigest("subagent-run", sessionId, `${surface}:${id}`)}`;
 }
 
 function opaqueSubagentSourceIdentity(
   sessionId: string,
   id: string,
-  surface = "run",
+  surface: string,
 ): string {
   return `subagent-source-${canonicalOpaqueDigest(
     "subagent-run",
