@@ -1344,6 +1344,80 @@ test("P1.A: a lone usage-bearing branch summary reconciles its own usage", () =>
   assert.deepEqual(session.usage.known, { totalTokens: 17, cost: 0.017 });
 });
 
+test("fails closed when an over-cap source duplicates an admitted public ID", () => {
+  const firstId = `subagent-${"0".repeat(64)}`;
+  const effortCoverage = {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  } as const;
+  const subagents: SubagentSourceEvidence = {
+    activity: {
+      state: "supported",
+      calls: 256,
+      succeeded: 256,
+      failed: 0,
+      interrupted: 0,
+      tools: [],
+    },
+    observations: [
+      ...Array.from({ length: 256 }, (_, order) => {
+        const digest = order.toString(16).padStart(64, "0");
+        return {
+          sourceIdentity: `subagent-source-${digest}`,
+          order,
+          run: {
+            id: `subagent-${digest}`,
+            status: "succeeded" as const,
+            confidence: "cooperative" as const,
+            effortCoverage,
+          },
+        };
+      }),
+      {
+        sourceIdentity: `subagent-source-${"f".repeat(64)}`,
+        order: 256,
+        run: {
+          id: firstId,
+          status: "failed" as const,
+          confidence: "cooperative" as const,
+          effortCoverage,
+        },
+      },
+    ],
+    state: "supported",
+    diagnostics: [],
+  };
+  const result = buildCanonicalSession({
+    parsed: parsed([MARKER]),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    subagents,
+  });
+
+  assert.equal(result.state, "ready");
+  if (result.state !== "ready") return;
+  assert.equal(result.session.agents.length, 255);
+  assert.equal(
+    result.session.agents.some((run) => run.id === firstId),
+    false,
+  );
+  const collisionDiagnostics = result.session.health.diagnostics
+    .filter((diagnostic) => diagnostic.source === "subagent-result")
+    .filter(
+      (diagnostic) => diagnostic.code === "cooperative-evidence-conflict",
+    );
+  assert.deepEqual(
+    collisionDiagnostics.map(({ code, count }) => ({ code, count })),
+    [{ code: "cooperative-evidence-conflict", count: 1 }],
+  );
+  assert.equal(JSON.stringify(collisionDiagnostics).includes(firstId), false);
+});
+
 test("caps canonical agent-run input at 256 distinct rows and keeps admitted updates", () => {
   const subagents: SubagentSourceEvidence = {
     activity: {

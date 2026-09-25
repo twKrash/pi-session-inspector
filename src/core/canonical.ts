@@ -531,21 +531,34 @@ export function attachSubagentEvidence(
 }
 
 // Keep the historical 256-distinct-run cap while still reconciling later updates
-// for runs already admitted; the reducer itself fails closed on overflow.
+// for admitted sources and detecting skipped rows that collide with their IDs.
 function* boundedSourceObservations(
   observations: Iterable<AgentRunSourceObservation>,
+  skippedPublicIdCollisions: Set<string>,
 ): IterableIterator<AgentRunSourceObservation> {
-  const sourceIdentities = new Set<string>();
+  const sourceIdentities = new Map<string, string | undefined>();
+  const admittedPublicIds = new Set<string>();
   for (const observation of observations) {
     const sourceIdentity = sourceIdentityOf(observation);
-    if (sourceIdentity !== undefined) {
-      if (
-        !sourceIdentities.has(sourceIdentity) &&
-        sourceIdentities.size >= MAX_AGENT_RUN_COUNT
-      ) {
-        continue;
+    if (sourceIdentity === undefined) {
+      yield observation;
+      continue;
+    }
+    const admitted = sourceIdentities.has(sourceIdentity);
+    const previousPublicId = sourceIdentities.get(sourceIdentity);
+    if (!admitted && sourceIdentities.size >= MAX_AGENT_RUN_COUNT) {
+      const publicId = observationPublicRunId(observation);
+      if (publicId !== undefined && admittedPublicIds.has(publicId)) {
+        skippedPublicIdCollisions.add(publicId);
       }
-      sourceIdentities.add(sourceIdentity);
+      continue;
+    }
+    if (!admitted || previousPublicId === undefined) {
+      const publicId = observationPublicRunId(observation);
+      if (!admitted || publicId !== undefined) {
+        sourceIdentities.set(sourceIdentity, publicId);
+      }
+      if (publicId !== undefined) admittedPublicIds.add(publicId);
     }
     yield observation;
   }
@@ -560,6 +573,26 @@ function sourceIdentityOf(value: unknown): string | undefined {
       OPAQUE_AGENT_SOURCE_ID.test(sourceIdentity)
       ? sourceIdentity
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function observationPublicRunId(value: unknown): string | undefined {
+  try {
+    if (!isRecord(value)) return undefined;
+    const order = value["order"];
+    const run = value["run"];
+    if (
+      typeof order !== "number" ||
+      !Number.isSafeInteger(order) ||
+      order < 0 ||
+      !isRecord(run)
+    ) {
+      return undefined;
+    }
+    const { id, status } = run;
+    return isOpaqueAgentRunId(id) && isAgentRunStatus(status) ? id : undefined;
   } catch {
     return undefined;
   }
@@ -642,10 +675,19 @@ function normalizeSubagentEvidence(
     ] === "function"
       ? (observationInput as Iterable<AgentRunSourceObservation>)
       : [];
+  const skippedPublicIdCollisions = new Set<string>();
   const reconciled = reconcileAgentRuns(
-    boundedSourceObservations(observations),
+    boundedSourceObservations(observations, skippedPublicIdCollisions),
   );
-  const normalizedRuns = normalizeAgentRuns(reconciled.runs);
+  const publicIdCollisions = new Set(
+    reconciled.runs
+      .filter((run) => skippedPublicIdCollisions.has(run.id))
+      .map((run) => run.id),
+  );
+  const normalizedRuns = normalizeAgentRuns(
+    reconciled.runs,
+    publicIdCollisions,
+  );
   return {
     activity,
     runs: normalizedRuns.runs,
@@ -670,12 +712,11 @@ function normalizeSubagentEvidence(
   };
 }
 
-function normalizeAgentRuns(runs: readonly AgentRun[]): {
-  runs: AgentRun[];
-  conflictCount: number;
-} {
+function normalizeAgentRuns(
+  runs: readonly AgentRun[],
+  conflictingIds: Set<string>,
+): { runs: AgentRun[]; conflictCount: number } {
   const byId = new Map<string, AgentRun>();
-  const conflictingIds = new Set<string>();
   for (const value of runs.slice(0, MAX_AGENT_RUN_COUNT)) {
     const run = normalizeAgentRun(value);
     if (run === undefined || conflictingIds.has(run.id)) continue;

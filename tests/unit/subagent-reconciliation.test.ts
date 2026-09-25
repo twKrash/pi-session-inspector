@@ -105,6 +105,39 @@ test("same-order alias objects with equal bounded fields do not conflict", () =>
   assert.deepEqual(result.diagnostics, []);
 });
 
+test("conflicted aliased effort fields report unavailable coverage", () => {
+  const result = reconcileAgentRuns(
+    [
+      observation(sourceA, 7, publicIdA, "succeeded", {
+        usage: { totalTokens: 7 },
+        durationMs: 5,
+        toolCalls: 1,
+      }),
+      observation(sourceB, 7, publicIdB, "succeeded", {
+        usage: { totalTokens: 8 },
+        durationMs: 6,
+        toolCalls: 2,
+      }),
+    ],
+    aliases,
+  );
+  const [run] = result.runs;
+
+  assert.equal(result.runs.length, 1);
+  assert.equal(run?.usage, undefined);
+  assert.equal(run?.durationMs, undefined);
+  assert.equal(run?.toolCalls, undefined);
+  assert.deepEqual(run?.effortCoverage, {
+    duration: "unavailable",
+    generations: "unavailable",
+    tools: "unavailable",
+    errors: "unavailable",
+    usage: "unavailable",
+    cost: "unavailable",
+  });
+  assertBoundedConflict(result);
+});
+
 test("no alias means no merge by shared labels or timestamps", () => {
   const reconcile = reconcileAgentRuns;
   const result = reconcile([observationB, observationA]);
