@@ -463,7 +463,7 @@ Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, cor
 | Integration | v1 handling | Non-claim |
 | --- | --- | --- |
 | Pi core | mandatory replay + live observer | exact provider retry spans |
-| pi-subagents | automatic discovery from persisted tool results: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; child Pi session files not replayed |
+| pi-subagents | automatic discovery from persisted tool results: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation; a `mode: "single"` completion's lone id-less child contributes its validated usage group to that run | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; child Pi session files not replayed |
 | Permission System | public bus counters (`permissions:ready\|ui_prompt\|decision`) folded into durable aggregates; additive hashed `attribution.request` metadata only | internal parser import; no raw producer payload fields; raw request ID never read |
 | RTK | persisted `rtkCompaction` details | rewrite decision/savings not persisted |
 | Context Mode | `ctx_*` use | exact Context Mode savings |
@@ -481,6 +481,17 @@ matching validated `runId` and `asyncId`, empty `results[]`), or (b) a
 async execution is unproven, not foreground. A run without an explicit parent
 keeps `parentId` absent; shared projections render its existing parent verdict
 as `unknown`. No parent is inferred.
+
+A wait completion that declares `mode: "single"` publishes exactly one child for
+its exact validated `runId`. When that child owns no `runId` it materializes no
+row of its own, so its bounded `usage` group rides on the completion row: the
+async run reports the child's tokens and cost exactly as published (a cost-only
+group stays cost-only, an unusable group stays absent). Every other shape
+attributes nothing — a missing, `parallel`, or `workflow` mode, more than one
+child, a child with its own id, or an unusable usage group. Names, order, array
+position, and parentage never establish this attribution, no alias or extra row
+is created, native totals are unchanged, and history reports see the same
+persisted evidence.
 
 For a current-session report only, a C1-proven async launch may be optionally
 filled from the `status.json` beneath its explicitly persisted `asyncDir`.

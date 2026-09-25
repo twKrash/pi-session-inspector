@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for PR B.
+Accepted for PR B; amended for the single-run completion child-usage contract.
 
 ## Context
 
@@ -21,6 +21,7 @@ The Inspector needs one compatibility contract for any future live enrichment an
 - **L0 ownership:** producer adapters validate producer-specific shapes, bound and redact values, and emit ordered observations. Each observation carries a private opaque source identity derived only from validated producer identity and the stable publication order. L0 does not merge observations and does not expose raw producer IDs, payloads, or paths.
 - **L1 ownership:** canonical reconciliation groups observations by exact private source identity. A cross-source merge requires an explicit, validated exact alias from source identity to private canonical identity and an already observed public `AgentRun.id`. Ambiguous or invalid aliases remain separate and produce bounded diagnostics. Distinct sources that collide on one public ID without an alias are withheld together and produce a bounded conflict diagnostic; canonical normalization never silently deduplicates them. Names, labels, timestamps, array positions, paths, or similarity never establish identity. Public IDs are projected unchanged; private identities do not enter reports.
 - **Accounting:** repeated observations select the latest valid published fields and preserve existing status/conflict behavior. Usage is selected, never summed. Child usage remains a breakdown and never contributes to parent or session totals.
+- **Single-run completion child usage (contract amendment):** a wait completion that declares `mode: "single"` publishes exactly one child for its exact validated `runId`. When that child owns no `runId` it materializes no observation and no row, so its bounded `usage` group may ride on the outer completion observation, decided by the same bounded child-usage validator every other surface uses. Any other shape attributes nothing: a missing, `parallel` or `workflow` mode, more than one child, a child with its own id, or an unusable usage group. No name, order, array position, or parentage join is introduced, no alias and no extra row are created, native totals are untouched, and because the source is persisted Pi evidence both current and history reports see the same attribution.
 - **Privacy and persistence:** no prompt, response, raw tool arguments/results, provider payload, secret, raw producer ID, path, or unbounded producer string enters Inspector WAL or report diagnostics. Pi session JSONL is never written by Inspector.
 - **PR B boundary:** existing persisted parsing remains. This decision adds no missing async `AgentRuns`, `bg_wait` visibility, lifecycle-artifact ingestion, or changes to parent rendering or `executionKind`.
 
@@ -38,6 +39,7 @@ The Inspector needs one compatibility contract for any future live enrichment an
 - L1 owns reconciliation, exact alias handling, and bounded conflict diagnostics; the current persisted path uses source identity directly and supplies no aliases.
 - Existing public AgentRun IDs, row ordering, report DTOs, archive verdicts, and non-additive usage semantics remain unchanged.
 - Future process-local capabilities require same-session ping validation and capability-specific compatibility before any evidence is consumed. Referenced filesystem enrichment follows its separate fail-closed reference/run/session/version gate; it does not activate process-local capabilities.
+- A single-run async completion can carry the run's own child usage without weakening the exact-identity rule: the attribution is bounded by the producer's declared `mode: "single"`, exactly one child, and that child's validated usage group, and it creates no identity, alias, or row.
 
 ## Related decisions
 

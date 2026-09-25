@@ -827,6 +827,34 @@ function isSuppressedAsyncWaitContainer(
   );
 }
 
+/**
+ * A wait completion declared `mode: "single"` publishes exactly one child for
+ * one exact validated run id. When that child owns no `runId` it materializes
+ * no row of its own, so its validated usage group is the only usage the run
+ * published and may ride on the completion row. Any other shape attributes
+ * nothing: a missing, `parallel` or `workflow` mode, more than one child, a
+ * child with its own id, or an unusable usage group. Names, order, position,
+ * and parentage never establish this attribution.
+ */
+function readSingleCompletionChildUsage(
+  completion: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | undefined {
+  if (
+    completion.mode !== "single" ||
+    !Array.isArray(completion.results) ||
+    completion.results.length !== 1
+  ) {
+    return undefined;
+  }
+  const child = snapshotRecord(completion.results[0]);
+  if (child === undefined || readRawRunId(child.runId) !== undefined) {
+    return undefined;
+  }
+  return readChildUsage(child.usage) === undefined
+    ? undefined
+    : (child.usage as Readonly<Record<string, unknown>>);
+}
+
 /** Reads documented `details.results[]`/`details.completions[]` rows. */
 function* collectRuns(
   result: Readonly<Record<string, unknown>>,
@@ -956,8 +984,13 @@ function* collectRuns(
               "completion",
             );
       if (!isSuppressedAsyncWaitContainer(toolName, completion)) {
+        // A single-run completion's lone id-less child carries the run's own
+        // validated usage; every other completion shape stays unavailable.
+        const singleChildUsage = readSingleCompletionChildUsage(completion);
         yield* pushRun(
-          completion,
+          singleChildUsage === undefined
+            ? completion
+            : { ...completion, usage: singleChildUsage },
           publication,
           completionId,
           completionSourceIdentity,

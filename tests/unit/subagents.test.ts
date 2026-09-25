@@ -585,6 +585,148 @@ test("keeps one stable public id for an async run from launch through persisted 
   assert.notEqual(foreground[0]?.id, launchId);
 });
 
+const completeChildUsage = {
+  input: 100,
+  output: 20,
+  cacheRead: 5,
+  cacheWrite: 1,
+  cost: 0.001,
+};
+
+/** One wait publication carrying a single completion row. */
+const completionEntries = (completion: unknown, callId: string) => [
+  assistantEntry(`${callId}-call`, callId, "bg_wait"),
+  resultEntry(
+    `${callId}-result`,
+    callId,
+    { completions: [completion] },
+    "2026-09-26T10:00:05.000Z",
+    "bg_wait",
+  ),
+];
+
+test("attributes a single-run completion child's usage that has no own id", async () => {
+  const fixture = await readFile(
+    new URL(
+      "../fixtures/pi-subagents/single-completion-child-usage.jsonl",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const parsed = parseSessionJsonl(fixture);
+  assert.equal(parsed.hasMalformedJson, false);
+  const evidence = readSubagentEvidenceWithSession(parsed.entries, parsed.id);
+  const runs = runsOf(evidence);
+
+  // One logical run: the exact launch/completion pair reconciles, and the
+  // child that publishes no run id of its own materializes no second row.
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.executionKind, "async");
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(runs[0]?.agent, "scout");
+  assert.deepEqual(runs[0]?.usage, { totalTokens: 126, cost: 0.001 });
+  assert.equal(serializeEvidence(evidence).includes("PRIVATE"), false);
+});
+
+test("attributes no single-run child usage for any other completion shape", () => {
+  const evidence = readSubagentEvidence(
+    [
+      {
+        runId: "run-parallel",
+        mode: "parallel",
+        agent: "parallel-run",
+        results: [{ usage: completeChildUsage }],
+      },
+      {
+        runId: "run-no-mode",
+        agent: "no-mode-run",
+        state: "complete",
+        results: [{ usage: completeChildUsage }],
+      },
+      {
+        runId: "run-two-children",
+        mode: "single",
+        agent: "two-children-run",
+        state: "complete",
+        results: [{ usage: completeChildUsage }, { agent: "second-child" }],
+      },
+      {
+        runId: "run-own-id",
+        mode: "single",
+        agent: "own-id-run",
+        state: "complete",
+        results: [
+          {
+            runId: "child-own-id",
+            agent: "own-id-child",
+            usage: completeChildUsage,
+          },
+        ],
+      },
+      {
+        runId: "run-invalid-usage",
+        mode: "single",
+        agent: "invalid-usage-run",
+        state: "complete",
+        results: [
+          { usage: { input: 1, output: 2, cacheRead: 3, cost: "0.5" } },
+        ],
+      },
+    ].flatMap((completion, index) =>
+      completionEntries(completion, `call-${index}`),
+    ),
+  );
+  const runs = runsOf(evidence);
+  const byAgent = new Map(runs.map((run) => [run.agent, run]));
+
+  // Only the child that owns an identity keeps usage; every unattributable
+  // shape stays unavailable rather than borrowing its one child's numbers.
+  assert.deepEqual(byAgent.get("own-id-child")?.usage, {
+    totalTokens: 126,
+    cost: 0.001,
+  });
+  assert.equal(runs.filter((run) => run.usage !== undefined).length, 1);
+  assert.equal(byAgent.get("parallel-run"), undefined);
+  for (const agent of [
+    "no-mode-run",
+    "two-children-run",
+    "own-id-run",
+    "invalid-usage-run",
+  ]) {
+    assert.equal(byAgent.get(agent)?.usage, undefined, agent);
+  }
+  assert.equal(byAgent.get("no-mode-run")?.status, "succeeded");
+});
+
+test("keeps a single-run child's cost-only usage and rejects an invalid group", () => {
+  const evidence = readSubagentEvidence(
+    [
+      {
+        runId: "run-cost-only",
+        mode: "single",
+        agent: "cost-only-run",
+        state: "complete",
+        results: [{ usage: { cost: 0.25 } }],
+      },
+      {
+        runId: "run-invalid-group",
+        mode: "single",
+        agent: "invalid-group-run",
+        state: "complete",
+        results: [{ usage: { input: 1, cost: "0.25" } }],
+      },
+    ].flatMap((completion, index) =>
+      completionEntries(completion, `cost-call-${index}`),
+    ),
+  );
+  const byAgent = new Map(runsOf(evidence).map((run) => [run.agent, run]));
+
+  // The bounded usage validator every other surface uses accepts a cost-only
+  // group and rejects anything else; the single-run child adds no new rule.
+  assert.deepEqual(byAgent.get("cost-only-run")?.usage, { cost: 0.25 });
+  assert.equal(byAgent.get("invalid-group-run")?.usage, undefined);
+});
+
 test("async launch plus completion stays non-additive against native totals", async () => {
   const runId = "non-additive-async-run";
   const entries: SessionEntry[] = [

@@ -10,6 +10,12 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   `model` from the explicitly referenced v3 pi-subagents `status.json`; history,
   persisted values, status, identity, and native usage accounting stay unchanged.
 
+- A persisted single-run async completion attributes its one child's validated
+  usage group to that async run when the child publishes no run id of its own,
+  so current and history reports show the run's tokens and cost instead of
+  `Unavailable`. Any other completion shape attributes nothing, and native
+  totals remain unchanged.
+
 ### Fixed
 
 - Preserve exact C1 subagent launch/completion aliases in history projections.
