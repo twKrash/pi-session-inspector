@@ -1090,7 +1090,12 @@ test("json current, history and global export deterministically and never open",
       harness.context({ mode: "interactive" }),
     );
     const first = await readFile(jsonPath, "utf8");
-    assert.equal(JSON.parse(first).usage.totalTokens, 18);
+    const current = JSON.parse(first) as {
+      agents: unknown[];
+      usage: { totalTokens: number };
+    };
+    assert.equal(current.usage.totalTokens, 18);
+    assert.equal(current.agents.length, 0);
     await harness.handler()(
       `json --scope tree --output ${JSON.stringify(jsonPath)}`,
       harness.context({ mode: "interactive" }),
@@ -1118,6 +1123,11 @@ test("json current, history and global export deterministically and never open",
       await readFile(join(harness.cache, "history.json"), "utf8"),
     );
     assert.equal(history.sessions[0].report.usage.totalTokens, 18);
+    assert.equal(history.sessions[0].report.agents.length, 0);
+    assert.equal(
+      history.sessions[0].report.agents.length,
+      current.agents.length,
+    );
     // The command writes the report DTO verbatim, so the inspection verdict and
     // the per-session dated-window flag travel with it (UAT 8).
     assert.deepEqual(
@@ -1140,6 +1150,110 @@ test("json current, history and global export deterministically and never open",
     assert.equal(global.usage.totalTokens, 18);
     assert.equal(harness.opens.length, 0);
     assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("history preserves exact async launch/completion aliases from production evidence path", async () => {
+  const harness = await createHarness();
+  try {
+    const fixtureSource = await readFile(
+      "tests/fixtures/pi-subagents/persisted-async-visibility.jsonl",
+      "utf8",
+    );
+    const fixtureRows = fixtureSource
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { id?: string });
+    const retainedIds = new Set([
+      "persisted-async-visibility",
+      "marker",
+      "fg-call",
+      "fg-result",
+      "launch-call-a",
+      "launch-result-a",
+      "wait-call-a",
+      "wait-result-a",
+    ]);
+    const fixture =
+      fixtureRows
+        .filter((entry) => retainedIds.has(entry.id ?? ""))
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n";
+    const sessionId = "persisted-async-visibility";
+    await writeFile(harness.sessionFile, fixture);
+    harness.replaceSession({
+      sessionId,
+      sessionFile: harness.sessionFile,
+      leafId: "wait-result-a",
+    });
+    const sessionDirectory = join(harness.root, "sessions", sessionId);
+    await mkdir(sessionDirectory, { recursive: true });
+    await writeFile(
+      join(sessionDirectory, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        sessionId,
+        sourceFile: "session.jsonl",
+        state: "tracking",
+      }),
+    );
+
+    const currentPath = join(harness.directory, "current.json");
+    await harness.handler()(
+      `json --scope tree --output ${JSON.stringify(currentPath)}`,
+      harness.context({ mode: "interactive" }),
+    );
+    const current = JSON.parse(await readFile(currentPath, "utf8")) as {
+      agents: Array<{
+        id: string;
+        agent?: string;
+        status: string;
+        executionKind?: string;
+      }>;
+      usage: { totalTokens: number };
+    };
+    await harness.handler()(
+      "json history",
+      harness.context({ mode: "interactive" }),
+    );
+    const history = JSON.parse(
+      await readFile(join(harness.cache, "history.json"), "utf8"),
+    ) as {
+      sessions: Array<{
+        report: { agents: typeof current.agents; usage: typeof current.usage };
+      }>;
+    };
+    const historical = history.sessions[0]?.report;
+    assert.ok(historical);
+    const currentRun = current.agents.filter(
+      (run) => run.agent === "async-worker-a",
+    );
+    const historyRun = historical.agents.filter(
+      (run) => run.agent === "async-worker-a",
+    );
+    assert.equal(currentRun.length, 1);
+    assert.equal(historyRun.length, 1);
+    assert.equal(historyRun[0]?.id, currentRun[0]?.id);
+    assert.equal(historyRun[0]?.status, "succeeded");
+    assert.equal(historyRun[0]?.executionKind, "async");
+    assert.deepEqual(
+      historical.agents.map(({ id, status, executionKind }) => ({
+        id,
+        status,
+        executionKind,
+      })),
+      current.agents.map(({ id, status, executionKind }) => ({
+        id,
+        status,
+        executionKind,
+      })),
+    );
+    assert.equal(historical.agents.length, current.agents.length);
+    assert.equal(historical.usage.totalTokens, current.usage.totalTokens);
+    assert.equal(JSON.stringify(historical).includes("aliases"), false);
+    assert.equal(JSON.stringify(current).includes("aliases"), false);
   } finally {
     await harness.cleanup();
   }
