@@ -4,7 +4,10 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { buildCanonicalSession } from "../../src/core/canonical.ts";
+import {
+  attachSubagentEvidence,
+  buildCanonicalSession,
+} from "../../src/core/canonical.ts";
 import type { SessionEntry } from "../../src/core/events.ts";
 import { toSessionReport } from "../../src/core/reports.ts";
 import { readSubagentEvidence } from "../../src/integrations/subagents.ts";
@@ -315,6 +318,98 @@ test("does not read history without the current-session locator context", async 
       const runs = await readRuns();
       assert.equal(runs[0]?.executionDisposition, "detached");
       assert.equal(runs[0]?.status, "unknown");
+    },
+  );
+});
+
+test("keeps detached disposition through canonical report normalization", async () => {
+  const parsed = parseSessionJsonl(
+    readFileSync(
+      new URL(
+        "../fixtures/pi-subagents/foreground-detached.jsonl",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const base = buildCanonicalSession({
+    parsed,
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+  });
+  if (base.state !== "ready") throw new Error("fixture must build");
+  const baseReport = toSessionReport(base.session);
+  const persistedEvidence = readSubagentEvidence(parsed.entries, parsed.id);
+  const persistedRun = reconcileAgentRuns(
+    persistedEvidence.observations,
+    persistedEvidence.aliases,
+  ).runs[0];
+  assert.ok(persistedRun);
+
+  await withHistory(
+    envelope(
+      { agent: "scout", status: "completed", exitCode: 0 },
+      { mode: "single" },
+    ),
+    async () => {
+      const evidence = await readSubagentEvidenceWithArchives(
+        parsed.entries,
+        parsed.id,
+        SESSION_FILE,
+      );
+      const original = [...evidence.observations][0];
+      assert.ok(original);
+      assert.equal(original.run.executionDisposition, "detached");
+      assert.equal(original.run.status, "succeeded");
+      assert.equal(original.run.id, persistedRun.id);
+
+      const { executionDisposition: _disposition, ...laterRun } = original.run;
+      const laterObservation = {
+        ...original,
+        order: original.order + 1,
+        run: { ...laterRun, status: "unknown" as const },
+      };
+      const unrelatedObservation = {
+        ...laterObservation,
+        sourceIdentity: `subagent-source-${"a".repeat(64)}`,
+        order: laterObservation.order + 1,
+        run: {
+          ...laterObservation.run,
+          id: `subagent-${"b".repeat(64)}`,
+          agent: "unrelated",
+        },
+      };
+      const observations = [original, laterObservation, unrelatedObservation];
+      const reconciled = reconcileAgentRuns(observations, evidence.aliases);
+      assert.equal(reconciled.runs.length, 2);
+      assert.equal(reconciled.runs[0]?.id, original.run.id);
+      assert.equal(reconciled.runs[0]?.executionDisposition, "detached");
+      assert.equal(reconciled.runs[0]?.status, "succeeded");
+      assert.equal(reconciled.runs[1]?.executionDisposition, undefined);
+
+      const report = toSessionReport(
+        attachSubagentEvidence(base.session, {
+          ...evidence,
+          observations,
+        }),
+      );
+      const run = report.agents.find(({ id }) => id === original.run.id);
+      assert.equal(report.agents.length, 2);
+      assert.equal(
+        report.agents.filter(({ id }) => id === original.run.id).length,
+        1,
+      );
+      assert.equal(run?.id, persistedRun.id);
+      assert.equal(run?.executionDisposition, "detached");
+      assert.equal(run?.status, "succeeded");
+      assert.equal(
+        report.agents.find(({ agent }) => agent === "unrelated")
+          ?.executionDisposition,
+        undefined,
+      );
+      assert.deepEqual(report.usage, baseReport.usage);
+      assert.deepEqual(report.usageComposition, baseReport.usageComposition);
     },
   );
 });
