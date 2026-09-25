@@ -606,6 +606,7 @@ test("renders bounded agent and integration evidence", () => {
           {
             id: "child-run",
             parentId: "parent-run",
+            executionDisposition: "detached",
             status: "succeeded",
             confidence: "cooperative",
             effortCoverage: {
@@ -642,6 +643,8 @@ test("renders bounded agent and integration evidence", () => {
   for (let index = 0; index < 4; index++) component.handleInput("\u001B[C");
   const renderedAgents = component.render(120).join("\n");
   assert.ok(renderedAgents.includes("child-run"));
+  assert.ok(renderedAgents.includes("Disposition: Detached"));
+  assert.ok(renderedAgents.includes("Status: succeeded"));
   assert.ok(renderedAgents.includes("Duration: Known 1.2 s"));
   assert.ok(renderedAgents.includes("Generations: Unavailable"));
   assert.ok(renderedAgents.includes("Tool calls: Known 3"));

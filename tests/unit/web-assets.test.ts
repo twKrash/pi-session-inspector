@@ -3326,6 +3326,28 @@ function agentTableRunNames(
     });
 }
 
+test("detached disposition stays separate from terminal status in Agents tree and table", async () => {
+  const run = {
+    ...agentRow({
+      id: `subagent-${"f".repeat(64)}`,
+      agent: "reviewer",
+      status: "succeeded",
+    }),
+    executionDisposition: "detached",
+  } as UiAgentRow;
+  const harness = createWebClient({
+    responses: [treeSnapshot([run])],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+
+  assert.equal(viewText(harness).includes("Detached"), true);
+  assert.equal(viewText(harness).includes("Succeeded"), true);
+  harness.click(viewButton(harness, "table"));
+  assert.equal(viewText(harness).includes("Detached"), true);
+  assert.equal(viewText(harness).includes("Succeeded"), true);
+});
+
 test("the Agents view is a Tree by default and keeps the table one click away", async () => {
   const parentId = `subagent-${"1".repeat(64)}`;
   const childId = `subagent-${"2".repeat(64)}`;

@@ -136,6 +136,69 @@ const resultEntry = (
   },
 });
 
+test("keeps detached launch disposition separate from child terminal status", () => {
+  const makeEvidence = (detached: boolean) =>
+    readSubagentEvidence([
+      assistantEntry(`call-${detached}`, `call-${detached}`),
+      resultEntry(
+        `result-${detached}`,
+        `call-${detached}`,
+        {
+          runId: "detached-run",
+          results: [
+            {
+              index: 0,
+              agent: "reviewer",
+              detached,
+              exitCode: detached ? -2 : 0,
+            },
+            { index: 1, agent: "worker", detached, exitCode: 7 },
+          ],
+        },
+        "2026-09-25T10:00:01.000Z",
+      ),
+    ]);
+  const detached = runsOf(makeEvidence(true));
+  const ordinary = runsOf(makeEvidence(false));
+
+  assert.equal(detached[0]?.executionDisposition, "detached");
+  assert.equal(detached[0]?.status, "unknown");
+  assert.equal(detached[1]?.executionDisposition, "detached");
+  assert.equal(detached[1]?.status, "failed");
+  assert.equal(ordinary[0]?.status, "succeeded");
+  assert.equal(ordinary[1]?.status, "failed");
+  assert.equal(detached[0]?.id, ordinary[0]?.id);
+});
+
+test("detached disposition requires a foreground subagent publication", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("wait-call", "wait-call", "subagent_wait"),
+    resultEntry(
+      "wait-result",
+      "wait-call",
+      {
+        runId: "outer-run",
+        detached: true,
+        results: [
+          {
+            runId: "child-run",
+            index: 0,
+            agent: "worker",
+            detached: true,
+            state: "running",
+          },
+        ],
+      },
+      "2026-09-25T10:00:01.000Z",
+      "subagent_wait",
+    ),
+  ]);
+
+  assert.equal(evidence.activity.calls, 1);
+  assert.equal(runsOf(evidence).length, 1);
+  assert.equal(runsOf(evidence)[0]?.executionDisposition, undefined);
+});
+
 test("fixture publishes audited effort only for final foreground rows", async () => {
   const fixture = await readFile(
     new URL(

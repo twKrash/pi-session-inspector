@@ -87,6 +87,7 @@ export type AgentRow = {
   id: string;
   parentId: string | null;
   executionKind?: SessionReport["agents"][number]["executionKind"];
+  executionDisposition?: SessionReport["agents"][number]["executionDisposition"];
   agent: SessionReport["agents"][number]["agent"] | null;
   status: SessionReport["agents"][number]["status"];
   confidence: SessionReport["agents"][number]["confidence"];
@@ -694,6 +695,9 @@ function agentRows(report: SessionReport): AgentRow[] {
     ...(agent.executionKind === undefined
       ? {}
       : { executionKind: agent.executionKind }),
+    ...(agent.executionDisposition === undefined
+      ? {}
+      : { executionDisposition: agent.executionDisposition }),
     agent: agent.agent ?? null,
     status: agent.status,
     confidence: agent.confidence,
