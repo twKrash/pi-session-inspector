@@ -2,36 +2,72 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.0]
 
 ### Added
 
-- Current-session C1 async runs may fill missing `toolCalls` and completed-step
-  `model` from the explicitly referenced v3 pi-subagents `status.json`; history,
-  persisted values, status, identity, and native usage accounting stay unchanged.
-
-- A persisted single-run async completion attributes its one child's validated
-  usage group to that async run when the child publishes no run id of its own,
-  so current and history reports show the run's tokens and cost instead of
-  `Unavailable`. Any other completion shape attributes nothing, and native
-  totals remain unchanged.
-
+- Every AgentRun now carries bounded effort beside its outcome: duration, tool
+  calls, and usage/cost, each with independent coverage. A run that spent work
+  before failing, being stopped, or staying incomplete is visible without
+  inventing a semantic score, and native generations plus error counts remain
+  `unavailable` because no supported producer publishes them.
+- The Agents view gained duration sorting and duration-coverage filtering, and a
+  workflow child's own progress and usage are attributed to the row its producer
+  keyed rather than to a neighbouring row.
+- Persisted pi-subagents async work is visible: a validated single-run `subagent`
+  launch and `bg_wait`/`subagent_wait` terminal completions stay visible as
+  AgentRuns with opaque IDs and `executionKind: "async"`, and one logical run
+  keeps one public ID from launch through completion.
+- A current session may fill a proven async launch's missing `toolCalls` and a
+  completed step's `model` from the explicitly referenced v3 `status.json`.
+  Persisted values win, history reports never read it, and the artifact can
+  disappear without changing a row.
+- Detached foreground launches report the `Detached` disposition separately from
+  their outcome: the launch sentinel `-2` never means failure, and only the
+  bounded `foreground-history.json` compatibility bridge may settle the terminal
+  status.
+- A persisted single-run async completion that publishes one child without a run
+  id of its own now attributes that child's validated usage group to the run, so
+  current and history reports show the run's tokens and cost instead of
+  `Unavailable`. Any other completion shape attributes nothing.
 - The browser Agents view discloses native subagent tool activity beside the
-  materialized runs and keeps it in the runs-empty states, so a failed or
-  interrupted call that published no child identity is not hidden by an empty
-  runs view.
+  runs, including when no runs are materialized, so a failed or interrupted call
+  whose producer published no child identity is not hidden by an empty runs view.
+- In the localhost UI, tool and skill affordances navigate to the surface that
+  holds their evidence.
+- A validated pi-subagents RPC `ping` capability contract and its sanitized
+  fixtures are pinned for future live enrichment. Inspector does not call it, so
+  no report depends on a running producer process.
+
+### Changed
+
+- The `AgentRun` row gains `effortCoverage`, optional `durationMs` and
+  `toolCalls`, optional `executionDisposition: "detached"`, and per-field usage
+  and cost coverage. TUI, immutable snapshot, browser, and JSON report the same
+  DTO, so effort reads identically on every surface.
+- Persisted subagent evidence is reconciled through a normalized seam: adapters
+  emit ordered observations with private opaque source identities and canonical
+  reconciliation merges only exact identities and explicit aliases (ADR 0022).
+  Existing public AgentRun IDs keep their values.
 
 ### Fixed
 
-- Preserve exact C1 subagent launch/completion aliases in history projections.
-
-- Persisted pi-subagents async launches and `bg_wait` completions stay visible
-  with opaque IDs; exact identities reconcile when both surfaces exist, and
-  missing parents remain unavailable.
-
 - Historical session projections retain optional token and per-bucket cost
-  values alongside their existing coverage, keeping selected-session
-  breakdowns and cache reuse consistent without fabricating unavailable values.
+  values alongside their existing coverage, keeping selected-session breakdowns
+  and cache reuse consistent without fabricating unavailable values.
+- Exact launch/completion aliases survive history projection, and an async run
+  keeps one public ID when completion evidence arrives after a launch-only
+  report was already produced.
+- Detached foreground disposition and its terminal outcome survive canonical
+  projection into every report surface.
+
+### Removed
+
+- Superseded pi-subagents producer reconstruction. A producer row's `isError`
+  field is no longer read as run status — that field belongs to the persisted Pi
+  tool result, and a row with no producer status evidence now fails closed — and
+  the dead unscoped public-ID digest is gone. No supported producer behavior,
+  identity, or accounting changes.
 
 ## [1.4.0]
 
