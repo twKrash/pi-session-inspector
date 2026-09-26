@@ -199,7 +199,7 @@ export const ENGLISH_CATALOG = {
   "agents.activity.note":
     "Calls recorded from persisted tool results. Usage is a breakdown only.",
   "agents.unattributedInvocation":
-    "A failed or unfinished call that published no child identity has no run here, so this count is its only record.",
+    "Failed or interrupted native calls may have no child-run row when no child identity was published.",
   "agents.childRuns": "Child runs",
   "agents.none":
     "Child-run evidence is unavailable for this session, so no run count is inferred.",

@@ -11,9 +11,9 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   persisted values, status, identity, and native usage accounting stay unchanged.
 
 - The browser Agents view discloses native subagent tool activity beside the
-  materialized runs, including when a failed or unfinished call published no
-  child identity and therefore has no run row; the empty state keeps that
-  disclosure instead of showing only an empty range.
+  materialized runs and keeps it in the runs-empty states, so a failed or
+  interrupted call that published no child identity is not hidden by an empty
+  runs view.
 
 ### Fixed
 
