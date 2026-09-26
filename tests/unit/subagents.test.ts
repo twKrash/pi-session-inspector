@@ -672,6 +672,13 @@ test("attributes no single-run child usage for any other completion shape", () =
           { usage: { input: 1, output: 2, cacheRead: 3, cost: "0.5" } },
         ],
       },
+      {
+        runId: "run-malformed-child-id",
+        mode: "single",
+        agent: "malformed-child-id",
+        state: "complete",
+        results: [{ runId: "INVALID RUN ID", usage: completeChildUsage }],
+      },
     ].flatMap((completion, index) =>
       completionEntries(completion, `call-${index}`),
     ),
@@ -692,9 +699,13 @@ test("attributes no single-run child usage for any other completion shape", () =
     "two-children-run",
     "own-id-run",
     "invalid-usage-run",
+    "malformed-child-id",
   ]) {
     assert.equal(byAgent.get(agent)?.usage, undefined, agent);
   }
+  // A child that declares an unusable `runId` owns that claim: it is not
+  // silently re-read as an id-less child, so its usage is never borrowed.
+  assert.equal(byAgent.get("malformed-child-id")?.usage, undefined);
   assert.equal(byAgent.get("no-mode-run")?.status, "succeeded");
 });
 

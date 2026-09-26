@@ -829,12 +829,14 @@ function isSuppressedAsyncWaitContainer(
 
 /**
  * A wait completion declared `mode: "single"` publishes exactly one child for
- * one exact validated run id. When that child owns no `runId` it materializes
- * no row of its own, so its validated usage group is the only usage the run
- * published and may ride on the completion row. Any other shape attributes
- * nothing: a missing, `parallel` or `workflow` mode, more than one child, a
- * child with its own id, or an unusable usage group. Names, order, position,
- * and parentage never establish this attribution.
+ * one exact validated run id. When that child declares no `runId` key at all it
+ * materializes no row of its own, so its validated usage group is the only
+ * usage the run published and may ride on the completion row. Any other shape
+ * attributes nothing: a missing, `parallel` or `workflow` mode, more than one
+ * child, a child that declares a `runId` (usable or not — a present but
+ * unusable claim is never re-read as an id-less child), or an unusable usage
+ * group. Names, order, position, and parentage never establish this
+ * attribution.
  */
 function readSingleCompletionChildUsage(
   completion: Readonly<Record<string, unknown>>,
@@ -847,7 +849,7 @@ function readSingleCompletionChildUsage(
     return undefined;
   }
   const child = snapshotRecord(completion.results[0]);
-  if (child === undefined || readRawRunId(child.runId) !== undefined) {
+  if (child === undefined || Object.hasOwn(child, "runId")) {
     return undefined;
   }
   return readChildUsage(child.usage) === undefined

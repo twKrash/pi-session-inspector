@@ -483,15 +483,15 @@ keeps `parentId` absent; shared projections render its existing parent verdict
 as `unknown`. No parent is inferred.
 
 A wait completion that declares `mode: "single"` publishes exactly one child for
-its exact validated `runId`. When that child owns no `runId` it materializes no
-row of its own, so its bounded `usage` group rides on the completion row: the
-async run reports the child's tokens and cost exactly as published (a cost-only
-group stays cost-only, an unusable group stays absent). Every other shape
-attributes nothing — a missing, `parallel`, or `workflow` mode, more than one
-child, a child with its own id, or an unusable usage group. Names, order, array
-position, and parentage never establish this attribution, no alias or extra row
-is created, native totals are unchanged, and history reports see the same
-persisted evidence.
+its exact validated `runId`. When that child declares no `runId` key at all it
+materializes no row of its own, so its bounded `usage` group rides on the
+completion row: the async run reports the child's tokens and cost exactly as
+published (a cost-only group stays cost-only, an unusable group stays absent).
+Every other shape attributes nothing — a missing, `parallel`, or `workflow`
+mode, more than one child, a child that declares a `runId` (usable or not), or an
+unusable usage group. Names, order, array position, and parentage never
+establish this attribution, no alias or extra row is created, native totals are
+unchanged, and history reports see the same persisted evidence.
 
 For a current-session report only, a C1-proven async launch may be optionally
 filled from the `status.json` beneath its explicitly persisted `asyncDir`.
