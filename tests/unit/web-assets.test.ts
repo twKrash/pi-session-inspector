@@ -4187,6 +4187,120 @@ test("an unsupported producer is stated as a capability gap, not an empty range"
   );
 });
 
+test("discloses a native call that failed without a run row", async () => {
+  const translator = createTranslator("en");
+  const failing = uiSnapshot();
+  const failingView = failing.current.tree;
+  if (failingView.report === undefined)
+    throw new Error("the fixture must carry a report");
+  failingView.report.agentActivity = {
+    state: "supported",
+    calls: 8,
+    succeeded: 7,
+    failed: 1,
+    interrupted: 0,
+    tools: [{ name: "subagent", calls: 6 }],
+  };
+  const harness = createWebClient({
+    responses: [failing],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const disclosed = viewText(harness);
+  assert.equal(disclosed.includes(translator("panel.agentActivity")), true);
+  assert.equal(
+    disclosed.includes(translator("agents.unattributedInvocation")),
+    true,
+  );
+
+  // The same activity with nothing failed or unfinished states its counts
+  // without the caveat.
+  const settled = uiSnapshot();
+  const settledView = settled.current.tree;
+  if (settledView.report === undefined)
+    throw new Error("the fixture must carry a report");
+  settledView.report.agentActivity = {
+    state: "supported",
+    calls: 7,
+    succeeded: 7,
+    failed: 0,
+    interrupted: 0,
+    tools: [],
+  };
+  const calm = createWebClient({
+    responses: [settled],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await calm.start();
+  const calmText = viewText(calm);
+  assert.equal(
+    calmText.includes(translator("agents.unattributedInvocation")),
+    false,
+  );
+  assert.equal(calmText.includes(translator("agents.activity.note")), true);
+});
+
+test("a zero-run range keeps the activity disclosure beside the empty range", async () => {
+  const translator = createTranslator("en");
+  const snapshot = uiSnapshot();
+  const view = snapshot.current.tree;
+  if (view.report === undefined || view.range === undefined)
+    throw new Error("the fixture must carry a report and a range");
+  view.report.agentEvidence = "supported";
+  view.report.agentActivity = {
+    state: "supported",
+    calls: 6,
+    succeeded: 5,
+    failed: 1,
+    interrupted: 0,
+    tools: [{ name: "subagent", calls: 5 }],
+  };
+  view.range.childUsage.runsTotal = 0;
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const disclosed = viewText(harness);
+  // The range holds no run, so the empty state is still stated -- with the
+  // native calls beside it rather than instead of it.
+  assert.equal(disclosed.includes(translator("bars.empty")), true);
+  assert.equal(disclosed.includes(translator("agents.none")), false);
+  assert.equal(disclosed.includes(translator("panel.agentActivity")), true);
+  assert.equal(
+    disclosed.includes(translator("agents.unattributedInvocation")),
+    true,
+  );
+});
+
+test("a failed call with no materialized run is still disclosed", async () => {
+  const translator = createTranslator("en");
+  const snapshot = uiSnapshot();
+  const view = snapshot.current.tree;
+  if (view.report === undefined)
+    throw new Error("the fixture must carry a report");
+  view.report.agentEvidence = "unavailable";
+  view.report.agentActivity = {
+    state: "supported",
+    calls: 1,
+    succeeded: 0,
+    failed: 1,
+    interrupted: 0,
+    tools: [{ name: "subagent", calls: 1 }],
+  };
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/llm?scope=tree&preset=7",
+  });
+  await harness.start();
+  const disclosed = viewText(harness);
+  assert.equal(disclosed.includes(translator("agents.none")), true);
+  assert.equal(
+    disclosed.includes(translator("agents.unattributedInvocation")),
+    true,
+  );
+});
+
 test("the table keeps ordinary rows: a tree-only filter never hides them", async () => {
   const harness = createWebClient({
     responses: [

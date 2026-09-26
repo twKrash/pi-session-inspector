@@ -198,6 +198,8 @@ export const ENGLISH_CATALOG = {
     "Child usage is a breakdown only. It is never added to native totals.",
   "agents.activity.note":
     "Calls recorded from persisted tool results. Usage is a breakdown only.",
+  "agents.unattributedInvocation":
+    "Failed or interrupted native calls may have no child-run row when no child identity was published.",
   "agents.childRuns": "Child runs",
   "agents.none":
     "Child-run evidence is unavailable for this session, so no run count is inferred.",

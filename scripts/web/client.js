@@ -2492,17 +2492,63 @@
     return section;
   };
 
+  /**
+   * Native subagent tool activity beside the materialized runs. A failed or
+   * unfinished call can publish no child identity, so it has no run row: this
+   * card is the only place that outcome is visible. These counts are never
+   * recomputed into runs and never added to a session total.
+   */
+  const agentActivityCard = (activity) => {
+    const unattributed = activity.failed > 0 || activity.interrupted > 0;
+    return card(
+      COPY["panel.agentActivity"],
+      unattributed
+        ? COPY["agents.activity.note"] +
+            " " +
+            COPY["agents.unattributedInvocation"]
+        : COPY["agents.activity.note"],
+      metrics([
+        metric(
+          COPY["table.calls"],
+          number(activity.calls),
+          COPY["metric.tools.note"],
+          [
+            [COPY["agents.succeeded"], number(activity.succeeded)],
+            [COPY["agents.failed"], number(activity.failed)],
+            [COPY["agents.interrupted"], number(activity.interrupted)],
+          ],
+        ),
+      ]),
+    );
+  };
+
   const agentsNodes = (target) => {
     const meta = target.range;
     const report = target.report;
+    const activity =
+      report !== undefined &&
+      report.agentActivity !== undefined &&
+      report.agentActivity.state === "supported"
+        ? report.agentActivity
+        : undefined;
+    const activityNodes =
+      activity === undefined ? [] : [agentActivityCard(activity)];
     // No runs to project is two different facts: a producer that publishes no
     // child-run evidence at all (a capability gap, so no run count is inferred)
     // and a selection whose range holds none of the runs the producer published.
+    // Either way the native calls stay visible: a failed call that published no
+    // child identity is exactly the case that has no run row.
     if (report !== undefined && report.agentEvidence !== "supported") {
-      return [emptyCard(COPY["tab.agents"], COPY["agents.none"])];
+      return [
+        emptyCard(COPY["tab.agents"], COPY["agents.none"]),
+        ...activityNodes,
+      ];
     }
     if (meta === undefined || meta.childUsage.runsTotal === 0) {
-      return [emptyCard(COPY["tab.agents"], COPY["bars.empty"])];
+      return [
+        emptyCard(COPY["tab.agents"], COPY["bars.empty"]),
+        ...activityNodes,
+      ];
     }
     const child = meta.childUsage;
     const fraction = tr("agents.usageFraction", {
@@ -2554,7 +2600,7 @@
     }
     const rendered = runsById(meta.agents);
     if (agentsInTree()) {
-      return [metrics(cards), agentsTreeSection(target)];
+      return [metrics(cards), ...activityNodes, agentsTreeSection(target)];
     }
     const agentRows =
       activeSort() === "duration-desc"
@@ -2562,6 +2608,7 @@
         : meta.agents;
     return [
       metrics(cards),
+      ...activityNodes,
       table(
         COPY["tab.agents"],
         COPY["agents.note"],
