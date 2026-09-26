@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { isAbsolute, normalize } from "node:path";
 import type {
   AgentFailure,
   AgentRun,
@@ -16,9 +17,9 @@ import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
 import {
-  readForegroundHistoryOutcomes,
-  type ForegroundHistoryRequest,
-} from "./subagent-foreground-history.ts";
+  type ForegroundTerminalFields,
+  readForegroundTerminalFields,
+} from "./subagent-foreground-metadata.ts";
 import { readReferencedLifecycleEnrichment } from "./subagent-lifecycle.ts";
 
 /** Persisted pi-subagents tool names, in the report's fixed column order. */
@@ -98,6 +99,8 @@ const WORKFLOW_CHILD_TEXT_LIMITS = {
 const MAX_TOTAL_TOKENS = 1_000_000_000;
 /** Bound on a published archive path so a corrupt session cannot retain an arbitrarily large string. */
 const MAX_ARCHIVE_PATH = 4096;
+/** Bound on a published per-child metadata reference; it never enters a report. */
+const MAX_METADATA_PATH = 4096;
 const MAX_COST = 1_000_000_000;
 /** Exit-code detail bound, shared with the report projection (R24). */
 const MAX_EXIT_CODE = 2_147_483_647;
@@ -224,10 +227,10 @@ async function enrichCurrentSession(
     sessionFile,
     evidence,
   );
-  return enrichCurrentForegroundHistory(entries, sessionId, lifecycle);
+  return enrichCurrentForegroundMetadata(entries, sessionId, lifecycle);
 }
 
-async function enrichCurrentForegroundHistory(
+async function enrichCurrentForegroundMetadata(
   entries: readonly SessionEntry[],
   sessionId: string,
   evidence: SubagentSourceEvidence,
@@ -256,18 +259,31 @@ async function enrichCurrentForegroundHistory(
       detachedSources,
     );
     if (references.size === 0) return evidence;
-    const outcomes = await readForegroundHistoryOutcomes(
-      sessionId,
-      [...references.values()].map(({ runId, index }) => ({ runId, index })),
-    );
+    const pendingByReference = new Map<
+      string,
+      Promise<ForegroundTerminalFields | undefined>
+    >();
+    const outcomes = new Map<string, AgentRun["status"]>();
+    for (const [sourceIdentity, reference] of references) {
+      const metadataPath = reference.metadataPath;
+      if (metadataPath === undefined) continue;
+      // The cached read is keyed by both identity parts: a shared path must never
+      // let one run's exact runId validation satisfy another run.
+      const cacheKey = `${metadataPath}\u0000${reference.runId}`;
+      let pending = pendingByReference.get(cacheKey);
+      if (pending === undefined) {
+        pending = readForegroundTerminalFields(metadataPath, reference.runId);
+        pendingByReference.set(cacheKey, pending);
+      }
+      const fields: ForegroundTerminalFields | undefined = await pending;
+      const outcome =
+        fields === undefined ? undefined : mapForegroundMetadataOutcome(fields);
+      if (outcome !== undefined) outcomes.set(sourceIdentity, outcome);
+    }
     return {
       ...evidence,
       observations: observations.map((observation) => {
-        const reference = references.get(observation.sourceIdentity);
-        const outcome =
-          reference === undefined
-            ? undefined
-            : outcomes.get(`${reference.runId}#${reference.index}`);
+        const outcome = outcomes.get(observation.sourceIdentity);
         return outcome === undefined
           ? observation
           : { ...observation, run: { ...observation.run, status: outcome } };
@@ -278,11 +294,52 @@ async function enrichCurrentForegroundHistory(
   }
 }
 
+/**
+ * Terminal outcome for a documented metadata record. The producer's detached
+ * launch sentinel (-2) and any other non-POSIX exit value prove nothing; a valid
+ * signaled termination without an exit code is an existing Inspector
+ * interruption, never a guessed success or failure.
+ */
+function mapForegroundMetadataOutcome(
+  fields: ForegroundTerminalFields,
+): AgentRun["status"] | undefined {
+  if (fields.exitCode !== undefined) {
+    return fields.exitCode < 0
+      ? undefined
+      : fields.exitCode === 0
+        ? "succeeded"
+        : "failed";
+  }
+  return isProcessSignal(fields.processSignal) ? "interrupted" : undefined;
+}
+
+/** A detached foreground reference stays adapter-private. */
+type DetachedForegroundReference = {
+  runId: string;
+  metadataPath?: string;
+};
+
+/** Bounded exact metadata reference published in the same persisted result. */
+function readMetadataReference(value: unknown): string | undefined {
+  const metadataPath = snapshotRecord(value)?.metadataPath;
+  if (
+    typeof metadataPath !== "string" ||
+    metadataPath.length === 0 ||
+    metadataPath.includes("\0") ||
+    Buffer.byteLength(metadataPath) > MAX_METADATA_PATH ||
+    !isAbsolute(metadataPath) ||
+    normalize(metadataPath) !== metadataPath
+  ) {
+    return undefined;
+  }
+  return metadataPath;
+}
+
 function collectDetachedForegroundReferences(
   entries: readonly SessionEntry[],
   sessionId: string,
   detachedSources: ReadonlySet<string>,
-): Map<string, ForegroundHistoryRequest> {
+): Map<string, DetachedForegroundReference> {
   const calls = new Set<string>();
   for (const entry of entries) {
     const message = snapshotRecord(entry.message);
@@ -320,7 +377,7 @@ function collectDetachedForegroundReferences(
     });
   });
 
-  const references = new Map<string, ForegroundHistoryRequest>();
+  const references = new Map<string, DetachedForegroundReference>();
   for (const callId of calls) {
     const result = results.get(callId)?.message;
     const details = snapshotRecord(result?.details);
@@ -350,7 +407,11 @@ function collectDetachedForegroundReferences(
       if (!detachedSources.has(sourceIdentity)) continue;
       if (!references.has(sourceIdentity)) {
         if (references.size === MAX_RUNS) return new Map();
-        references.set(sourceIdentity, { runId, index });
+        const metadataPath = readMetadataReference(record.artifactPaths);
+        references.set(sourceIdentity, {
+          runId,
+          ...(metadataPath === undefined ? {} : { metadataPath }),
+        });
       }
     }
   }

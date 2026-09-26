@@ -1,6 +1,6 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.5.0`
+**Current release:** `1.5.1`
 
 **Current state:** M0–M8 are complete, token economics/cache accounting shipped
 in `1.4.0`, and subagent AgentRun observability — persisted async visibility,
