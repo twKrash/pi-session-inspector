@@ -10,6 +10,11 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   `model` from the explicitly referenced v3 pi-subagents `status.json`; history,
   persisted values, status, identity, and native usage accounting stay unchanged.
 
+- The browser Agents view discloses native subagent tool activity beside the
+  materialized runs and keeps it in the runs-empty states, so a failed or
+  interrupted call that published no child identity is not hidden by an empty
+  runs view.
+
 ### Fixed
 
 - Preserve exact C1 subagent launch/completion aliases in history projections.
