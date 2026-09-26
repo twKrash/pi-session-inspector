@@ -23,8 +23,9 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   Persisted values win, history reports never read it, and the artifact can
   disappear without changing a row.
 - Detached foreground launches report the `Detached` disposition separately from
-  their outcome: the launch sentinel `-2` never means failure, and an exact
-  current-session `foreground-history.json` entry may settle the terminal status.
+  their outcome: the launch sentinel `-2` never means failure, and only the
+  bounded `foreground-history.json` compatibility bridge may settle the terminal
+  status.
 - A persisted single-run async completion that publishes one child without a run
   id of its own now attributes that child's validated usage group to the run, so
   current and history reports show the run's tokens and cost instead of

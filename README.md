@@ -137,7 +137,7 @@ Shipped integrations ([full contract](docs/integrations.md)):
 | [`ponytail`](https://github.com/DietrichGebert/ponytail) | `ponytail-mode` custom entries | `changes` |
 | [`caveman`](https://github.com/jonjonrankin/pi-caveman) | `caveman-level` custom entries | `changes` |
 | [`permission`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system) | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors` |
-| [`subagents`](https://github.com/nicobailon/pi-subagents) | persisted native subagent tool results: foreground `results[]`, wait `completions[]`, workflow child summaries, published archive references, plus current-session-only referenced `status.json` v3 and `foreground-history.json` | Rich run and activity evidence in the Agents view: status, effort and usage coverage, async kind, detached disposition, and the native activity behind the runs; the row itself declares no counters |
+| [`subagents`](https://github.com/nicobailon/pi-subagents) | persisted native subagent tool results: foreground `results[]`, wait `completions[]`, workflow child summaries, published archive references, plus current-session-only referenced `status.json` v3 and the bounded `foreground-history.json` compatibility bridge | Rich run and activity evidence in the Agents view: status, effort and usage coverage, async kind, detached disposition, and the native activity behind the runs; the row itself declares no counters |
 | [`lens`](https://github.com/apmantza/pi-lens) | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls | `calls` |
 | [`mcp`](https://github.com/nicobailon/pi-mcp-adapter) | native `mcp`, `mcpScript`, and `mcp__<server>` tool calls, plus `pi-mcp-adapter` `mcp-approval-v1` entries re-validated against the declared shape, and its `pi-mcp-adapter/status/v1` runtime snapshot | `calls`, `toolApprovals`, `iframeApprovals`, `iframeDenials`; `calls` counts invocations of the adapter's own tool surface and only counters with evidence are published; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
 
@@ -172,12 +172,14 @@ The Agents view inside the LLM tab reads one set of runs two ways.
   `Unavailable` instead of becoming zero, and generations plus error counts are
   `Unavailable` because no supported producer publishes them.
 - A **single-run async launch** stays visible before its completion arrives,
-  keeps one public ID when the completion lands, and never invents a parent. An
-  explicitly referenced current-session `status.json` may fill missing model or
-  tool counts on that row; persisted values win.
+  keeps one public ID when the completion lands, and never invents a parent. The
+  explicitly referenced current-session `status.json` (ADR 0022) may fill missing
+  model or tool counts on that row; persisted values win.
 - A **detached foreground run** reports its disposition, not an outcome: the
-  launch sentinel is not a result, and only an exact current-session
-  `foreground-history.json` entry may settle the terminal status.
+  launch sentinel is not a result, and only the bounded
+  `foreground-history.json` compatibility bridge (ADR 0023) may settle the
+  terminal status. That file is a fixed producer-index bridge, not a referenced
+  artifact, and it never creates a row.
 - **Native subagent activity** is stated next to the runs, so a failed or
   interrupted call whose producer published no child identity stays visible even
   though it produced no row.
