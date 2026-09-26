@@ -1,9 +1,12 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.4.0`
+**Current release:** `1.5.0`
 
-**Current state:** M0–M8 are complete, and token economics/cache accounting
-shipped in `1.4.0`. Current and future work is listed below; completed milestone
+**Current state:** M0–M8 are complete, token economics/cache accounting shipped
+in `1.4.0`, and subagent AgentRun observability — persisted async visibility,
+per-run effort coverage, referenced lifecycle enrichment, detached foreground
+history, single-run usage attribution, and the Agents-view activity disclosure —
+shipped in `1.5.0`. Current and future work is listed below; completed milestone
 history is preserved in the [roadmap archive](roadmap-archive.md).
 
 **Next gate:** no release gate is currently scheduled. The open work below is
@@ -266,7 +269,7 @@ Expected implementation shape:
 - per-dimension breakdown rows in the existing report DTO.
 ### 7. Make the tool and skill link affordances navigate
 
-**Status:** Implemented. **Depends on:** nothing.
+**Status:** Implemented; shipped in `1.5.0`. **Depends on:** nothing.
 
 **Decision:** choose the entity's existing navigation surface, not a local path. In the localhost UI, Tools tool-name affordances are real `entity=tool:<name>` route anchors: they filter Calls, focus the summary row, preserve route context, and clear through the route. Skills keep their published entity routes. In static HTML, tool and skill names are same-document anchors to the corresponding `#tools` and `#skills` sections; no filesystem path or producer string is exposed.
 
@@ -540,7 +543,7 @@ Until the upstream telemetry seam exists:
 
 ### 13. Subagent run outcome and effort breakdown
 
-**Status:** Complete; 13A evidence audit, 13B contract, 13C projections, and 13D UX cleanup are complete and integrated (PR #47).
+**Status:** Complete; 13A evidence audit, 13B contract, 13C projections, and 13D UX cleanup are complete and integrated (PR #47). The follow-up subagent observability work (persisted async visibility, per-run effort coverage across surfaces, referenced lifecycle enrichment, detached foreground history, and single-run usage attribution) shipped in `1.5.0`; ADR 0021–0023 and the [archive](roadmap-archive.md) record it.
 **Depends on:** existing Agent execution evidence and subagent run attribution.
 
 **Motivation:** token and cost totals answer which subagent runs were expensive,

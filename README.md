@@ -31,11 +31,15 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.4.0`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.5.0`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
-> semantic integration, and native token economics/cache accounting are
-> available. The localhost UI paints the configured theme before any report
-> data arrives, and its loading state announces once.
+> semantic integration, native token economics/cache accounting, and subagent
+> AgentRun observability are available: async launches and wait completions stay
+> visible with one stable ID per run, every run carries bounded effort coverage,
+> detached foreground runs are reported as detached, and the Agents view states
+> the native subagent activity behind them. The localhost UI paints the
+> configured theme before any report data arrives, and its loading state
+> announces once.
 
 ## Install
 
@@ -52,7 +56,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.4.0
+pi install npm:@twkrash/pi-session-inspector@1.5.0
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the
@@ -76,7 +80,7 @@ right-click save is still the browser's own affordance.
 | --- | --- |
 | Overview | Native session usage and cost, generations, tool calls, and errors for the selected range, a daily activity chart whose metrics the reader picks, plus an evidence panel that keeps native, live/cooperative, and unavailable inputs apart |
 | LLM | Generation-attributed model usage and cost for the range; the same tab's Agent execution tree carries the session's own native total |
-| Agent execution | The LLM tab's second subject: Tree and Table readings of the same subagent runs — nested topology, run containers, model, status, and partial child usage. Grouping nodes are presentation only (see [Agent execution](#agent-execution)) |
+| Agent execution | The LLM tab's second subject: Tree and Table readings of the same subagent runs — nested topology, run containers, model, status, per-run effort and usage coverage, async execution kind, detached disposition, and the native activity behind them. Grouping nodes are presentation only (see [Agent execution](#agent-execution)) |
 | Tools | Calls with duration and per-row usage coverage; partial usage and partial duration are flagged, never averaged away |
 | Skills | Discovered skill inventory plus explicit invocation evidence only |
 | Integrations | Semantic telemetry from supported Pi extensions (see below) |
@@ -133,7 +137,7 @@ Shipped integrations ([full contract](docs/integrations.md)):
 | [`ponytail`](https://github.com/DietrichGebert/ponytail) | `ponytail-mode` custom entries | `changes` |
 | [`caveman`](https://github.com/jonjonrankin/pi-caveman) | `caveman-level` custom entries | `changes` |
 | [`permission`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system) | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors` |
-| [`subagents`](https://github.com/nicobailon/pi-subagents) | persisted native subagent tool results | Rich run and activity evidence in the Agents view; the row itself declares no counters |
+| [`subagents`](https://github.com/nicobailon/pi-subagents) | persisted native subagent tool results: foreground `results[]`, wait `completions[]`, workflow child summaries, published archive references, plus current-session-only referenced `status.json` v3 and `foreground-history.json` | Rich run and activity evidence in the Agents view: status, effort and usage coverage, async kind, detached disposition, and the native activity behind the runs; the row itself declares no counters |
 | [`lens`](https://github.com/apmantza/pi-lens) | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls | `calls` |
 | [`mcp`](https://github.com/nicobailon/pi-mcp-adapter) | native `mcp`, `mcpScript`, and `mcp__<server>` tool calls, plus `pi-mcp-adapter` `mcp-approval-v1` entries re-validated against the declared shape, and its `pi-mcp-adapter/status/v1` runtime snapshot | `calls`, `toolApprovals`, `iframeApprovals`, `iframeDenials`; `calls` counts invocations of the adapter's own tool surface and only counters with evidence are published; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
 
@@ -163,6 +167,20 @@ The Agents view inside the LLM tab reads one set of runs two ways.
   running process may not be visible yet.
 - A run with no observed time cannot be placed in a range; the view says so
   instead of blaming the range for the gap.
+- Runs carry **bounded effort** — duration, tool calls, usage, and cost — each
+  with its own coverage. A value the producer did not publish stays
+  `Unavailable` instead of becoming zero, and generations plus error counts are
+  `Unavailable` because no supported producer publishes them.
+- A **single-run async launch** stays visible before its completion arrives,
+  keeps one public ID when the completion lands, and never invents a parent. An
+  explicitly referenced current-session `status.json` may fill missing model or
+  tool counts on that row; persisted values win.
+- A **detached foreground run** reports its disposition, not an outcome: the
+  launch sentinel is not a result, and only an exact current-session
+  `foreground-history.json` entry may settle the terminal status.
+- **Native subagent activity** is stated next to the runs, so a failed or
+  interrupted call whose producer published no child identity stays visible even
+  though it produced no row.
 
 ## Commands
 

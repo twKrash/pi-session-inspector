@@ -1121,6 +1121,34 @@ Before merge:
   source, or metric gets its own name and its own documented method before it
   gets a place in the DTO.
 
+### Subagent AgentRun observability (shipped in `1.5.0`)
+
+Item 13 defined the per-run effort contract. The work that completed the
+subagent evidence model was carried as a bounded migration with one ADR per new
+boundary:
+
+- **ADR 0021** — per-run AgentRun effort and coverage, item 13's contract.
+- **ADR 0022** — pi-subagents observability contract and reconciliation
+  boundary. Persisted Pi JSONL stays the historical authority; adapters validate
+  producer shapes, bound values, and emit ordered observations with private
+  opaque source identities; canonical reconciliation merges only exact identities
+  and explicit aliases; a validated RPC v1 `ping` capability matrix is pinned but
+  never activated at runtime, so no report depends on a running producer process.
+  Amended for the single-run completion child-usage contract.
+- **ADR 0023** — detached foreground terminal history. The `Detached` disposition
+  is separate from outcome, the launch sentinel `-2` never means failure, and
+  only an exact current-session `foreground-history.json` entry may settle the
+  status; historical reports never read that file.
+
+Migration steps, shipped in `1.5.0` by PRs #44–#58: `A` history usage regression,
+`B` observation/reconciliation foundation, `C1` persisted async visibility with
+one stable public ID per logical run, `C2` referenced lifecycle enrichment, the
+detached foreground regression, `D` removal of the superseded producer
+reconstruction, `E1` single-run completion usage attribution, and `E2` the
+Agents-view disclosure for a native call with no run row. Live pre-cleanup and
+post-cleanup UAT records stay local working artifacts; the release artifact
+record is [`release/1.5.0-evidence.md`](release/1.5.0-evidence.md).
+
 ## Resolved maintenance and hardening
 
 ### Resolved in `1.3.0` — macOS parent-session containment
