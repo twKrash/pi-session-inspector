@@ -33,7 +33,7 @@ The original pin assumed a manual `--subagents-artifact` input shaped `{version:
 
 - `details.completions[]` on `subagent_wait` results (`WaitCompletion`): `runId`, `agent`, `mode`, `state`, `success`, `archivePath`, `results`, `workflowChildren`; usage is on `WaitCompletionChild` under `results[]`, with child fields `runId`, `usage`, `success`, and `outputState`.
 - `details.runId` identifies the foreground container; `details.results[]` on `subagent` results carries `index`, `agent`, and `usage` (no row-level foreground `runId`); completion surfaces carry their own `runId`s. `workflowChildren{version,inventoryComplete}` for workflow fan-out.
-- `foreground-history.json` `{version:1, runs:[{runId,mode,cwd,sessionId,updatedAt,children[]}]}`.
+- `foreground-history.json` `{version:1, runs:[{runId,mode,cwd,sessionId,updatedAt,children[]}]}`. **Superseded 2026-09-26:** upstream issue #2485 confirms this file is internal resume bookkeeping. It is no longer an Inspector surface. The supported detached-foreground terminal source is the documented per-child metadata artifact `<artifacts dir>/{runId}_{agent}[_{index}]_meta.json`, referenced by `artifactPaths.metadataPath` in the same persisted result (audited on `pi-subagents@0.71.0`, release commit `4af5e85a427b9f87334585ae8d0eb365d4dd2a1e`; see ADR 0023).
 - `completion-replay/<runId>.json` `{version:1, runId, sessionId, completedAt, expiresAt, archivePath, completion}`.
 - `output-archives/<runId>.json` `{version:1, runId, createdAt, entries:[{agent,resultIndex,source,path}]}`.
 

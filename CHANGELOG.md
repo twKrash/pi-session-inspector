@@ -2,6 +2,16 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Detached foreground subagent runs settle their terminal status from the
+  documented per-child `_meta.json` referenced by the persisted result
+  (`artifactPaths.metadataPath`) instead of the private producer
+  `foreground-history.json` index, which Inspector no longer reads. Missing or
+  disabled metadata leaves the proven row `detached` + `unknown`.
+
 ## [1.5.0]
 
 ### Added

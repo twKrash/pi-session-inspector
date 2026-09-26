@@ -509,6 +509,23 @@ serially, one at a time. History never reads lifecycle artifacts. No lifecycle s
 process proof, duration, turns, usage, cost, requested model, or root aggregate
 count is consumed; native totals and child-usage accounting remain unchanged.
 
+For a current-session report only, an already-proven detached foreground child
+may be optionally settled from the documented per-child `_meta.json` that its own
+persisted result references through `artifactPaths.metadataPath` (ADR 0023). Only
+an exact `runId` match plus a terminal `exitCode` or a bounded process signal is
+consumed; the producer's `-2` detach sentinel and provisional records prove
+nothing, and any missing file, `artifactConfig.includeMetadata: false` (the
+reference may still be published while the file is never written), or
+malformed/unsafe record leaves the row `detached` + `unknown`. The referenced
+file is opened directly and never discovered by scanning, and it creates no run,
+changes no public ID, adds no usage, and never becomes historical authority. The
+artifact is documented but carries no schema version; eligibility rests on its
+documented field shape, the exact reference, the exact `runId`, and fail-closed
+mapping. Documented limitation: `_meta.json` persists `exitCode` but not the
+producer's interruption classification, so a detached child later interrupted
+through the producer's interrupt action reports `exitCode: 0` and is rendered
+`succeeded` (ADR 0023 records this and the upstream follow-up).
+
 ## 11. Failure behavior, migrations, and risks
 
 Unknown Pi entries/fields, telemetry schema, integration version, artifact absence, corrupted WAL tail, stale checkpoint, source rewrite, missing browser, and storage errors must degrade to diagnostics/confidence—not crashes or Pi behavior changes.
