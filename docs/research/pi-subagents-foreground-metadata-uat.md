@@ -3,9 +3,9 @@
 **Date:** 2026-09-26
 **Subject:** ADR 0023 amendment — settle detached foreground runs from the documented
 per-child `_meta.json` instead of the private `foreground-history.json`.
-**Build under test:** branch `fix/detached-foreground-metadata` (unreleased; ADR 0023
-amendment; `package.json` remains `1.5.0`). The commit hash is deliberately not
-pinned here because this record lives in the same commit.
+**Build under test:** branch `fix/detached-foreground-metadata` (unreleased at
+the time of the run; ADR 0023 amendment; shipped as `1.5.1`). The commit hash is
+deliberately not pinned here because this record lives in the same commit.
 **Producer:** `pi-subagents@0.71.0` installed locally; audited release commit
 `4af5e85a427b9f87334585ae8d0eb365d4dd2a1e`; npm tarball integrity
 `sha512-4Ng1bM0oigvrdE5DfSoDgdiUOZOXig2M4DTZvlAWSx3Ineyvl7N0Le2FetfPo1N7oU0wO91aCJqcAInU6wsl5A==`.

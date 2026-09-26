@@ -31,7 +31,7 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.5.0`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.5.1`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
 > semantic integration, native token economics/cache accounting, and subagent
 > AgentRun observability are available: async launches and wait completions stay
@@ -56,7 +56,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.5.0
+pi install npm:@twkrash/pi-session-inspector@1.5.1
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the
