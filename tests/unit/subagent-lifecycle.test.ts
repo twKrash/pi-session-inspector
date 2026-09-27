@@ -165,6 +165,46 @@ test("complete single step may fill absent model with producer label", async () 
   try {
     const { run } = await readRun(input);
     assert.equal(run.model, "provider/model-a");
+    assert.equal(run.status, "unknown");
+  } finally {
+    await input.cleanup();
+  }
+});
+
+test("completed async lifecycle fills bounded run status, usage, and effort", async () => {
+  const input = await setup(
+    status(
+      {
+        agent: "reviewer",
+        status: "complete",
+        exitCode: 0,
+        model: "provider/model-a",
+        thinking: "high",
+        durationMs: 161_307,
+        toolCount: 48,
+        tokens: { input: 84_128, output: 6_052, total: 90_180 },
+        totalCost: { costUsd: 0.3271312 },
+      },
+      { turnCount: 11 },
+    ),
+  );
+  try {
+    const { run } = await readRun(input);
+    assert.equal(run.agent, "reviewer");
+    assert.equal(run.status, "succeeded");
+    assert.equal(run.thinking, "high");
+    assert.deepEqual(run.usage, { totalTokens: 90_180, cost: 0.3271312 });
+    assert.equal(run.durationMs, 161_307);
+    assert.equal(run.toolCalls, 48);
+    assert.equal(run.generations, undefined);
+    assert.deepEqual(run.effortCoverage, {
+      duration: "partial",
+      generations: "unavailable",
+      tools: "partial",
+      errors: "unavailable",
+      usage: "partial",
+      cost: "partial",
+    });
   } finally {
     await input.cleanup();
   }
@@ -192,6 +232,146 @@ test("non-complete lifecycle steps never fill model", async (t) => {
         await input.cleanup();
       }
     });
+  }
+});
+
+test("lifecycle fills only missing persisted usage fields", async (t) => {
+  for (const scenario of [
+    {
+      name: "fills lifecycle tokens beside persisted cost",
+      persistedUsage: { cost: 0.5 },
+      lifecycleStep: {
+        tokens: { input: 40, output: 2, total: 42 },
+        totalCost: { costUsd: 0.25 },
+      },
+      expected: { totalTokens: 42, cost: 0.5 },
+    },
+    {
+      name: "fills lifecycle cost beside persisted tokens",
+      persistedUsage: { input: 40, output: 2, cacheRead: 0, cacheWrite: 0 },
+      lifecycleStep: {
+        tokens: { input: 40, output: 2, total: 42 },
+        totalCost: { costUsd: 0.25 },
+      },
+      expected: { totalTokens: 42, cost: 0.25 },
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const input = await setup(
+        status({ status: "complete", exitCode: 0, ...scenario.lifecycleStep }),
+      );
+      input.entries.push(
+        {
+          id: "wait-call",
+          parentId: "launch-result",
+          timestamp: "2026-09-25T10:00:02.000Z",
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "wait-tool-call", name: "bg_wait" },
+            ],
+          },
+        },
+        {
+          id: "wait-result",
+          parentId: "wait-call",
+          timestamp: "2026-09-25T10:00:03.000Z",
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolCallId: "wait-tool-call",
+            toolName: "bg_wait",
+            isError: false,
+            details: {
+              completions: [
+                {
+                  runId: producerRunId,
+                  mode: "single",
+                  agent: "reviewer",
+                  state: "complete",
+                  success: true,
+                  usage: scenario.persistedUsage,
+                  results: [],
+                },
+              ],
+            },
+          },
+        },
+      );
+      try {
+        const { run } = await readRun(input);
+        assert.deepEqual(run.usage, scenario.expected);
+      } finally {
+        await input.cleanup();
+      }
+    });
+  }
+});
+
+test("persisted usage fields win over lifecycle values across completions", async () => {
+  const input = await setup(
+    status({
+      status: "complete",
+      exitCode: 0,
+      tokens: { input: 40, output: 2, total: 42 },
+      totalCost: { costUsd: 0.25 },
+    }),
+  );
+  const completionEntries = (suffix: string, usage: Record<string, unknown>) =>
+    [
+      {
+        id: `${suffix}-call`,
+        parentId: "launch-result",
+        timestamp: `2026-09-25T10:00:0${suffix === "first" ? "2" : "4"}.000Z`,
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: `${suffix}-tool-call`, name: "bg_wait" },
+          ],
+        },
+      },
+      {
+        id: `${suffix}-result`,
+        parentId: `${suffix}-call`,
+        timestamp: `2026-09-25T10:00:0${suffix === "first" ? "3" : "5"}.000Z`,
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: `${suffix}-tool-call`,
+          toolName: "bg_wait",
+          isError: false,
+          details: {
+            completions: [
+              {
+                runId: producerRunId,
+                mode: "single",
+                agent: "reviewer",
+                state: "complete",
+                success: true,
+                usage,
+                results: [],
+              },
+            ],
+          },
+        },
+      },
+    ] as unknown as SessionEntry[];
+  input.entries.push(
+    ...completionEntries("first", { cost: 0.5 }),
+    ...completionEntries("later", {
+      input: 40,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+    }),
+  );
+  try {
+    const { run } = await readRun(input);
+    assert.deepEqual(run.usage, { totalTokens: 42, cost: 0.5 });
+  } finally {
+    await input.cleanup();
   }
 });
 
@@ -496,11 +676,26 @@ test("published v3 fixture enriches current report only", async () => {
     assert.ok(currentRun);
     assert.ok(baselineRun);
     assert.equal(currentRun.id, baselineRun.id);
-    assert.equal(currentRun.status, baselineRun.status);
+    assert.equal(currentRun.status, "succeeded");
     assert.equal(currentRun.parentId, baselineRun.parentId);
+    assert.equal(currentRun.agent, "reviewer");
+    assert.equal(currentRun.thinking, "high");
     assert.equal(currentRun.toolCalls, 2);
+    assert.equal(currentRun.durationMs, 12_345);
     assert.equal(currentRun.effortCoverage.tools, "partial");
+    assert.equal(currentRun.effortCoverage.duration, "partial");
     assert.equal(currentRun.model, "provider/model-a");
+    assert.deepEqual(currentRun.usage, {
+      totalTokens: 19_134,
+      cost: 0.0123456789,
+    });
+    assert.equal(currentRun.effortCoverage.usage, "partial");
+    assert.equal(currentRun.effortCoverage.cost, "partial");
+    assert.equal(currentRun.generations, undefined);
+    assert.equal(baselineRun.status, "unknown");
+    assert.equal(baselineRun.agent, undefined);
+    assert.equal(baselineRun.usage, undefined);
+    assert.equal(baselineRun.durationMs, undefined);
     assert.equal(baselineRun.toolCalls, undefined);
     assert.equal(baselineRun.model, undefined);
     assert.deepEqual(current.report.usage, withoutLifecycle.report.usage);
@@ -509,6 +704,10 @@ test("published v3 fixture enriches current report only", async () => {
     const historyRun = reconcileAgentRuns(history.observations, history.aliases)
       .runs[0];
     assert.equal(historyRun?.id, currentRun.id);
+    assert.equal(historyRun?.status, "unknown");
+    assert.equal(historyRun?.agent, undefined);
+    assert.equal(historyRun?.usage, undefined);
+    assert.equal(historyRun?.durationMs, undefined);
     assert.equal(historyRun?.toolCalls, undefined);
     assert.equal(historyRun?.model, undefined);
   } finally {

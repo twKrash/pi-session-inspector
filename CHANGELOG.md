@@ -2,6 +2,14 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2]
+
+### Fixed
+
+- Current-session async subagent runs now include validated lifecycle outcome,
+  agent/thinking labels, token/cost usage, and reported duration. History remains
+  persisted-source-only, and child usage stays non-additive.
+
 ## [1.5.1]
 
 ### Fixed

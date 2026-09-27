@@ -3,8 +3,10 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, normalize, parse, sep } from "node:path";
 
+import type { AgentRun } from "../core/events.ts";
 import { MAX_AGENT_RUN_TOOL_CALLS } from "../core/events.ts";
 import { boundedProducerLabel } from "../core/evidence.ts";
+import { roundCost } from "../core/rounding.ts";
 
 const MAX_STATUS_BYTES = 128 * 1024;
 const MAX_ASYNC_DIR_BYTES = 4096;
@@ -20,13 +22,82 @@ const STEP_STATUSES = new Set([
   "stopped",
   "rejected",
 ]);
+const MAX_TOTAL_TOKENS = 1_000_000_000;
+const MAX_COST = 1_000_000_000;
+const MAX_DURATION_MS = 86_400_000_000;
+
+type LifecycleEnrichment = {
+  agent?: string;
+  model?: string;
+  thinking?: string;
+  status?: AgentRun["status"];
+  usage?: { totalTokens?: number; cost?: number };
+  durationMs?: number;
+  toolCalls?: number;
+};
+
+function readLifecycleUsage(record: Record<string, unknown>) {
+  const tokens = record.tokens;
+  const totalCost = record.totalCost;
+  const tokenRecord =
+    typeof tokens === "object" && tokens !== null && !Array.isArray(tokens)
+      ? (tokens as Record<string, unknown>)
+      : undefined;
+  const costRecord =
+    typeof totalCost === "object" &&
+    totalCost !== null &&
+    !Array.isArray(totalCost)
+      ? (totalCost as Record<string, unknown>)
+      : undefined;
+  const totalTokens = tokenRecord?.total;
+  const cost = costRecord?.costUsd;
+  const boundedTokens =
+    typeof totalTokens === "number" &&
+    Number.isSafeInteger(totalTokens) &&
+    totalTokens >= 0 &&
+    totalTokens <= MAX_TOTAL_TOKENS
+      ? totalTokens
+      : undefined;
+  const boundedCost =
+    typeof cost === "number" &&
+    Number.isFinite(cost) &&
+    cost >= 0 &&
+    cost <= MAX_COST
+      ? roundCost(cost)
+      : undefined;
+  return boundedTokens === undefined && boundedCost === undefined
+    ? undefined
+    : {
+        ...(boundedTokens === undefined ? {} : { totalTokens: boundedTokens }),
+        ...(boundedCost === undefined ? {} : { cost: boundedCost }),
+      };
+}
+
+function readLifecycleOutcome(
+  record: Record<string, unknown>,
+): AgentRun["status"] | undefined {
+  const status = record.status;
+  if (status === "failed") return "failed";
+  if (status === "stopped") return "interrupted";
+  const exitCode = record.exitCode;
+  if (
+    typeof exitCode === "number" &&
+    Number.isSafeInteger(exitCode) &&
+    exitCode >= 0 &&
+    exitCode <= 2_147_483_647
+  ) {
+    if (exitCode > 0) return "failed";
+    if (exitCode === 0 && status === "complete") return "succeeded";
+  }
+  return undefined;
+}
 
 /** Returns only approved bounded step fields; every failure is no enrichment. */
 export async function readReferencedLifecycleEnrichment(
   asyncDir: unknown,
   runId: string,
   sessionFile: string,
-): Promise<{ model?: string; toolCalls?: number } | undefined> {
+): Promise<LifecycleEnrichment | undefined> {
   try {
     if (
       typeof asyncDir !== "string" ||
@@ -131,9 +202,24 @@ export async function readReferencedLifecycleEnrichment(
       ) {
         return undefined;
       }
+      const agent = boundedProducerLabel(record.agent);
+      const thinking = boundedProducerLabel(record.thinking);
+      const durationMs = record.durationMs;
+      const usage = readLifecycleUsage(record);
+      const outcome = readLifecycleOutcome(record);
       return {
-        ...(typeof toolCount === "number" ? { toolCalls: toolCount } : {}),
+        ...(agent === undefined ? {} : { agent }),
         ...(model === undefined ? {} : { model }),
+        ...(thinking === undefined ? {} : { thinking }),
+        ...(outcome === undefined ? {} : { status: outcome }),
+        ...(usage === undefined ? {} : { usage }),
+        ...(typeof durationMs === "number" &&
+        Number.isSafeInteger(durationMs) &&
+        durationMs >= 0 &&
+        durationMs <= MAX_DURATION_MS
+          ? { durationMs }
+          : {}),
+        ...(typeof toolCount === "number" ? { toolCalls: toolCount } : {}),
       };
     } finally {
       await handle.close();

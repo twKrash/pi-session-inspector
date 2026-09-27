@@ -463,7 +463,7 @@ Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, cor
 | Integration | v1 handling | Non-claim |
 | --- | --- | --- |
 | Pi core | mandatory replay + live observer | exact provider retry spans |
-| pi-subagents | automatic discovery from persisted tool results: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation; a `mode: "single"` completion's lone id-less child contributes its validated usage group to that run | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; child Pi session files not replayed |
+| pi-subagents | automatic discovery from persisted tool results: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation; a `mode: "single"` completion's lone id-less child contributes its validated usage group to that run; current-session-only lifecycle enrichment is limited to an exact referenced v3 `status.json` | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; child Pi session files not replayed; lifecycle artifacts never authority for history |
 | Permission System | public bus counters (`permissions:ready\|ui_prompt\|decision`) folded into durable aggregates; additive hashed `attribution.request` metadata only | internal parser import; no raw producer payload fields; raw request ID never read |
 | RTK | persisted `rtkCompaction` details | rewrite decision/savings not persisted |
 | Context Mode | `ctx_*` use | exact Context Mode savings |
@@ -494,20 +494,25 @@ establish this attribution, no alias or extra row is created, native totals are
 unchanged, and history reports see the same persisted evidence.
 
 For a current-session report only, a C1-proven async launch may be optionally
-filled from the `status.json` beneath its explicitly persisted `asyncDir`.
-Accept only lifecycle artifact v3, `mode: "single"`, exact persisted launch
-`runId`, one step, and a present `sessionId` equal to the parent Pi session-file
-path. Lifecycle evidence never creates a run. It may fill absent `toolCalls`
-from `steps[0].toolCount` as partial/provisional current-view effort, or absent
-`model` from `steps[0].model` only when the step status is `complete`; model is a
-producer-reported label, not proof of provider generation. Persisted values
-win. Missing, malformed, mismatched, unsupported, or unsafe artifacts leave
-C1 rows unchanged. The optional reader bounds input to 256 candidate `subagent`
+enriched from `status.json` beneath its explicitly persisted `asyncDir`. Accept
+only lifecycle artifact v3, `mode: "single"`, exact persisted launch `runId`,
+one step, and a present `sessionId` equal to the parent Pi session-file path.
+Lifecycle evidence never creates a run. It may fill absent bounded `agent`,
+`thinking`, or `model` labels; `toolCalls` from `steps[0].toolCount`; and partial
+`durationMs` from `steps[0].durationMs`. Exact per-step `tokens.total` and
+`totalCost.costUsd` may fill child usage/cost after numeric bounds checks. For
+each field, the latest available value across persisted observations takes
+precedence over lifecycle data; child usage is a breakdown and never contributes
+to native totals. A `complete` step with `exitCode: 0` maps to `succeeded`,
+`failed` or nonzero exit maps to `failed`, and `stopped` maps to `interrupted`;
+absent or ambiguous terminal proof leaves status `unknown`. Model is a
+producer-reported label, not proof of provider generation. `turnCount` never
+maps to generations. Missing, malformed, mismatched, unsupported, or unsafe
+artifacts leave C1 rows unchanged. The optional reader bounds input to 256 candidate `subagent`
 launch calls and 512 persisted run observations; exceeding either cap skips all
 lifecycle reads and preserves persisted C1 evidence. Status files are read
-serially, one at a time. History never reads lifecycle artifacts. No lifecycle status,
-process proof, duration, turns, usage, cost, requested model, or root aggregate
-count is consumed; native totals and child-usage accounting remain unchanged.
+serially, one at a time. History never reads lifecycle artifacts; native totals
+and child-usage accounting remain unchanged.
 
 For a current-session report only, an already-proven detached foreground child
 may be optionally settled from the documented per-child `_meta.json` that its own
@@ -848,7 +853,7 @@ nothing about it is fabricated in the meantime.
 | Usage-coverage ratio / estimated unavailable usage | Unsupported | Would fabricate usage; only the session ratio exists, and it is omitted when the denominator is unknown |
 | Tool-error message text | Supported, bounded | Text-only `content` from an errored tool result passes shared secret/path/URL redaction and a 200-byte cap; arguments, non-text blocks, and unusable values render `Message: Unavailable` |
 | Tool result content / arguments in any view | Unsupported by design | Privacy boundary |
-| Agent run duration | Supported, partial | Only validated persisted `progressSummary.durationMs` is published; timestamps remain publication provenance and never provide duration |
+| Agent run duration | Supported, partial | Validated persisted `progressSummary.durationMs`, or exact referenced v3 lifecycle `steps[0].durationMs` for a current async run; timestamps remain publication provenance and never provide duration |
 | Agent run generations | Unsupported | `usage.turns` is usage metadata, not native generation evidence |
 | Agent per-run error count | Unsupported | No persisted producer count exists |
 | Agent free-text failure reason | Unsupported | The producer exposes bounded enums only |

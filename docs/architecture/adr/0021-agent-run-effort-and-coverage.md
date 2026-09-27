@@ -4,7 +4,11 @@
 Accepted for Item 13B.
 
 ## Decision
-The Item 13B baseline, verified against `pi-subagents@0.70.1`, publishes bounded effort only from persisted foreground `results[]` `progressSummary.durationMs` and `progressSummary.toolCount`. Each row includes independent `effortCoverage`; that evidence was partial on the proven 0.70.1 foreground subset. Usage and cost remain child breakdowns and are never added to native session totals.
+The Item 13B baseline, verified against `pi-subagents@0.70.1`, publishes bounded effort from persisted foreground `results[]` `progressSummary.durationMs` and `progressSummary.toolCount`. Each row includes independent `effortCoverage`; that evidence was partial on the proven 0.70.1 foreground subset. Usage and cost remain child breakdowns and are never added to native session totals.
+
+### Current async lifecycle supplement (v1.5.2)
+
+A current-session report may also use bounded `durationMs`, `toolCount`, total tokens, and cost from the exact v3 lifecycle artifact referenced by a persisted async launch (ADR 0022). This is producer-reported effort, not timestamp inference; coverage remains partial. The artifact is never used for history, and its `turnCount` is not generation evidence.
 
 ### 0.71.0 workflow evidence follow-up (2026-09-23)
 

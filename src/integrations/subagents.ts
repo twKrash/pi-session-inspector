@@ -440,24 +440,55 @@ async function enrichCurrentLifecycle(
     );
     const persistedModels = new Set<string>();
     const persistedToolCalls = new Set<string>();
+    const persistedAgents = new Set<string>();
+    const persistedThinking = new Set<string>();
+    const persistedStatuses = new Set<string>();
+    const persistedDuration = new Set<string>();
+    // Preserve latest reported token/cost field across partial publications.
+    const persistedUsageByRunId = new Map<
+      string,
+      { totalTokens?: number; cost?: number }
+    >();
     for (const observation of observations) {
       const runId =
         publicIdBySource.get(observation.sourceIdentity) ?? observation.run.id;
       if (observation.run.model !== undefined) persistedModels.add(runId);
       if (observation.run.toolCalls !== undefined)
         persistedToolCalls.add(runId);
+      if (observation.run.agent !== undefined) persistedAgents.add(runId);
+      if (observation.run.thinking !== undefined) persistedThinking.add(runId);
+      if (observation.run.status !== "unknown") persistedStatuses.add(runId);
+      if (observation.run.durationMs !== undefined)
+        persistedDuration.add(runId);
     }
-    const observedSources = new Set(
-      observations.map(({ sourceIdentity }) => sourceIdentity),
+    for (const observation of [...observations].sort(
+      (left, right) => left.order - right.order,
+    )) {
+      const runId =
+        publicIdBySource.get(observation.sourceIdentity) ?? observation.run.id;
+      const current = persistedUsageByRunId.get(runId);
+      const usage = observation.run.usage;
+      if (usage === undefined) continue;
+      persistedUsageByRunId.set(runId, {
+        totalTokens: usage.totalTokens ?? current?.totalTokens,
+        cost: usage.cost ?? current?.cost,
+      });
+    }
+    const logicalRunIdBySource = new Map(
+      observations.map((observation) => [
+        observation.sourceIdentity,
+        publicIdBySource.get(observation.sourceIdentity) ?? observation.run.id,
+      ]),
     );
-    const enrichmentBySource = new Map<
+    const enrichmentByRunId = new Map<
       string,
       Awaited<ReturnType<typeof readReferencedLifecycleEnrichment>>
     >();
     for (const [sourceIdentity, reference] of references) {
-      if (!observedSources.has(sourceIdentity)) continue;
-      enrichmentBySource.set(
-        sourceIdentity,
+      const logicalRunId = logicalRunIdBySource.get(sourceIdentity);
+      if (logicalRunId === undefined) continue;
+      enrichmentByRunId.set(
+        logicalRunId,
         await readReferencedLifecycleEnrichment(
           reference.asyncDir,
           reference.runId,
@@ -469,11 +500,12 @@ async function enrichCurrentLifecycle(
     return {
       ...evidence,
       observations: observations.map((observation) => {
-        const enrichment = enrichmentBySource.get(observation.sourceIdentity);
-        if (enrichment === undefined) return observation;
         const logicalRunId =
-          publicIdBySource.get(observation.sourceIdentity) ??
+          logicalRunIdBySource.get(observation.sourceIdentity) ??
           observation.run.id;
+        const enrichment = enrichmentByRunId.get(logicalRunId);
+        if (enrichment === undefined) return observation;
+        const persistedUsage = persistedUsageByRunId.get(logicalRunId);
         const model =
           observation.run.model ??
           (persistedModels.has(logicalRunId) ? undefined : enrichment.model);
@@ -482,26 +514,81 @@ async function enrichCurrentLifecycle(
           (persistedToolCalls.has(logicalRunId)
             ? undefined
             : enrichment.toolCalls);
+        const agent =
+          observation.run.agent ??
+          (persistedAgents.has(logicalRunId) ? undefined : enrichment.agent);
+        const thinking =
+          observation.run.thinking ??
+          (persistedThinking.has(logicalRunId)
+            ? undefined
+            : enrichment.thinking);
+        const status =
+          observation.run.status !== "unknown"
+            ? observation.run.status
+            : persistedStatuses.has(logicalRunId)
+              ? observation.run.status
+              : (enrichment.status ?? observation.run.status);
+        const totalTokens =
+          observation.run.usage?.totalTokens ??
+          persistedUsage?.totalTokens ??
+          enrichment.usage?.totalTokens;
+        const cost =
+          observation.run.usage?.cost ??
+          persistedUsage?.cost ??
+          enrichment.usage?.cost;
+        const usage =
+          totalTokens === undefined && cost === undefined
+            ? undefined
+            : {
+                ...(totalTokens === undefined ? {} : { totalTokens }),
+                ...(cost === undefined ? {} : { cost }),
+              };
+        const durationMs =
+          observation.run.durationMs ??
+          (persistedDuration.has(logicalRunId)
+            ? undefined
+            : enrichment.durationMs);
         if (
           model === observation.run.model &&
-          toolCalls === observation.run.toolCalls
+          toolCalls === observation.run.toolCalls &&
+          agent === observation.run.agent &&
+          thinking === observation.run.thinking &&
+          status === observation.run.status &&
+          usage?.totalTokens === observation.run.usage?.totalTokens &&
+          usage?.cost === observation.run.usage?.cost &&
+          durationMs === observation.run.durationMs
         )
           return observation;
         return {
           ...observation,
           run: {
             ...observation.run,
+            ...(agent === undefined ? {} : { agent }),
             ...(model === undefined ? {} : { model }),
+            ...(thinking === undefined ? {} : { thinking }),
+            ...(status === undefined ? {} : { status }),
+            ...(usage === undefined ? {} : { usage }),
+            ...(durationMs === undefined ? {} : { durationMs }),
             ...(toolCalls === undefined ? {} : { toolCalls }),
-            ...(observation.run.toolCalls === undefined &&
-            toolCalls !== undefined
-              ? {
-                  effortCoverage: {
-                    ...observation.run.effortCoverage,
-                    tools: "partial" as const,
-                  },
-                }
-              : {}),
+            effortCoverage: {
+              ...observation.run.effortCoverage,
+              ...(observation.run.durationMs === undefined &&
+              durationMs !== undefined
+                ? { duration: "partial" as const }
+                : {}),
+              ...(observation.run.usage?.totalTokens === undefined &&
+              usage?.totalTokens !== undefined
+                ? { usage: "partial" as const }
+                : {}),
+              ...(observation.run.usage?.cost === undefined &&
+              usage?.cost !== undefined
+                ? { cost: "partial" as const }
+                : {}),
+              ...(observation.run.toolCalls === undefined &&
+              toolCalls !== undefined
+                ? { tools: "partial" as const }
+                : {}),
+            },
           },
         };
       }),

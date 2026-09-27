@@ -11,10 +11,24 @@
   "chainStepCount": 1,
   "steps": [
     {
-      "agent": "worker",
+      "agent": "reviewer",
       "status": "complete",
+      "exitCode": 0,
       "model": "provider/model-a",
-      "toolCount": 2
+      "thinking": "high",
+      "durationMs": 12345,
+      "toolCount": 2,
+      "tokens": {
+        "input": 12345,
+        "output": 6789,
+        "total": 19134
+      },
+      "totalCost": {
+        "inputTokens": 12345,
+        "outputTokens": 6789,
+        "costUsd": 0.0123456789
+      },
+      "turnCount": 3
     }
   ]
 }
