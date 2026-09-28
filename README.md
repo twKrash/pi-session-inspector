@@ -31,15 +31,15 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.5.1`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.5.2`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
 > semantic integration, native token economics/cache accounting, and subagent
-> AgentRun observability are available: async launches and wait completions stay
-> visible with one stable ID per run, every run carries bounded effort coverage,
-> detached foreground runs are reported as detached, and the Agents view states
-> the native subagent activity behind them. The localhost UI paints the
-> configured theme before any report data arrives, and its loading state
-> announces once.
+> AgentRun observability are available: current async runs can use bounded
+> outcome, usage/cost, and effort from their exact referenced lifecycle artifact;
+> history remains persisted-source-only and child usage never affects native
+> totals. The Agents view states native subagent activity. The localhost UI
+> paints the configured theme before report data arrives and announces loading
+> once.
 
 ## Install
 
