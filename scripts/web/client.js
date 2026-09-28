@@ -123,6 +123,7 @@
   let lastAppliedKey = "";
   let stateNotice = undefined;
   let inFlight = null;
+  let pendingRequest = null;
   // The identity of the newest request. A response the client has already
   // superseded (a second refresh, a range the reader moved on from) is dropped
   // rather than published, so a slow answer never overwrites a newer one.
@@ -3541,24 +3542,35 @@
   };
 
   /**
-   * One request for one range intent, followed by the apply that renders it. The
-   * view being left stays on screen while the request is in flight, so a range
-   * change never blanks the page it came from.
+   * One request per range intent while it is in flight; a browser hashchange
+   * can reapply that intent before its response arrives. Explicit refreshes
+   * still start a fresh request.
    */
-  const request = (query, effects) => {
+  const request = (query, effects, refresh) => {
+    if (
+      refresh !== true &&
+      pendingRequest !== null &&
+      pendingRequest.query === query
+    ) {
+      pendingRequest.effects = effects;
+      return;
+    }
     const id = (latestRequest += 1);
+    const pending = { query, effects };
+    pendingRequest = pending;
     setLoading(true);
     inFlight = (async () => {
       const served = await load(query, id);
       // A newer request owns the page now: it renders and it clears the loading
       // state, so this one leaves both alone.
       if (id !== latestRequest) return;
+      pendingRequest = null;
       setLoading(false);
       if (!served) {
         setFailure(true);
         return;
       }
-      apply(effects, true);
+      apply(pending.effects, true);
     })();
   };
 
@@ -3903,7 +3915,7 @@
       // already makes: the range stays whatever the address bar names, so a
       // refresh never moves the reader off the view they are looking at.
       refresh.addEventListener("click", () => {
-        request(requestQuery(location.hash || ""), undefined);
+        request(requestQuery(location.hash || ""), undefined, true);
       });
     }
     const custom = q("custom-range");

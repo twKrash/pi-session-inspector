@@ -1,6 +1,6 @@
 {
   "name": "@twkrash/pi-session-inspector",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "Local Pi session analytics for token usage, cost, models, tools, subagents, skills, and history",
   "type": "module",
   "license": "MIT",

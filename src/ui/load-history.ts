@@ -259,7 +259,10 @@ const NO_EVIDENCE: L0Evidence = { atomic: [], folded: [] };
 export async function loadHistoryReports(
   options: HistoryLoadOptions,
 ): Promise<HistoryReport> {
-  const scan = await scanHistory(options);
+  return historyReportFromScan(await scanHistory(options));
+}
+
+function historyReportFromScan(scan: HistoryScan): HistoryReport {
   return {
     availability: scan.availability,
     sessions: scan.sessions.map(toHistoricalSession),
@@ -549,15 +552,35 @@ function toHistoricalSession(session: SessionScan): HistoricalSession {
       };
 }
 
+type GlobalLoadOptions = HistoryLoadOptions & {
+  dateRange?: DateRange;
+  /** Add the bounded per-session windows the partiality verdict needs. */
+  includeSessionWindows?: boolean;
+};
+
+/** Share one validated scan between History and Global within one UI bundle. */
+export function loadHistoryAndGlobalReports(options: GlobalLoadOptions): {
+  history: Promise<HistoryReport>;
+  global: Promise<GlobalReport>;
+} {
+  const scan = scanHistory(options);
+  return {
+    history: scan.then(historyReportFromScan),
+    global: scan.then((result) => globalReportFromScan(result, options)),
+  };
+}
+
 /** Folds shared session reports without adding child-agent breakdown usage. */
 export async function loadGlobalReport(
-  options: HistoryLoadOptions & {
-    dateRange?: DateRange;
-    /** Add the bounded per-session windows the partiality verdict needs. */
-    includeSessionWindows?: boolean;
-  },
+  options: GlobalLoadOptions,
 ): Promise<GlobalReport> {
-  const history = await scanHistory(options);
+  return globalReportFromScan(await scanHistory(options), options);
+}
+
+function globalReportFromScan(
+  history: HistoryScan,
+  options: GlobalLoadOptions,
+): GlobalReport {
   const rows = new Map<
     string,
     {

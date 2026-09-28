@@ -11,6 +11,7 @@ import { readInventory } from "../../src/integrations/inventory.ts";
 import { readPresence } from "../../src/integrations/presence.ts";
 import type { CoverageReason } from "../../src/storage/history.ts";
 import { renderJson } from "../../src/ui/json.ts";
+import { loadInspectorBundle } from "../../src/ui/bundle.ts";
 import {
   type HistorySessionEvidence,
   loadGlobalReport,
@@ -1681,5 +1682,31 @@ test("an unavailable session's opt-in window carries no usage", async () => {
     ]);
   } finally {
     await rm(options.root, { force: true, recursive: true });
+  }
+});
+
+test("UI bundle shares one history scan between history and global", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  const evidenceReads: string[] = [];
+  try {
+    const bundle = await loadInspectorBundle({
+      theme: "dark",
+      initialScope: "tree",
+      root,
+      sessionDirectory: () => sessionDirectory,
+      maintenance,
+      historyEvidence: async ({ sessionId }) => {
+        evidenceReads.push(sessionId);
+        return { evidence: { atomic: [], folded: [] } };
+      },
+    });
+
+    assert.equal(bundle.history.availability, "available");
+    assert.equal(bundle.history.sessions.length, 1);
+    assert.equal(bundle.global.availability, "available");
+    assert.equal(bundle.global.sessions.length, 1);
+    assert.deepEqual(evidenceReads, ["history-session"]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
   }
 });

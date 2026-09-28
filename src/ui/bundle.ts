@@ -9,6 +9,7 @@ import type { DatedModelRow, DateUsageRow } from "./dated-usage.ts";
 import { loadCurrentSessionReport } from "./load-current.ts";
 import {
   loadGlobalReport,
+  loadHistoryAndGlobalReports,
   loadHistoryReports,
   type GlobalReport,
   type HistoryReport,
@@ -163,8 +164,16 @@ export async function loadInspectorBundle(
   input: InspectorBundleInput,
 ): Promise<InspectorBundle> {
   const loadCurrent = input.loadCurrent ?? defaultCurrentLoader(input);
-  const loadHistory = input.loadHistory ?? defaultHistoryLoader(input);
-  const loadGlobal = input.loadGlobal ?? defaultGlobalLoader(input);
+  const loadHistoryGlobal =
+    input.loadHistory === undefined && input.loadGlobal === undefined
+      ? defaultHistoryGlobalLoaders(input)
+      : undefined;
+  const loadHistory =
+    input.loadHistory ??
+    loadHistoryGlobal?.history ??
+    defaultHistoryLoader(input);
+  const loadGlobal =
+    input.loadGlobal ?? loadHistoryGlobal?.global ?? defaultGlobalLoader(input);
 
   // Both views are always attempted; initialScope never changes what is
   // precomputed, only which view the renderer displays first.
@@ -331,6 +340,27 @@ function defaultCurrentLoader(
         ? {}
         : { subagentEvidence: input.subagentEvidence }),
     });
+}
+
+function defaultHistoryGlobalLoaders(input: InspectorBundleInput): {
+  history: HistoryLoader;
+  global: GlobalLoader;
+} {
+  let shared: ReturnType<typeof loadHistoryAndGlobalReports> | undefined;
+  const get = () =>
+    (shared ??= loadHistoryAndGlobalReports({
+      root: input.root,
+      sessionDirectory: input.sessionDirectory,
+      scope: "tree",
+      maintenance: input.maintenance,
+      ...(input.historyEvidence === undefined
+        ? {}
+        : { sessionEvidence: input.historyEvidence }),
+    }));
+  return {
+    history: () => get().history,
+    global: () => get().global,
+  };
 }
 
 function defaultHistoryLoader(input: InspectorBundleInput): HistoryLoader {
