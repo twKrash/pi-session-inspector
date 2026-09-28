@@ -2019,3 +2019,284 @@ test("a skill named after an absent extension is not reported present", async ()
     await harness.cleanup();
   }
 });
+
+const UI_BENCHMARK_SAMPLE_COUNT = 200;
+const UI_BENCHMARK_BLOCKS = 4;
+const UI_BENCHMARK_HISTORY_SESSIONS = 159;
+const UI_BENCHMARK_RECORDS_PER_SESSION = 20;
+
+function percentile(sorted: readonly number[], p: number): number {
+  return sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)] as number;
+}
+
+/** Exact order-statistic 95% interval for the population 95th percentile. */
+function p95ConfidenceInterval(
+  samples: readonly number[],
+): { lower: number; upper: number } | undefined {
+  if (samples.length < UI_BENCHMARK_SAMPLE_COUNT) return undefined;
+
+  const binomialQuantile = (probability: number): number => {
+    const n = samples.length;
+    const p = 0.95;
+    const mode = Math.floor((n + 1) * p);
+    const weights = new Float64Array(n + 1);
+    weights[mode] = 1;
+    for (let k = mode; k > 0; k -= 1) {
+      weights[k - 1] =
+        (weights[k] as number) * (k / (n - k + 1)) * ((1 - p) / p);
+    }
+    for (let k = mode; k < n; k += 1) {
+      weights[k + 1] =
+        (weights[k] as number) * ((n - k) / (k + 1)) * (p / (1 - p));
+    }
+    const total = weights.reduce((sum, value) => sum + value, 0);
+    let cumulative = 0;
+    for (let k = 0; k <= n; k += 1) {
+      cumulative += (weights[k] as number) / total;
+      if (cumulative >= probability) return k;
+    }
+    return n;
+  };
+
+  const sorted = [...samples].sort((a, b) => a - b);
+  const lowerRank = Math.max(1, binomialQuantile(0.025));
+  const upperRank = Math.min(samples.length, binomialQuantile(0.975) + 1);
+  return {
+    lower: sorted[lowerRank - 1] as number,
+    upper: sorted[upperRank - 1] as number,
+  };
+}
+
+test("p95 interval refuses small samples and bounds the estimate", () => {
+  assert.equal(
+    p95ConfidenceInterval(Array.from({ length: 10 }, (_, i) => i)),
+    undefined,
+  );
+  const values = Array.from(
+    { length: UI_BENCHMARK_SAMPLE_COUNT },
+    (_, i) => i + 1,
+  );
+  const interval = p95ConfidenceInterval(values);
+  assert.ok(interval);
+  const p95 = percentile(values, 0.95);
+  assert.ok(interval.lower <= p95);
+  assert.ok(interval.upper >= p95);
+});
+
+test(
+  "authenticated UI read-path benchmark (opt-in)",
+  { skip: process.env.PI_INSPECTOR_UI_BENCHMARK !== "1" },
+  async () => {
+    const request = async (origin: string, token: string) => {
+      const started = process.hrtime.bigint();
+      const response = await fetch(`${origin}/api/v1/ui`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = await response.text();
+      const requestMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+      assert.equal(response.status, 200);
+      const parseStarted = process.hrtime.bigint();
+      const snapshot = JSON.parse(body) as {
+        current?: unknown;
+        history?: unknown;
+        global?: unknown;
+      };
+      const jsonParseMs =
+        Number(process.hrtime.bigint() - parseStarted) / 1_000_000;
+      assert.ok(snapshot.current && snapshot.history && snapshot.global);
+      return {
+        requestMs,
+        jsonParseMs,
+        responseBytes: Buffer.byteLength(body, "utf8"),
+      };
+    };
+
+    const writeHistoryCorpus = async (harness: Harness) => {
+      const dayMs = 86_400_000;
+      const today = new Date();
+      const end =
+        Date.UTC(
+          today.getUTCFullYear(),
+          today.getUTCMonth(),
+          today.getUTCDate(),
+        ) +
+        12 * 60 * 60 * 1000;
+      let changedPath = "";
+      let originalSource = "";
+      let changedSource = "";
+      for (let index = 0; index < UI_BENCHMARK_HISTORY_SESSIONS; index += 1) {
+        const sessionId = `bench-${String(index).padStart(3, "0")}`;
+        const sourceName = `${sessionId}.jsonl`;
+        const sessionDirectory = join(harness.root, "sessions", sessionId);
+        await mkdir(sessionDirectory, { recursive: true });
+        await writeFile(
+          join(sessionDirectory, "meta.json"),
+          JSON.stringify({
+            schemaVersion: 2,
+            sessionId,
+            sourceFile: sourceName,
+            state: "tracking",
+          }),
+        );
+        const start = end - (10 - (index % 11)) * dayMs;
+        const markerId = `marker-${sessionId}`;
+        const lines = [
+          JSON.stringify({ type: "session", version: 3, id: sessionId }),
+          JSON.stringify({
+            type: "custom",
+            id: markerId,
+            parentId: null,
+            customType: "session-inspector:tracking-start",
+            data: { schemaVersion: 1 },
+            timestamp: new Date(start).toISOString(),
+          }),
+          ...Array.from(
+            { length: UI_BENCHMARK_RECORDS_PER_SESSION },
+            (_, record) =>
+              JSON.stringify({
+                type: "message",
+                id: `${sessionId}-${record}`,
+                parentId:
+                  record === 0 ? markerId : `${sessionId}-${record - 1}`,
+                timestamp: new Date(start + record * 60_000).toISOString(),
+                message: {
+                  role: "assistant",
+                  provider: "corpus-provider",
+                  model: "corpus-model",
+                  content: [{ type: "text", text: "corpus-fixed-seed-filler" }],
+                  usage: {
+                    input: 12,
+                    output: 5,
+                    totalTokens: 17,
+                    cost: { total: 0.001 },
+                  },
+                },
+              }),
+          ),
+        ];
+        const source = `${lines.join("\n")}\n`;
+        const sourcePath = join(harness.sessionDirectory, sourceName);
+        await writeFile(sourcePath, source);
+        if (index === 0) {
+          changedPath = sourcePath;
+          originalSource = source;
+          changedSource = `${source}${JSON.stringify({
+            type: "message",
+            id: `${sessionId}-changed`,
+            parentId: `${sessionId}-${UI_BENCHMARK_RECORDS_PER_SESSION - 1}`,
+            timestamp: new Date(
+              start + UI_BENCHMARK_RECORDS_PER_SESSION * 60_000,
+            ).toISOString(),
+            message: {
+              role: "assistant",
+              provider: "corpus-provider",
+              model: "corpus-model",
+              content: [{ type: "text", text: "corpus-fixed-seed-filler" }],
+              usage: {
+                input: 12,
+                output: 6,
+                totalTokens: 18,
+                cost: { total: 0.001 },
+              },
+            },
+          })}\n`;
+        }
+      }
+      return { changedPath, originalSource, changedSource };
+    };
+
+    const summarize = (measurements: Awaited<ReturnType<typeof request>>[]) => {
+      const requests = measurements
+        .map((sample) => sample.requestMs)
+        .sort((a, b) => a - b);
+      const parse = measurements
+        .map((sample) => sample.jsonParseMs)
+        .sort((a, b) => a - b);
+      const bytes = measurements.map((sample) => sample.responseBytes);
+      return {
+        samples: measurements.length,
+        requestMs: {
+          median: percentile(requests, 0.5),
+          p95: percentile(requests, 0.95),
+          confidence95: p95ConfidenceInterval(requests) ?? "inconclusive",
+          min: requests[0],
+          max: requests.at(-1),
+        },
+        jsonParseMs: {
+          median: percentile(parse, 0.5),
+          p95: percentile(parse, 0.95),
+        },
+        responseBytes: { min: Math.min(...bytes), max: Math.max(...bytes) },
+      };
+    };
+
+    const unchanged: Awaited<ReturnType<typeof request>>[] = [];
+    const changed: Awaited<ReturnType<typeof request>>[] = [];
+    const cold: number[] = [];
+    const samplesPerBlock = UI_BENCHMARK_SAMPLE_COUNT / UI_BENCHMARK_BLOCKS;
+    for (let block = 0; block < UI_BENCHMARK_BLOCKS; block += 1) {
+      const harness = await createHarness();
+      try {
+        await writeSessionManifest(harness);
+        const sources = await writeHistoryCorpus(harness);
+        await harness.handler()(
+          "ui --no-open",
+          harness.context({ mode: "interactive" }),
+        );
+        const bootstrap = bootstrapOf(harness.notices.at(-1) ?? "");
+        assert.ok(
+          bootstrap,
+          "UI command must expose authenticated loopback bootstrap",
+        );
+        cold.push((await request(bootstrap.origin, bootstrap.token)).requestMs);
+        for (let warm = 0; warm < 3; warm += 1)
+          await request(bootstrap.origin, bootstrap.token);
+        for (let index = 0; index < samplesPerBlock; index += 1)
+          unchanged.push(await request(bootstrap.origin, bootstrap.token));
+        for (let index = 0; index < samplesPerBlock; index += 1) {
+          await writeFile(
+            sources.changedPath,
+            index % 2 === 0 ? sources.changedSource : sources.originalSource,
+          );
+          changed.push(await request(bootstrap.origin, bootstrap.token));
+        }
+      } finally {
+        await harness.cleanup();
+      }
+    }
+
+    console.log(
+      `UI_READ_PATH_BASELINE ${JSON.stringify({
+        benchmark: "authenticated-get-api-v1-ui",
+        runtime: {
+          node: process.version,
+          platform: process.platform,
+          arch: process.arch,
+        },
+        corpus: {
+          trackedSessions: UI_BENCHMARK_HISTORY_SESSIONS + 1,
+          historicalSessions: UI_BENCHMARK_HISTORY_SESSIONS,
+          recordsPerHistoricalSession: UI_BENCHMARK_RECORDS_PER_SESSION,
+          observedDays: 11,
+          content: "generated sanitized fixture; no user session data",
+        },
+        runBlocks: UI_BENCHMARK_BLOCKS,
+        coldInitialRequest: {
+          samples: cold.length,
+          medianMs: percentile(
+            [...cold].sort((a, b) => a - b),
+            0.5,
+          ),
+          p95: "inconclusive",
+        },
+        unchangedRefresh: summarize(unchanged),
+        changedRefresh: summarize(changed),
+        unmeasured: [
+          "internal per-stage timings",
+          "browser first render",
+          "peak heap",
+        ],
+      })}`,
+    );
+  },
+);

@@ -2,6 +2,18 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3]
+
+### Fixed
+
+- UI History and Global now derive from one historical scan per `/api/v1/ui`
+  response, avoiding duplicate source/evidence work without adding cross-request
+  caching or changing report DTO semantics.
+- Reapplying the same range during an in-flight request reuses that request;
+  explicit Refresh still fetches fresh data.
+- Request-level UI failures remain in bounded HTTP responses instead of being
+  mirrored to Pi stderr; startup and runtime-listener diagnostics remain.
+
 ## [1.5.2]
 
 ### Fixed

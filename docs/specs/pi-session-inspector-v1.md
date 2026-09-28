@@ -152,7 +152,9 @@ GET /api/v1/reports/global
 ```
 
 `GET /api/v1/ui` calls `loadInspectorBundle()` once per response and then runs
-TypeScript L2 projection. Its range metadata is per projection/view: the
+TypeScript L2 projection. The default History and Global projections share one
+bounded tree-scope history scan within that bundle; this reuse is request-local,
+with no cross-request cache. Its range metadata is per projection/view: the
 shared intent is retained, while `current.active`, `current.tree`, History,
 and Global may carry different resolved anchors. Independent session/global
 resource calls are independent observations and do not promise cross-request
@@ -214,9 +216,11 @@ for a deliberate future security decision, not a reason to weaken this contract
 preemptively.
 
 API errors use bounded RFC 9457-style `application/problem+json` with fixed safe
-codes/messages, status, retryability, and an opaque correlation ID. Startup,
-asset, API, refresh, and export failures emit one-line bounded JSON stderr
-records. Logging is best-effort and never changes Pi execution.
+codes/messages, status, retryability, and an opaque correlation ID. Startup and
+runtime listener failures emit one-line bounded JSON stderr records. Request-level
+failures remain in the bounded HTTP response or browser error state and are not
+mirrored to Pi stderr, avoiding host-TUI noise from failed or repeated requests.
+Logging is best-effort and never changes Pi execution.
 
 Server CSP is same-origin and permits only the normal client assets and API.
 Snapshot CSP is separate and deterministic: snapshot HTML has no executable

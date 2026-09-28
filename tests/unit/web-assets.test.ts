@@ -1428,7 +1428,7 @@ test("the current scope buttons select the DTO's own views", async () => {
   assert.equal(active.attributes["aria-pressed"], "false");
 });
 
-test("a range selection is a request, and the range controls read the DTO", async () => {
+test("a range selection requests one DTO even when its hashchange fires", async () => {
   const first = uiSnapshot();
   const second = uiSnapshot();
   if (second.current.tree.range?.resolved === undefined) {
@@ -1448,6 +1448,7 @@ test("a range selection is a request, and the range controls read the DTO", asyn
 
   const seven = control(harness, "range", "days", "7");
   harness.click(seven);
+  harness.hashchange();
   assert.equal(harness.location.hash, "#/current/overview?scope=tree&preset=7");
   assert.deepEqual(
     harness.fetches().map((fetch) => fetch.url),

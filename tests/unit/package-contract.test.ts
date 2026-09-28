@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 /** The released version this branch ships (SemVer, ADR 0018). */
-const RELEASE_VERSION = "1.5.2";
+const RELEASE_VERSION = "1.5.3";
 
 /**
  * The three browser assets the server and package share. `client.bundle.js` is
