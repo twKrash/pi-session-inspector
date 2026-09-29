@@ -16,6 +16,7 @@ build/
 coverage/
 .tmp/
 .cache/
+.kapisch/
 
 # Screenshots are GitHub release assets (docs/images/README.md), except the
 # gallery preview, which needs a URL serving a real image content type.
