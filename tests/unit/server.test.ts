@@ -821,7 +821,7 @@ test("only normalized IPv4 loopback peers are accepted", () => {
 // Methods, unknown routes, and traversal
 // ---------------------------------------------------------------------------
 
-test("favicon requests return an empty success without a diagnostic", async () => {
+test("favicon and method requests do not emit Pi diagnostics", async () => {
   const { context } = fixtureContext();
   const server = await getInspectorServer(context);
   const lines: string[] = [];
@@ -854,7 +854,7 @@ test("favicon requests return an empty success without a diagnostic", async () =
       assertProblem(response, 405, "method-not-allowed", [method]);
       assert.equal(response.headers.allow, "GET, HEAD");
     }
-    assert.equal(lines.length, 4);
+    assert.equal(lines.length, 0);
   } finally {
     process.stderr.write = original;
     await closeInspectorServer();
@@ -864,6 +864,12 @@ test("favicon requests return an empty success without a diagnostic", async () =
 test("unsupported methods, traversal paths, and unknown routes fail boundedly", async () => {
   const { context, calls } = fixtureContext();
   const server = await getInspectorServer(context);
+  const lines: string[] = [];
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    lines.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
   try {
     for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
       const response = await call(server, "/", { method });
@@ -918,7 +924,9 @@ test("unsupported methods, traversal paths, and unknown routes fail boundedly", 
       calls.ui.length + calls.global.length + calls.sessions.length,
       0,
     );
+    assert.deepEqual(lines, []);
   } finally {
+    process.stderr.write = original;
     await closeInspectorServer();
   }
 });
@@ -927,7 +935,7 @@ test("unsupported methods, traversal paths, and unknown routes fail boundedly", 
 // Bounded diagnostics
 // ---------------------------------------------------------------------------
 
-test("a failing callback answers a bounded internal error and one redacted stderr line", async () => {
+test("a failing callback answers a bounded internal error without Pi diagnostics", async () => {
   const { context } = fixtureContext();
   const server = await getInspectorServer({
     ...context,
@@ -936,7 +944,6 @@ test("a failing callback answers a bounded internal error and one redacted stder
     },
   });
   const lines: string[] = [];
-  const token = bootstrapToken(server);
   const original = process.stderr.write;
   process.stderr.write = ((chunk: string | Uint8Array) => {
     lines.push(String(chunk));
@@ -951,52 +958,7 @@ test("a failing callback answers a bounded internal error and one redacted stder
       "read failed",
     ]);
     assert.equal(body.detail, "The request could not be completed.");
-    assert.equal(lines.length, 1);
-    assert.equal(lines[0].endsWith("\n"), true);
-    assert.equal(lines[0].split("\n").filter((line) => line !== "").length, 1);
-    const record = JSON.parse(lines[0]) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(record).sort(), [
-      "code",
-      "event",
-      "phase",
-      "reason",
-      "requestId",
-      "status",
-    ]);
-    assert.equal(record.event, "ui-server");
-    assert.equal(record.phase, "request");
-    assert.equal(record.code, "internal-error");
-    assert.equal(record.status, 500);
-    assert.equal(record.requestId, body.correlationId);
-    assert.equal(typeof record.reason, "string");
-    assert.equal(String(record.reason).includes("/home/"), false);
-    assert.equal(String(record.reason).includes("[PATH]"), true);
-    // The failed request carried the token in its Authorization header; no
-    // diagnostic line may carry it back out.
-    assert.equal(lines.join("").includes(token), false);
-  } finally {
-    process.stderr.write = original;
-    await closeInspectorServer();
-  }
-});
-
-test("a failing stderr writer cannot change the response", async () => {
-  const { context } = fixtureContext();
-  const server = await getInspectorServer({
-    ...context,
-    loadUi: async () => {
-      throw new Error("SECRET_EXCEPTION_TEXT");
-    },
-  });
-  const original = process.stderr.write;
-  process.stderr.write = (() => {
-    throw new Error("stderr is closed");
-  }) as typeof process.stderr.write;
-  try {
-    const response = await call(server, "/api/v1/ui", {
-      headers: bearer(server),
-    });
-    assertProblem(response, 500, "internal-error", ["SECRET_EXCEPTION_TEXT"]);
+    assert.deepEqual(lines, []);
   } finally {
     process.stderr.write = original;
     await closeInspectorServer();
@@ -1005,7 +967,7 @@ test("a failing stderr writer cannot change the response", async () => {
 
 // ---------------------------------------------------------------------------
 // Singleton lifecycle
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------// ---------------------------------------------------------------------------
 
 test("the singleton is reused with replaced context and closed explicitly", async () => {
   const first = fixtureContext();

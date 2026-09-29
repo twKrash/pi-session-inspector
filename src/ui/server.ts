@@ -212,7 +212,7 @@ function securityHeaders(contentType: string): Record<string, string> {
 }
 
 function logDiagnostic(record: {
-  phase: "startup" | "request" | "runtime";
+  phase: "startup" | "runtime";
   code: string;
   status?: number;
   requestId?: string;
@@ -261,15 +261,9 @@ function sendProblem(
   if (options.allow !== undefined) {
     headers.allow = options.allow;
   }
+  // Request failures belong in the bounded HTTP response, not Pi's TUI.
   res.writeHead(problem.status, headers);
   res.end(options.head === true ? undefined : body);
-  logDiagnostic({
-    phase: "request",
-    code,
-    status: problem.status,
-    requestId: correlationId,
-    reason: options.reason,
-  });
 }
 
 function sendJson(res: ServerResponse, value: unknown): void {
@@ -482,7 +476,7 @@ function dispatch(
   req: IncomingMessage,
   res: ServerResponse,
 ): void {
-  void handleRequest(state, req, res).catch((error: unknown) => {
+  void handleRequest(state, req, res).catch(() => {
     try {
       if (res.headersSent) {
         res.end();
@@ -490,7 +484,6 @@ function dispatch(
       }
       sendProblem(res, "internal-error", {
         head: req.method === "HEAD",
-        reason: error instanceof Error ? error.message : undefined,
       });
     } catch {
       // The socket is already gone; there is nothing safe left to write.

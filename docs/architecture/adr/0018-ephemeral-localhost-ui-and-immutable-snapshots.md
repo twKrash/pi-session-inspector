@@ -82,7 +82,9 @@ safe evidence -> L1 canonical session -> TypeScript L2 projection
 `loadInspectorBundle()` remains the only aggregate UI loader. A
 `GET /api/v1/ui` request invokes it once, then applies the named TypeScript L2
 projection that produces `InspectorUiSnapshot`. The response includes Current
-active/tree, History, and Global from one consistent logical observation.
+active/tree, History, and Global from one consistent logical observation. The
+default History and Global projections derive from one bounded tree-scope
+history scan within that request; no scan result is reused across requests.
 
 Range metadata is per projection/view. The shared `RangeIntent` is retained,
 but a preset may resolve against different latest observed dates for
@@ -339,10 +341,12 @@ Report-level failures remain `HTTP 200` DTO availability/coverage states when
 the canonical loader can represent them. Startup failures become concise CLI
 notifications. Browser failures render bounded retry/error state.
 
-Startup, asset, API, refresh, and snapshot/export failures emit one-line JSON
-stderr events containing only fixed event/phase/code, bounded status,
-request/correlation ID, and `redactBoundedText`-sanitized bounded reason.
-Logging is best-effort and cannot affect Pi execution.
+Startup and runtime listener failures emit one-line JSON stderr events containing
+only fixed event/phase/code, bounded status, and a `redactBoundedText`-sanitized
+reason. Request-level failures stay in the bounded HTTP/problem response or
+browser error state and are not mirrored to Pi stderr, avoiding host-TUI noise
+from failed or repeated requests. Logging is best-effort and cannot affect Pi
+execution.
 
 ## Alternatives considered
 
