@@ -20,6 +20,35 @@ Generations, per-run errors, and inferred duration are unavailable. `usage.turns
 
 Canonical and report projections revalidate all fields. No new persistence path is introduced.
 
+### 0.78.0 terminal workflow notification follow-up (2026-10-13)
+
+The installed `pi-subagents@0.78.0` documents `subagent-notify` as a persisted
+Pi `custom_message`; `details.runs[]` identifies finished runs, and a workflow
+entry's `runId` equals its `workflowRunId`. Each documented `childRuns[]` row
+may carry `runId`, `workflowKey`, `agent`, and `status`. The observed Pi 1.2.0
+session had a successful workflow tool result with an incomplete empty child
+summary, followed by this notification with two terminal child rows.
+
+The adapter accepts a notification only when its bounded `runId` and
+`workflowRunId` are equal to each other and to a successful, matching persisted
+`subagent` workflow result's `details.runId`. A unique bounded non-placeholder
+child `runId` uses the existing `workflow` observation identity and exact
+workflow-container parent identity. Therefore an exact run ID already published
+by `workflowChildren.children[]` updates that same row; no workflow-key,
+position, name, or time alias is introduced. Duplicate or `unavailable` child
+IDs are withheld. Only bounded `agent` and `status` from the child row are read;
+missing or unrecognized status stays `unknown`, and the workflow's own terminal
+status never determines child status. Duration, usage, model, paths, output,
+error, and other notification fields are ignored. Child usage remains
+non-additive, and no artifact reader or new persistence path is introduced.
+
+The producer evidence is environmental, not stamped into individual session
+events. The package checkout was `pi-subagents@0.78.0`, source revision
+`a4c8ced69a8176cdf4179b127feddc8875e3418f`; no npm tarball integrity or release
+tag was available, so this revision is recorded as an observed source
+fingerprint, not a release provenance claim. Sanitized replay evidence is in
+`tests/fixtures/pi/1.2.0/subagent-workflow-terminal-notification.jsonl`.
+
 ## Rejected inference
 
 - No duration from timestamps or live status.

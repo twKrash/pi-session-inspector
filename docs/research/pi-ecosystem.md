@@ -201,3 +201,44 @@ The producer v1 parser requires child `childId` and `state`; `runId`, `agent`, a
 Adapter attribution requires the supported version-1 summary envelope, including `inventoryComplete: true`, recognized workflow state and fields, bounded producer IDs, supported child rows, and arrays within bounds. `mode` must be `"workflow"` and `workflowRunId` must exactly equal `details.runId`; `parentToolCallId` is validated but not compared with the current tool-call ID because async publication can differ. Within one result, bounded `workflowKey` values must exactly match unique `childId` values. Missing, mismatched, or duplicate keys withhold only that key; unrelated exact keys remain eligible. Unsupported summary or child shapes produce no correlation. No effort is inferred from child summaries, and the adapter never correlates by index, order, agent, task, timestamp, or fuzzy run ID. Existing workflow/result `AgentRun` identities and statuses remain separate and unchanged; child usage remains non-additive. No producer identifiers, prompts, outputs, or raw session entries are recorded here.
 
 This observation does not revise the 0.70.1 declaration map or infer that older producer versions publish the same fields. That historical evidence remains unchanged.
+
+
+## Installed pi-subagents 0.78.0 terminal workflow notification follow-up (2026-10-13)
+
+This environment used Pi `1.2.0` and `pi-subagents@0.78.0`. The inspected
+producer docs (`docs/extension-api.md`, completion notification section) define
+`subagent-notify` as a custom Pi message whose persisted details are separate
+from model-visible text. `details.runs[]` contains one entry per finished run;
+a workflow entry has `runId` equal to `workflowRunId`; its `childRuns[]` rows
+contain `runId`, optional `workflowKey` and `agent`, and optional `status`.
+The inspected producer implementation (`src/runs/background/notify.ts`,
+`buildCompletionDetails`) may fall back to the workflow result's `state` when a
+child has neither its own `state` nor `success`. For example, sanitized producer
+input `{ "state": "complete", "results": [{ "runId": "child",
+"workflowKey": "step" }] }` can publish
+`childRuns: [{ "runId": "child", "workflowKey": "step", "status": "completed" }]`;
+`result-intercom.ts` maps `"complete"` to `"completed"`. Therefore a published
+child status is not necessarily independent evidence of that child's outcome.
+Inspector consumes only the published `childRuns[].status`; it does not apply
+the producer's workflow-state fallback. When the notification omits or has an
+unrecognized child status, Inspector keeps that child's status `unknown`, as
+covered by `tests/unit/subagents.test.ts`.
+
+The installed source checkout reported package version `0.78.0` and revision
+`a4c8ced69a8176cdf4179b127feddc8875e3418f`. Its `package.json` has no `gitHead`,
+there was no matching release tag, and no npm tarball integrity was verified;
+this is an observed source fingerprint only. It does not replace the pinned
+`0.70.1` implementation baseline or establish compatibility with every
+intervening release.
+
+The actual Pi 1.2.0 session persisted a successful `mode: "workflow"` tool
+result whose `workflowChildren` inventory was incomplete and empty, then a
+`type: "custom_message"`, `customType: "subagent-notify"` entry. Its single
+workflow detail had equal `runId` and `workflowRunId` matching the persisted
+workflow result, plus two child rows; each had `runId`, `workflowKey`, agent
+label `scout`, and status `completed`. The adapter now consumes only those
+exact parent/child identities, bounded child agent labels, and child statuses;
+it ignores the message text and all unrelated details such as paths and
+workflow duration. Raw IDs, keys, paths, task text, and output are not recorded
+here. `tests/fixtures/pi/1.2.0/subagent-workflow-terminal-notification.jsonl`
+is a synthetic sanitized replay fixture, not a copy of the live session.

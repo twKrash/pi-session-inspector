@@ -683,7 +683,7 @@ export function isProcessSignal(value: unknown): value is string {
 /**
  * Derives subagent evidence from persisted Pi entries only: native tool
  * activity joined by `toolCallId`, plus cooperative rich runs read from the
- * documented `details.results[]`/`details.completions[]` projections.
+ * documented tool-result projections and exact terminal workflow notifications.
  *
  * Child usage is a breakdown of the parent session's own tool-result usage and
  * is never added to session totals. Malformed or unknown input yields no rows;
@@ -787,9 +787,20 @@ function deriveEvidence(
   publications.sort((a, b) => a.ordinal - b.ordinal);
   const asyncLaunchRunIds = new Set<string>();
   const asyncCompletionRunIds = new Set<string>();
+  const workflowLaunchRunIds = new Set<string>();
   for (const { result, toolName, successfulMatchingResult } of publications) {
     const details = snapshotRecord(result.details);
     if (details === undefined) continue;
+    if (
+      successfulMatchingResult &&
+      toolName === "subagent" &&
+      details.mode === "workflow"
+    ) {
+      const workflowRunId = readRawRunId(details.runId);
+      if (workflowRunId !== undefined && workflowLaunchRunIds.size < MAX_RUNS) {
+        workflowLaunchRunIds.add(workflowRunId);
+      }
+    }
     const launchRunId = readAsyncLaunchRunId(toolName, result, details);
     if (launchRunId !== undefined && asyncLaunchRunIds.size < MAX_RUNS) {
       asyncLaunchRunIds.add(launchRunId);
@@ -848,23 +859,38 @@ function deriveEvidence(
       },
     );
   }
+  const observationSources = [
+    ...publications.map((publication) => ({
+      ...publication,
+      kind: "tool" as const,
+    })),
+    ...entries.flatMap((entry, ordinal) =>
+      entry.type === "custom_message" && entry.customType === "subagent-notify"
+        ? [{ kind: "notification" as const, ordinal, entry }]
+        : [],
+    ),
+  ].sort((a, b) => a.ordinal - b.ordinal);
   const observations: Iterable<AgentRunSourceObservation> = {
     *[Symbol.iterator]() {
       const cursor = { value: 0 };
-      for (const {
-        result,
-        publication,
-        toolName,
-        successfulMatchingResult,
-      } of publications) {
-        yield* collectRuns(
-          result,
-          publication,
-          sessionId,
-          cursor,
-          toolName,
-          successfulMatchingResult,
-        );
+      for (const source of observationSources) {
+        if (source.kind === "tool") {
+          yield* collectRuns(
+            source.result,
+            source.publication,
+            sessionId,
+            cursor,
+            source.toolName,
+            source.successfulMatchingResult,
+          );
+        } else {
+          yield* collectWorkflowNotificationRows(
+            source.entry,
+            workflowLaunchRunIds,
+            sessionId,
+            cursor,
+          );
+        }
       }
     },
   };
@@ -1244,6 +1270,82 @@ function* collectRuns(
         sourceIdentity,
         workflowParentId,
         hasCorrelatedEffort ? "enabled" : "disabled",
+        cursor,
+      );
+    }
+  }
+}
+
+function* collectWorkflowNotificationRows(
+  entry: SessionEntry,
+  workflowLaunchRunIds: ReadonlySet<string>,
+  sessionId: string,
+  cursor: ObservationCursor,
+): Generator<AgentRunSourceObservation> {
+  const details = snapshotRecord(entry.details);
+  if (
+    details === undefined ||
+    !Array.isArray(details.runs) ||
+    details.runs.length > MAX_RUNS
+  ) {
+    return;
+  }
+  const observedAt = readObservedAt(entry.timestamp);
+  const publication: RunPublication =
+    observedAt === undefined ? {} : { observedAt };
+  for (const value of details.runs) {
+    const run = snapshotRecord(value);
+    const runId = readRawRunId(run?.runId);
+    const workflowRunId = readRawRunId(run?.workflowRunId);
+    if (
+      run === undefined ||
+      runId === undefined ||
+      workflowRunId !== runId ||
+      !workflowLaunchRunIds.has(workflowRunId) ||
+      !Array.isArray(run.childRuns) ||
+      run.childRuns.length > MAX_RUNS
+    ) {
+      continue;
+    }
+    const children: {
+      record: Readonly<Record<string, unknown>>;
+      runId: string;
+    }[] = [];
+    const counts = new Map<string, number>();
+    for (const childValue of run.childRuns) {
+      const child = snapshotRecord(childValue);
+      const childRunId = readRawRunId(child?.runId);
+      if (
+        child === undefined ||
+        childRunId === undefined ||
+        childRunId === "unavailable"
+      ) {
+        continue;
+      }
+      children.push({ record: child, runId: childRunId });
+      counts.set(childRunId, (counts.get(childRunId) ?? 0) + 1);
+    }
+    const parentId = opaqueSubagentId(
+      sessionId,
+      workflowRunId,
+      "workflow-parent",
+    );
+    for (const { record, runId: childRunId } of children) {
+      if (counts.get(childRunId) !== 1) continue;
+      const status = record.status;
+      const runRecord = {
+        ...(isAgentLabel(record.agent) ? { agent: record.agent } : {}),
+        ...(typeof status === "string" && status.length <= 32
+          ? { state: status }
+          : {}),
+      };
+      yield* pushRun(
+        runRecord,
+        publication,
+        opaqueSubagentId(sessionId, childRunId, "workflow"),
+        opaqueSubagentSourceIdentity(sessionId, childRunId, "workflow"),
+        parentId,
+        "disabled",
         cursor,
       );
     }
