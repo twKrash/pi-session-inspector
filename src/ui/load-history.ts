@@ -30,7 +30,7 @@ import {
 } from "../core/session-coverage.ts";
 import { readSubagentEvidence } from "../integrations/subagents.ts";
 import { parseSessionJsonl, type ParsedSession } from "../pi/adapter.ts";
-import { hasTrackingStartMarker } from "../pi/sessions.ts";
+import { hasTrackingStartMarker, selectScope } from "../pi/sessions.ts";
 import {
   discoverHistory,
   resolveManifestSourceFile,
@@ -63,7 +63,7 @@ export type SessionEvidenceRequest = {
   root: string;
   /** `root/sessions/<sessionId>`, already resolved by the loader. */
   directory: string;
-  /** Already parsed Pi entries selected by L1; never a producer-storage read. */
+  /** Parsed Pi entries in L1 tree scope, after the tracking marker. */
   entries: readonly SessionEntry[];
 };
 
@@ -407,7 +407,7 @@ async function scanDiscoveredSession(
             sessionId,
             root: options.root,
             directory,
-            entries: parsed.entries,
+            entries: selectScope(parsed.entries, null, "tree"),
           });
     if (options.sessionEvidence !== undefined && supplied === undefined) {
       return {

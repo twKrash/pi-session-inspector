@@ -42,6 +42,26 @@ status never determines child status. Duration, usage, model, paths, output,
 error, and other notification fields are ignored. Child usage remains
 non-additive, and no artifact reader or new persistence path is introduced.
 
+A successful workflow publication with `workflowChildren.inventoryComplete`
+other than `true` carries partial subagent-result source coverage, even when
+terminal notifications provide visible child rows. Child completeness is not
+inferred from observed notifications; native parent usage and child breakdown
+semantics remain unchanged.
+
+### 2026-10-14 live compatibility retest
+
+A real tracked Pi 1.2.0 session using the local `pi-subagents@0.78.0` checkout
+at source revision `a4c8ced69a8176cdf4179b127feddc8875e3418f` produced a
+successful workflow result with `inventoryComplete: false`, no summary children,
+and `workflowState: "running"`. Its later terminal notification contained two
+`scout` children with `completed` status and distinct workflow keys. Replaying
+the session through the current report path yielded each child exactly once,
+with succeeded status and the same opaque workflow parent; source coverage
+remained partial. No child usage was published, and parent native usage remained
+authoritative. Sanitized replay evidence is in
+`tests/fixtures/pi/1.2.0/subagent-workflow-terminal-notification-retest.jsonl`.
+No debug log files were available.
+
 The producer evidence is environmental, not stamped into individual session
 events. The package checkout was `pi-subagents@0.78.0`, source revision
 `a4c8ced69a8176cdf4179b127feddc8875e3418f`; no npm tarball integrity or release

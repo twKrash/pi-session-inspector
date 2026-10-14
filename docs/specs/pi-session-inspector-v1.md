@@ -491,7 +491,11 @@ publications reconcile as one row. Only the child's bounded `agent` and
 workflow-level status, `workflowKey`, duration, usage, paths, output, and other
 notification fields do not create or enrich child facts. Notifications without
 the exact persisted workflow identity are ignored. This is persisted evidence
-and is available to history under the same replay rules as tool results.
+and is available to history under the same replay rules as tool results. A
+successful workflow publication whose `workflowChildren.inventoryComplete` is
+not `true` keeps subagent-result source coverage `partial`, even when terminal
+notifications supply visible child rows; observed rows do not prove inventory
+completeness.
 
 For pi-subagents, `executionKind: "async"` is present only for (a) a
 successful `subagent` tool result (`isError: false`, with result `toolName`

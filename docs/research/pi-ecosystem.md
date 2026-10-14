@@ -241,4 +241,7 @@ exact parent/child identities, bounded child agent labels, and child statuses;
 it ignores the message text and all unrelated details such as paths and
 workflow duration. Raw IDs, keys, paths, task text, and output are not recorded
 here. `tests/fixtures/pi/1.2.0/subagent-workflow-terminal-notification.jsonl`
-is a synthetic sanitized replay fixture, not a copy of the live session.
+remains synthetic sanitized replay evidence. A separate
+`tests/fixtures/pi/1.2.0/subagent-workflow-terminal-notification-retest.jsonl`
+records the 2026-10-14 live Pi 1.2.0 / pi-subagents 0.78.0 retest with
+sanitized session/run IDs and no prompts, outputs, paths, or raw payloads.

@@ -160,6 +160,7 @@ export type SubagentEvidence = {
   activity: AgentToolActivity;
   runs: readonly AgentRun[];
   state: EvidenceState;
+  coverage?: "partial";
   /**
    * Bounded, closed-code diagnostics. Repeated observations of one run that
    * disagree on identity or regress a terminal status are counted here.
@@ -174,6 +175,8 @@ export type SubagentSourceEvidence = {
   /** Private exact aliases consumed by L1; never part of public SubagentEvidence. */
   aliases?: readonly AgentRunIdentityAlias[];
   state: EvidenceState;
+  /** Workflow child inventory is not known complete for every publication. */
+  coverage?: "partial";
   diagnostics: readonly SubagentEvidenceDiagnostic[];
 };
 

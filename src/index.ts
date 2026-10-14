@@ -1047,6 +1047,9 @@ async function readSubagentContribution(
       return {
         state: contribution.state,
         observations: contribution.observations ?? [],
+        ...(contribution.coverage === "partial"
+          ? { coverage: "partial" as const }
+          : {}),
         ...(contribution.aliases === undefined
           ? {}
           : { aliases: contribution.aliases }),

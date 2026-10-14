@@ -788,6 +788,7 @@ function deriveEvidence(
   const asyncLaunchRunIds = new Set<string>();
   const asyncCompletionRunIds = new Set<string>();
   const workflowLaunchRunIds = new Set<string>();
+  let incompleteWorkflowInventory = false;
   for (const { result, toolName, successfulMatchingResult } of publications) {
     const details = snapshotRecord(result.details);
     if (details === undefined) continue;
@@ -796,6 +797,10 @@ function deriveEvidence(
       toolName === "subagent" &&
       details.mode === "workflow"
     ) {
+      const workflowChildren = snapshotRecord(details.workflowChildren);
+      if (workflowChildren?.inventoryComplete !== true) {
+        incompleteWorkflowInventory = true;
+      }
       const workflowRunId = readRawRunId(details.runId);
       if (workflowRunId !== undefined && workflowLaunchRunIds.size < MAX_RUNS) {
         workflowLaunchRunIds.add(workflowRunId);
@@ -912,6 +917,7 @@ function deriveEvidence(
     observations: hasObservations ? observations : [],
     ...(aliases.length === 0 ? {} : { aliases }),
     state: hasObservations ? "supported" : "unavailable",
+    ...(incompleteWorkflowInventory ? { coverage: "partial" as const } : {}),
     diagnostics: [],
   };
 }

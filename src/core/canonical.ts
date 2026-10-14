@@ -472,11 +472,9 @@ export function attachSubagentEvidence(
       source: "subagent-result",
       authority: "cooperative",
       state:
-        normalizedSubagents.state === "supported"
-          ? "supported"
-          : normalizedSubagents.state === "unsupported"
-            ? "unsupported"
-            : "unavailable",
+        normalizedSubagents.coverage === "partial"
+          ? "partial"
+          : normalizedSubagents.state,
       schemaVersion: 1,
       recordsSeen: agents.length,
       factsAccepted: agents.length,
@@ -712,6 +710,7 @@ function normalizeSubagentEvidence(
   return {
     activity,
     runs: normalizedRuns.runs,
+    ...(input.coverage === "partial" ? { coverage: "partial" as const } : {}),
     state:
       input.state === "supported" ||
       input.state === "unavailable" ||
@@ -2501,12 +2500,7 @@ function healthFor(context: HealthContext): SessionEvidenceHealth {
     sources.push({
       source: "subagent-result",
       authority: "cooperative",
-      state:
-        subagents.state === "supported"
-          ? "supported"
-          : subagents.state === "unsupported"
-            ? "unsupported"
-            : "unavailable",
+      state: subagents.coverage === "partial" ? "partial" : subagents.state,
       schemaVersion: 1,
       recordsSeen: subagents.runs.length,
       factsAccepted: subagents.runs.length,

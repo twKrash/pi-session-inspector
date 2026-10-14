@@ -2811,16 +2811,23 @@ const subagentNotifyEntry = (
 test("replays exact terminal workflow child notifications as opaque child rows", async () => {
   const fixture = await readFile(
     new URL(
-      "../fixtures/pi/1.2.0/subagent-workflow-terminal-notification.jsonl",
+      "../fixtures/pi/1.2.0/subagent-workflow-terminal-notification-retest.jsonl",
       import.meta.url,
     ),
     "utf8",
   );
   const parsed = parseSessionJsonl(fixture);
   assert.equal(parsed.hasMalformedJson, false);
+  const launchOnly = readSubagentEvidenceWithSession(
+    parsed.entries.slice(0, -1),
+    parsed.id,
+  );
+  assert.deepEqual(runsOf(launchOnly), []);
+  assert.equal(launchOnly.coverage, "partial");
   const evidence = readSubagentEvidenceWithSession(parsed.entries, parsed.id);
   const runs = runsOf(evidence);
 
+  assert.equal(evidence.coverage, "partial");
   assert.equal(runs.length, 2);
   assert.deepEqual(
     runs.map((run) => run.agent),
@@ -2854,6 +2861,8 @@ test("replays exact terminal workflow child notifications as opaque child rows",
     "workflow-container",
     "workflow-child-a",
     "workflow-child-b",
+    "task-1",
+    "task-2",
     "workflow-step-a",
     "workflow-step-b",
     "/sanitized/async",
@@ -2909,29 +2918,31 @@ test("reconciles terminal notification with exact workflow summary identity", ()
       "2026-10-13T21:51:02.000Z",
     ),
   ];
-  const existing = runsOf(readSubagentEvidence(launch));
+  const completeLaunchEvidence = readSubagentEvidence(launch);
+  const existing = runsOf(completeLaunchEvidence);
+  assert.equal(completeLaunchEvidence.coverage, undefined);
   assert.equal(existing.length, 1);
   assert.equal(existing[0]?.status, "running");
 
-  const completed = runsOf(
-    readSubagentEvidence([
-      ...launch,
-      subagentNotifyEntry("workflow-notice", {
-        agent: "workflow",
-        status: "completed",
-        runId: workflowRunId,
-        workflowRunId,
-        childRuns: [
-          {
-            runId: childRunId,
-            workflowKey: "workflow-step",
-            agent: "scout",
-            status: "completed",
-          },
-        ],
-      }),
-    ]),
-  );
+  const completedEvidence = readSubagentEvidence([
+    ...launch,
+    subagentNotifyEntry("workflow-notice", {
+      agent: "workflow",
+      status: "completed",
+      runId: workflowRunId,
+      workflowRunId,
+      childRuns: [
+        {
+          runId: childRunId,
+          workflowKey: "workflow-step",
+          agent: "scout",
+          status: "completed",
+        },
+      ],
+    }),
+  ]);
+  const completed = runsOf(completedEvidence);
+  assert.equal(completedEvidence.coverage, undefined);
   assert.equal(completed.length, 1);
   assert.equal(completed[0]?.id, existing[0]?.id);
   assert.equal(completed[0]?.status, "succeeded");
@@ -2962,6 +2973,87 @@ test("ignores terminal child notifications without exact workflow launch identit
     }),
   ];
   assert.deepEqual(runsOf(readSubagentEvidence(entries)), []);
+});
+
+test("deduplicates repeated terminal notices and rejects malformed child IDs", () => {
+  const workflowRunId = "workflow-repeated-notice";
+  const launch = [
+    assistantEntry("workflow-notice-call", "workflow-notice-call-id"),
+    resultEntry(
+      "workflow-notice-result",
+      "workflow-notice-call-id",
+      { mode: "workflow", runId: workflowRunId, results: [] },
+      "2026-10-13T21:51:02.000Z",
+    ),
+  ];
+  const notify = (id: string, status: string, runId: string) => ({
+    ...subagentNotifyEntry(id, {
+      agent: "workflow",
+      status: "completed",
+      runId: workflowRunId,
+      workflowRunId,
+      childRuns: [
+        {
+          runId,
+          workflowKey: "valid-step",
+          agent: "scout",
+          status,
+        },
+        {
+          runId: "malformed child id",
+          workflowKey: "malformed-step",
+          agent: "scout",
+          status: "completed",
+        },
+      ],
+    }),
+    timestamp:
+      id === "notice-first"
+        ? "2026-10-13T21:51:03.000Z"
+        : "2026-10-13T21:51:04.000Z",
+  });
+  const runs = runsOf(
+    readSubagentEvidence([
+      ...launch,
+      notify("notice-first", "running", "valid-child-run"),
+      notify("notice-repeat", "completed", "valid-child-run"),
+    ]),
+  );
+
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(runs[0]?.agent, "scout");
+});
+
+test("rejected workflow launch cannot authorize child notifications", () => {
+  const workflowRunId = "workflow-rejected";
+  const evidence = readSubagentEvidence([
+    assistantEntry("workflow-rejected-call", "workflow-rejected-call-id"),
+    resultEntry(
+      "workflow-rejected-result",
+      "workflow-rejected-call-id",
+      { mode: "workflow", runId: workflowRunId, results: [] },
+      "2026-10-13T21:51:02.000Z",
+      "subagent",
+      true,
+    ),
+    subagentNotifyEntry("workflow-rejected-notice", {
+      agent: "workflow",
+      status: "completed",
+      runId: workflowRunId,
+      workflowRunId,
+      childRuns: [
+        {
+          runId: "untrusted-child-run",
+          workflowKey: "rejected-step",
+          agent: "scout",
+          status: "completed",
+        },
+      ],
+    }),
+  ]);
+
+  assert.deepEqual(runsOf(evidence), []);
 });
 
 test("does not infer child status or metrics from terminal workflow container fields", () => {

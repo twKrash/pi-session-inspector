@@ -31,15 +31,17 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.5.3`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.5.4`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
 > semantic integration, native token economics/cache accounting, and subagent
 > AgentRun observability are available: current async runs can use bounded
 > outcome, usage/cost, and effort from their exact referenced lifecycle artifact;
 > history remains persisted-source-only and child usage never affects native
-> totals. The Agents view states native subagent activity. The localhost UI
-> paints the configured theme before report data arrives and announces loading
-> once. One UI response shares its History and Global scan; repeated in-flight
+> totals. The Agents view states native subagent activity. Pi 1.2.0 and
+> `pi-subagents` 0.78.0 terminal workflow notifications keep child runs visible
+> when summaries omit a complete inventory; source coverage remains partial.
+> The localhost UI paints the configured theme before report data arrives and
+> announces loading once. One UI response shares its History and Global scan; repeated in-flight
 > range requests are coalesced, while explicit Refresh remains fresh. Request
 > failures stay in bounded HTTP responses, not Pi stderr.
 
@@ -58,7 +60,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.5.3
+pi install npm:@twkrash/pi-session-inspector@1.5.4
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the
