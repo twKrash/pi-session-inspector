@@ -30,7 +30,11 @@ import {
 } from "../core/session-coverage.ts";
 import { readSubagentEvidence } from "../integrations/subagents.ts";
 import { parseSessionJsonl, type ParsedSession } from "../pi/adapter.ts";
-import { hasTrackingStartMarker, selectScope } from "../pi/sessions.ts";
+import {
+  hasTrackingStartMarker,
+  selectResolvedEntries,
+  selectScope,
+} from "../pi/sessions.ts";
 import {
   discoverHistory,
   resolveManifestSourceFile,
@@ -446,14 +450,10 @@ async function scanDiscoveredSession(
     // R49: the entry set is the builder's resolution in order, mapped
     // back to parsed entries; an id without a parsed entry (an
     // unknown-semantic node) is skipped instead of fabricating a node.
-    const byId = new Map<string, SessionEntry>();
-    for (const entry of parsed.entries) {
-      if (!byId.has(entry.id)) byId.set(entry.id, entry);
-    }
-    const entries = resolved.session.scopedEntryIds.flatMap((id) => {
-      const entry = byId.get(id);
-      return entry === undefined ? [] : [entry];
-    });
+    const entries = selectResolvedEntries(
+      parsed.entries,
+      resolved.session.scopedEntryIds,
+    );
     // Subagent runs are auto-discovered from persisted tool results;
     // their usage is a breakdown of this session's toolResult usage.
     // Published archive presence is validated, bounded, and never a path.

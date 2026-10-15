@@ -11,6 +11,7 @@ import { readInventory } from "../../src/integrations/inventory.ts";
 import { readPresence } from "../../src/integrations/presence.ts";
 import type { CoverageReason } from "../../src/storage/history.ts";
 import { renderJson } from "../../src/ui/json.ts";
+import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { loadInspectorBundle } from "../../src/ui/bundle.ts";
 import {
   type HistorySessionEvidence,
@@ -1329,6 +1330,73 @@ async function optionsWithSource(
     maintenance,
   };
 }
+
+test("current and history reports use post-marker duplicate entries", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  const sessionFile = join(sessionDirectory, "history-session.jsonl");
+  const header = {
+    type: "session",
+    version: 3,
+    id: "history-session",
+    timestamp: "2026-02-01T00:00:00.000Z",
+  };
+  const before = {
+    type: "message",
+    id: "duplicate-generation",
+    parentId: null,
+    timestamp: "2026-02-01T00:00:01.000Z",
+    message: {
+      role: "assistant",
+      provider: "acme",
+      model: "before-marker",
+      usage: { totalTokens: 900, cost: { total: 9 } },
+    },
+  };
+  const marker = {
+    type: "custom",
+    id: "tracking-marker",
+    parentId: before.id,
+    timestamp: "2026-02-01T00:00:02.000Z",
+    customType: TRACKING_MARKER_TOKEN,
+    data: { schemaVersion: 1 },
+  };
+  const after = {
+    ...before,
+    parentId: marker.id,
+    timestamp: "2026-02-01T00:00:03.000Z",
+    message: {
+      ...before.message,
+      model: "after-marker",
+      usage: { totalTokens: 7, cost: { total: 0.07 } },
+    },
+  };
+  await writeFile(
+    sessionFile,
+    [header, before, marker, after]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n") + "\n",
+  );
+  try {
+    const current = await loadCurrentSessionReport(sessionFile, "tree", {
+      leafId: null,
+      evidence: { atomic: [], folded: [] },
+    });
+    const history = await loadHistoryReports(
+      historyOptions(root, sessionDirectory),
+    );
+    const historical = history.sessions.find(
+      (session) => session.sessionId === "history-session",
+    );
+    assert.ok(current);
+    assert.ok(historical?.availability === "available");
+    assert.equal(current.report.generations[0]?.model, "after-marker");
+    assert.equal(historical.report.generations[0]?.model, "after-marker");
+    assert.equal(current.report.usage?.totalTokens, 7);
+    assert.equal(historical.report.usage?.totalTokens, 7);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
 
 test("history and global report the same coverage from the same inputs", async () => {
   const options = await optionsWithSource(validSource());

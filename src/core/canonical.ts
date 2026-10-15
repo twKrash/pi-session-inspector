@@ -9,7 +9,7 @@ import { readPersistedEvidence } from "../integrations/persisted.ts";
 import { debugLog } from "../debug/log.ts";
 import { isAgentLabel, isProcessSignal } from "../integrations/subagents.ts";
 import type { ParsedSession } from "../pi/adapter.ts";
-import { resolveScope } from "../pi/scope.ts";
+import { resolveScope, selectResolvedEntries } from "../pi/scope.ts";
 import { roundCost } from "./rounding.ts";
 import type {
   AgentFailure,
@@ -1120,16 +1120,11 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   // scope order: a duplicate producer row remains health-visible, but cannot
   // cause the last row to be reduced repeatedly through duplicate resolution
   // ids (or replace its first logical owner).
-  const entryById = new Map<string, SessionEntry>();
-  for (const entry of parsed.entries) {
-    if (!entryById.has(entry.id)) entryById.set(entry.id, entry);
-  }
-  const resolvedIds = new Set<string>();
-  const entries = resolution.entryIds.flatMap((id) => {
-    if (resolvedIds.has(id)) return [];
-    resolvedIds.add(id);
-    const entry = entryById.get(id);
-    return entry === undefined ? [] : [entry];
+  const entries = selectResolvedEntries(parsed.entries, resolution.entryIds);
+  const selectedEntries = new Set(entries);
+  const appendOrder = new Map<SessionEntry, number>();
+  parsed.entries.forEach((entry, index) => {
+    if (selectedEntries.has(entry)) appendOrder.set(entry, index);
   });
 
   const reduced = reduceEntries(sessionId, entries);
@@ -1153,7 +1148,11 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   const liveTimings = liveFacts.map(toCanonicalLiveTiming);
   const tools = correlateLiveDuration(sessionId, reduced.tools, liveFacts);
   const stateTransitions = readStateTransitions(entries);
-  const integrationEvents = readIntegrationEvents(entries, sessionId);
+  const integrationEvents = readIntegrationEvents(
+    entries,
+    sessionId,
+    appendOrder,
+  );
   const agents = [...(normalizedSubagents?.runs ?? [])];
   for (const conflict of normalizedSubagents?.diagnostics ?? []) {
     diagnostics.add("subagent-result", conflict.code, conflict.count);
@@ -1310,21 +1309,23 @@ function readStateTransitions(
 function readIntegrationEvents(
   entries: readonly SessionEntry[],
   sessionId: string,
+  appendOrder: ReadonlyMap<SessionEntry, number>,
 ): CanonicalIntegrationEvent[] {
-  return readPersistedEvidence({ entries, sessionId }, integrations).rows.map(
-    (row: IntegrationObservationInput) => {
-      const presence =
-        row.presence ?? (row.state === "supported" ? "present" : "unknown");
-      return {
-        id: `integration:${row.integration}`,
-        integration: row.integration,
-        presence,
-        state: row.state,
-        ...(row.version === undefined ? {} : { version: row.version }),
-        ...(row.counters === undefined ? {} : { counters: row.counters }),
-      };
-    },
-  );
+  return readPersistedEvidence(
+    { entries, appendOrder, sessionId },
+    integrations,
+  ).rows.map((row: IntegrationObservationInput) => {
+    const presence =
+      row.presence ?? (row.state === "supported" ? "present" : "unknown");
+    return {
+      id: `integration:${row.integration}`,
+      integration: row.integration,
+      presence,
+      state: row.state,
+      ...(row.version === undefined ? {} : { version: row.version }),
+      ...(row.counters === undefined ? {} : { counters: row.counters }),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

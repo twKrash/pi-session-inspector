@@ -1,4 +1,4 @@
-import type { Scope } from "../core/events.ts";
+import type { Scope, SessionEntry } from "../core/events.ts";
 import { MAX_ID_BYTES, type PiGraphNode } from "./graph.ts";
 
 const TRACKING_START_TYPE = "session-inspector:tracking-start";
@@ -26,6 +26,29 @@ export function isTrackingMarkerRecord(value: unknown): boolean {
     isRecord(value.data) &&
     value.data.schemaVersion === TRACKING_START_SCHEMA_VERSION
   );
+}
+
+/** Selects resolved IDs from the first matching post-marker records. */
+export function selectResolvedEntries(
+  entries: readonly SessionEntry[],
+  entryIds: readonly string[],
+): SessionEntry[] {
+  const markerIndex = entries.findIndex(isTrackingMarkerRecord);
+  if (markerIndex === -1) return [];
+
+  const byId = new Map<string, SessionEntry>();
+  for (const entry of entries.slice(markerIndex + 1)) {
+    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+  }
+  const selected: SessionEntry[] = [];
+  const seenIds = new Set<string>();
+  for (const id of entryIds) {
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+    const entry = byId.get(id);
+    if (entry !== undefined) selected.push(entry);
+  }
+  return selected;
 }
 
 /**
@@ -82,14 +105,24 @@ export function resolveScope(
     };
   }
 
-  // A selected ancestry must be structurally complete. Do not use a last-wins
-  // map here: duplicate graph ids make parentage ambiguous, rather than merely
-  // selecting one of the producer's conflicting rows.
+  // Resolve tracked ancestry first, then use unambiguous pre-marker nodes only
+  // as structural sentinels. Pre-marker facts never replace tracked nodes.
   const nodeById = new Map<string, PiGraphNode>();
   const duplicateIds = new Set<string>();
-  for (const node of nodes) {
+  for (const node of [markerNode, ...postMarkerNodes]) {
     if (nodeById.has(node.entryId)) duplicateIds.add(node.entryId);
     else nodeById.set(node.entryId, node);
+  }
+  const preMarkerNodeById = new Map<string, PiGraphNode>();
+  const duplicatePreMarkerIds = new Set<string>();
+  for (const node of nodes) {
+    if (node.appendOrdinal > markerNode.appendOrdinal) continue;
+    if (preMarkerNodeById.has(node.entryId)) {
+      duplicatePreMarkerIds.add(node.entryId);
+    } else {
+      preMarkerNodeById.set(node.entryId, node);
+    }
+    if (!nodeById.has(node.entryId)) nodeById.set(node.entryId, node);
   }
   const leaf = leafId === null ? undefined : nodeById.get(leafId);
   const postMarkerSet = new Set(postMarkerNodes.map((node) => node.entryId));
@@ -102,19 +135,31 @@ export function resolveScope(
   }
 
   const path: string[] = [];
-  const visited = new Set<string>();
+  const visited = new Set<PiGraphNode>();
   let next: PiGraphNode | undefined = leaf;
   while (next !== undefined) {
     // A repeated node, duplicate id, or missing parent cannot prove active
     // ancestry (§8.2). Unknown semantic *types* still have nodes and therefore
     // remain valid structure (R18).
-    if (visited.has(next.entryId) || duplicateIds.has(next.entryId)) {
+    if (
+      visited.has(next) ||
+      duplicateIds.has(next.entryId) ||
+      (next.appendOrdinal < markerNode.appendOrdinal &&
+        duplicatePreMarkerIds.has(next.entryId))
+    ) {
       return { state: "unavailable", reason: "active-leaf-unavailable" };
     }
-    visited.add(next.entryId);
-    if (postMarkerSet.has(next.entryId)) path.push(next.entryId);
+    visited.add(next);
+    if (next.appendOrdinal > markerNode.appendOrdinal) {
+      path.push(next.entryId);
+    }
     if (next.parentId === null) break;
-    next = nodeById.get(next.parentId);
+    // A pre-marker node may refer to an earlier id reused later. Follow that
+    // structural occurrence; otherwise allow forward references into scope.
+    next =
+      next.appendOrdinal <= markerNode.appendOrdinal
+        ? (preMarkerNodeById.get(next.parentId) ?? nodeById.get(next.parentId))
+        : nodeById.get(next.parentId);
     if (next === undefined) {
       return { state: "unavailable", reason: "active-leaf-unavailable" };
     }

@@ -8,6 +8,8 @@
  * to persist prompts, tool arguments, or tool-result bodies.
  */
 
+import { Buffer } from "node:buffer";
+
 export const REDACTED = "[REDACTED]";
 export const PATH_MARKER = "[PATH]";
 export const URL_MARKER = "[URL]";
@@ -19,6 +21,7 @@ const WINDOWS_INNER = /(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/])[^\s"'<>()]*/;
 const POSIX = /(?:^|[\s"'(=,])(?:~\/|\/)[^\s"'<>():,;]*(?:\/[^\s"'<>():,;]*)+/g;
 const POSIX_INNER = /(?:~\/|\/)[^\s"'<>():,;]*(?:\/[^\s"'<>():,;]*)+/;
 const TRUNCATION = "…[TRUNCATED]";
+const DOTTED_TOKEN = /(?:[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/;
 
 // Description policy: producer-authored text is dropped, not marked, when it
 // is secret-like or path-like. Kept as a distinct predicate so the inventory,
@@ -37,19 +40,60 @@ const encoder = new TextEncoder();
 export function secretLikeValue(value: string): boolean {
   return (
     /(?:secret|token|password|credential)/i.test(value) ||
+    credentialShapedValue(value) ||
+    DOTTED_TOKEN.test(value) ||
+    /(?:^|[\\/])\.env(?:[.\\/]|$)|(?:^|[\\/])(?:credentials?|secrets?)(?:[.\\/]|$)/i.test(
+      value,
+    )
+  );
+}
+
+/** Recognises credential structures without flagging ordinary label words. */
+export function secretShapedValue(value: string): boolean {
+  return credentialShapedValue(value) || hasJoseCredentialHeader(value);
+}
+
+function credentialShapedValue(value: string): boolean {
+  return (
     /(?:^|\s)bearer\s+\S+/i.test(value) ||
     /-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(value) ||
-    /(?:[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/.test(value) ||
     /\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/.test(
       value,
     ) ||
     /\bsk-[A-Za-z0-9_-]{6,}/i.test(value) ||
     /[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]+@/i.test(value) ||
-    /^[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S+/.test(value) ||
-    /(?:^|[\\/])\.env(?:[.\\/]|$)|(?:^|[\\/])(?:credentials?|secrets?)(?:[.\\/]|$)/i.test(
-      value,
-    )
+    /^[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S+/.test(value)
   );
+}
+
+function hasJoseCredentialHeader(value: string): boolean {
+  if (value.length > 64) return false;
+  for (const match of value.matchAll(
+    /(?=(?:^|[^A-Za-z0-9_-])([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*)/g,
+  )) {
+    const encodedHeader = match[1];
+    if (encodedHeader === undefined) continue;
+    const bytes = Buffer.from(encodedHeader, "base64url");
+    if (bytes.toString("base64url") !== encodedHeader) continue;
+    try {
+      const header: unknown = JSON.parse(bytes.toString("utf8"));
+      if (
+        typeof header === "object" &&
+        header !== null &&
+        !Array.isArray(header) &&
+        "alg" in header &&
+        typeof (header as Record<string, unknown>).alg === "string" &&
+        (header as Record<string, string>).alg.length > 0
+      ) {
+        // A valid protected header identifies JWS/JWE; payload and signature
+        // need not be valid for a producer value to be sensitive.
+        return true;
+      }
+    } catch {
+      // A non-JSON dotted label is not a JOSE header.
+    }
+  }
+  return false;
 }
 
 /**

@@ -67,6 +67,8 @@ export type PresenceContext = {
 
 export type PersistedEvidenceContext = {
   entries: readonly SessionEntry[];
+  /** Source ordinals for these entry objects; absence grants no chronology. */
+  appendOrder?: ReadonlyMap<SessionEntry, number>;
   /**
    * The Inspector session identity. It is Inspector's own opaque id (never
    * producer text) and it is what an integration needs to hash a producer id

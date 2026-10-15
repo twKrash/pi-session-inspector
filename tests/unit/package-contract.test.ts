@@ -40,6 +40,17 @@ function shippedSourceFiles(directory = "src"): string[] {
   });
 }
 
+test("CI checks each Pi 1.2.0 host package independently", () => {
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const hostChecks = [
+    ...workflow.matchAll(/^\s*- run: npm ls --depth=0 (.+)$/gm),
+  ].map((match) => match[1]);
+  assert.deepEqual(hostChecks, [
+    "@earendil-works/pi-coding-agent@1.2.0",
+    "@earendil-works/pi-tui@1.2.0",
+  ]);
+});
+
 test("package declares Pi extension and ships entrypoint", () => {
   const pkg = packageManifest();
 

@@ -86,6 +86,8 @@ It exposes no `readPresence`-style methods.
 | Telemetry folding | `src/core/live-counter-fold.ts` | `hooks.telemetry` → stamp `integration.key` → generic counter/presence application |
 | Rich canonical contribution | `src/integrations/contributions.ts` | `hooks.canonical` → keyed contributions |
 
+Persisted hooks receive scope-selected entries. When an integration depends on producer append chronology, `PersistedEvidenceContext.appendOrder` may provide source ordinals keyed by those exact entry objects. This map is provenance only, never evidence or a way to recover out-of-scope entries; absent, incomplete, or invalid ordering metadata grants no chronological authority. The canonical builder supplies complete metadata for its selected entries, and subagent completion notices use it to verify that their result appeared earlier in the persisted source. Other integrations retain their existing entry iteration semantics.
+
 The loops are deliberately boring:
 
 ```ts
