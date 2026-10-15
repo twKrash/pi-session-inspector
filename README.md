@@ -31,7 +31,7 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.5.4`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.5.5`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
 > semantic integration, native token economics/cache accounting, and subagent
 > AgentRun observability are available: current async runs can use bounded
