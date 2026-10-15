@@ -13,7 +13,6 @@ import type {
 } from "../core/events.ts";
 import { MAX_AGENT_RUN_TOOL_CALLS } from "../core/events.ts";
 import { boundedProducerLabel } from "../core/evidence.ts";
-import { secretShapedValue } from "../core/redact.ts";
 import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
@@ -673,11 +672,7 @@ function collectAsyncLifecycleReferences(
 
 /** Bounded label grammar shared with the report projection. */
 export function isAgentLabel(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    AGENT_LABEL.test(value) &&
-    !secretShapedValue(value)
-  );
+  return typeof value === "string" && AGENT_LABEL.test(value);
 }
 
 /** Closed POSIX signal vocabulary shared with the report projection. */
@@ -792,14 +787,9 @@ function deriveEvidence(
   publications.sort((a, b) => a.ordinal - b.ordinal);
   const asyncLaunchRunIds = new Set<string>();
   const asyncCompletionRunIds = new Set<string>();
-  const workflowLaunchRunOrdinals = new Map<string, number>();
+  const workflowLaunchRunIds = new Set<string>();
   let incompleteWorkflowInventory = false;
-  for (const {
-    result,
-    ordinal,
-    toolName,
-    successfulMatchingResult,
-  } of publications) {
+  for (const { result, toolName, successfulMatchingResult } of publications) {
     const details = snapshotRecord(result.details);
     if (details === undefined) continue;
     if (
@@ -812,12 +802,8 @@ function deriveEvidence(
         incompleteWorkflowInventory = true;
       }
       const workflowRunId = readRawRunId(details.runId);
-      if (
-        workflowRunId !== undefined &&
-        workflowLaunchRunOrdinals.size < MAX_RUNS &&
-        !workflowLaunchRunOrdinals.has(workflowRunId)
-      ) {
-        workflowLaunchRunOrdinals.set(workflowRunId, ordinal);
+      if (workflowRunId !== undefined && workflowLaunchRunIds.size < MAX_RUNS) {
+        workflowLaunchRunIds.add(workflowRunId);
       }
     }
     const launchRunId = readAsyncLaunchRunId(toolName, result, details);
@@ -905,8 +891,7 @@ function deriveEvidence(
         } else {
           yield* collectWorkflowNotificationRows(
             source.entry,
-            workflowLaunchRunOrdinals,
-            source.ordinal,
+            workflowLaunchRunIds,
             sessionId,
             cursor,
           );
@@ -1299,8 +1284,7 @@ function* collectRuns(
 
 function* collectWorkflowNotificationRows(
   entry: SessionEntry,
-  workflowLaunchRunOrdinals: ReadonlyMap<string, number>,
-  notificationOrdinal: number,
+  workflowLaunchRunIds: ReadonlySet<string>,
   sessionId: string,
   cursor: ObservationCursor,
 ): Generator<AgentRunSourceObservation> {
@@ -1315,10 +1299,6 @@ function* collectWorkflowNotificationRows(
   const observedAt = readObservedAt(entry.timestamp);
   const publication: RunPublication =
     observedAt === undefined ? {} : { observedAt };
-  const eligibleRuns: {
-    workflowRunId: string;
-    childRuns: unknown[];
-  }[] = [];
   for (const value of details.runs) {
     const run = snapshotRecord(value);
     const runId = readRawRunId(run?.runId);
@@ -1327,48 +1307,37 @@ function* collectWorkflowNotificationRows(
       run === undefined ||
       runId === undefined ||
       workflowRunId !== runId ||
+      !workflowLaunchRunIds.has(workflowRunId) ||
       !Array.isArray(run.childRuns) ||
       run.childRuns.length > MAX_RUNS
     ) {
       continue;
     }
-    const workflowResultOrdinal = workflowLaunchRunOrdinals.get(workflowRunId);
-    if (
-      workflowResultOrdinal === undefined ||
-      workflowResultOrdinal >= notificationOrdinal
-    ) {
-      continue;
-    }
-    eligibleRuns.push({ workflowRunId, childRuns: run.childRuns });
-  }
-
-  const counts = new Map<string, number>();
-  for (const { childRuns } of eligibleRuns) {
-    for (const childValue of childRuns) {
-      const childRunId = readRawRunId(snapshotRecord(childValue)?.runId);
-      if (childRunId !== undefined && childRunId !== "unavailable") {
-        counts.set(childRunId, (counts.get(childRunId) ?? 0) + 1);
+    const children: {
+      record: Readonly<Record<string, unknown>>;
+      runId: string;
+    }[] = [];
+    const counts = new Map<string, number>();
+    for (const childValue of run.childRuns) {
+      const child = snapshotRecord(childValue);
+      const childRunId = readRawRunId(child?.runId);
+      if (
+        child === undefined ||
+        childRunId === undefined ||
+        childRunId === "unavailable"
+      ) {
+        continue;
       }
+      children.push({ record: child, runId: childRunId });
+      counts.set(childRunId, (counts.get(childRunId) ?? 0) + 1);
     }
-  }
-  for (const { workflowRunId, childRuns } of eligibleRuns) {
     const parentId = opaqueSubagentId(
       sessionId,
       workflowRunId,
       "workflow-parent",
     );
-    for (const childValue of childRuns) {
-      const record = snapshotRecord(childValue);
-      const childRunId = readRawRunId(record?.runId);
-      if (
-        record === undefined ||
-        childRunId === undefined ||
-        childRunId === "unavailable" ||
-        childRunId === workflowRunId ||
-        counts.get(childRunId) !== 1
-      ) {
-        continue;
-      }
+    for (const { record, runId: childRunId } of children) {
+      if (counts.get(childRunId) !== 1) continue;
       const status = record.status;
       const runRecord = {
         ...(isAgentLabel(record.agent) ? { agent: record.agent } : {}),

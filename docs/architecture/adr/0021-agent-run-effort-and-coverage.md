@@ -31,10 +31,8 @@ summary, followed by this notification with two terminal child rows.
 
 The adapter accepts a notification only when its bounded `runId` and
 `workflowRunId` are equal to each other and to a successful, matching persisted
-`subagent` workflow result's `details.runId`, and that result precedes the
-notification in persisted entry order. A later result never retroactively
-authorizes an earlier notification. A unique bounded non-placeholder child
-`runId` uses the existing `workflow` observation identity and exact
+`subagent` workflow result's `details.runId`. A unique bounded non-placeholder
+child `runId` uses the existing `workflow` observation identity and exact
 workflow-container parent identity. Therefore an exact run ID already published
 by `workflowChildren.children[]` updates that same row; no workflow-key,
 position, name, or time alias is introduced. Duplicate or `unavailable` child

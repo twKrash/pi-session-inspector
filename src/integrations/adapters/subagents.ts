@@ -37,14 +37,8 @@ export const subagentsIntegration = defineIntegration({
      * evidence the Agents view already shows, rather than
      * `Present / Unavailable`.
      */
-    persisted: ({
-      entries,
-      appendOrder,
-      sessionId,
-    }: PersistedEvidenceContext) => {
-      const orderedEntries = orderPersistedEntries(entries, appendOrder);
-      if (orderedEntries === undefined) return undefined;
-      const evidence = readSubagentEvidence(orderedEntries, sessionId);
+    persisted: ({ entries, sessionId }: PersistedEvidenceContext) => {
+      const evidence = readSubagentEvidence(entries, sessionId);
       if (evidence.state !== "supported") return undefined;
       return {
         integration: "subagents",
@@ -74,34 +68,3 @@ export const subagentsIntegration = defineIntegration({
     },
   },
 });
-
-function orderPersistedEntries(
-  entries: PersistedEvidenceContext["entries"],
-  appendOrder: PersistedEvidenceContext["appendOrder"],
-): PersistedEvidenceContext["entries"] | undefined {
-  if (appendOrder === undefined || appendOrder.size !== entries.length) {
-    return undefined;
-  }
-
-  const seen = new Set<number>();
-  const ordered: Array<{
-    entry: PersistedEvidenceContext["entries"][number];
-    ordinal: number;
-  }> = [];
-  for (const entry of entries) {
-    const ordinal = appendOrder.get(entry);
-    if (
-      ordinal === undefined ||
-      !Number.isSafeInteger(ordinal) ||
-      ordinal < 0 ||
-      seen.has(ordinal)
-    ) {
-      return undefined;
-    }
-    seen.add(ordinal);
-    ordered.push({ entry, ordinal });
-  }
-  return ordered
-    .sort((left, right) => left.ordinal - right.ordinal)
-    .map(({ entry }) => entry);
-}

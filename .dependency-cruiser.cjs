@@ -258,7 +258,7 @@ module.exports = {
       comment:
         'Core owns semantic contracts and reduction logic; it must not depend on runtime/platform/storage implementations. ' +
         'Type-only imports into pi/ and storage/ (parsed adapter shapes, checkpoint/history evidence DTOs) are allowed: they erase at compile time. ' +
-        'One runtime exception exists: core/canonical.ts imports pure scope rules from pi/scope.ts. That module owns resolveScope and boundary-aware selected-entry lookup over already-parsed Pi data (ADR 0006/0016 own its semantics), so it is accepted as a file-location artifact rather than an implementation dependency. ' +
+        'One runtime exception exists: core/canonical.ts imports resolveScope from pi/scope.ts. That module is a pure, I/O-free scope rule over already-parsed Pi graph data (ADR 0006/0016 own its semantics), so it is accepted as a file-location artifact rather than an implementation dependency. ' +
         'If a zero-exception boundary is wanted later, the trivial follow-up is moving that pure function into core/ and keeping pi/scope.ts as a thin re-export.',
       from: {
         path: '^src/core/'

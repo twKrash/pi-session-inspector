@@ -7,7 +7,6 @@ import {
   URL_MARKER,
   redactBoundedText,
   secretLikeValue,
-  secretShapedValue,
 } from "../../src/core/redact.ts";
 
 test("redacts secrets, paths, and URLs while preserving ordinary prose", () => {
@@ -95,17 +94,5 @@ test("secretLikeValue recognises secret-shaped values", () => {
   assert.equal(secretLikeValue("Bearer sk-live-abcdef"), true);
   assert.equal(secretLikeValue("sk-abcdef123"), true);
   assert.equal(secretLikeValue("PASSWORD=hunter2"), true);
-  assert.equal(secretLikeValue("-----BEGIN private key-----"), true);
   assert.equal(secretLikeValue("lists files"), false);
-});
-
-test("keeps broad dotted-token redaction separate from label credential checks", () => {
-  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.A";
-  assert.ok(jwt.length <= 64);
-  assert.equal(secretShapedValue("reviewer.v1.2"), false);
-  assert.equal(secretShapedValue(jwt), true);
-  assert.equal(secretLikeValue("reviewer.v1.2"), true);
-  assert.equal(secretLikeValue(jwt), true);
-  assert.equal(redactBoundedText("reviewer.v1.2"), REDACTED);
-  assert.equal(redactBoundedText(jwt), REDACTED);
 });

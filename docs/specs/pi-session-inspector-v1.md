@@ -481,9 +481,7 @@ A persisted Pi `custom_message` with `customType: "subagent-notify"` may
 add terminal child observations to a previously proven workflow only when one
 `details.runs[]` entry has bounded `runId` and `workflowRunId` values that are
 equal to each other and to the `runId` of a successful, matching `subagent`
-workflow tool result in that same session, and the result entry precedes the
-notification in persisted entry order. A later result never retroactively
-authorizes an earlier notification. Each unique, bounded, non-placeholder
+workflow tool result in that same session. Each unique, bounded, non-placeholder
 `childRuns[].runId` materializes a child row using the existing workflow
 identity surface; the workflow container ID supplies its opaque parent, not a
 parent run row. Repeated or placeholder child IDs are withheld. When that exact

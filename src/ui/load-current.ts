@@ -85,13 +85,12 @@ export async function loadCurrentSessionReport(
     // without replaying native entries or integration adapters (P1.2).
     const resolved = buildCanonicalSession(buildInput);
     if (resolved.state !== "ready") return undefined;
-    // Scope comes only from the canonical builder; restore persisted order for
-    // adapter ordinals so later results cannot authorize earlier notifications.
-    const selectedEntries = new Set(
-      selectResolvedEntries(parsed.entries, resolved.session.scopedEntryIds),
-    );
-    const entries = parsed.entries.filter((entry) =>
-      selectedEntries.has(entry),
+    // R49: the entry set is the builder's resolution in order, mapped back to
+    // parsed entries; an id without a parsed entry (an unknown-semantic node)
+    // is skipped instead of fabricating a node. Scope is never re-derived here.
+    const entries = selectResolvedEntries(
+      parsed.entries,
+      resolved.session.scopedEntryIds,
     );
     // Subagent runs are auto-discovered from persisted tool results; the
     // evidence usage stays a child-agent breakdown, never a session total.

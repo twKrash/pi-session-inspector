@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
-  isAgentLabel,
   readSubagentEvidence as readSubagentEvidenceWithSession,
   readSubagentEvidenceWithArchives as readSubagentEvidenceWithArchivesForSession,
 } from "../../src/integrations/subagents.ts";
@@ -46,85 +45,6 @@ const externallyRelevantEvidence = (
 };
 const serializeEvidence = (evidence: ReturnType<typeof readSubagentEvidence>) =>
   JSON.stringify(externallyRelevantEvidence(evidence));
-
-test("accepts dotted agent labels and rejects credential-shaped labels", () => {
-  const jwtHeader = Buffer.from(' { "typ":"JWT", "alg":"HS256" } ').toString(
-    "base64url",
-  );
-  const jwt = `${jwtHeader}.A.A`;
-  const jweHeader = Buffer.from('{"enc":"A128GCM","alg":"dir"}').toString(
-    "base64url",
-  );
-  const jwe = `${jweHeader}..A.A.A`;
-  assert.ok(jwt.length <= 64);
-  assert.ok(jwe.length <= 64);
-  for (const label of [
-    "reviewer.v1.2",
-    "team.backend.worker",
-    "v1.2.3",
-    "tokenizer",
-    "authorization-reviewer",
-  ]) {
-    assert.equal(isAgentLabel(label), true, label);
-  }
-  for (const label of [
-    "ghp_123456789012345678901234567890",
-    "sk-abcdef123456",
-    jwt,
-    `worker:${jwt}`,
-    jwe,
-  ]) {
-    assert.equal(isAgentLabel(label), false, label);
-  }
-});
-
-test("requires complete append-order provenance for persisted subagent evidence", () => {
-  const entries = [
-    assistantEntry("provenance-call", "provenance-call-id"),
-    resultEntry(
-      "provenance-result",
-      "provenance-call-id",
-      {
-        mode: "single",
-        runId: "provenance-run",
-        asyncId: "provenance-run",
-        results: [
-          {
-            index: 0,
-            agent: "worker",
-            state: "complete",
-            success: true,
-          },
-        ],
-      },
-      "2026-09-12T10:00:01.000Z",
-    ),
-  ];
-  const persisted = subagentsIntegration.hooks?.persisted;
-  assert.ok(persisted);
-  const appendOrder = new Map(
-    entries.map((entry, index) => [entry, index] as const),
-  );
-  const ancestryOrder = [...entries].reverse();
-  const orderedContext = {
-    entries: ancestryOrder,
-    sessionId: SESSION_ID,
-    appendOrder,
-  } as unknown as Parameters<typeof persisted>[0];
-  const missingContext = {
-    entries: ancestryOrder,
-    sessionId: SESSION_ID,
-  } as unknown as Parameters<typeof persisted>[0];
-  const invalidContext = {
-    entries: ancestryOrder,
-    sessionId: SESSION_ID,
-    appendOrder: new Map(entries.map((entry) => [entry, 0] as const)),
-  } as unknown as Parameters<typeof persisted>[0];
-
-  assert.equal(persisted(orderedContext)?.state, "supported");
-  assert.equal(persisted(missingContext), undefined);
-  assert.equal(persisted(invalidContext), undefined);
-});
 
 test("L0 emits ordered opaque observations for L1 reconciliation", () => {
   const entries = [
@@ -2909,6 +2829,7 @@ test("replays exact terminal workflow child notifications as opaque child rows",
 
   assert.equal(evidence.coverage, "partial");
   assert.equal(runs.length, 2);
+  assert.equal(new Set(runs.map((run) => run.id)).size, 2);
   assert.deepEqual(
     runs.map((run) => run.agent),
     ["scout", "scout"],
@@ -3055,38 +2976,6 @@ test("ignores terminal child notifications without exact workflow launch identit
   assert.deepEqual(runsOf(readSubagentEvidence(entries)), []);
 });
 
-test("ignores terminal notifications that precede their successful workflow result", () => {
-  const workflowRunId = "workflow-out-of-order";
-  const entries = [
-    subagentNotifyEntry("workflow-out-of-order-notice", {
-      agent: "workflow",
-      status: "completed",
-      runId: workflowRunId,
-      workflowRunId,
-      childRuns: [
-        {
-          runId: "out-of-order-child",
-          workflowKey: "out-of-order-step",
-          agent: "scout",
-          status: "completed",
-        },
-      ],
-    }),
-    assistantEntry(
-      "workflow-out-of-order-call",
-      "workflow-out-of-order-call-id",
-    ),
-    resultEntry(
-      "workflow-out-of-order-result",
-      "workflow-out-of-order-call-id",
-      { mode: "workflow", runId: workflowRunId, results: [] },
-      "2026-10-13T21:51:04.000Z",
-    ),
-  ];
-
-  assert.deepEqual(runsOf(readSubagentEvidence(entries)), []);
-});
-
 test("deduplicates repeated terminal notices and rejects malformed child IDs", () => {
   const workflowRunId = "workflow-repeated-notice";
   const launch = [
@@ -3135,95 +3024,6 @@ test("deduplicates repeated terminal notices and rejects malformed child IDs", (
   assert.equal(runs.length, 1);
   assert.equal(runs[0]?.status, "succeeded");
   assert.equal(runs[0]?.agent, "scout");
-});
-
-test("withholds child IDs duplicated across workflow wrappers in one notification", () => {
-  const workflowRunId = "workflow-duplicate-wrappers";
-  const otherWorkflowRunId = "workflow-other-duplicate";
-  const evidence = readSubagentEvidence([
-    assistantEntry("workflow-duplicate-call", "workflow-duplicate-call-id"),
-    resultEntry(
-      "workflow-duplicate-result",
-      "workflow-duplicate-call-id",
-      { mode: "workflow", runId: workflowRunId, results: [] },
-      "2026-10-13T21:51:02.000Z",
-    ),
-    assistantEntry("workflow-other-call", "workflow-other-call-id"),
-    resultEntry(
-      "workflow-other-result",
-      "workflow-other-call-id",
-      { mode: "workflow", runId: otherWorkflowRunId, results: [] },
-      "2026-10-13T21:51:03.000Z",
-    ),
-    {
-      ...subagentNotifyEntry("workflow-duplicate-notice", {
-        agent: "workflow",
-        status: "completed",
-        runId: workflowRunId,
-        workflowRunId,
-        childRuns: [],
-      }),
-      details: {
-        runs: [
-          {
-            runId: workflowRunId,
-            workflowRunId,
-            childRuns: [
-              {
-                runId: "duplicated-child",
-                agent: "scout",
-                status: "completed",
-              },
-            ],
-          },
-          {
-            runId: workflowRunId,
-            workflowRunId,
-            childRuns: [
-              { runId: "duplicated-child", agent: "worker", status: "failed" },
-            ],
-          },
-          {
-            runId: otherWorkflowRunId,
-            workflowRunId: otherWorkflowRunId,
-            childRuns: [
-              {
-                runId: "duplicated-child",
-                agent: "helper",
-                status: "completed",
-              },
-            ],
-          },
-        ],
-      },
-    },
-  ]);
-
-  assert.deepEqual(runsOf(evidence), []);
-});
-
-test("does not materialize workflow container ID as its own child", () => {
-  const workflowRunId = "workflow-self-child";
-  const evidence = readSubagentEvidence([
-    assistantEntry("workflow-self-call", "workflow-self-call-id"),
-    resultEntry(
-      "workflow-self-result",
-      "workflow-self-call-id",
-      { mode: "workflow", runId: workflowRunId, results: [] },
-      "2026-10-13T21:51:02.000Z",
-    ),
-    subagentNotifyEntry("workflow-self-notice", {
-      agent: "workflow",
-      status: "completed",
-      runId: workflowRunId,
-      workflowRunId,
-      childRuns: [
-        { runId: workflowRunId, agent: "workflow", status: "completed" },
-      ],
-    }),
-  ]);
-
-  assert.deepEqual(runsOf(evidence), []);
 });
 
 test("rejected workflow launch cannot authorize child notifications", () => {

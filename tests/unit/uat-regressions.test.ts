@@ -171,11 +171,8 @@ test("subagents publishes its row from its own persisted evidence, without count
     ].join("\n"),
   ).entries;
 
-  const appendOrder = new Map(
-    entries.map((entry, index) => [entry, index] as const),
-  );
   const read = readPersistedEvidence(
-    { entries, appendOrder, sessionId: "session-uat" },
+    { entries, sessionId: "session-uat" },
     integrations,
   );
   assert.deepEqual(read.rows, [

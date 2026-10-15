@@ -144,7 +144,7 @@ test("overflow usage remains unavailable through the snapshot and JSON productio
   }
 });
 
-test("current loader maps duplicate ids to first post-marker entry", async () => {
+test("current loader maps a duplicated tree id to its first parsed entry", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
   const sessionFile = join(directory, "duplicate-session.jsonl");
   await writeFile(
@@ -157,21 +157,9 @@ test("current loader maps duplicate ids to first post-marker entry", async () =>
         timestamp: "2026-01-01T00:00:00.000Z",
       }),
       JSON.stringify({
-        type: "message",
-        id: "duplicate-generation",
-        parentId: null,
-        timestamp: "2026-01-01T00:00:00.500Z",
-        message: {
-          role: "assistant",
-          provider: "acme",
-          model: "before-marker",
-          usage: { totalTokens: 900, cost: { total: 9 } },
-        },
-      }),
-      JSON.stringify({
         type: "custom",
         id: "tracking-marker",
-        parentId: "duplicate-generation",
+        parentId: null,
         timestamp: "2026-01-01T00:00:01.000Z",
         customType: "session-inspector:tracking-start",
         data: { schemaVersion: 1 },
@@ -1020,211 +1008,6 @@ test("loads auto-discovered subagent runs for active and tree scopes through the
   assert.ok(
     rendered?.().some((line) => line.includes("Evidence: cooperative")),
   );
-});
-
-test("keeps subagent integration authorization in append order without reordering other integrations", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
-  const sessionFile = join(directory, "workflow-notice-order.jsonl");
-  const timestamp = "2026-10-14T18:51:03.000Z";
-  const workflowRunId = "workflow-forward-parent";
-  await writeFile(
-    sessionFile,
-    [
-      JSON.stringify({ type: "session", version: 3, id: "notice-order" }),
-      JSON.stringify({
-        type: "custom",
-        id: "marker",
-        parentId: null,
-        timestamp,
-        customType: "session-inspector:tracking-start",
-        data: { schemaVersion: 1 },
-      }),
-      JSON.stringify({
-        type: "message",
-        id: "workflow-call",
-        parentId: "ctx-child",
-        timestamp,
-        message: {
-          role: "assistant",
-          content: [
-            { type: "toolCall", id: "workflow-call-id", name: "subagent" },
-          ],
-        },
-      }),
-      JSON.stringify({
-        type: "custom",
-        id: "ctx-child",
-        parentId: "ctx-parent",
-        timestamp,
-        customType: "ctx_status",
-        data: { schemaVersion: 2 },
-      }),
-      JSON.stringify({
-        type: "custom",
-        id: "ctx-parent",
-        parentId: "marker",
-        timestamp,
-        customType: "ctx_status",
-        data: { schemaVersion: 1 },
-      }),
-      JSON.stringify({
-        type: "custom_message",
-        id: "workflow-notice",
-        parentId: "workflow-result",
-        timestamp,
-        customType: "subagent-notify",
-        content: "sanitized notice",
-        display: false,
-        details: {
-          runs: [
-            {
-              runId: workflowRunId,
-              workflowRunId,
-              childRuns: [
-                {
-                  runId: "forward-child",
-                  agent: "scout",
-                  status: "completed",
-                },
-              ],
-            },
-          ],
-        },
-      }),
-      JSON.stringify({
-        type: "message",
-        id: "workflow-result",
-        parentId: "workflow-call",
-        timestamp,
-        message: {
-          role: "toolResult",
-          toolCallId: "workflow-call-id",
-          toolName: "subagent",
-          isError: false,
-          details: { mode: "workflow", runId: workflowRunId, results: [] },
-        },
-      }),
-    ].join("\n"),
-  );
-
-  const active = await loadCurrentSessionReport(sessionFile, "active", {
-    leafId: "workflow-notice",
-  });
-  const tree = await loadCurrentSessionReport(sessionFile, "tree", {
-    leafId: null,
-  });
-  assert.ok(active);
-  assert.ok(tree);
-  assert.deepEqual(active.report.agents, []);
-  assert.deepEqual(tree.report.agents, []);
-  const activeSubagents = active.report.integrations.find(
-    (row) => row.integration === "subagents",
-  );
-  const treeSubagents = tree.report.integrations.find(
-    (row) => row.integration === "subagents",
-  );
-  assert.notEqual(activeSubagents?.state, "supported");
-  assert.notEqual(treeSubagents?.state, "supported");
-  const activeContext = active.report.integrations.find(
-    (row) => row.integration === "context",
-  );
-  const treeContext = tree.report.integrations.find(
-    (row) => row.integration === "context",
-  );
-  assert.equal(activeContext?.version, 2);
-  assert.equal(treeContext?.version, 1);
-});
-
-test("filters credential labels while preserving dotted workflow labels", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-session-inspector-"));
-  const sessionFile = join(directory, "secret-agent-labels.jsonl");
-  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.A";
-  const credentialLabels = [
-    "ghp_123456789012345678901234567890",
-    "sk-abcdef123456",
-    jwt,
-  ];
-  const dottedLabels = ["reviewer.v1.2", "worker.us.east"];
-  const labels = [...credentialLabels, ...dottedLabels];
-  const timestamp = "2026-10-14T18:51:03.000Z";
-  await writeFile(
-    sessionFile,
-    [
-      JSON.stringify({ type: "session", version: 3, id: "secret-labels" }),
-      JSON.stringify({
-        type: "custom",
-        id: "marker",
-        parentId: null,
-        timestamp,
-        customType: "session-inspector:tracking-start",
-        data: { schemaVersion: 1 },
-      }),
-      JSON.stringify({
-        type: "message",
-        id: "workflow-call",
-        parentId: "marker",
-        timestamp,
-        message: {
-          role: "assistant",
-          content: [
-            { type: "toolCall", id: "workflow-call-id", name: "subagent" },
-          ],
-        },
-      }),
-      JSON.stringify({
-        type: "message",
-        id: "workflow-result",
-        parentId: "workflow-call",
-        timestamp,
-        message: {
-          role: "toolResult",
-          toolCallId: "workflow-call-id",
-          toolName: "subagent",
-          isError: false,
-          details: { mode: "workflow", runId: "workflow-parent", results: [] },
-        },
-      }),
-      JSON.stringify({
-        type: "custom_message",
-        id: "workflow-notice",
-        parentId: "workflow-result",
-        timestamp,
-        customType: "subagent-notify",
-        content: "sanitized notice",
-        display: false,
-        details: {
-          runs: [
-            {
-              runId: "workflow-parent",
-              workflowRunId: "workflow-parent",
-              childRuns: labels.map((agent, index) => ({
-                runId: `child-${index}`,
-                agent,
-                status: "completed",
-              })),
-            },
-          ],
-        },
-      }),
-    ].join("\n"),
-  );
-
-  const model = await loadCurrentSessionReport(sessionFile, "tree", {
-    leafId: null,
-  });
-  assert.ok(model);
-  assert.equal(model.report.agents.length, labels.length);
-  assert.deepEqual(
-    model.report.agents.map((run) => run.agent),
-    [undefined, undefined, undefined, ...dottedLabels],
-  );
-  const reportJson = JSON.stringify(model.report);
-  for (const label of credentialLabels) {
-    assert.equal(reportJson.includes(label), false);
-  }
-  for (const label of dottedLabels) {
-    assert.equal(reportJson.includes(label), true);
-  }
 });
 
 test("exports auto-discovered subagent evidence in current JSON without rendering producer paths", async () => {

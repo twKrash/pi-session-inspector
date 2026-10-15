@@ -8,7 +8,7 @@ import {
 
 export { selectResolvedEntries };
 
-/** Selects tracked entries in scope order, keeping the first post-marker record per id. */
+/** Selects tracked entries in scope order, keeping the first post-marker record per native id. */
 export function selectScope(
   entries: readonly SessionEntry[],
   leafId: string | null,

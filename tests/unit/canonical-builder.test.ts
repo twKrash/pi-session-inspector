@@ -131,42 +131,6 @@ function parsed(records: object[]) {
   );
 }
 
-test("canonical tree report uses post-marker duplicate entry", () => {
-  const before = {
-    ...ASSISTANT,
-    id: "duplicate-generation",
-    parentId: null,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 900, cost: { total: 9 } },
-    },
-  };
-  const after = {
-    ...ASSISTANT,
-    id: "duplicate-generation",
-    parentId: "marker",
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 7, cost: { total: 0.07 } },
-    },
-  };
-  const result = buildCanonicalSession({
-    parsed: parsed([before, { ...MARKER, parentId: before.id }, after]),
-    scope: "tree",
-    leafId: null,
-    evidence: { atomic: [], folded: [] },
-  });
-
-  assert.equal(result.state, "ready");
-  if (result.state !== "ready") return;
-  assert.deepEqual(result.session.scopedEntryIds, ["duplicate-generation"]);
-  assert.equal(result.session.generations[0]?.model, "gpt");
-  assert.equal(result.session.usage.state, "known");
-  if (result.session.usage.state === "known") {
-    assert.equal(result.session.usage.known.totalTokens, 7);
-  }
-});
-
 test("deduplicates a duplicate tree-scope id before L1 usage reduction", () => {
   const first = {
     ...ASSISTANT,
@@ -185,7 +149,16 @@ test("deduplicates a duplicate tree-scope id before L1 usage reduction", () => {
       usage: { totalTokens: 99, cost: { total: 0.99 } },
     },
   };
-  const source = parsed([MARKER, first, duplicate]);
+  const beforeMarker = {
+    ...first,
+    parentId: null,
+    timestamp: "2026-09-12T09:59:30.000Z",
+    message: {
+      ...first.message,
+      usage: { totalTokens: 900, cost: { total: 9 } },
+    },
+  };
+  const source = parsed([beforeMarker, MARKER, first, duplicate]);
   const result = buildCanonicalSession({
     parsed: source,
     scope: "tree",
@@ -404,207 +377,6 @@ test("R49: a ready session publishes the builder's resolved scoped entry ids", (
     activeSession.graph.nodes.length > activeSession.scopedEntryIds.length,
     true,
   );
-});
-
-test("active scope counts tracked ancestors beyond a pre-marker record", () => {
-  const preMarker = {
-    ...ASSISTANT,
-    id: "pre-marker",
-    parentId: "tracked",
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 900, cost: { total: 9 } },
-    },
-  };
-  const tracked = {
-    ...ASSISTANT,
-    id: "tracked",
-    parentId: MARKER.id,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 7, cost: { total: 0.07 } },
-      content: [],
-    },
-  };
-  const leaf = {
-    type: "message",
-    id: "leaf",
-    parentId: "pre-marker",
-    timestamp: "2026-09-12T10:02:00.000Z",
-    message: { role: "user", content: [] },
-  };
-  const result = buildCanonicalSession({
-    parsed: parsed([preMarker, MARKER, tracked, leaf]),
-    scope: "active",
-    leafId: "leaf",
-    evidence: { atomic: [], folded: [] },
-  });
-
-  assert.equal(result.state, "ready");
-  if (result.state !== "ready") return;
-  assert.deepEqual(result.session.scopedEntryIds, ["tracked", "leaf"]);
-  assert.equal(result.session.usage.state, "known");
-  if (result.session.usage.state === "known") {
-    assert.equal(result.session.usage.known.totalTokens, 7);
-  }
-});
-
-test("active scope counts post-marker ancestors above the tracking marker", () => {
-  const preMarker = {
-    ...ASSISTANT,
-    id: "pre-marker",
-    parentId: "tracked",
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 900, cost: { total: 9 } },
-    },
-  };
-  const tracked = {
-    ...ASSISTANT,
-    id: "tracked",
-    parentId: null,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 7, cost: { total: 0.07 } },
-      content: [],
-    },
-  };
-  const leaf = {
-    type: "message",
-    id: "leaf",
-    parentId: MARKER.id,
-    timestamp: "2026-09-12T10:02:00.000Z",
-    message: { role: "user", content: [] },
-  };
-  const result = buildCanonicalSession({
-    parsed: parsed([
-      preMarker,
-      { ...MARKER, parentId: "pre-marker" },
-      tracked,
-      leaf,
-    ]),
-    scope: "active",
-    leafId: "leaf",
-    evidence: { atomic: [], folded: [] },
-  });
-
-  assert.equal(result.state, "ready");
-  if (result.state !== "ready") return;
-  assert.deepEqual(result.session.scopedEntryIds, ["tracked", "leaf"]);
-  assert.equal(result.session.usage.state, "known");
-  if (result.session.usage.state === "known") {
-    assert.equal(result.session.usage.known.totalTokens, 7);
-  }
-});
-
-test("active usage excludes a post-marker sibling matching a pre-marker sentinel id", () => {
-  const preMarker = {
-    ...ASSISTANT,
-    id: "duplicate",
-    parentId: null,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 900, cost: { total: 9 } },
-    },
-  };
-  const postMarkerSibling = {
-    ...ASSISTANT,
-    id: "duplicate",
-    parentId: MARKER.id,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 7, cost: { total: 0.07 } },
-      content: [],
-    },
-  };
-  const leaf = {
-    ...ASSISTANT,
-    id: "leaf",
-    parentId: MARKER.id,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 2, cost: { total: 0.02 } },
-      content: [],
-    },
-  };
-  const result = buildCanonicalSession({
-    parsed: parsed([
-      preMarker,
-      { ...MARKER, parentId: preMarker.id },
-      postMarkerSibling,
-      leaf,
-    ]),
-    scope: "active",
-    leafId: "leaf",
-    evidence: { atomic: [], folded: [] },
-  });
-
-  assert.equal(result.state, "ready");
-  if (result.state !== "ready") return;
-  assert.deepEqual(result.session.scopedEntryIds, ["leaf"]);
-  assert.equal(result.session.usage.state, "known");
-  if (result.session.usage.state === "known") {
-    assert.equal(result.session.usage.known.totalTokens, 2);
-  }
-});
-
-test("active usage excludes post-marker duplicate beyond a pre-marker bridge", () => {
-  const preMarker = {
-    ...ASSISTANT,
-    id: "duplicate",
-    parentId: null,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 900, cost: { total: 9 } },
-    },
-  };
-  const bridge = {
-    type: "message",
-    id: "bridge",
-    parentId: "duplicate",
-    timestamp: "2026-09-12T10:00:30.000Z",
-    message: { role: "user", content: [] },
-  };
-  const postMarkerSibling = {
-    ...ASSISTANT,
-    id: "duplicate",
-    parentId: null,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 7, cost: { total: 0.07 } },
-      content: [],
-    },
-  };
-  const leaf = {
-    ...ASSISTANT,
-    id: "leaf",
-    parentId: MARKER.id,
-    message: {
-      ...ASSISTANT.message,
-      usage: { totalTokens: 2, cost: { total: 0.02 } },
-      content: [],
-    },
-  };
-  const result = buildCanonicalSession({
-    parsed: parsed([
-      preMarker,
-      bridge,
-      { ...MARKER, parentId: "bridge" },
-      postMarkerSibling,
-      leaf,
-    ]),
-    scope: "active",
-    leafId: "leaf",
-    evidence: { atomic: [], folded: [] },
-  });
-
-  assert.equal(result.state, "ready");
-  if (result.state !== "ready") return;
-  assert.deepEqual(result.session.scopedEntryIds, ["leaf"]);
-  assert.equal(result.session.usage.state, "known");
-  if (result.session.usage.state === "known") {
-    assert.equal(result.session.usage.known.totalTokens, 2);
-  }
 });
 
 function skillFact(): SkillInvocationObservation {
