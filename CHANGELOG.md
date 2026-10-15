@@ -2,6 +2,14 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4]
+
+### Fixed
+
+- Pi 1.2.0 and `pi-subagents` 0.78.0 terminal workflow notifications retain
+  child runs when successful summaries omit a complete inventory. Source
+  coverage remains `partial` instead of implying child inventory completeness.
+
 ## [1.5.3]
 
 ### Fixed

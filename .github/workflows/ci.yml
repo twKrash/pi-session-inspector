@@ -64,3 +64,26 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:invariants
+
+  # Keep the published peer range broad while checking the supported Pi 1.2.0 host.
+  test-pi-1-2-0:
+    name: test (Pi 1.2.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - run: |
+          npm install --no-save --ignore-scripts \
+            @earendil-works/pi-coding-agent@1.2.0 \
+            @earendil-works/pi-tui@1.2.0
+      - run: git diff --exit-code -- package.json package-lock.json
+      - run: npm ls --depth=0 @earendil-works/pi-coding-agent@1.2.0
+      - run: npm ls --depth=0 @earendil-works/pi-tui@1.2.0
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:invariants

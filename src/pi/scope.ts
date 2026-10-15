@@ -1,4 +1,4 @@
-import type { Scope } from "../core/events.ts";
+import type { Scope, SessionEntry } from "../core/events.ts";
 import { MAX_ID_BYTES, type PiGraphNode } from "./graph.ts";
 
 const TRACKING_START_TYPE = "session-inspector:tracking-start";
@@ -16,6 +16,29 @@ export type ScopeResolution =
       state: "unavailable";
       reason: "tracking-marker-missing" | "active-leaf-unavailable";
     };
+
+/** Selects resolved IDs from the first matching post-marker records. */
+export function selectResolvedEntries(
+  entries: readonly SessionEntry[],
+  entryIds: readonly string[],
+): SessionEntry[] {
+  const markerIndex = entries.findIndex(isTrackingMarkerRecord);
+  if (markerIndex === -1) return [];
+
+  const byId = new Map<string, SessionEntry>();
+  for (const entry of entries.slice(markerIndex + 1)) {
+    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+  }
+  const selected: SessionEntry[] = [];
+  const seenIds = new Set<string>();
+  for (const id of entryIds) {
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+    const entry = byId.get(id);
+    if (entry !== undefined) selected.push(entry);
+  }
+  return selected;
+}
 
 /** The single tracking-marker rule; every boundary check delegates here. */
 export function isTrackingMarkerRecord(value: unknown): boolean {

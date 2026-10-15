@@ -1,8 +1,14 @@
 import type { Scope, SessionEntry } from "../core/events.ts";
 import { buildGraphNodes } from "./graph.ts";
-import { isTrackingMarkerRecord, resolveScope } from "./scope.ts";
+import {
+  isTrackingMarkerRecord,
+  resolveScope,
+  selectResolvedEntries,
+} from "./scope.ts";
 
-/** Selects entries after tracking began, preserving Pi's native tree positions. */
+export { selectResolvedEntries };
+
+/** Selects tracked entries in scope order, keeping the first post-marker record per native id. */
 export function selectScope(
   entries: readonly SessionEntry[],
   leafId: string | null,
@@ -14,15 +20,9 @@ export function selectScope(
     leafId,
     scope,
   );
-  if (resolution.state === "unavailable") return [];
-
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  const selected: SessionEntry[] = [];
-  for (const id of resolution.entryIds) {
-    const entry = byId.get(id);
-    if (entry !== undefined) selected.push(entry);
-  }
-  return selected;
+  return resolution.state === "unavailable"
+    ? []
+    : selectResolvedEntries(entries, resolution.entryIds);
 }
 
 export function hasTrackingStartMarker(

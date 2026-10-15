@@ -21,6 +21,8 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import registerSessionInspector, { registerTracking } from "../../src/index.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+import { selectScope } from "../../src/pi/sessions.ts";
 import { readInventory } from "../../src/integrations/inventory.ts";
 import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import {
@@ -1150,6 +1152,192 @@ test("json current, history and global export deterministically and never open",
     assert.equal(global.usage.totalTokens, 18);
     assert.equal(harness.opens.length, 0);
     assert.equal(await readFile(harness.sessionFile, "utf8"), SESSION_SOURCE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("history subagent evidence obeys the tracking marker tree scope", async () => {
+  const harness = await createHarness();
+  try {
+    const fixture = await readFile(
+      "tests/fixtures/pi/1.2.0/subagent-workflow-terminal-notification.jsonl",
+      "utf8",
+    );
+    const byId = new Map(
+      fixture
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .map((entry) => [entry.id as string, entry]),
+    );
+    const entry = (id: string): Record<string, unknown> => {
+      const value = byId.get(id);
+      assert.ok(value, `fixture entry ${id}`);
+      return value;
+    };
+    const header = entry("workflow-terminal-session");
+    const marker = entry("marker");
+    const workflowCall = entry("workflow-call-entry");
+    const workflowResult = entry("workflow-result-entry");
+    const notification = entry("workflow-notify-entry");
+    const conflictingResult = {
+      ...workflowResult,
+      message: {
+        role: "toolResult",
+        toolCallId: "unrelated-call",
+        toolName: "bash",
+        isError: false,
+        content: [],
+      },
+    };
+    const nativeGeneration = {
+      type: "message",
+      id: "native-generation",
+      parentId: "marker",
+      timestamp: "2026-10-13T21:51:00.750Z",
+      message: {
+        role: "assistant",
+        provider: "acme",
+        model: "alpha",
+        usage: { totalTokens: 7, cost: { total: 0.07 } },
+      },
+    };
+    const cases: Array<{
+      name: string;
+      entries: Record<string, unknown>[];
+      expectedAgents: number;
+      expectedTotalTokens?: number;
+      duplicateResultId?: boolean;
+    }> = [
+      {
+        name: "workflow publication before marker",
+        entries: [header, workflowCall, workflowResult, notification, marker],
+        expectedAgents: 0,
+      },
+      {
+        name: "workflow publication and notification straddle marker",
+        entries: [header, workflowCall, workflowResult, marker, notification],
+        expectedAgents: 0,
+      },
+      {
+        name: "workflow publication after marker",
+        entries: [header, marker, workflowCall, workflowResult, notification],
+        expectedAgents: 2,
+      },
+      {
+        name: "first workflow result wins a duplicate native entry id",
+        entries: [
+          header,
+          marker,
+          nativeGeneration,
+          workflowCall,
+          workflowResult,
+          notification,
+          conflictingResult,
+        ],
+        expectedAgents: 2,
+        expectedTotalTokens: 7,
+        duplicateResultId: true,
+      },
+    ];
+    const sessionId = "workflow-terminal-session";
+    const manifestDirectory = join(harness.root, "sessions", sessionId);
+    await mkdir(manifestDirectory, { recursive: true });
+    await writeFile(
+      join(manifestDirectory, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        sessionId,
+        sourceFile: "session.jsonl",
+        state: "tracking",
+      }),
+    );
+
+    for (const scenario of cases) {
+      const source = `${scenario.entries.map((row) => JSON.stringify(row)).join("\n")}\n`;
+      if (scenario.duplicateResultId) {
+        const parsed = parseSessionJsonl(source);
+        const providerEntries = selectScope(parsed.entries, null, "tree");
+        assert.equal(
+          providerEntries.find((row) => row.id === "workflow-result-entry"),
+          parsed.entries.find((row) => row.id === "workflow-result-entry"),
+          scenario.name,
+        );
+      }
+      await writeFile(harness.sessionFile, source);
+      harness.replaceSession({
+        sessionId,
+        sessionFile: harness.sessionFile,
+        leafId: scenario.entries.at(-1)?.id as string,
+      });
+      const currentPath = join(harness.directory, "scope.json");
+      await harness.handler()(
+        `json --scope tree --output ${JSON.stringify(currentPath)}`,
+        harness.context({ mode: "interactive" }),
+      );
+      const current = JSON.parse(await readFile(currentPath, "utf8")) as {
+        agents: unknown[];
+        usage?: unknown;
+        evidenceHealth: {
+          sources: Array<{ source: string; state: string }>;
+        };
+      };
+      await harness.handler()(
+        "json history",
+        harness.context({ mode: "interactive" }),
+      );
+      const history = JSON.parse(
+        await readFile(join(harness.cache, "history.json"), "utf8"),
+      ) as {
+        sessions: Array<{
+          report: {
+            agents: unknown[];
+            usage?: unknown;
+            evidenceHealth: {
+              sources: Array<{ source: string; state: string }>;
+            };
+          };
+        }>;
+      };
+      const historicalAgents = history.sessions[0]?.report.agents;
+
+      assert.ok(historicalAgents, `${scenario.name}: history report exists`);
+      assert.equal(
+        current.agents.length,
+        scenario.expectedAgents,
+        scenario.name,
+      );
+      assert.equal(
+        historicalAgents.length,
+        scenario.expectedAgents,
+        scenario.name,
+      );
+      assert.deepEqual(historicalAgents, current.agents, scenario.name);
+      if (scenario.expectedAgents > 0) {
+        for (const report of [current, history.sessions[0]?.report]) {
+          assert.equal(
+            report?.evidenceHealth.sources.find(
+              (source) => source.source === "subagent-result",
+            )?.state,
+            "partial",
+            `${scenario.name}: incomplete workflow inventory coverage`,
+          );
+        }
+      }
+      assert.deepEqual(
+        history.sessions[0]?.report.usage,
+        current.usage,
+        `${scenario.name}: native usage parity`,
+      );
+      if (scenario.expectedTotalTokens !== undefined) {
+        assert.equal(
+          (current.usage as { totalTokens?: number } | undefined)?.totalTokens,
+          scenario.expectedTotalTokens,
+          `${scenario.name}: native usage remains unchanged`,
+        );
+      }
+    }
   } finally {
     await harness.cleanup();
   }

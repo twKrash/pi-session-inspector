@@ -57,6 +57,7 @@ export const subagentsIntegration = defineIntegration({
         await readSubagentEvidenceWithArchives(entries, sessionId);
       return {
         state: evidence.state,
+        ...(evidence.coverage === "partial" ? { coverage: "partial" } : {}),
         observations: evidence.observations,
         ...(evidence.aliases === undefined
           ? {}

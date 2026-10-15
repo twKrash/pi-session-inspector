@@ -136,6 +136,7 @@ export type CanonicalIntegrationContext = {
  */
 export type CanonicalIntegrationContribution = {
   state: EvidenceState;
+  coverage?: "partial";
   observations?: Iterable<AgentRunSourceObservation>;
   aliases?: readonly AgentRunIdentityAlias[];
   activity?: AgentToolActivity;

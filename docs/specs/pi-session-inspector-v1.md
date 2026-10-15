@@ -467,7 +467,7 @@ Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, cor
 | Integration | v1 handling | Non-claim |
 | --- | --- | --- |
 | Pi core | mandatory replay + live observer | exact provider retry spans |
-| pi-subagents | automatic discovery from persisted tool results: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation; a `mode: "single"` completion's lone id-less child contributes its validated usage group to that run; current-session-only lifecycle enrichment is limited to an exact referenced v3 `status.json` | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; child Pi session files not replayed; lifecycle artifacts never authority for history |
+| pi-subagents | automatic discovery from persisted tool results and exact `subagent-notify` workflow completion entries: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation; a `mode: "single"` completion's lone id-less child contributes its validated usage group to that run; current-session-only lifecycle enrichment is limited to an exact referenced v3 `status.json` | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; child Pi session files not replayed; lifecycle artifacts never authority for history |
 | Permission System | public bus counters (`permissions:ready\|ui_prompt\|decision`) folded into durable aggregates; additive hashed `attribution.request` metadata only | internal parser import; no raw producer payload fields; raw request ID never read |
 | RTK | persisted `rtkCompaction` details | rewrite decision/savings not persisted |
 | Context Mode | `ctx_*` use | exact Context Mode savings |
@@ -476,6 +476,26 @@ Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, cor
 | Generic resources | sanitized `(sourceLabel, scope, origin)` inventory from `getCommands()` + `getAllTools()` | loaded/available resources, never activity or installation status |
 | Lens | generic native tool use | rich Lens dashboard in v1 |
 | Hermes | unsupported | adapter implementation |
+
+A persisted Pi `custom_message` with `customType: "subagent-notify"` may
+add terminal child observations to a previously proven workflow only when one
+`details.runs[]` entry has bounded `runId` and `workflowRunId` values that are
+equal to each other and to the `runId` of a successful, matching `subagent`
+workflow tool result in that same session. Each unique, bounded, non-placeholder
+`childRuns[].runId` materializes a child row using the existing workflow
+identity surface; the workflow container ID supplies its opaque parent, not a
+parent run row. Repeated or placeholder child IDs are withheld. When that exact
+child run ID already appeared in `workflowChildren.children[]`, both
+publications reconcile as one row. Only the child's bounded `agent` and
+`status` are consumed. Missing or unrecognized child status remains `unknown`;
+workflow-level status, `workflowKey`, duration, usage, paths, output, and other
+notification fields do not create or enrich child facts. Notifications without
+the exact persisted workflow identity are ignored. This is persisted evidence
+and is available to history under the same replay rules as tool results. A
+successful workflow publication whose `workflowChildren.inventoryComplete` is
+not `true` keeps subagent-result source coverage `partial`, even when terminal
+notifications supply visible child rows; observed rows do not prove inventory
+completeness.
 
 For pi-subagents, `executionKind: "async"` is present only for (a) a
 successful `subagent` tool result (`isError: false`, with result `toolName`
@@ -591,7 +611,7 @@ The Evidence Foundation (ADR 0016) is accepted only if all of the following hold
 1. Unknown Pi format produces no semantic facts.
 2. Every native semantic fact traces to one valid Pi header/entry.
 3. Every live fact traces to one validated WAL record and writer sequence.
-4. Every cooperative fact traces to one persisted publishing result or validated archive.
+4. Every cooperative fact traces to one validated persisted producer publication or validated archive.
 5. Earliest valid marker is the sole tracking boundary.
 6. Missing marker never means "all entries."
 7. Active/tree projections implement existing ancestry/tree semantics exactly.

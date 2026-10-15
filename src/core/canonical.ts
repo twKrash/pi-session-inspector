@@ -9,7 +9,7 @@ import { readPersistedEvidence } from "../integrations/persisted.ts";
 import { debugLog } from "../debug/log.ts";
 import { isAgentLabel, isProcessSignal } from "../integrations/subagents.ts";
 import type { ParsedSession } from "../pi/adapter.ts";
-import { resolveScope } from "../pi/scope.ts";
+import { resolveScope, selectResolvedEntries } from "../pi/scope.ts";
 import { roundCost } from "./rounding.ts";
 import type {
   AgentFailure,
@@ -472,11 +472,9 @@ export function attachSubagentEvidence(
       source: "subagent-result",
       authority: "cooperative",
       state:
-        normalizedSubagents.state === "supported"
-          ? "supported"
-          : normalizedSubagents.state === "unsupported"
-            ? "unsupported"
-            : "unavailable",
+        normalizedSubagents.coverage === "partial"
+          ? "partial"
+          : normalizedSubagents.state,
       schemaVersion: 1,
       recordsSeen: agents.length,
       factsAccepted: agents.length,
@@ -712,6 +710,7 @@ function normalizeSubagentEvidence(
   return {
     activity,
     runs: normalizedRuns.runs,
+    ...(input.coverage === "partial" ? { coverage: "partial" as const } : {}),
     state:
       input.state === "supported" ||
       input.state === "unavailable" ||
@@ -1121,17 +1120,7 @@ function build(input: CanonicalSessionInput): CanonicalSessionBuildResult {
   // scope order: a duplicate producer row remains health-visible, but cannot
   // cause the last row to be reduced repeatedly through duplicate resolution
   // ids (or replace its first logical owner).
-  const entryById = new Map<string, SessionEntry>();
-  for (const entry of parsed.entries) {
-    if (!entryById.has(entry.id)) entryById.set(entry.id, entry);
-  }
-  const resolvedIds = new Set<string>();
-  const entries = resolution.entryIds.flatMap((id) => {
-    if (resolvedIds.has(id)) return [];
-    resolvedIds.add(id);
-    const entry = entryById.get(id);
-    return entry === undefined ? [] : [entry];
-  });
+  const entries = selectResolvedEntries(parsed.entries, resolution.entryIds);
 
   const reduced = reduceEntries(sessionId, entries);
   const normalizedSubagents =
@@ -2501,12 +2490,7 @@ function healthFor(context: HealthContext): SessionEvidenceHealth {
     sources.push({
       source: "subagent-result",
       authority: "cooperative",
-      state:
-        subagents.state === "supported"
-          ? "supported"
-          : subagents.state === "unsupported"
-            ? "unsupported"
-            : "unavailable",
+      state: subagents.coverage === "partial" ? "partial" : subagents.state,
       schemaVersion: 1,
       recordsSeen: subagents.runs.length,
       factsAccepted: subagents.runs.length,

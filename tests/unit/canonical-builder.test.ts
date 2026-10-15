@@ -149,7 +149,16 @@ test("deduplicates a duplicate tree-scope id before L1 usage reduction", () => {
       usage: { totalTokens: 99, cost: { total: 0.99 } },
     },
   };
-  const source = parsed([MARKER, first, duplicate]);
+  const beforeMarker = {
+    ...first,
+    parentId: null,
+    timestamp: "2026-09-12T09:59:30.000Z",
+    message: {
+      ...first.message,
+      usage: { totalTokens: 900, cost: { total: 9 } },
+    },
+  };
+  const source = parsed([beforeMarker, MARKER, first, duplicate]);
   const result = buildCanonicalSession({
     parsed: source,
     scope: "tree",

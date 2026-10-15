@@ -12,6 +12,7 @@ import {
   type SubagentSourceEvidence,
 } from "../integrations/subagents.ts";
 import { parseSessionJsonl } from "../pi/adapter.ts";
+import { selectResolvedEntries } from "../pi/sessions.ts";
 import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
 import { sessionDatedUsage } from "./dated-usage.ts";
 import { countersFrom } from "./l2-projection.ts";
@@ -87,14 +88,10 @@ export async function loadCurrentSessionReport(
     // R49: the entry set is the builder's resolution in order, mapped back to
     // parsed entries; an id without a parsed entry (an unknown-semantic node)
     // is skipped instead of fabricating a node. Scope is never re-derived here.
-    const byId = new Map<string, (typeof parsed.entries)[number]>();
-    for (const entry of parsed.entries) {
-      if (!byId.has(entry.id)) byId.set(entry.id, entry);
-    }
-    const entries = resolved.session.scopedEntryIds.flatMap((id) => {
-      const entry = byId.get(id);
-      return entry === undefined ? [] : [entry];
-    });
+    const entries = selectResolvedEntries(
+      parsed.entries,
+      resolved.session.scopedEntryIds,
+    );
     // Subagent runs are auto-discovered from persisted tool results; the
     // evidence usage stays a child-agent breakdown, never a session total.
     // Only validated published archive references add presence evidence.

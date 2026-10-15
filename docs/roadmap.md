@@ -1,13 +1,15 @@
 # Pi Session Inspector Roadmap
 
-**Current release:** `1.5.3`
+**Current release:** `1.5.4`
 
 **Current state:** M0–M8 are complete, token economics/cache accounting shipped
 in `1.4.0`, and subagent AgentRun observability — persisted async visibility,
 per-run effort coverage, referenced lifecycle enrichment, detached foreground
 history, single-run usage attribution, and the Agents-view activity disclosure —
-shipped in `1.5.0`. Current and future work is listed below; completed milestone
-history is preserved in the [roadmap archive](roadmap-archive.md).
+shipped in `1.5.0`. Pi `1.2.0` and `pi-subagents` `0.78.0` terminal workflow
+notifications with partial inventory coverage shipped in `1.5.4`. Current and
+future work is listed below; completed milestone history is preserved in the
+[roadmap archive](roadmap-archive.md).
 
 **Next gate:** no release gate is currently scheduled. The open work below is
 planning context, not a prerequisite for the published release.
