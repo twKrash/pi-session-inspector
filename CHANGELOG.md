@@ -2,6 +2,14 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.5]
+
+### Fixed
+
+- History now hides known sessions outside the selected date range instead of
+  listing older sessions alongside in-range results. Unknown/unavailable
+  sessions remain available through the existing availability filter.
+
 ## [1.5.4]
 
 ### Fixed
