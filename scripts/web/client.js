@@ -2981,7 +2981,9 @@
   };
 
   const historyTable = () => {
-    const entries = sessionEntries();
+    const entries = sessionEntries().filter(
+      (entry) => entry.membership !== "out",
+    );
     const section = table(
       COPY["panel.history"],
       COPY["history.note"],

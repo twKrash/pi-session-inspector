@@ -2517,6 +2517,44 @@ test("the history aggregate renders coverage, membership, and its own rows", asy
   assert.equal(/\b0\b|\$0\.00/.test(unknownText), false);
 });
 
+test("the history range hides known out-of-range sessions but keeps unknown rows revealable", async () => {
+  const base = uiSnapshot();
+  const member = base.history.sessions.find(
+    (session) => session.membership === "member",
+  );
+  if (member === undefined) throw new Error("fixture must publish a member");
+  const snapshot = {
+    ...base,
+    history: {
+      ...base.history,
+      sessions: [
+        ...base.history.sessions,
+        { ...member, sessionId: "session-out", membership: "out" as const },
+      ],
+    },
+  };
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/history/overview",
+  });
+  await harness.start();
+  const memberships = () =>
+    harness
+      .element("view")
+      .querySelectorAll("tr")
+      .filter((row) => row.dataset.membership !== undefined)
+      .map((row) => row.dataset.membership);
+  assert.deepEqual(memberships(), ["member"]);
+
+  const availableOnly = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.notEqual(availableOnly, undefined);
+  harness.click(availableOnly as StubElement);
+  assert.deepEqual(memberships(), ["member", "unknown"]);
+});
+
 test("the global aggregate renders the DTO's own totals and inventory", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
