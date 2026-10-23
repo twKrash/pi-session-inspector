@@ -279,35 +279,75 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
     await release.promise;
     return SNAPSHOT;
   };
-  const serverA = await getInspectorServer(ownerA);
-  const requestA = call(serverA, "/api/v1/ui", {
-    headers: await bearer(serverA),
-  });
-  await entered.promise;
+  let serverA: InspectorServer | undefined;
+  let replacementB: Promise<InspectorServer> | undefined;
+  let replacementC: Promise<InspectorServer> | undefined;
+  let serverB: InspectorServer | undefined;
+  let serverC: InspectorServer | undefined;
+  let requestA: Promise<unknown> | undefined;
+  try {
+    serverA = await getInspectorServer(ownerA);
+    requestA = call(serverA, "/api/v1/ui", {
+      headers: await bearer(serverA),
+    });
+    await entered.promise;
 
-  const ownerB = {
-    ...fixtureContext().context,
-    runtimeId: "runtime-b",
-    projectRoot: "/project-b",
-  };
-  const replacementB = getInspectorServer(ownerB);
-  await waitUntilNotListening(serverA);
-  const ownerC = {
-    ...fixtureContext().context,
-    runtimeId: "runtime-c",
-    projectRoot: "/project-c",
-  };
-  const replacementC = getInspectorServer(ownerC);
-  release.resolve();
-  await requestA;
-  const [serverB, serverC] = await Promise.all([replacementB, replacementC]);
-  assert.notEqual(serverB.origin, serverC.origin);
-  assert.equal((await call(serverC, "/")).status, 200);
-  await assert.rejects(call(serverB, "/"));
-  await closeInspectorServer("runtime-c");
-  await assert.rejects(call(serverC, "/"));
-  await closeInspectorServer();
+    const ownerB = {
+      ...fixtureContext().context,
+      runtimeId: "runtime-b",
+      projectRoot: "/project-b",
+    };
+    replacementB = getInspectorServer(ownerB);
+    await waitUntilNotListening(serverA);
+    const ownerC = {
+      ...fixtureContext().context,
+      runtimeId: "runtime-c",
+      projectRoot: "/project-c",
+    };
+    replacementC = getInspectorServer(ownerC);
+    release.resolve();
+    await requestA;
+    [serverB, serverC] = await Promise.all([replacementB, replacementC]);
+    assert.notEqual(serverB.origin, serverC.origin);
+    assert.equal((await call(serverC, "/")).status, 200);
+    await assert.rejects(call(serverB, "/"));
+    await closeInspectorServer("runtime-c");
+    await assert.rejects(call(serverC, "/"));
+  } finally {
+    release.resolve();
+    await settleWithin(requestA);
+    await settleWithin(
+      Promise.allSettled(
+        [replacementB, replacementC].filter(
+          (promise): promise is Promise<InspectorServer> => Boolean(promise),
+        ),
+      ),
+    );
+    for (const runtimeId of ["runtime-a", "runtime-b", "runtime-c"]) {
+      await settleWithin(closeInspectorServer(runtimeId));
+    }
+    await settleWithin(closeInspectorServer());
+  }
 });
+
+async function settleWithin<T>(
+  promise: Promise<T> | undefined,
+): Promise<T | undefined> {
+  if (!promise) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), 2_000);
+      }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
   let resolve!: (value: T) => void;
