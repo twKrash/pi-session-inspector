@@ -282,6 +282,12 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
   let serverA: InspectorServer | undefined;
   let replacementB: Promise<InspectorServer> | undefined;
   let replacementC: Promise<InspectorServer> | undefined;
+  let observeReplacementB:
+    | Promise<PromiseSettledResult<InspectorServer>[]>
+    | undefined;
+  let observeReplacementC:
+    | Promise<PromiseSettledResult<InspectorServer>[]>
+    | undefined;
   let serverB: InspectorServer | undefined;
   let serverC: InspectorServer | undefined;
   let cleanupMode = false;
@@ -306,6 +312,7 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
       if (cleanupMode) void settleWithin(closeCapturedServer(server));
       return server;
     });
+    observeReplacementB = Promise.allSettled([replacementB]);
     await waitUntilNotListening(serverA);
     const ownerC = {
       ...fixtureContext().context,
@@ -318,6 +325,7 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
       if (cleanupMode) void settleWithin(closeCapturedServer(server));
       return server;
     });
+    observeReplacementC = Promise.allSettled([replacementC]);
     release.resolve();
     await requestA;
     [serverB, serverC] = await Promise.all([replacementB, replacementC]);
@@ -329,14 +337,9 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
   } finally {
     cleanupMode = true;
     release.resolve();
+    await settleWithin(observeReplacementB);
+    await settleWithin(observeReplacementC);
     await settleWithin(requestA);
-    await settleWithin(
-      Promise.allSettled(
-        [replacementB, replacementC].filter(
-          (promise): promise is Promise<InspectorServer> => Boolean(promise),
-        ),
-      ),
-    );
     for (const server of capturedServers) {
       await settleWithin(closeCapturedServer(server));
     }
