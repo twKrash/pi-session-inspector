@@ -4,6 +4,7 @@ import net from "node:net";
 import { after, test } from "node:test";
 
 import type { SessionReport } from "../../src/core/reports.ts";
+import { createUiCapabilities } from "../../src/ui/capabilities.ts";
 import type { RangeIntent } from "../../src/ui/range.ts";
 import {
   closeInspectorServer,
@@ -67,6 +68,8 @@ function fixtureContext(theme: ShellTheme = "light"): {
     calls,
     context: {
       theme,
+      runtimeId: "runtime-a",
+      projectRoot: "/project-a",
       loadUi: async (intent) => {
         calls.ui.push(intent);
         return SNAPSHOT;
@@ -154,14 +157,25 @@ const BOOTSTRAP_URL =
   /^http:\/\/127\.0\.0\.1:(\d+)\/#token=([A-Za-z0-9_-]{43})$/;
 
 function bootstrapToken(server: InspectorServer): string {
-  const match = BOOTSTRAP_URL.exec(server.bootstrapUrl());
-  assert.ok(match !== null, `bootstrap URL shape: ${server.bootstrapUrl()}`);
+  const url = server.bootstrapUrl();
+  const match = BOOTSTRAP_URL.exec(url);
+  assert.ok(match !== null, `bootstrap URL shape: ${url}`);
   assert.equal(Number(match[1]), server.port);
   return match[2];
 }
 
-function bearer(server: InspectorServer): Record<string, string> {
-  return { Authorization: `Bearer ${bootstrapToken(server)}` };
+async function bearer(
+  server: InspectorServer,
+): Promise<Record<string, string>> {
+  const token = bootstrapToken(server);
+  const response = await call(server, "/api/v1/ui-session", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.status, 200);
+  return {
+    Authorization: `Bearer ${(JSON.parse(response.body) as { capability: string }).capability}`,
+  };
 }
 
 /** A same-length, different token. */
@@ -260,7 +274,65 @@ after(async () => {
 // Bootstrap URL
 // ---------------------------------------------------------------------------
 
-test("the bootstrap URL is one fresh 32-byte token and no report state", async () => {
+test("bootstrap credentials expire at 60 seconds, are one-use, and retain one stable runtime capability", () => {
+  let now = 100;
+  const capabilities = createUiCapabilities(() => now);
+  const first = capabilities.newBootstrapToken();
+  const exchanged = capabilities.exchange(first);
+  assert.ok(exchanged);
+  assert.equal(capabilities.exchange(first), undefined);
+  const second = capabilities.newBootstrapToken();
+  const third = capabilities.newBootstrapToken();
+  assert.equal(capabilities.exchange(second), undefined);
+  assert.equal(capabilities.exchange("unknown"), undefined);
+  assert.equal(capabilities.exchange(third), exchanged);
+  const expiring = capabilities.newBootstrapToken();
+  now += 60_000;
+  assert.equal(capabilities.exchange(expiring), undefined);
+  assert.equal(capabilities.authorize(exchanged), true);
+  capabilities.revoke();
+  assert.equal(capabilities.authorize(exchanged), false);
+});
+
+test("successive bootstrap exchanges reuse the stable capability and reject spent tokens", async () => {
+  const { context } = fixtureContext();
+  const server = await getInspectorServer(context);
+  try {
+    const oldToken = bootstrapToken(server);
+    const currentToken = bootstrapToken(server);
+    const exchange = (token: string) =>
+      call(server, "/api/v1/ui-session", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    assert.equal((await exchange(oldToken)).status, 401);
+    const first = await exchange(currentToken);
+    assert.equal(first.status, 200);
+    const capability = (JSON.parse(first.body) as { capability: string })
+      .capability;
+    assert.equal(Buffer.from(capability, "base64url").length, 32);
+    assert.equal((await exchange(currentToken)).status, 401);
+    const nextToken = bootstrapToken(server);
+    const second = await exchange(nextToken);
+    assert.equal(second.status, 200);
+    assert.equal(
+      (JSON.parse(second.body) as { capability: string }).capability,
+      capability,
+    );
+    assert.equal(
+      (
+        await call(server, "/api/v1/ui", {
+          headers: { Authorization: `Bearer ${capability}` },
+        })
+      ).status,
+      200,
+    );
+  } finally {
+    await closeInspectorServer();
+  }
+});
+
+test("each UI invocation mints a fresh bootstrap token on the reused listener", async () => {
   const { context } = fixtureContext();
   const server = await getInspectorServer(context);
   try {
@@ -268,7 +340,8 @@ test("the bootstrap URL is one fresh 32-byte token and no report state", async (
     const token = bootstrapToken(server);
     assert.equal(Buffer.from(token, "base64url").length, 32);
     // The anchored shape above is the whole URL: origin, "/", fragment token.
-    assert.equal(server.bootstrapUrl(), `${server.origin}/#token=${token}`);
+    const next = bootstrapToken(server);
+    assert.notEqual(next, token);
   } finally {
     await closeInspectorServer();
   }
@@ -396,13 +469,13 @@ test("protected API calls require the exact bearer credential", async () => {
     }
     // A query token is never a credential, even beside a valid bearer.
     const both = await call(server, `/api/v1/ui?token=${token}`, {
-      headers: bearer(server),
+      headers: await bearer(server),
     });
     assertProblem(both, 400, "invalid-range", [token]);
     assert.equal(calls.ui.length, 0);
 
     const accepted = await call(server, "/api/v1/ui", {
-      headers: bearer(server),
+      headers: await bearer(server),
     });
     assert.equal(accepted.status, 200);
     assert.equal(accepted.body, JSON.stringify(SNAPSHOT));
@@ -420,7 +493,9 @@ test("/api/v1/ui calls loadUi once per response and passes only the parse result
   const { context, calls } = fixtureContext();
   const server = await getInspectorServer(context);
   try {
-    const plain = await call(server, "/api/v1/ui", { headers: bearer(server) });
+    const plain = await call(server, "/api/v1/ui", {
+      headers: await bearer(server),
+    });
     assert.equal(plain.status, 200);
     assert.equal(plain.headers["content-type"], "application/json");
     assert.equal(plain.headers["x-content-type-options"], "nosniff");
@@ -430,7 +505,7 @@ test("/api/v1/ui calls loadUi once per response and passes only the parse result
     assert.deepEqual(calls.ui, [undefined]);
 
     const preset = await call(server, "/api/v1/ui?preset=7", {
-      headers: bearer(server),
+      headers: await bearer(server),
     });
     assert.equal(preset.status, 200);
     assert.deepEqual(calls.ui.at(-1), { kind: "preset", preset: 7 });
@@ -438,7 +513,7 @@ test("/api/v1/ui calls loadUi once per response and passes only the parse result
     const custom = await call(
       server,
       "/api/v1/ui?from=2026-09-01&to=2026-09-12",
-      { headers: bearer(server) },
+      { headers: await bearer(server) },
     );
     assert.equal(custom.status, 200);
     assert.deepEqual(calls.ui.at(-1), {
@@ -448,8 +523,8 @@ test("/api/v1/ui calls loadUi once per response and passes only the parse result
     });
 
     const responses = await Promise.all([
-      call(server, "/api/v1/ui", { headers: bearer(server) }),
-      call(server, "/api/v1/ui", { headers: bearer(server) }),
+      call(server, "/api/v1/ui", { headers: await bearer(server) }),
+      call(server, "/api/v1/ui", { headers: await bearer(server) }),
     ]);
     assert.deepEqual(
       responses.map((response) => response.status),
@@ -481,7 +556,7 @@ test("invalid range input is rejected without invoking the projection", async ()
     ];
     for (const query of rejected) {
       const response = await call(server, `/api/v1/ui?${query}`, {
-        headers: bearer(server),
+        headers: await bearer(server),
       });
       assertProblem(response, 400, "invalid-range", [query]);
       assert.equal(calls.ui.length, 0, query);
@@ -500,14 +575,14 @@ test("the global resource accepts exactly the same range grammar", async () => {
   const server = await getInspectorServer(context);
   try {
     const empty = await call(server, "/api/v1/reports/global", {
-      headers: bearer(server),
+      headers: await bearer(server),
     });
     assert.equal(empty.status, 200);
     assert.equal(empty.body, JSON.stringify(GLOBAL));
     assert.deepEqual(calls.global, [undefined]);
 
     const preset = await call(server, "/api/v1/reports/global?preset=14", {
-      headers: bearer(server),
+      headers: await bearer(server),
     });
     assert.equal(preset.status, 200);
     assert.deepEqual(calls.global.at(-1), { kind: "preset", preset: 14 });
@@ -515,7 +590,7 @@ test("the global resource accepts exactly the same range grammar", async () => {
     const custom = await call(
       server,
       "/api/v1/reports/global?from=2026-09-01&to=2026-09-12",
-      { headers: bearer(server) },
+      { headers: await bearer(server) },
     );
     assert.equal(custom.status, 200);
     assert.deepEqual(calls.global.at(-1), {
@@ -527,7 +602,7 @@ test("the global resource accepts exactly the same range grammar", async () => {
     const invalid = await call(
       server,
       "/api/v1/reports/global?preset=7&from=2026-09-01&to=2026-09-12",
-      { headers: bearer(server) },
+      { headers: await bearer(server) },
     );
     assertProblem(invalid, 400, "invalid-range");
     assert.equal(calls.global.length, 3);
@@ -547,7 +622,7 @@ test("the atomic session resource resolves one bounded id through loadSession", 
     const response = await call(
       server,
       `/api/v1/reports/sessions/${SESSION_ID}`,
-      { headers: bearer(server) },
+      { headers: await bearer(server) },
     );
     assert.equal(response.status, 200);
     assert.equal(response.headers["content-type"], "application/json");
@@ -575,7 +650,7 @@ test("the atomic session resource rejects scope and range queries", async () => 
       const response = await call(
         server,
         `/api/v1/reports/sessions/${SESSION_ID}?${query}`,
-        { headers: bearer(server) },
+        { headers: await bearer(server) },
       );
       assertProblem(response, 400, code, [query]);
       assert.equal(calls.sessions.length, 0, query);
@@ -583,7 +658,7 @@ test("the atomic session resource rejects scope and range queries", async () => 
     const unknownKey = await call(
       server,
       `/api/v1/reports/sessions/${SESSION_ID}?token=SECRET_QUERY_VALUE`,
-      { headers: bearer(server) },
+      { headers: await bearer(server) },
     );
     assertProblem(unknownKey, 400, "invalid-range", ["SECRET_QUERY_VALUE"]);
     assert.equal(calls.sessions.length, 0);
@@ -601,7 +676,7 @@ test("unknown and malformed session ids return one bounded generic failure", asy
       server,
       `/api/v1/reports/sessions/${unknownId}`,
       {
-        headers: bearer(server),
+        headers: await bearer(server),
       },
     );
     assertProblem(unknown, 404, "not-found", [unknownId]);
@@ -615,7 +690,9 @@ test("unknown and malformed session ids return one bounded generic failure", asy
       "/api/v1/reports/sessions/%2e%2e",
       `/api/v1/reports/sessions/${"a".repeat(129)}`,
     ]) {
-      const response = await call(server, path, { headers: bearer(server) });
+      const response = await call(server, path, {
+        headers: await bearer(server),
+      });
       assertProblem(response, 404, "not-found", [path]);
     }
     // Malformed ids never reach the loader.
@@ -659,7 +736,7 @@ test("the Host, peer, and Origin boundary admits only the exact loopback origin"
     ]);
 
     const nullOrigin = await call(server, "/api/v1/ui", {
-      headers: { ...bearer(server), Origin: "null" },
+      headers: { ...(await bearer(server)), Origin: "null" },
     });
     assertProblem(nullOrigin, 403, "forbidden");
 
@@ -670,7 +747,7 @@ test("the Host, peer, and Origin boundary admits only the exact loopback origin"
       `http://127.0.0.1:${server.port}/`,
     ]) {
       const response = await call(server, "/api/v1/ui", {
-        headers: { ...bearer(server), Origin: rejectedOrigin },
+        headers: { ...(await bearer(server)), Origin: rejectedOrigin },
       });
       assertProblem(response, 403, "forbidden", [rejectedOrigin]);
     }
@@ -681,11 +758,11 @@ test("the Host, peer, and Origin boundary admits only the exact loopback origin"
     const matching = await call(server, "/", { headers: { Origin: origin } });
     assert.equal(matching.status, 200);
     const apiWithOrigin = await call(server, "/api/v1/ui", {
-      headers: { ...bearer(server), Origin: origin },
+      headers: { ...(await bearer(server)), Origin: origin },
     });
     assert.equal(apiWithOrigin.status, 200);
     const apiWithoutOrigin = await call(server, "/api/v1/ui", {
-      headers: bearer(server),
+      headers: await bearer(server),
     });
     assert.equal(apiWithoutOrigin.status, 200);
     const apiWithoutBearer = await call(server, "/api/v1/ui", {
@@ -695,7 +772,7 @@ test("the Host, peer, and Origin boundary admits only the exact loopback origin"
     // Forwarded headers are ignored, never trusted.
     const forwardedFor = await call(server, "/api/v1/ui", {
       headers: {
-        ...bearer(server),
+        ...(await bearer(server)),
         "X-Forwarded-For": "203.0.113.9",
         Forwarded: "host=evil.example",
       },
@@ -760,6 +837,7 @@ test("a request from another loopback address is refused boundedly", async (t) =
   try {
     // Source-bind to 127.0.0.2 so the listener sees a 127/8 peer that is not
     // its own address: the only wire-level way to exercise the peer check.
+    const authHeaders = await bearer(server);
     const outcome = await new Promise<TestResponse | { bindError: string }>(
       (resolve, reject) => {
         const request = http.request(
@@ -768,7 +846,7 @@ test("a request from another loopback address is refused boundedly", async (t) =
             port,
             path: "/api/v1/ui",
             method: "GET",
-            headers: bearer(server),
+            headers: authHeaders,
             agent: false,
             localAddress: "127.0.0.2",
           },
@@ -879,7 +957,7 @@ test("unsupported methods, traversal paths, and unknown routes fail boundedly", 
     for (const method of ["POST", "PUT", "DELETE"]) {
       const response = await call(server, "/api/v1/ui", {
         method,
-        headers: bearer(server),
+        headers: await bearer(server),
       });
       assertProblem(response, 405, "method-not-allowed", [method]);
       assert.equal(response.headers.allow, "GET");
@@ -887,7 +965,7 @@ test("unsupported methods, traversal paths, and unknown routes fail boundedly", 
     // HEAD must not carry a body; its bounded headers state the same refusal.
     const headApi = await call(server, "/api/v1/ui", {
       method: "HEAD",
-      headers: bearer(server),
+      headers: await bearer(server),
     });
     assert.equal(headApi.status, 405);
     assert.equal(headApi.body, "");
@@ -911,7 +989,9 @@ test("unsupported methods, traversal paths, and unknown routes fail boundedly", 
       "/api/v1/reports/sessionsx",
       "/api/v2/ui",
     ]) {
-      const response = await call(server, path, { headers: bearer(server) });
+      const response = await call(server, path, {
+        headers: await bearer(server),
+      });
       assertProblem(response, 404, "not-found", [path]);
       assert.equal(response.body.includes("<html"), false, path);
       assert.equal(
@@ -951,7 +1031,7 @@ test("a failing callback answers a bounded internal error without Pi diagnostics
   }) as typeof process.stderr.write;
   try {
     const response = await call(server, "/api/v1/ui", {
-      headers: bearer(server),
+      headers: await bearer(server),
     });
     const body = assertProblem(response, 500, "internal-error", [
       "/home/dvory/private/notes.txt",
@@ -969,6 +1049,37 @@ test("a failing callback answers a bounded internal error without Pi diagnostics
 // Singleton lifecycle
 // ---------------------------------------------------------------------------// ---------------------------------------------------------------------------
 
+test("runtime/project replacement retires the listener and old-owner shutdown cannot close its replacement", async () => {
+  const first = fixtureContext();
+  const serverA = await getInspectorServer({
+    ...first.context,
+    runtimeId: "old",
+    projectRoot: "/old",
+  });
+  const serverB = await getInspectorServer({
+    ...first.context,
+    runtimeId: "new",
+    projectRoot: "/new",
+  });
+  assert.notEqual(serverA.port, serverB.port);
+  await closeInspectorServer("old");
+  assert.equal((await call(serverB, "/")).status, 200);
+  await closeInspectorServer("new");
+
+  const projectA = await getInspectorServer({
+    ...first.context,
+    runtimeId: "same",
+    projectRoot: "/project-a",
+  });
+  const projectB = await getInspectorServer({
+    ...first.context,
+    runtimeId: "same",
+    projectRoot: "/project-b",
+  });
+  assert.notEqual(projectA.port, projectB.port);
+  await closeInspectorServer();
+});
+
 test("the singleton is reused with replaced context and closed explicitly", async () => {
   const first = fixtureContext();
   const serverA = await getInspectorServer(first.context);
@@ -976,12 +1087,13 @@ test("the singleton is reused with replaced context and closed explicitly", asyn
   const second = fixtureContext();
   const serverB = await getInspectorServer(second.context);
   try {
-    // Reuse: one listener, one token, request-time context replaced.
+    // Reuse one listener while each invocation mints a distinct one-use token.
     assert.equal(serverB.port, serverA.port);
     assert.equal(serverB.origin, serverA.origin);
-    assert.equal(serverB.bootstrapUrl(), serverA.bootstrapUrl());
+    const tokenB = bootstrapToken(serverB);
+    assert.notEqual(tokenB, tokenA);
     const response = await call(serverA, "/api/v1/ui", {
-      headers: bearer(serverA),
+      headers: await bearer(serverA),
     });
     assert.equal(response.status, 200);
     assert.equal(first.calls.ui.length, 0);

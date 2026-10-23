@@ -498,6 +498,9 @@ export function registerTracking(
   // out of the runtime that replaces it.
   registerSessionShutdown(api, () => {
     disposeRuntimeLiveCounters(runtimeId);
+    void import("./ui/server.ts")
+      .then(({ closeInspectorServer }) => closeInspectorServer(runtimeId))
+      .catch(() => {});
   });
 }
 
@@ -1159,6 +1162,7 @@ async function startInspectorUi(
         sessionManager: ctx.sessionManager,
         root,
         runtimeId,
+        projectRoot: ctx.cwd,
         // The initial theme is resolved configuration, never browser-local
         // state: an in-page toggle stays ephemeral (ADR 0019).
         theme: config.theme,
@@ -1193,6 +1197,7 @@ function createUiServerContext(input: {
   api: ExtensionAPI;
   sessionManager: ExtensionCommandContext["sessionManager"];
   root: string;
+  projectRoot: string;
   theme: "light" | "dark";
   initialScope: Scope;
   /** Identity of the runtime that owns this server's reads. */
@@ -1207,6 +1212,8 @@ function createUiServerContext(input: {
     sessionEvidence: readHistorySessionEvidence,
   });
   return {
+    runtimeId,
+    projectRoot: input.projectRoot,
     // Rendered into the shell so the first paint is the resolved theme, the
     // same value the DTO carries and the snapshot renders.
     theme: input.theme,

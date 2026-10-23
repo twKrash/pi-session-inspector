@@ -265,13 +265,25 @@ function bootstrapOf(
 }
 
 /** One authenticated API read against the running UI server. */
+const runtimeCapabilities = new Map<string, string>();
 async function apiGet(
   origin: string,
   path: string,
   token: string,
 ): Promise<{ status: number; body: unknown }> {
+  let capability = runtimeCapabilities.get(origin);
+  if (capability === undefined) {
+    const exchanged = await fetch(`${origin}/api/v1/ui-session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    capability = ((await exchanged.json()) as { capability?: string })
+      .capability;
+    assert.equal(typeof capability, "string");
+    runtimeCapabilities.set(origin, capability as string);
+  }
   const response = await fetch(`${origin}${path}`, {
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${capability}` },
   });
   return { status: response.status, body: await response.json() };
 }
@@ -399,7 +411,7 @@ test("ui notifies one tokenized URL, writes no report, and serves current reques
     );
     assert.equal(await countFiles(harness.cache), 0);
     const first = harness.notices.at(-1) ?? "";
-    const bootstrap = bootstrapOf(first);
+    let bootstrap = bootstrapOf(first);
     assert.ok(bootstrap, first);
     assert.equal(harness.opens.length, 0);
 
@@ -412,15 +424,19 @@ test("ui notifies one tokenized URL, writes no report, and serves current reques
     assert.match(harness.notices.at(-1) ?? "", /help/i);
     assert.equal(await countFiles(harness.cache), 0);
 
-    // A repeated invocation reuses the one server and token; the request-time
-    // context is replaced, so the next request reads the current leaf.
+    // A repeated invocation reuses the listener but mints a fresh bootstrap token;
+    // the request-time context is replaced and prior exchanged capabilities remain valid.
     harness.notices.length = 0;
     await harness.handler()(
       "ui --no-open",
       harness.context({ mode: "interactive" }),
     );
-    assert.equal(harness.notices.at(-1), first);
-    assert.deepEqual(bootstrapOf(harness.notices.at(-1) ?? ""), bootstrap);
+    const second = harness.notices.at(-1) ?? "";
+    const secondBootstrap = bootstrapOf(second);
+    assert.ok(secondBootstrap, second);
+    assert.equal(secondBootstrap.origin, bootstrap.origin);
+    assert.notEqual(secondBootstrap.token, bootstrap.token);
+    bootstrap = secondBootstrap;
     await writeSessionManifest(harness);
 
     // The one server reads the session manager's current values per request:
@@ -451,7 +467,10 @@ test("ui notifies one tokenized URL, writes no report, and serves current reques
       "ui --no-open",
       harness.context({ mode: "interactive" }),
     );
-    assert.equal(harness.notices.at(-1), first);
+    const third = bootstrapOf(harness.notices.at(-1) ?? "");
+    assert.ok(third);
+    assert.notEqual(third.token, bootstrap.token);
+    bootstrap = third;
     const replaced = await apiGet(
       bootstrap.origin,
       "/api/v1/ui",
@@ -493,7 +512,10 @@ test("ui notifies one tokenized URL, writes no report, and serves current reques
     harness.setOpenerResult(1);
     harness.notices.length = 0;
     await harness.handler()("ui", harness.context({ mode: "interactive" }));
-    assert.deepEqual(bootstrapOf(harness.notices.at(-1) ?? ""), bootstrap);
+    const fourth = bootstrapOf(harness.notices.at(-1) ?? "");
+    assert.ok(fourth);
+    assert.notEqual(fourth.token, bootstrap.token);
+    bootstrap = fourth;
     assert.equal(harness.opens.length, 1);
     assert.equal(
       harness.opens[0]?.[1].at(-1),

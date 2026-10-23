@@ -13,7 +13,8 @@
  * starts a server at import time and nothing maps a request path to the
  * filesystem.
  */
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { createUiCapabilities } from "./capabilities.ts";
 import {
   createServer,
   type IncomingMessage,
@@ -32,6 +33,8 @@ import { renderShell, WEB_ASSETS, type ShellTheme } from "./web-assets.ts";
 
 /** The request-time data seams: only these callbacks may observe reports. */
 export type InspectorServerContext = {
+  runtimeId: string;
+  projectRoot: string;
   /** The resolved theme the shell is rendered in; presentation, never report data. */
   theme: ShellTheme;
   loadUi(intent?: RangeIntent): Promise<InspectorUiSnapshot>;
@@ -137,7 +140,9 @@ type Running = {
   server: Server;
   port: number;
   origin: string;
-  token: string;
+  capabilities: ReturnType<typeof createUiCapabilities>;
+  runtimeId: string;
+  projectRoot: string;
   context: InspectorServerContext;
   inspector: InspectorServer;
 };
@@ -148,6 +153,8 @@ let pending: Promise<Startup> | undefined;
 /** What a shared start hands each caller: the instance and its context seam. */
 type Startup = {
   inspector: InspectorServer;
+  runtimeId: string;
+  projectRoot: string;
   setContext(context: InspectorServerContext): void;
 };
 
@@ -171,8 +178,15 @@ export async function getInspectorServer(
   context: InspectorServerContext,
 ): Promise<InspectorServer> {
   if (running !== undefined) {
-    running.context = context;
-    return running.inspector;
+    if (
+      running.runtimeId !== context.runtimeId ||
+      running.projectRoot !== context.projectRoot
+    ) {
+      await closeInspectorServer(running.runtimeId);
+    } else {
+      running.context = context;
+      return running.inspector;
+    }
   }
   if (pending === undefined) {
     const start = startServer(context);
@@ -180,24 +194,42 @@ export async function getInspectorServer(
       pending = undefined;
     });
   }
-  const startup = await pending;
+  const startupPromise = pending;
+  const startup = await startupPromise;
+  if (
+    startup.runtimeId !== context.runtimeId ||
+    startup.projectRoot !== context.projectRoot
+  ) {
+    await closeInspectorServer(startup.runtimeId);
+    return getInspectorServer(context);
+  }
   startup.setContext(context);
   return startup.inspector;
 }
 
 /** Closes and clears the singleton; safe to call when nothing is running. */
-export async function closeInspectorServer(): Promise<void> {
+export async function closeInspectorServer(runtimeId?: string): Promise<void> {
   const starting = pending;
   if (starting !== undefined) {
     const startup = await starting.catch(() => undefined);
-    if (startup !== undefined) {
+    if (
+      startup !== undefined &&
+      (runtimeId === undefined || startup.runtimeId === runtimeId)
+    ) {
       await startup.inspector.close();
     }
     return;
   }
   const current = running;
+  if (
+    current !== undefined &&
+    runtimeId !== undefined &&
+    current.runtimeId !== runtimeId
+  )
+    return;
   running = undefined;
   if (current !== undefined) {
+    current.capabilities.revoke();
     await closeServer(current.server);
   }
 }
@@ -292,22 +324,15 @@ function sendAsset(
   res.end(head ? undefined : body);
 }
 
-function isAuthorized(state: Running, req: IncomingMessage): boolean {
+function bearerValue(req: IncomingMessage): string | undefined {
   const header = req.headers.authorization;
-  if (typeof header !== "string") {
-    return false;
-  }
-  const match = BEARER.exec(header);
-  if (match === null) {
-    return false;
-  }
-  // Constant-time only after bounded format and equal-length validation.
-  const candidate = Buffer.from(match[1], "utf8");
-  const expected = Buffer.from(state.token, "utf8");
-  if (candidate.length !== expected.length) {
-    return false;
-  }
-  return timingSafeEqual(candidate, expected);
+  if (typeof header !== "string") return undefined;
+  return BEARER.exec(header)?.[1];
+}
+
+function isAuthorized(state: Running, req: IncomingMessage): boolean {
+  const candidate = bearerValue(req);
+  return candidate !== undefined && state.capabilities.authorize(candidate);
 }
 
 /**
@@ -408,6 +433,42 @@ async function handleRequest(
     return;
   }
 
+  if (path === "/api/v1/ui-session") {
+    if (method !== "POST") {
+      sendProblem(res, "method-not-allowed", {
+        head,
+        allow: "POST",
+        reason: "method",
+      });
+      return;
+    }
+    const token = bearerValue(req);
+    if (token === undefined) {
+      sendProblem(res, "unauthorized", { head, reason: "bearer" });
+      return;
+    }
+    if (
+      req.headers["transfer-encoding"] !== undefined ||
+      (req.headers["content-length"] !== undefined &&
+        req.headers["content-length"] !== "0")
+    ) {
+      sendProblem(res, "invalid-range", { reason: "exchange-body" });
+      req.resume();
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      req.on("end", resolve);
+      req.resume();
+    });
+    const capability = state.capabilities.exchange(token);
+    if (capability === undefined) {
+      sendProblem(res, "unauthorized", { reason: "bootstrap" });
+      return;
+    }
+    sendJson(res, { capability });
+    return;
+  }
+
   if (path === "/api/v1/ui" || path === "/api/v1/reports/global") {
     if (method !== "GET") {
       sendProblem(res, "method-not-allowed", {
@@ -498,12 +559,15 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
     server: createServer({ requireHostHeader: false }),
     port: 0,
     origin: "",
-    token: randomBytes(32).toString("base64url"),
+    capabilities: createUiCapabilities(),
+    runtimeId: context.runtimeId,
+    projectRoot: context.projectRoot,
     context,
     inspector: {
       port: 0,
       origin: "",
-      bootstrapUrl: () => `${state.origin}/#token=${state.token}`,
+      bootstrapUrl: () =>
+        `${state.origin}/#token=${state.capabilities.newBootstrapToken()}`,
       close: () => closeServer(state.server, state),
     },
   };
@@ -543,6 +607,8 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
   running = state;
   return {
     inspector: state.inspector,
+    runtimeId: state.runtimeId,
+    projectRoot: state.projectRoot,
     setContext: (next) => {
       state.context = next;
     },
@@ -550,6 +616,7 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
 }
 
 async function closeServer(server: Server, state?: Running): Promise<void> {
+  state?.capabilities.revoke();
   if (state !== undefined && running === state) {
     running = undefined;
   }
