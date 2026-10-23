@@ -284,9 +284,12 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
   let replacementC: Promise<InspectorServer> | undefined;
   let serverB: InspectorServer | undefined;
   let serverC: InspectorServer | undefined;
+  let cleanupMode = false;
+  const capturedServers = new Set<InspectorServer>();
   let requestA: Promise<unknown> | undefined;
   try {
     serverA = await getInspectorServer(ownerA);
+    capturedServers.add(serverA);
     requestA = call(serverA, "/api/v1/ui", {
       headers: await bearer(serverA),
     });
@@ -297,14 +300,24 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
       runtimeId: "runtime-b",
       projectRoot: "/project-b",
     };
-    replacementB = getInspectorServer(ownerB);
+    replacementB = getInspectorServer(ownerB).then((server) => {
+      serverB = server;
+      capturedServers.add(server);
+      if (cleanupMode) void settleWithin(closeCapturedServer(server));
+      return server;
+    });
     await waitUntilNotListening(serverA);
     const ownerC = {
       ...fixtureContext().context,
       runtimeId: "runtime-c",
       projectRoot: "/project-c",
     };
-    replacementC = getInspectorServer(ownerC);
+    replacementC = getInspectorServer(ownerC).then((server) => {
+      serverC = server;
+      capturedServers.add(server);
+      if (cleanupMode) void settleWithin(closeCapturedServer(server));
+      return server;
+    });
     release.resolve();
     await requestA;
     [serverB, serverC] = await Promise.all([replacementB, replacementC]);
@@ -314,6 +327,7 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
     await closeInspectorServer("runtime-c");
     await assert.rejects(call(serverC, "/"));
   } finally {
+    cleanupMode = true;
     release.resolve();
     await settleWithin(requestA);
     await settleWithin(
@@ -323,12 +337,26 @@ test("replacement serialized behind an in-flight request cannot orphan a later l
         ),
       ),
     );
+    for (const server of capturedServers) {
+      await settleWithin(closeCapturedServer(server));
+    }
     for (const runtimeId of ["runtime-a", "runtime-b", "runtime-c"]) {
       await settleWithin(closeInspectorServer(runtimeId));
     }
     await settleWithin(closeInspectorServer());
   }
 });
+
+const capturedServerClosures = new WeakMap<InspectorServer, Promise<void>>();
+
+function closeCapturedServer(server: InspectorServer): Promise<void> {
+  let closing = capturedServerClosures.get(server);
+  if (closing === undefined) {
+    closing = server.close();
+    capturedServerClosures.set(server, closing);
+  }
+  return closing;
+}
 
 async function settleWithin<T>(
   promise: Promise<T> | undefined,
