@@ -108,12 +108,14 @@ export async function createWalWriter({
   now,
   write = (path, data) => appendFile(path, data, "utf8"),
   onSegmentRotation,
+  onFlushed,
 }: {
   root: string;
   writerId?: string;
   now: () => Date;
   write?: (path: string, data: string) => Promise<void>;
   onSegmentRotation?: () => void;
+  onFlushed?: () => void;
 }): Promise<WalWriter> {
   const immutableWriterId = writerId ?? randomUUID();
   if (!isAsciiToken(immutableWriterId)) {
@@ -212,6 +214,7 @@ export async function createWalWriter({
     }
 
     flushing = (async () => {
+      let persisted = false;
       while (!disabled && pending.length > 0) {
         const batch = pending.splice(0, MAX_PENDING_EVENTS);
         pendingBytes -= batch.reduce((total, { bytes }) => total + bytes, 0);
@@ -253,6 +256,7 @@ export async function createWalWriter({
 
             activeSegment = next;
             if (rotated) scheduleRotation(onSegmentRotation);
+            persisted = true;
           } catch {
             disabled = true;
             pending = [];
@@ -260,6 +264,13 @@ export async function createWalWriter({
             clearScheduledFlushes();
             break;
           }
+        }
+      }
+      if (persisted) {
+        try {
+          onFlushed?.();
+        } catch {
+          // UI observers are isolated from WAL/Pi execution.
         }
       }
       await closeExpiredActiveSegment();

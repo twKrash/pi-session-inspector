@@ -11,6 +11,13 @@ import {
   parseInspectorCommand,
 } from "./commands/grammar.ts";
 import { createInspectorHelpComponent } from "./commands/help.ts";
+import {
+  type InspectorSettings,
+  type ResolvedConfig,
+  readSettings,
+  readSettingsSync,
+  resolveConfig,
+} from "./config/settings.ts";
 import type { Scope, SessionEntry } from "./core/events.ts";
 import {
   type FoldedAggregateEvidence,
@@ -22,6 +29,12 @@ import {
   foldedFromCheckpointAggregates,
   mergeFoldedCounters,
 } from "./core/live-counter-fold.ts";
+import { presenceKeys } from "./core/presence.ts";
+import { createDebugFileSink } from "./debug/file.ts";
+import { configureDebugLog, debugLog, debugLogEnabled } from "./debug/log.ts";
+import { reportIntegrations } from "./integrations/catalog.ts";
+import { readCanonicalContributions } from "./integrations/contributions.ts";
+import { integrations } from "./integrations/index.ts";
 import type { InventorySnapshot } from "./integrations/inventory.ts";
 import {
   type LiveCounterApi,
@@ -32,23 +45,10 @@ import {
 } from "./integrations/live-counters.ts";
 import { readPresence } from "./integrations/presence.ts";
 import { readSkillInvocations } from "./integrations/skill-invocations.ts";
-import { reportIntegrations } from "./integrations/catalog.ts";
-import { integrations } from "./integrations/index.ts";
-import { configureDebugLog, debugLog, debugLogEnabled } from "./debug/log.ts";
-import { createDebugFileSink } from "./debug/file.ts";
-import {
-  readSettings,
-  readSettingsSync,
-  resolveConfig,
-  type InspectorSettings,
-  type ResolvedConfig,
-} from "./config/settings.ts";
 import {
   readSubagentEvidenceWithArchives,
   type SubagentSourceEvidence,
 } from "./integrations/subagents.ts";
-import { readCanonicalContributions } from "./integrations/contributions.ts";
-import { presenceKeys } from "./core/presence.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
 import {
   type LiveWalRegistration,
@@ -74,6 +74,7 @@ import { type RecoveredWalRecord, recoverSession } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
 import { loadCurrentView, loadInspectorBundle } from "./ui/bundle.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
+import { sessionInvalidationSignal } from "./ui/invalidation.ts";
 import { renderJson } from "./ui/json.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
 import {
@@ -548,6 +549,7 @@ function setupProductionSessionWal(input: {
         root,
         now: () => new Date(),
         onSegmentRotation,
+        onFlushed: () => sessionInvalidationSignal.notify(),
       });
       // Keyed by session so a concurrent/repeated promotion never clobbers
       // another session's writer handle.
