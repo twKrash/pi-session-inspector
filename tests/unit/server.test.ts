@@ -270,6 +270,64 @@ after(async () => {
   await closeInspectorServer();
 });
 
+test("replacement serialized behind an in-flight request cannot orphan a later listener", async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const ownerA = fixtureContext().context;
+  ownerA.loadUi = async () => {
+    entered.resolve();
+    await release.promise;
+    return SNAPSHOT;
+  };
+  const serverA = await getInspectorServer(ownerA);
+  const requestA = call(serverA, "/api/v1/ui", {
+    headers: await bearer(serverA),
+  });
+  await entered.promise;
+
+  const ownerB = {
+    ...fixtureContext().context,
+    runtimeId: "runtime-b",
+    projectRoot: "/project-b",
+  };
+  const replacementB = getInspectorServer(ownerB);
+  await waitUntilNotListening(serverA);
+  const ownerC = {
+    ...fixtureContext().context,
+    runtimeId: "runtime-c",
+    projectRoot: "/project-c",
+  };
+  const replacementC = getInspectorServer(ownerC);
+  release.resolve();
+  await requestA;
+  const [serverB, serverC] = await Promise.all([replacementB, replacementC]);
+  assert.notEqual(serverB.origin, serverC.origin);
+  assert.equal((await call(serverC, "/")).status, 200);
+  await assert.rejects(call(serverB, "/"));
+  await closeInspectorServer("runtime-c");
+  await assert.rejects(call(serverC, "/"));
+  await closeInspectorServer();
+});
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => (resolve = done));
+  return { promise, resolve };
+}
+
+async function waitUntilNotListening(server: InspectorServer): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      await call(server, "/");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } catch {
+      return;
+    }
+  }
+  assert.fail("replacement did not close the previous listener");
+}
+
 // ---------------------------------------------------------------------------
 // Bootstrap URL
 // ---------------------------------------------------------------------------

@@ -149,6 +149,7 @@ type Running = {
 
 let running: Running | undefined;
 let pending: Promise<Startup> | undefined;
+let lifecycle: Promise<void> = Promise.resolve();
 
 /** What a shared start hands each caller: the instance and its context seam. */
 type Startup = {
@@ -177,12 +178,18 @@ export function isLoopbackPeer(address: string | undefined): boolean {
 export async function getInspectorServer(
   context: InspectorServerContext,
 ): Promise<InspectorServer> {
+  return serializeLifecycle(() => getInspectorServerLocked(context));
+}
+
+async function getInspectorServerLocked(
+  context: InspectorServerContext,
+): Promise<InspectorServer> {
   if (running !== undefined) {
     if (
       running.runtimeId !== context.runtimeId ||
       running.projectRoot !== context.projectRoot
     ) {
-      await closeInspectorServer(running.runtimeId);
+      await closeInspectorServerLocked(running.runtimeId);
     } else {
       running.context = context;
       return running.inspector;
@@ -200,8 +207,8 @@ export async function getInspectorServer(
     startup.runtimeId !== context.runtimeId ||
     startup.projectRoot !== context.projectRoot
   ) {
-    await closeInspectorServer(startup.runtimeId);
-    return getInspectorServer(context);
+    await closeInspectorServerLocked(startup.runtimeId);
+    return getInspectorServerLocked(context);
   }
   startup.setContext(context);
   return startup.inspector;
@@ -209,6 +216,10 @@ export async function getInspectorServer(
 
 /** Closes and clears the singleton; safe to call when nothing is running. */
 export async function closeInspectorServer(runtimeId?: string): Promise<void> {
+  return serializeLifecycle(() => closeInspectorServerLocked(runtimeId));
+}
+
+async function closeInspectorServerLocked(runtimeId?: string): Promise<void> {
   const starting = pending;
   if (starting !== undefined) {
     const startup = await starting.catch(() => undefined);
@@ -613,6 +624,15 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
       state.context = next;
     },
   };
+}
+
+function serializeLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+  const result = lifecycle.then(operation);
+  lifecycle = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 async function closeServer(server: Server, state?: Running): Promise<void> {
