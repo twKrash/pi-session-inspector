@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
 import { after, test } from "node:test";
+import WebSocket from "ws";
 
 import type { SessionReport } from "../../src/core/reports.ts";
 import { createUiCapabilities } from "../../src/ui/capabilities.ts";
@@ -9,15 +10,16 @@ import type { RangeIntent } from "../../src/ui/range.ts";
 import {
   closeInspectorServer,
   getInspectorServer,
-  isLoopbackPeer,
   type InspectorServer,
   type InspectorServerContext,
+  isLoopbackPeer,
 } from "../../src/ui/server.ts";
+import { serializeUiSnapshot } from "../../src/ui/snapshot-revision.ts";
 import type {
   GlobalReportProjection,
   InspectorUiSnapshot,
 } from "../../src/ui/ui-projection.ts";
-import { WEB_ASSETS, type ShellTheme } from "../../src/ui/web-assets.ts";
+import { type ShellTheme, WEB_ASSETS } from "../../src/ui/web-assets.ts";
 
 /**
  * The loopback server boundary (ADR 0018 and the spec's Pre-M8.4 HTTP and
@@ -1242,4 +1244,61 @@ test("the singleton is reused with replaced context and closed explicitly", asyn
     await closeInspectorServer();
   }
   await assert.rejects(call(serverC, "/"));
+});
+
+test("protected UI snapshot ETag matches the revision serializer without conditional responses", async () => {
+  const { context } = fixtureContext();
+  const server = await getInspectorServer(context);
+  try {
+    const headers = await bearer(server);
+    const expected = serializeUiSnapshot(SNAPSHOT);
+    const response = await call(server, "/api/v1/ui", { headers });
+    assert.equal(response.status, 200);
+    assert.equal(response.body, expected.body);
+    assert.equal(response.headers.etag, expected.etag);
+    assert.equal(response.headers["cache-control"], "no-store, no-cache");
+    const fullBody = await call(server, "/api/v1/ui", {
+      headers: { ...headers, "If-None-Match": expected.etag },
+    });
+    assert.equal(fullBody.status, 200);
+    assert.equal(fullBody.body, expected.body);
+    assert.equal(fullBody.headers.etag, expected.etag);
+  } finally {
+    await closeInspectorServer();
+  }
+});
+
+test("owner shutdown closes an authenticated live socket and its channel", async () => {
+  const { context } = fixtureContext();
+  const server = await getInspectorServer(context);
+  const auth = await bearer(server);
+  const authorization = auth.Authorization;
+  assert.ok(authorization);
+  const capability = authorization.replace(/^Bearer /, "");
+  const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/v1/ui-live`, {
+    origin: server.origin,
+  });
+  await new Promise<void>((resolve) => ws.once("open", resolve));
+  ws.send(
+    JSON.stringify({ type: "subscribe", capability, etag: "stale", range: "" }),
+  );
+  await new Promise<void>((resolve) => ws.once("message", () => resolve()));
+  const closed = new Promise<number>((resolve) =>
+    ws.once("close", (code) => resolve(code)),
+  );
+  await Promise.race([
+    closeInspectorServer(),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("owner close timeout")), 1500),
+    ),
+  ]);
+  assert.equal(
+    await Promise.race([
+      closed,
+      new Promise<number>((_, reject) =>
+        setTimeout(() => reject(new Error("socket close timeout")), 1500),
+      ),
+    ]),
+    1001,
+  );
 });

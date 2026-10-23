@@ -243,11 +243,13 @@ than assumes.
 
 ### Localhost server and API
 
-The server uses only Node `node:http` and `node:crypto`. It is a lazy singleton
-per Pi process: no registration-time autostart, daemon, service, global
-cross-process listener, or server for `snapshot`/`json`/`tui`. It binds only to
-`127.0.0.1:0`, exposes an explicit `close()` for tests, and obtains current
-session/evidence context through request-time composition-root callbacks.
+The server uses Node `node:http` and `node:crypto` for HTTP and capabilities, and
+the `ws` package for the same-listener WebSocket protocol. It is a lazy
+singleton per Pi process: no registration-time autostart, daemon, service,
+global cross-process listener, or server for `snapshot`/`json`/`tui`. It binds
+only to `127.0.0.1:0`, exposes an explicit `close()` for tests, and obtains
+current session/evidence context through request-time composition-root
+callbacks.
 
 The initial protected API surface is:
 
@@ -256,6 +258,22 @@ GET /api/v1/ui
 GET /api/v1/reports/sessions/{sessionId}
 GET /api/v1/reports/global
 ```
+
+`GET /api/v1/ui` serializes the canonical `InspectorUiSnapshot` once and
+returns its quoted SHA-256/base64url ETag for WebSocket revision parity. It
+always returns the full snapshot body; conditional `If-None-Match`/304 behavior
+is not used. The interactive client may upgrade the same listener at
+`/api/v1/ui-live`. The upgrade validates the exact loopback Host, peer, Origin,
+and path before `ws` accepts the connection. The first WebSocket message must
+carry the capability, current ETag, and canonical range; no report load or
+report data is available before capability authorization. The channel shares
+one bounded snapshot baseline per runtime generation, project root, initial
+scope, and normalized range. Persisted UI invalidations are coalesced for
+200 ms; only authenticated subscribers receive changed top-level DTO sections,
+and a stale ETag or range receives a full snapshot. It caps pending plus
+authenticated sockets at eight, authentication at five seconds, and frames at
+1 KiB; ping and baseline state are cleared when the channel becomes unused or
+its owner closes.
 
 Shell and known static assets support `GET` and `HEAD`. The exact
 `/favicon.ico` compatibility route returns empty `204` for `GET` and `HEAD`
@@ -302,8 +320,9 @@ Authorization: Bearer <token>
 ```
 
 Tokens are never accepted from query strings, cookies, storage, route state,
-exports, referrers, logs, or diagnostics. Bearer comparison is constant-time
-after bounded format/length validation.
+exports, referrers, logs, or diagnostics. The live-channel capability is sent
+only in the first WebSocket message, never in the URL. Bearer comparison is
+constant-time after bounded format/length validation.
 
 Every request requires exact `Host: 127.0.0.1:<port>` and a loopback peer.
 IPv4-mapped loopback is normalized only as the same loopback representation.

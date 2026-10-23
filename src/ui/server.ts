@@ -14,22 +14,25 @@
  * filesystem.
  */
 import { randomUUID } from "node:crypto";
-import { createUiCapabilities } from "./capabilities.ts";
 import {
   createServer,
   type IncomingMessage,
   type Server,
   type ServerResponse,
 } from "node:http";
-
 import { redactBoundedText } from "../core/redact.ts";
 import type { SessionReport } from "../core/reports.ts";
+import { createUiCapabilities } from "./capabilities.ts";
+import { attachLiveChannel, isLoopbackPeer } from "./live-channel.ts";
 import { parseRangeQuery, type RangeIntent } from "./range.ts";
+import { serializeUiSnapshot } from "./snapshot-revision.ts";
 import type {
   GlobalReportProjection,
   InspectorUiSnapshot,
 } from "./ui-projection.ts";
-import { renderShell, WEB_ASSETS, type ShellTheme } from "./web-assets.ts";
+import { renderShell, type ShellTheme, WEB_ASSETS } from "./web-assets.ts";
+
+export { isLoopbackPeer };
 
 /** The request-time data seams: only these callbacks may observe reports. */
 export type InspectorServerContext = {
@@ -37,6 +40,7 @@ export type InspectorServerContext = {
   projectRoot: string;
   /** The resolved theme the shell is rendered in; presentation, never report data. */
   theme: ShellTheme;
+  initialScope?: "active" | "tree";
   loadUi(intent?: RangeIntent): Promise<InspectorUiSnapshot>;
   loadSession(sessionId: string): Promise<SessionReport | undefined>;
   loadGlobal(intent?: RangeIntent): Promise<GlobalReportProjection>;
@@ -145,6 +149,7 @@ type Running = {
   projectRoot: string;
   context: InspectorServerContext;
   inspector: InspectorServer;
+  live?: { close(): Promise<void>; replaceContext(): void };
 };
 
 let running: Running | undefined;
@@ -158,17 +163,6 @@ type Startup = {
   projectRoot: string;
   setContext(context: InspectorServerContext): void;
 };
-
-/**
- * Accepted loopback peer forms. The listener binds IPv4 `127.0.0.1`, so the
- * only other form a kernel may report is the IPv4-mapped IPv6 representation
- * of the same address; native IPv6 loopback is not this listener and is
- * refused. Exported because a real non-loopback peer cannot be produced from
- * the test process.
- */
-export function isLoopbackPeer(address: string | undefined): boolean {
-  return address === "127.0.0.1" || address === "::ffff:127.0.0.1";
-}
 
 /**
  * Starts or reuses the module-local singleton and replaces its request-time
@@ -192,6 +186,7 @@ async function getInspectorServerLocked(
       await closeInspectorServerLocked(running.runtimeId);
     } else {
       running.context = context;
+      running.live?.replaceContext();
       return running.inspector;
     }
   }
@@ -241,7 +236,7 @@ async function closeInspectorServerLocked(runtimeId?: string): Promise<void> {
   running = undefined;
   if (current !== undefined) {
     current.capabilities.revoke();
-    await closeServer(current.server);
+    await closeServer(current.server, current);
   }
 }
 
@@ -307,6 +302,20 @@ function sendProblem(
   // Request failures belong in the bounded HTTP response, not Pi's TUI.
   res.writeHead(problem.status, headers);
   res.end(options.head === true ? undefined : body);
+}
+
+function sendUiSnapshot(
+  res: ServerResponse,
+  snapshot: InspectorUiSnapshot,
+): void {
+  const serialized = serializeUiSnapshot(snapshot);
+  const headers: Record<string, string> = {
+    ...securityHeaders("application/json"),
+    etag: serialized.etag,
+    "content-length": String(Buffer.byteLength(serialized.body)),
+  };
+  res.writeHead(200, headers);
+  res.end(serialized.body);
 }
 
 function sendJson(res: ServerResponse, value: unknown): void {
@@ -499,7 +508,7 @@ async function handleRequest(
       return;
     }
     if (path === "/api/v1/ui") {
-      sendJson(res, await state.context.loadUi(range.intent));
+      sendUiSnapshot(res, await state.context.loadUi(range.intent));
     } else {
       sendJson(res, await state.context.loadGlobal(range.intent));
     }
@@ -605,6 +614,15 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
   }
   state.port = address.port;
   state.origin = `http://127.0.0.1:${state.port}`;
+  state.live = attachLiveChannel(
+    state.server,
+    state.origin,
+    () => ({
+      ...state.context,
+      initialScope: state.context.initialScope ?? "active",
+    }),
+    (candidate) => state.capabilities.authorize(candidate),
+  );
   state.inspector.port = state.port;
   state.inspector.origin = state.origin;
   // Runtime listener errors are swallowed: they must never reach Pi.
@@ -622,6 +640,7 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
     projectRoot: state.projectRoot,
     setContext: (next) => {
       state.context = next;
+      state.live?.replaceContext();
     },
   };
 }
@@ -637,6 +656,7 @@ function serializeLifecycle<T>(operation: () => Promise<T>): Promise<T> {
 
 async function closeServer(server: Server, state?: Running): Promise<void> {
   state?.capabilities.revoke();
+  if (state?.live !== undefined) await state.live.close();
   if (state !== undefined && running === state) {
     running = undefined;
   }
