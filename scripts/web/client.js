@@ -11,8 +11,8 @@
  *
  * Report-derived strings reach the document through `textContent` and bounded
  * `setAttribute` calls; report-derived markup is never parsed. First-party
- * storage, cookies, and sockets are not used, and the capability token lives in
- * one in-memory variable for the lifetime of the page. The theme a run starts
+ * storage and cookies are not used; the runtime capability stays in memory and
+ * authenticates only the fixed same-origin live channel. The theme a run starts
  * with comes from the report settings; the in-page toggle is presentation only.
  */
 (function () {
@@ -57,6 +57,8 @@
   const DEFAULT_KEY = "#/current/overview";
   /** The fragment the bootstrap consumes; nothing else is a bootstrap token. */
   const TOKEN_FRAGMENT = /^#token=([A-Za-z0-9_-]{1,256})$/;
+  const CAPABILITY = /^[A-Za-z0-9_-]{43}$/;
+  const ETAG = /^"[A-Za-z0-9_-]{43}"$/;
 
   const q = (id) => document.getElementById(id);
   const text = (value) =>
@@ -114,8 +116,14 @@
   // State
   // -------------------------------------------------------------------------
 
-  /** The capability token: memory only, never storage, a cookie, or a query. */
+  /** The runtime capability: memory only, never storage, a cookie, or a query. */
   let token = null;
+  let etag = null;
+  let liveSocket = null;
+  let liveTimer = null;
+  let reconnectAttempt = 0;
+  let liveGeneration = 0;
+  let liveTerminal = false;
   let snapshot = null;
   let loadedQuery = null;
   let loadedOnce = false;
@@ -520,6 +528,31 @@
     const landmark = q("error");
     if (landmark !== null) landmark.hidden = !active;
   };
+  const setLiveStatus = (message, state) => {
+    const landmark = q("live-status");
+    if (landmark === null) return;
+    landmark.textContent = message;
+    landmark.hidden = message === "";
+    if (state === undefined) landmark.removeAttribute("data-state");
+    else landmark.setAttribute("data-state", state);
+  };
+
+  const exchangeToken = async (bootstrapToken) => {
+    try {
+      const response = await fetch("/api/v1/ui-session", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + bootstrapToken },
+      });
+      if (response === undefined || response === null || response.ok !== true)
+        return null;
+      const body = await response.json();
+      return body !== null && CAPABILITY.test(body.capability)
+        ? body.capability
+        : null;
+    } catch (error) {
+      return null;
+    }
+  };
 
   /** The one query the client sends: the range intent, and nothing else. */
   const requestQuery = (hash) => {
@@ -533,6 +566,14 @@
 
   const requestUrl = (query) =>
     query === "" ? "/api/v1/ui" : "/api/v1/ui?" + query;
+  const responseEtag = (response) => {
+    const headers = response.headers;
+    const value =
+      headers !== null && headers !== undefined && typeof headers.get === "function"
+        ? headers.get("etag")
+        : null;
+    return typeof value === "string" && ETAG.test(value) ? value : null;
+  };
 
   /**
    * One protected request. The token is sent as the bearer credential only, and
@@ -555,6 +596,7 @@
       if (body === undefined || body === null || body.kind !== "ui")
         return false;
       snapshot = body;
+      etag = responseEtag(response);
       loadedQuery = query;
       known = null;
       if (!loadedOnce) {
@@ -3513,7 +3555,7 @@
       }
     }
     const announcement = q("announcement");
-    if (announcement !== null) {
+    if (announcement !== null && flags.announce !== false) {
       announcement.textContent =
         COPY["nav." + view.activeSection] +
         ", " +
@@ -3548,7 +3590,195 @@
    * can reapply that intent before its response arrives. Explicit refreshes
    * still start a fresh request.
    */
-  const request = (query, effects, refresh) => {
+  const retireLiveChannel = () => {
+    liveGeneration += 1;
+    liveTerminal = false;
+    reconnectAttempt = 0;
+    if (liveTimer !== null) {
+      clearTimeout(liveTimer);
+      liveTimer = null;
+    }
+    const socket = liveSocket;
+    liveSocket = null;
+    if (socket !== null) {
+      try {
+        socket.close(1000, "snapshot request");
+      } catch (error) {
+        // Closing a retired channel is best-effort; the HTTP snapshot is primary.
+      }
+    }
+  };
+
+  const scheduleLiveReconnect = () => {
+    if (
+      liveTerminal ||
+      token === null ||
+      etag === null ||
+      loadedQuery === null ||
+      location.protocol === "file:" ||
+      liveTimer !== null
+    ) {
+      return;
+    }
+    const delay = Math.min(30_000, 1_000 * 2 ** reconnectAttempt);
+    reconnectAttempt = Math.min(reconnectAttempt + 1, 6);
+    const generation = liveGeneration;
+    setLiveStatus(COPY["live.reconnecting"], "stale");
+    liveTimer = setTimeout(() => {
+      if (generation !== liveGeneration || liveTerminal) return;
+      liveTimer = null;
+      connectLive(true);
+    }, delay);
+  };
+
+  const recoverLiveSnapshot = () => {
+    if (loadedQuery !== null) request(loadedQuery, {}, true, true);
+  };
+
+  const applyLiveSnapshot = (message) => {
+    if (
+      !ETAG.test(message.etag) ||
+      message.snapshot === null ||
+      typeof message.snapshot !== "object" ||
+      message.snapshot.kind !== "ui"
+    ) {
+      recoverLiveSnapshot();
+      return;
+    }
+    setLiveStatus(COPY["live.updating"], "updating");
+    snapshot = message.snapshot;
+    etag = message.etag;
+    apply({}, true, true);
+    reconnectAttempt = 0;
+    setLiveStatus(COPY["live.connected"], "live");
+  };
+
+  const applyLiveDelta = (message) => {
+    const changes = message.changes;
+    const keys =
+      changes !== null && typeof changes === "object" && !Array.isArray(changes)
+        ? Object.keys(changes)
+        : [];
+    const sections = ["current", "history", "global", "initialScope", "theme"];
+    if (
+      message.baseEtag !== etag ||
+      !ETAG.test(message.baseEtag) ||
+      !ETAG.test(message.etag) ||
+      message.etag === etag ||
+      keys.length === 0 ||
+      keys.some(
+        (key) =>
+          !sections.includes(key) ||
+          changes[key] === null ||
+          changes[key] === undefined,
+      )
+    ) {
+      recoverLiveSnapshot();
+      return;
+    }
+    setLiveStatus(COPY["live.updating"], "updating");
+    snapshot = assign(snapshot, changes);
+    etag = message.etag;
+    render({ announce: false });
+    reconnectAttempt = 0;
+    setLiveStatus(COPY["live.connected"], "live");
+  };
+
+  const receiveLiveMessage = (event) => {
+    let message;
+    try {
+      message = JSON.parse(String(event.data));
+    } catch (error) {
+      recoverLiveSnapshot();
+      return;
+    }
+    if (message === null || typeof message !== "object") {
+      recoverLiveSnapshot();
+      return;
+    }
+    if (message.type === "ready") {
+      if (message.etag !== etag || !ETAG.test(message.etag)) {
+        recoverLiveSnapshot();
+        return;
+      }
+      reconnectAttempt = 0;
+      setLiveStatus(COPY["live.connected"], "live");
+      return;
+    }
+    if (message.type === "snapshot") {
+      applyLiveSnapshot(message);
+      return;
+    }
+    if (message.type === "delta") {
+      applyLiveDelta(message);
+      return;
+    }
+    recoverLiveSnapshot();
+  };
+
+  const connectLive = (reconnecting) => {
+    if (reconnecting !== true) retireLiveChannel();
+    if (
+      token === null ||
+      location.protocol === "file:" ||
+      typeof WebSocket !== "function"
+    ) {
+      setLiveStatus("", undefined);
+      return;
+    }
+    if (etag === null || loadedQuery === null) {
+      setLiveStatus(COPY["live.stopped"], "stale");
+      return;
+    }
+    liveTerminal = false;
+    const generation = ++liveGeneration;
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = scheme + "//" + location.host + "/api/v1/ui-live";
+    setLiveStatus(COPY["live.connecting"], "connecting");
+    let socket;
+    try {
+      socket = new WebSocket(url);
+    } catch (error) {
+      scheduleLiveReconnect();
+      return;
+    }
+    liveSocket = socket;
+    socket.onopen = () => {
+      if (generation !== liveGeneration || liveSocket !== socket) return;
+      try {
+        socket.send(
+          JSON.stringify({
+            type: "subscribe",
+            capability: token,
+            etag,
+            range: loadedQuery,
+          }),
+        );
+      } catch (error) {
+        socket.close(1011, "subscribe failed");
+      }
+    };
+    socket.onmessage = (event) => {
+      if (generation !== liveGeneration || liveSocket !== socket) return;
+      receiveLiveMessage(event);
+    };
+    socket.onerror = () => {};
+    socket.onclose = (event) => {
+      if (generation !== liveGeneration || liveSocket !== socket) return;
+      liveSocket = null;
+      if ([1000, 1001, 4400, 4401].includes(event.code)) {
+        liveTerminal = true;
+        setLiveStatus(
+          event.code === 4401 ? COPY["live.expired"] : COPY["live.stopped"],
+          "stale",
+        );
+        return;
+      }
+      scheduleLiveReconnect();
+    };
+  };
+
+  const request = (query, effects, refresh, quiet) => {
     if (
       refresh !== true &&
       pendingRequest !== null &&
@@ -3557,27 +3787,38 @@
       pendingRequest.effects = effects;
       return;
     }
+    retireLiveChannel();
     const id = (latestRequest += 1);
     const pending = { query, effects };
     pendingRequest = pending;
-    setLoading(true);
+    if (quiet === true) setLiveStatus(COPY["live.updating"], "updating");
+    else {
+      setLoading(true);
+      setLiveStatus("", undefined);
+    }
     inFlight = (async () => {
       const served = await load(query, id);
       // A newer request owns the page now: it renders and it clears the loading
       // state, so this one leaves both alone.
       if (id !== latestRequest) return;
       pendingRequest = null;
-      setLoading(false);
+      if (quiet !== true) setLoading(false);
       if (!served) {
-        setFailure(true);
+        if (quiet === true) {
+          setLiveStatus(COPY["live.stopped"], "stale");
+          scheduleLiveReconnect();
+        } else {
+          setFailure(true);
+        }
         return;
       }
-      apply(pending.effects, true);
+      apply(pending.effects, true, quiet === true);
+      if (id === latestRequest) connectLive(false);
     })();
   };
 
   /** The one place a hash becomes the applied route. */
-  const apply = (effects, force) => {
+  const apply = (effects, force, quiet) => {
     // Nothing can be coerced or rendered before a DTO exists: the address bar is
     // the only source of the range intent the first request may carry, and the
     // route is applied once there is a payload to bound it against.
@@ -3642,10 +3883,11 @@
     // A load that was requested by an earlier apply renders with THAT
     // navigation's effects, so its focus behaviour is not lost to the wait.
     const pending = effects === undefined ? flags : effects;
+    const renderEffects = quiet === true ? assign(pending, { announce: false }) : pending;
     const query = requestQuery(location.hash || "");
     const stale = query !== loadedQuery;
     if (!stale && appliedKey === lastAppliedKey) {
-      if (force === true) render(pending);
+      if (force === true) render(renderEffects);
       return;
     }
     lastAppliedKey = appliedKey;
@@ -3656,7 +3898,7 @@
       request(query, pending);
       return;
     }
-    render(pending);
+    render(renderEffects);
   };
 
   const retry = () => {
@@ -3980,8 +4222,13 @@
   const start = () => {
     if (startPromise !== null) return startPromise;
     startPromise = (async () => {
-      token = consumeToken();
+      const bootstrapToken = consumeToken();
       wire();
+      token =
+        bootstrapToken !== null &&
+        (location.protocol === "http:" || location.protocol === "https:")
+          ? await exchangeToken(bootstrapToken)
+          : null;
       apply();
       if (inFlight !== null) await inFlight;
     })();

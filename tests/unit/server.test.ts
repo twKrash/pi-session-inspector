@@ -243,8 +243,8 @@ function assertProblem(
   return body;
 }
 
-const SERVER_CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const serverCsp = (port: number) =>
+  `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws://127.0.0.1:${port}; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 const ASSETS: readonly {
   path: string;
@@ -493,7 +493,11 @@ test("known assets are served byte-for-byte for GET and HEAD with fixed headers"
         const label = `${method} ${asset.path}`;
         assert.equal(response.status, 200, label);
         assert.equal(response.headers["content-type"], asset.contentType);
-        assert.equal(response.headers["content-security-policy"], SERVER_CSP);
+        const policy = String(response.headers["content-security-policy"]);
+        assert.equal(policy, serverCsp(server.port));
+        assert.equal(policy.includes("ws://localhost"), false);
+        assert.equal(policy.includes("ws://127.0.0.1:*"), false);
+        assert.equal(policy.includes("wss://"), false);
         assert.equal(response.headers["x-content-type-options"], "nosniff");
         assert.equal(response.headers["cache-control"], "no-store, no-cache");
         assert.equal(response.headers["referrer-policy"], "no-referrer");
@@ -557,7 +561,10 @@ test("the shell is served with the resolved theme already in effect", async () =
     );
     // Presentation only: the same headers, and still no report, session, or
     // catalog value — the one injected value is a closed enum's class name.
-    assert.equal(dark.headers["content-security-policy"], SERVER_CSP);
+    assert.equal(
+      dark.headers["content-security-policy"],
+      serverCsp(darkServer.port),
+    );
     assert.equal(dark.body.includes("SNAPSHOT_DTO"), false);
     assert.equal(dark.body.includes(SESSION_ID), false);
     assert.equal(dark.body.includes("application/json"), false);

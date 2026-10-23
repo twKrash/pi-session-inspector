@@ -54,8 +54,8 @@ export type InspectorServer = {
   close(): Promise<void>;
 };
 
-const SERVER_CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const serverCsp = (port: number): string =>
+  `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws://127.0.0.1:${port}; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 /** The two fixed assets; the shell is rendered per request with its theme. */
 const ASSETS = new Map<string, { body: string; contentType: string }>([
@@ -334,11 +334,12 @@ function sendAsset(
   res: ServerResponse,
   asset: { body: string; contentType: string },
   head: boolean,
+  port: number,
 ): void {
   const body = Buffer.from(asset.body, "utf8");
   res.writeHead(200, {
     ...securityHeaders(asset.contentType),
-    "content-security-policy": SERVER_CSP,
+    "content-security-policy": serverCsp(port),
     "content-length": String(body.byteLength),
   });
   res.end(head ? undefined : body);
@@ -434,7 +435,7 @@ async function handleRequest(
       });
       return;
     }
-    sendAsset(res, asset, head);
+    sendAsset(res, asset, head, state.port);
     return;
   }
 

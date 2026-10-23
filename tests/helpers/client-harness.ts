@@ -262,7 +262,14 @@ export type ChartInputRecord = {
 /** One ordered observation of what the client did, not only what it rendered. */
 export type WebClientEvent =
   | { kind: "parse"; hash: string }
-  | { kind: "fetch"; url: string; authorization: string; hash: string }
+  | {
+      kind: "fetch";
+      url: string;
+      method: string;
+      authorization: string;
+      hash: string;
+    }
+  | { kind: "socket"; url: string }
   | { kind: "replaceState"; hash: string }
   | { kind: "hashAssign"; hash: string };
 
@@ -281,6 +288,10 @@ export type WebClientEvent =
  */
 export type WebClientInput = {
   responses?: readonly InspectorUiSnapshot[];
+  etags?: readonly string[];
+  capability?: string;
+  protocol?: string;
+  host?: string;
   hash?: string;
   /**
    * The theme the server rendered the shell in. Defaults to the product
@@ -298,6 +309,15 @@ export type WebClientHarness = {
   context: Record<string, unknown>;
   events: WebClientEvent[];
   fetches(): { url: string; authorization: string }[];
+  fetchRequests(): { url: string; method: string; authorization: string }[];
+  socketUrls(): string[];
+  socketMessages(): string[];
+  socketCount(): number;
+  openSocket(index?: number): void;
+  receiveSocket(message: unknown, index?: number): void;
+  closeSocket(code: number, reason?: string, index?: number): void;
+  timerDelays(): number[];
+  fireNextTimer(): number;
   routeParses(): string[];
   /** Every chart input the client projected, in the order it drew them. */
   chartInputs(): ChartInputRecord[];
@@ -312,10 +332,11 @@ export type WebClientHarness = {
   input(node: StubElement): void;
   hashchange(): void;
   popstate(): void;
-  location: { hash: string };
+  location: { hash: string; protocol: string; host: string };
   activeElement(): StubElement | null;
   /** Every storage write the client performed, though both storages exist. */
   storageWrites(): readonly { area: string; key: string }[];
+  cookieWrites(): readonly string[];
   /** Renders performed so far, counted by the client's one view swap. */
   renders(): number;
   /** `history.replaceState` calls so far, so a push and a replace differ. */
@@ -635,6 +656,7 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
       listeners.push(listener);
     },
   };
+  const cookieWrites: string[] = [];
   const documentStub = {
     body,
     defaultView: windowStub,
@@ -664,11 +686,17 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
       listeners.push(listener);
     },
   };
+  Object.defineProperty(documentStub, "cookie", {
+    get: () => "",
+    set: (value: unknown) => cookieWrites.push(String(value)),
+  });
   // The address bar the client reads and writes; a replacement moves the entry
   // the client already has, an assignment is the client's own history entry —
   // the difference the event log exists to prove.
   let hashValue = input.hash ?? "";
   const locationStub = {
+    protocol: input.protocol ?? "http:",
+    host: input.host ?? "127.0.0.1:1234",
     get hash(): string {
       return hashValue;
     },
@@ -710,37 +738,136 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     responses.length === 0
       ? undefined
       : responses[Math.min(served, responses.length - 1)];
-  const respond = (): Promise<unknown> => {
-    const snapshot = snapshotFor();
-    served += 1;
+  const Response = (
+    ok: boolean,
+    snapshot?: InspectorUiSnapshot,
+    etag?: string,
+    body?: unknown,
+  ) => ({
+    ok,
+    status: ok ? 200 : 401,
+    headers: {
+      get: (name: string) =>
+        name.toLowerCase() === "etag" ? (etag ?? null) : null,
+    },
+    json: async () => body ?? snapshot,
+  });
+  const respond = (url: string): Promise<unknown> => {
     if (input.fetchFailure !== undefined) {
       return input.fetchFailure === "network"
         ? Promise.reject(new TypeError("Failed to fetch"))
         : Promise.resolve(Response(false));
     }
-    return Promise.resolve(Response(true, snapshot));
+    if (url === "/api/v1/ui-session") {
+      return Promise.resolve(
+        Response(true, undefined, undefined, {
+          capability: input.capability ?? "R".repeat(43),
+        }),
+      );
+    }
+    const snapshot = snapshotFor();
+    const etag =
+      input.etags?.[Math.min(served, (input.etags?.length ?? 1) - 1)];
+    served += 1;
+    return Promise.resolve(
+      Response(true, snapshot, etag ?? `"${"A".repeat(43)}"`),
+    );
   };
-  const Response = (ok: boolean, snapshot?: InspectorUiSnapshot) => ({
-    ok,
-    status: ok ? 200 : 401,
-    json: async () => snapshot,
-  });
+  const requests: { url: string; method: string; authorization: string }[] = [];
   const fetchStub = (
     url: string,
-    init?: { headers?: Record<string, string> },
+    init?: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: unknown;
+    },
   ) => {
+    const method = init?.method ?? "GET";
+    const authorization = init?.headers?.Authorization ?? "";
     events.push({
       kind: "fetch",
       url,
-      authorization: init?.headers?.Authorization ?? "",
+      method,
+      authorization,
       hash: locationStub.hash,
     });
-    if (input.deferFetch === true) {
+    requests.push({ url, method, authorization });
+    const respondOnce = () => respond(url);
+    if (input.deferFetch === true && method === "GET") {
       return new Promise<unknown>((resolve) => {
-        release = () => resolve(respond());
+        release = () => resolve(respondOnce());
       });
     }
-    return respond();
+    return respondOnce();
+  };
+  const socketMessagesSent: string[] = [];
+  const sockets: StubWebSocket[] = [];
+  class StubWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    readonly url: string;
+    readyState = StubWebSocket.CONNECTING;
+    onopen: ((event: unknown) => void) | null = null;
+    onmessage: ((event: { data: string }) => void) | null = null;
+    onclose: ((event: { code: number; reason: string }) => void) | null = null;
+    onerror: ((event: unknown) => void) | null = null;
+    private readonly listeners = new Map<string, ((event: never) => void)[]>();
+    constructor(url: string) {
+      this.url = url;
+      sockets.push(this);
+      events.push({ kind: "socket", url });
+    }
+    addEventListener(type: string, listener: (event: never) => void): void {
+      const listeners = this.listeners.get(type) ?? [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    }
+    send(data: string): void {
+      socketMessagesSent.push(String(data));
+    }
+    close(code = 1000, reason = ""): void {
+      this.serverClose(code, reason);
+    }
+    open(): void {
+      this.readyState = StubWebSocket.OPEN;
+      this.emit("open", {});
+    }
+    receive(message: unknown): void {
+      const data =
+        typeof message === "string" ? message : JSON.stringify(message);
+      this.emit("message", { data });
+    }
+    serverClose(code: number, reason: string): void {
+      this.readyState = StubWebSocket.CLOSED;
+      this.emit("close", { code, reason });
+    }
+    private emit(type: string, event: unknown): void {
+      const handler = this[`on${type}` as "onopen"];
+      if (typeof handler === "function")
+        (handler as (value: unknown) => void)(event);
+      for (const listener of this.listeners.get(type) ?? []) {
+        listener(event as never);
+      }
+    }
+  }
+  const scheduledDelays: number[] = [];
+  const pendingTimers = new Map<
+    number,
+    { delay: number; callback: () => void }
+  >();
+  let timerId = 0;
+  const timeoutStub = (callback: () => void, delay = 0) => {
+    if (delay < 1000) return setTimeout(callback, delay);
+    const id = ++timerId;
+    scheduledDelays.push(delay);
+    pendingTimers.set(id, { delay, callback });
+    return id;
+  };
+  const clearTimeoutStub = (handle: ReturnType<typeof setTimeout> | number) => {
+    if (typeof handle === "number" && pendingTimers.delete(handle)) return;
+    clearTimeout(handle as ReturnType<typeof setTimeout>);
   };
   const navigatorStub = {
     clipboard: { writeText: async () => {} },
@@ -757,7 +884,9 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     console,
     ResizeObserver: StubObserver,
     MutationObserver: StubObserver,
-    setTimeout,
+    setTimeout: timeoutStub,
+    clearTimeout: clearTimeoutStub,
+    WebSocket: StubWebSocket,
     ...input.globals,
   };
   for (const node of nodes) node.ownerDocument = documentStub;
@@ -850,6 +979,36 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
           url: event.url,
           authorization: event.authorization,
         })),
+    fetchRequests: () => requests.map((request) => ({ ...request })),
+    socketUrls: () => sockets.map((socket) => socket.url),
+    socketMessages: () => [...socketMessagesSent],
+    socketCount: () => sockets.length,
+    openSocket: (index = 0) => {
+      const socket = sockets[index];
+      if (socket === undefined) throw new Error("no socket");
+      socket.open();
+    },
+    receiveSocket: (message, index = 0) => {
+      const socket = sockets[index];
+      if (socket === undefined) throw new Error("no socket");
+      socket.receive(message);
+    },
+    closeSocket: (code, reason = "", index = 0) => {
+      const socket = sockets[index];
+      if (socket === undefined) throw new Error("no socket");
+      socket.serverClose(code, reason);
+    },
+    timerDelays: () => [...scheduledDelays],
+    fireNextTimer: () => {
+      const next = pendingTimers.entries().next().value as
+        | [number, { delay: number; callback: () => void }]
+        | undefined;
+      if (next === undefined) throw new Error("no pending timer");
+      const [id, timer] = next;
+      pendingTimers.delete(id);
+      timer.callback();
+      return timer.delay;
+    },
     routeParses: () =>
       events
         .filter((event) => event.kind === "parse")
@@ -873,6 +1032,7 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
     location: locationStub,
     activeElement: () => documentStub.activeElement,
     storageWrites: () => storageWrites,
+    cookieWrites: () => [...cookieWrites],
     renders: () => renders,
     replacements: () => replacements,
   };

@@ -29,6 +29,12 @@ export const ENGLISH_CATALOG = {
   // What the one live region says while a request is in flight, and the visible
   // line the same words fill. The applied route replaces it once data lands.
   "state.loading": "Loading report…",
+  "live.connecting": "Connecting live updates…",
+  "live.connected": "Live",
+  "live.updating": "Updating report…",
+  "live.reconnecting": "Reconnecting live updates…",
+  "live.stopped": "Live updates ended; showing the last report as stale.",
+  "live.expired": "Live access expired; showing the last report as stale.",
   // The header control that re-reads the report from the running Inspector.
   "action.refresh": "Refresh",
   "scope.label": "Entry scope",

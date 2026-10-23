@@ -150,12 +150,15 @@ test("the shell is report-free and loads the generated client asset", () => {
     "tabs",
     "view",
     "announcement",
+    "live-status",
   ]) {
     assert.equal(shell.includes(`id="${landmark}"`), true, landmark);
   }
 });
 
-test("no shipped asset carries a storage, socket, or html sink", () => {
+test("no shipped asset carries unsafe storage, alternate sockets, or html sinks", () => {
+  assert.equal((WEB_ASSETS.client.match(/\bnew WebSocket\(/g) ?? []).length, 1);
+  assert.equal(WEB_ASSETS.client.includes("/api/v1/ui-live"), true);
   for (const name of [...SCRIPTS, "shell"] as const) {
     const source = WEB_ASSETS[name];
     for (const forbidden of [
@@ -166,7 +169,6 @@ test("no shipped asset carries a storage, socket, or html sink", () => {
       "localStorage",
       "sessionStorage",
       "document.cookie",
-      "WebSocket",
       "EventSource",
       "XMLHttpRequest",
       "eval(",
@@ -413,6 +415,8 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
     "fetch",
     "console",
     "setTimeout",
+    "clearTimeout",
+    "WebSocket",
     "getComputedStyle",
     "ResizeObserver",
     "MutationObserver",
@@ -937,6 +941,10 @@ test("the range module parses and serializes intent, and rejects the rest", () =
 // ---------------------------------------------------------------------------
 
 const TOKEN = "Kq3Zt0m3Yc4v6b8n1m2Q4w5E6r7T8y9U0iO1p2A3s4D";
+const ETAG_1 = `"${"A".repeat(43)}"`;
+const ETAG_2 = `"${"B".repeat(43)}"`;
+const ETAG_3 = `"${"C".repeat(43)}"`;
+const RUNTIME_CAPABILITY = "R".repeat(43);
 
 /** The kinds of the first events, in the order the client performed them. */
 function kinds(events: readonly { kind: string }[]): string[] {
@@ -954,7 +962,11 @@ test("the loaded browser scripts bootstrap data and wire the theme control", asy
   await settle();
 
   assert.deepEqual(harness.fetches(), [
-    { url: "/api/v1/ui", authorization: `Bearer ${TOKEN}` },
+    { url: "/api/v1/ui-session", authorization: `Bearer ${TOKEN}` },
+    {
+      url: "/api/v1/ui",
+      authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+    },
   ]);
   assert.equal(harness.element("title").textContent, "A session, in focus.");
   const theme = harness.element("theme");
@@ -977,8 +989,10 @@ test("the bootstrap consumes the token fragment before parsing or requesting", a
   assert.deepEqual(kinds(harness.events), [
     "replaceState",
     "fetch",
+    "fetch",
     "parse",
     "replaceState",
+    "socket",
   ]);
   assert.equal(kinds(harness.events).includes("hashAssign"), false);
   for (const hash of harness.routeParses()) {
@@ -987,13 +1001,251 @@ test("the bootstrap consumes the token fragment before parsing or requesting", a
   assert.equal(harness.location.hash.includes("token"), false);
   assert.equal(harness.replacements() > 0, true);
 
-  // The token travels as the bearer credential and nowhere else.
+  // The one-time token is exchanged; only the runtime capability reaches the report API.
   assert.deepEqual(harness.fetches(), [
-    { url: "/api/v1/ui", authorization: `Bearer ${TOKEN}` },
+    { url: "/api/v1/ui-session", authorization: `Bearer ${TOKEN}` },
+    {
+      url: "/api/v1/ui",
+      authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+    },
   ]);
   // The applied route is canonical, and its scope is the DTO's own initial scope.
   assert.equal(harness.location.hash, "#/current/overview?scope=tree");
   assert.equal(harness.element("title").textContent, "A session, in focus.");
+});
+
+test("bootstrap exchanges once and subscribes with the in-memory capability and ETag", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot()],
+    etags: [ETAG_1],
+    capability: RUNTIME_CAPABILITY,
+  });
+  await harness.start();
+
+  assert.deepEqual(harness.fetchRequests(), [
+    {
+      url: "/api/v1/ui-session",
+      method: "POST",
+      authorization: `Bearer ${TOKEN}`,
+    },
+    {
+      url: "/api/v1/ui",
+      method: "GET",
+      authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+    },
+  ]);
+  assert.equal(harness.location.hash.includes(TOKEN), false);
+  assert.equal(
+    harness.fetchRequests().some(({ url }) => url.includes(TOKEN)),
+    false,
+  );
+  assert.deepEqual(harness.socketUrls(), [
+    "ws://127.0.0.1:1234/api/v1/ui-live",
+  ]);
+  harness.openSocket();
+  assert.deepEqual(JSON.parse(harness.socketMessages()[0] ?? "null"), {
+    type: "subscribe",
+    capability: RUNTIME_CAPABILITY,
+    etag: ETAG_1,
+    range: "",
+  });
+  assert.equal(harness.socketMessages()[0]?.includes(TOKEN), false);
+  assert.deepEqual(harness.storageWrites(), []);
+  assert.deepEqual(harness.cookieWrites(), []);
+});
+
+test("live subscriptions reuse the normalized range of each full snapshot", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot(), uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+
+  harness.location.hash = "#/current/overview?scope=tree&preset=7&q=local-only";
+  harness.hashchange();
+  await settle();
+
+  assert.deepEqual(harness.fetchRequests().at(-1), {
+    url: "/api/v1/ui?preset=7",
+    method: "GET",
+    authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+  });
+  assert.equal(harness.socketCount(), 2);
+  harness.openSocket(1);
+  assert.deepEqual(JSON.parse(harness.socketMessages().at(-1) ?? "null"), {
+    type: "subscribe",
+    capability: RUNTIME_CAPABILITY,
+    etag: ETAG_2,
+    range: "preset=7",
+  });
+});
+
+test("explicit refresh remains a full snapshot and resubscribes with its ETag", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot(), uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.click(harness.element("refresh"));
+  await settle();
+
+  assert.equal(harness.fetchRequests().length, 3);
+  assert.deepEqual(harness.fetchRequests().at(-1), {
+    url: "/api/v1/ui",
+    method: "GET",
+    authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+  });
+  assert.equal(harness.socketCount(), 2);
+  harness.openSocket(1);
+  assert.equal(
+    JSON.parse(harness.socketMessages().at(-1) ?? "null").etag,
+    ETAG_2,
+  );
+});
+
+test("file snapshots do not exchange a capability or open a live channel", async () => {
+  const harness = createWebClient({
+    protocol: "file:",
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot()],
+  });
+  await harness.start();
+  assert.equal(
+    harness.fetchRequests().some(({ method }) => method === "POST"),
+    false,
+  );
+  assert.equal(harness.socketCount(), 0);
+});
+
+test("a matching live delta replaces only its DTO section without an HTTP load", async () => {
+  const first = uiSnapshot();
+  const changed = uiSnapshot();
+  if (changed.current.active.report === undefined) {
+    throw new Error("fixture must carry the active report");
+  }
+  changed.current.active.report.compactionCount = 42;
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [first],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  const renders = harness.renders();
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { current: changed.current },
+  });
+
+  assert.equal(harness.fetchRequests().length, 2);
+  assert.equal(harness.renders() > renders, true);
+  assert.equal(harness.element("loading").hidden, true);
+  assert.equal(harness.element("live-status").textContent, "Live");
+});
+
+test("a mismatched live delta recovers by HTTP without showing report loading", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot(), uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_3,
+    etag: ETAG_3,
+    changes: { current: uiSnapshot().current },
+  });
+  await settle();
+
+  assert.deepEqual(harness.fetchRequests().slice(-1), [
+    {
+      url: "/api/v1/ui",
+      method: "GET",
+      authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+    },
+  ]);
+  assert.equal(harness.element("loading").hidden, true);
+  assert.notEqual(
+    harness.element("announcement").textContent,
+    "Loading report…",
+  );
+  assert.equal(harness.socketCount(), 2);
+  harness.openSocket(1);
+  assert.deepEqual(JSON.parse(harness.socketMessages().at(-1) ?? "null"), {
+    type: "subscribe",
+    capability: RUNTIME_CAPABILITY,
+    etag: ETAG_2,
+    range: "",
+  });
+});
+
+test("live reconnect uses the last ETag with capped exponential delays", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot()],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const expected = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000];
+  for (let index = 0; index < expected.length; index += 1) {
+    harness.closeSocket(1006, "temporary disconnect", index);
+    assert.equal(harness.fireNextTimer(), expected[index]);
+    const reconnect = harness.socketCount() - 1;
+    harness.openSocket(reconnect);
+    const subscribe = JSON.parse(harness.socketMessages().at(-1) ?? "null");
+    assert.equal(subscribe.etag, ETAG_1);
+  }
+  assert.deepEqual(harness.timerDelays(), expected);
+});
+
+test("terminal live closes retain the report and do not reconnect", async () => {
+  for (const code of [1001, 4401]) {
+    const harness = createWebClient({
+      hash: `#token=${TOKEN}`,
+      responses: [uiSnapshot()],
+      etags: [ETAG_1],
+    });
+    await harness.start();
+    harness.openSocket();
+    const renders = harness.renders();
+    harness.closeSocket(code, "terminal", 0);
+    assert.equal(harness.element("live-status").hidden, false);
+    assert.equal(
+      harness
+        .element("live-status")
+        .textContent.toLowerCase()
+        .includes("stale"),
+      true,
+    );
+    assert.equal(harness.renders(), renders);
+    assert.deepEqual(harness.timerDelays(), []);
+    assert.equal(harness.element("view").children.length > 0, true);
+  }
+});
+
+test("the shell exposes one hidden, atomic live status landmark", () => {
+  const shell = WEB_ASSETS.shell;
+  assert.match(
+    shell,
+    /id="live-status"[^>]*role="status"[^>]*aria-atomic="true"[^>]*hidden/,
+  );
+  assert.equal((shell.match(/role="status"/g) ?? []).length, 2);
 });
 
 test("a token is never accepted from a query, storage, or a cookie", async () => {
