@@ -198,48 +198,38 @@ Inspector usage rules if that seam lands:
   or upstream modification is accepted; with no public seam the integration
   stays `unsupported`/`unavailable` rather than approximated from private
   internals.
-### 4. Push-based live updates (WebSocket) — research required
+### 4. Push-based live updates (WebSocket)
 
-**Status:** Research. **Depends on:** nothing; independent of the localhost
-transport that shipped in `0.10.0`.
+**Status:** Complete in the feature branch; release pending. **Depends on:**
+nothing; independent of the localhost transport that shipped in `0.10.0`.
 
-**Current state:** the localhost UI fetches a full payload on load and on the
-explicit Refresh action (the `refresh` handler in `scripts/web/client.js`), and
-`src/ui/server.ts` reads Inspector's own store per request. Nothing watches the
-WAL, so a reader watching a running session sees stale numbers until they
-refresh, and staying current costs one full payload per refresh.
+**Shipped:** an in-process payload-free invalidation after a successful Inspector
+WAL flush; an authenticated, bounded WebSocket channel on the existing loopback
+server; canonical ETag revisions shared with full HTTP snapshots; and deltas
+containing only changed top-level DTO sections. The UI retains its existing
+route/range authority, recovers stale revisions with a full snapshot, and keeps
+explicit Refresh as an HTTP snapshot. Server ownership is scoped to the Pi
+runtime and `ExtensionCommandContext.cwd`, not the shared Inspector storage
+root. The `file://` snapshot and its offline behavior are unchanged.
 
-Research questions:
+The transport choice, lifetime, authentication, bounds, deferred work, and
+alternatives are recorded in accepted [ADR 0027](architecture/adr/0027-localhost-live-websocket-deltas.md),
+with endpoint and security contracts in [ADR 0018](architecture/adr/0018-ephemeral-localhost-ui-and-immutable-snapshots.md)
+and the [v1 specification](specs/pi-session-inspector-v1.md#localhost-ui-and-immutable-snapshots).
 
-- where can a change signal honestly come from: an in-process event on the
-  observer's write path, a filesystem watch on the exclusive WAL shard, or a
-  polling tail with an offset? Each candidate has to hold invariant 1 (Pi
-  remains the authority) and invariant 6 (one writer id owns one shard);
-- what is the bounded message shape? A push channel must not become a second
-  report path: either it signals "something changed, refetch", or it carries the
-  same DTO deltas the report path already produces;
-- how does this stay additive? The static HTML report has no server, so the
-  localhost UI gains push, the static report keeps its behaviour, and the DTO
-  stays identical;
-- what happens on reconnect, on multiple tabs, on a stale client, and on a
-  session that stops writing;
-- transport: a WebSocket on the existing loopback server is the candidate, but
-  it is a new protocol surface on a server that speaks bounded HTTP GETs today.
-  Compare Server-Sent Events (one-way, text-only, no framing dependency) before
-  committing to either.
+**Deferred:** cross-process updates and incremental report computation. No
+filesystem watcher, polling tail, daemon, or cross-process bus was added.
 
-Expected implementation shape:
+**Superseded:** the roadmap's SSE-versus-WebSocket research question and
+signal-only/full-payload-on-every-change alternative. WebSocket is the selected
+transport; the server emits no delta for an unchanged DTO, and stale ETag or
+range state receives a full snapshot. Static HTML has no live runtime and
+remains unchanged.
 
-- an ADR for the transport and its lifetime;
-- one bounded change notification;
-- no new dependency unless the ADR justifies it;
-- the existing range/tab routes unchanged.
-
-Before merge:
-
-1. the transport ADR is accepted;
-2. a test proves an unchanged payload is not re-sent;
-3. a `file://` report is verified unchanged.
+Verification: tests cover unchanged DTO suppression, delta and snapshot
+resynchronization, authentication/origin/connection bounds, and existing static
+snapshot invariants; full project validation and `npm pack --dry-run` are
+required for the implementation PR.
 ### 6. Attributing tokens and cost to tools, skills, environment, and more
 
 **Status:** Research. **Depends on:** item 2 above — attribution cannot precede

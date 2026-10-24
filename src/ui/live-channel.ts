@@ -6,6 +6,7 @@ import { diffUiSnapshot, serializeUiSnapshot } from "./snapshot-revision.ts";
 import type { InspectorUiSnapshot } from "./ui-projection.ts";
 
 const MAX_SOCKETS = 8;
+const MAX_OUTBOUND_BUFFER_BYTES = 4 * 1024 * 1024;
 const AUTH_TIMEOUT_MS = 5_000;
 const COALESCE_MS = 200;
 const PING_MS = 30_000;
@@ -29,7 +30,14 @@ type SocketState = {
   timer: NodeJS.Timeout;
   baselineKey?: string;
   authenticated: boolean;
+  alive: boolean;
 };
+type Baseline = {
+  snapshot: InspectorUiSnapshot;
+  etag: string;
+  invalidationVersion: number;
+};
+type Loading = { promise: Promise<Baseline> };
 
 /** Attaches a bounded noServer WebSocket channel to an existing loopback HTTP owner. */
 export function attachLiveChannel(
@@ -47,23 +55,25 @@ export function attachLiveChannel(
   let timer: NodeJS.Timeout | undefined;
   let ping: NodeJS.Timeout | undefined;
   let closed = false;
-  let refreshing = false;
+  let activeRefresh: { key?: string } | undefined;
   let dirty = false;
   let generation = 0;
-  const baselines = new Map<
-    string,
-    { snapshot: InspectorUiSnapshot; etag: string }
-  >();
-  const loading = new Map<
-    string,
-    Promise<{ snapshot: InspectorUiSnapshot; etag: string }>
-  >();
+  const baselines = new Map<string, Baseline>();
+  const loading = new Map<string, Loading>();
+  let invalidationVersion = 0;
   const etagKeys = new Map<string, Set<string>>();
   const startPing = (): void => {
     if (ping !== undefined) return;
     ping = setInterval(() => {
-      for (const state of sockets)
-        if (state.ws.readyState === WebSocket.OPEN) state.ws.ping();
+      for (const state of sockets) {
+        if (state.ws.readyState !== WebSocket.OPEN) continue;
+        if (!state.alive) {
+          state.ws.terminate();
+          continue;
+        }
+        state.alive = false;
+        state.ws.ping();
+      }
     }, PING_MS);
     ping.unref();
   };
@@ -83,7 +93,8 @@ export function attachLiveChannel(
     if (unsubscribe !== undefined) return;
     unsubscribe = sessionInvalidationSignal.subscribe(() => {
       if (closed || ![...sockets].some((state) => state.authenticated)) return;
-      if (refreshing) {
+      invalidationVersion++;
+      if (activeRefresh !== undefined) {
         dirty = true;
         return;
       }
@@ -121,6 +132,7 @@ export function attachLiveChannel(
           AUTH_TIMEOUT_MS,
         ),
         authenticated: false,
+        alive: true,
       };
       sockets.add(state);
       startPing();
@@ -161,8 +173,15 @@ export function attachLiveChannel(
         subscribeInvalidation();
         state.range = canonicalRange(parsed.intent);
         state.intent = parsed.intent;
-        state.baselineKey = baselineKey(state.context, parsed.intent);
+        state.baselineKey = baselineKey(
+          state.context,
+          parsed.intent,
+          generation,
+        );
         void initialize(state, input.etag);
+      });
+      ws.on("pong", () => {
+        state.alive = true;
       });
       ws.on("close", () => {
         clearTimeout(state.timer);
@@ -171,7 +190,7 @@ export function attachLiveChannel(
           state.baselineKey !== undefined &&
           !hasSubscriber(state.baselineKey)
         ) {
-          removeBaseline(state.baselineKey);
+          retireBaseline(state.baselineKey);
         }
         if (![...sockets].some((candidate) => candidate.authenticated)) {
           clearSubscription();
@@ -188,30 +207,60 @@ export function attachLiveChannel(
     });
   };
   server.on("upgrade", onUpgrade);
+  function sendMessage(
+    state: SocketState,
+    message: Record<string, unknown>,
+  ): void {
+    const payload = JSON.stringify(message);
+    if (payload === undefined) {
+      state.ws.close(1011, "unavailable");
+      return;
+    }
+    if (
+      state.ws.bufferedAmount + Buffer.byteLength(payload) >
+      MAX_OUTBOUND_BUFFER_BYTES
+    ) {
+      state.ws.terminate();
+      return;
+    }
+    state.ws.send(payload);
+  }
   function loadBaseline(
     context: Context,
     intent?: RangeIntent,
-  ): Promise<{ snapshot: InspectorUiSnapshot; etag: string }> {
-    const key = baselineKey(context, intent);
+  ): Promise<Baseline> {
+    const key = baselineKey(context, intent, generation);
     const cached = baselines.get(key);
     if (cached !== undefined) return Promise.resolve(cached);
     const pending = loading.get(key);
-    if (pending !== undefined) return pending;
+    if (pending !== undefined) return pending.promise;
     const requestGeneration = generation;
+    const requestVersion = invalidationVersion;
+    let record!: Loading;
     const request = context
       .loadUi(intent)
       .then((snapshot) => {
         const serialized = serializeUiSnapshot(snapshot);
-        const baseline = { snapshot, etag: serialized.etag };
-        if (!closed && requestGeneration === generation && hasSubscriber(key)) {
+        const baseline = {
+          snapshot,
+          etag: serialized.etag,
+          invalidationVersion: requestVersion,
+        };
+        if (
+          !closed &&
+          requestGeneration === generation &&
+          loading.get(key) === record &&
+          hasSubscriber(key)
+        ) {
           storeBaseline(key, baseline);
         }
         return baseline;
       })
       .finally(() => {
-        if (loading.get(key) === request) loading.delete(key);
+        if (loading.get(key) === record) loading.delete(key);
       });
-    loading.set(key, request);
+    record = { promise: request };
+    loading.set(key, record);
     return request;
   }
   function hasSubscriber(key: string): boolean {
@@ -219,15 +268,23 @@ export function attachLiveChannel(
       (state) => state.authenticated && state.baselineKey === key,
     );
   }
-  function storeBaseline(
-    key: string,
-    baseline: { snapshot: InspectorUiSnapshot; etag: string },
-  ): void {
+  function storeBaseline(key: string, baseline: Baseline): void {
     removeBaseline(key);
     baselines.set(key, baseline);
     const keys = etagKeys.get(baseline.etag) ?? new Set<string>();
     keys.add(key);
     etagKeys.set(baseline.etag, keys);
+  }
+  function retireBaseline(key: string): void {
+    const retired = baselines.has(key) || loading.has(key);
+    removeBaseline(key);
+    loading.delete(key);
+    if (!retired || activeRefresh?.key !== key) return;
+    activeRefresh = undefined;
+    dirty = false;
+    if (!closed && [...sockets].some((state) => state.authenticated)) {
+      scheduleRefresh();
+    }
   }
   function removeBaseline(key: string): void {
     const baseline = baselines.get(key);
@@ -245,25 +302,26 @@ export function attachLiveChannel(
       const staleRange =
         knownKeys !== undefined &&
         [...knownKeys].some((key) => key !== state.baselineKey);
-      state.ws.send(
-        JSON.stringify(
-          etag === baseline.etag && !staleRange
-            ? { type: "ready", etag: baseline.etag }
-            : {
-                type: "snapshot",
-                etag: baseline.etag,
-                snapshot: baseline.snapshot,
-              },
-        ),
+      sendMessage(
+        state,
+        etag === baseline.etag && !staleRange
+          ? { type: "ready", etag: baseline.etag }
+          : {
+              type: "snapshot",
+              etag: baseline.etag,
+              snapshot: baseline.snapshot,
+            },
       );
     } catch {
       state.ws.close(1011, "unavailable");
     }
   }
   async function refresh(): Promise<void> {
-    if (refreshing || closed) return;
-    refreshing = true;
+    if (activeRefresh !== undefined || closed) return;
+    const refreshPass: { key?: string } = {};
+    activeRefresh = refreshPass;
     dirty = false;
+    const refreshGeneration = generation;
     try {
       const groups = new Map<string, SocketState[]>();
       for (const state of sockets) {
@@ -287,42 +345,71 @@ export function attachLiveChannel(
         groups.set(state.baselineKey, group);
       }
       for (const [key, group] of groups) {
+        if (
+          closed ||
+          activeRefresh !== refreshPass ||
+          refreshGeneration !== generation
+        )
+          return;
         const first = group[0];
         if (first === undefined) continue;
+        const recipients = group.filter(
+          (state) =>
+            state.authenticated &&
+            state.ws.readyState === WebSocket.OPEN &&
+            sockets.has(state),
+        );
+        if (recipients.length === 0) continue;
+        refreshPass.key = key;
         const previous = baselines.get(key);
         removeBaseline(key);
-        let next: { snapshot: InspectorUiSnapshot; etag: string };
+        let next: Baseline;
         try {
           next = await loadBaseline(getContext(), first.intent);
         } catch {
+          if (
+            closed ||
+            activeRefresh !== refreshPass ||
+            refreshGeneration !== generation
+          )
+            return;
           for (const state of group) state.ws.close(1011, "unavailable");
           continue;
         }
+        if (
+          closed ||
+          activeRefresh !== refreshPass ||
+          refreshGeneration !== generation
+        )
+          return;
+        if (next.invalidationVersion < invalidationVersion) dirty = true;
         if (previous === undefined || next.etag === previous.etag) continue;
         const changes = diffUiSnapshot(previous.snapshot, next.snapshot);
         if (changes !== undefined)
-          for (const state of group) {
+          for (const state of recipients) {
             if (state.ws.readyState === WebSocket.OPEN)
-              state.ws.send(
-                JSON.stringify({
-                  type: "delta",
-                  baseEtag: previous.etag,
-                  etag: next.etag,
-                  changes,
-                }),
-              );
+              sendMessage(state, {
+                type: "delta",
+                baseEtag: previous.etag,
+                etag: next.etag,
+                changes,
+              });
           }
       }
     } finally {
-      refreshing = false;
-      if (dirty && !closed) {
-        dirty = false;
-        scheduleRefresh();
+      if (activeRefresh === refreshPass) {
+        activeRefresh = undefined;
+        if (dirty && !closed) {
+          dirty = false;
+          scheduleRefresh();
+        }
       }
     }
   }
   function clearBaseline(): void {
+    activeRefresh = undefined;
     baselines.clear();
+    loading.clear();
     etagKeys.clear();
     dirty = false;
     if (timer !== undefined) clearTimeout(timer);
@@ -373,8 +460,10 @@ export function attachLiveChannel(
 function baselineKey(
   context: Context,
   intent: RangeIntent | undefined,
+  generation: number,
 ): string {
   return JSON.stringify([
+    generation,
     context.runtimeId,
     context.projectRoot,
     context.initialScope,

@@ -1108,6 +1108,165 @@ test("explicit refresh remains a full snapshot and resubscribes with its ETag", 
   );
 });
 
+test("live snapshots refresh known session IDs and removed IDs are rejected", async () => {
+  const initial = uiSnapshot();
+  const member = initial.history.sessions.find(
+    (session) => session.sessionId === "session-a",
+  );
+  if (member?.view?.report === undefined) {
+    throw new Error("fixture must publish an available session");
+  }
+  const incoming = {
+    ...initial,
+    history: {
+      ...initial.history,
+      sessions: [
+        ...initial.history.sessions,
+        {
+          ...member,
+          sessionId: "live-session",
+          view: {
+            ...member.view,
+            report: { ...member.view.report, sessionId: "live-session" },
+          },
+        },
+      ],
+    },
+  };
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.receiveSocket({ type: "snapshot", etag: ETAG_2, snapshot: incoming });
+
+  harness.location.hash = "#/history/overview?session=live-session";
+  harness.hashchange();
+  assert.equal(
+    harness.location.hash,
+    "#/history/overview?session=live-session",
+  );
+  assert.equal(harness.element("breadcrumb").textContent, "live-session");
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_2,
+    etag: ETAG_3,
+    changes: {
+      history: {
+        ...incoming.history,
+        sessions: incoming.history.sessions.filter(
+          (session) => session.sessionId !== "live-session",
+        ),
+      },
+    },
+  });
+  assert.equal(harness.location.hash, "#/history/overview");
+  assert.notEqual(harness.element("breadcrumb").textContent, "live-session");
+});
+
+test("live deltas expose links for newly published model IDs", async () => {
+  const initial = uiSnapshot();
+  const incoming = uiSnapshot();
+  const range = incoming.current.tree.range;
+  const report = incoming.current.tree.report;
+  const rangeModel = range?.models[0];
+  const reportModel = report?.models[0];
+  if (
+    range === undefined ||
+    report === undefined ||
+    rangeModel === undefined ||
+    reportModel === undefined
+  ) {
+    throw new Error("fixture must publish a model in the tree range");
+  }
+  range.models = [
+    ...range.models,
+    { ...rangeModel, provider: "live", model: "delta" },
+  ];
+  report.models = [
+    ...report.models,
+    { ...reportModel, provider: "live", model: "delta" },
+  ];
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { current: incoming.current },
+  });
+  harness.location.hash = "#/current/llm?scope=tree";
+  harness.hashchange();
+
+  const liveLink = harness
+    .element("view")
+    .querySelectorAll("a")
+    .find((link) => link.dataset.entity === "model:live/delta");
+  assert.notEqual(liveLink, undefined);
+  harness.click(liveLink as StubElement);
+  assert.equal(
+    harness.location.hash,
+    (liveLink as StubElement).attributes.href,
+  );
+  assert.equal(harness.activeElement()?.dataset.entity, "model:live/delta");
+});
+
+test("live deltas reconcile added and withdrawn tab capabilities", async () => {
+  const initial = uiSnapshot();
+  initial.initialScope = "active";
+  initial.current.active.capabilities = [];
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  assert.deepEqual(visibleTabs(harness), []);
+
+  const available = uiSnapshot();
+  available.current.active.capabilities = ALL_TABS;
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { current: available.current },
+  });
+  assert.deepEqual(visibleTabs(harness), ALL_TABS);
+  assert.equal(currentTab(harness), "overview");
+
+  harness.location.hash = "#/current/llm?scope=active";
+  harness.hashchange();
+  assert.equal(currentTab(harness), "llm");
+  const withdrawn = uiSnapshot();
+  withdrawn.current.active.capabilities = ["overview"];
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_2,
+    etag: ETAG_3,
+    changes: { current: withdrawn.current },
+  });
+  assert.deepEqual(visibleTabs(harness), ["overview"]);
+  assert.equal(currentTab(harness), "overview");
+  assert.equal(harness.location.hash, "#/current/overview?scope=active");
+  assert.equal(harness.element("route-notice").hidden, false);
+  assert.equal(
+    harness.element("route-notice").textContent,
+    "That view isn't available here.",
+  );
+});
+
 test("file snapshots do not exchange a capability or open a live channel", async () => {
   const harness = createWebClient({
     protocol: "file:",
@@ -1125,10 +1284,10 @@ test("file snapshots do not exchange a capability or open a live channel", async
 test("a matching live delta replaces only its DTO section without an HTTP load", async () => {
   const first = uiSnapshot();
   const changed = uiSnapshot();
-  if (changed.current.active.report === undefined) {
-    throw new Error("fixture must carry the active report");
+  if (changed.current.tree.report === undefined) {
+    throw new Error("fixture must carry the tree report");
   }
-  changed.current.active.report.compactionCount = 42;
+  changed.current.tree.report.compactionCount = 42;
   const harness = createWebClient({
     hash: `#token=${TOKEN}`,
     responses: [first],
@@ -1149,18 +1308,190 @@ test("a matching live delta replaces only its DTO section without an HTTP load",
   assert.equal(harness.fetchRequests().length, 2);
   assert.equal(harness.renders() > renders, true);
   assert.equal(harness.element("loading").hidden, true);
+  assert.equal(
+    metrics(harness).some(
+      (card) => card.includes("Compactions") && card.includes("42"),
+    ),
+    true,
+  );
   assert.equal(harness.element("live-status").textContent, "Live");
 });
 
-test("a mismatched live delta recovers by HTTP without showing report loading", async () => {
+test("live deltas preserve sort focus across unrelated and same-view updates", async () => {
+  const first = uiSnapshot();
+  const unrelated = uiSnapshot();
+  unrelated.global.trackedSessions = 999;
+  const changed = uiSnapshot();
+  if (changed.current.tree.report === undefined) {
+    throw new Error("fixture must carry the tree report");
+  }
+  changed.current.tree.report.compactionCount = 42;
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [first],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.location.hash = "#/current/tools?scope=tree";
+  harness.hashchange();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  harness.element("sort").focus();
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { global: unrelated.global },
+  });
+  assert.ok(
+    harness.activeElement() === harness.element("sort"),
+    "live delta should retain focus on the sort selector",
+  );
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_2,
+    etag: ETAG_3,
+    changes: { current: changed.current },
+  });
+  assert.ok(
+    harness.activeElement() === harness.element("sort"),
+    "same-view delta should retain focus on the sort selector",
+  );
+});
+
+test("live snapshots preserve focus on non-search view controls", async () => {
+  const first = uiSnapshot();
+  const unrelated = uiSnapshot();
+  unrelated.global.trackedSessions = 999;
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [first],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.location.hash = "#/history/overview";
+  harness.hashchange();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  const control = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.notEqual(control, undefined);
+  (control as StubElement).focus();
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { global: unrelated.global },
+  });
+  const restored = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.ok(
+    harness.activeElement() === restored,
+    "live delta should retain focus on the available-only button",
+  );
+
+  harness.receiveSocket({ type: "snapshot", etag: ETAG_3, snapshot: first });
+  const afterSnapshot = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.ok(
+    harness.activeElement() === afterSnapshot,
+    "live snapshot should retain focus on the available-only button",
+  );
+});
+
+test("live updates preserve focus on repeated Copy ID controls", async () => {
+  const first = uiSnapshot();
+  const unrelated = uiSnapshot();
+  unrelated.global.trackedSessions = 999;
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [first, uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.location.hash = "#/history/overview";
+  harness.hashchange();
+  const reveal = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  if (reveal === undefined)
+    throw new Error("history reveal control is missing");
+  harness.click(reveal);
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const copyButtons = (): StubElement[] =>
+    harness
+      .element("view")
+      .querySelectorAll("button")
+      .filter((button) => button.dataset.copyId !== undefined);
+  assert.equal(copyButtons().length, 2);
+  const copyButton = (): StubElement | undefined =>
+    copyButtons().find((button) =>
+      button.getAttribute("aria-label")?.endsWith("session-a"),
+    );
+  const focusCopyButton = (): void => {
+    const button = copyButton();
+    if (button === undefined)
+      throw new Error("session-a copy button is missing");
+    button.focus();
+  };
+  const assertCopyButtonFocus = (message: string): void => {
+    assert.ok(harness.activeElement() === copyButton(), message);
+  };
+
+  focusCopyButton();
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { global: unrelated.global },
+  });
+  assertCopyButtonFocus(
+    "a delta should retain focus on the session-a copy button",
+  );
+
+  harness.receiveSocket({ type: "snapshot", etag: ETAG_3, snapshot: first });
+  assertCopyButtonFocus(
+    "a snapshot should retain focus on the session-a copy button",
+  );
+
+  focusCopyButton();
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { global: unrelated.global },
+  });
+  await settle();
+  assertCopyButtonFocus(
+    "quiet HTTP resynchronization should retain focus on the session-a copy button",
+  );
+});
+
+test("a mismatched live delta recovers quietly without losing view focus", async () => {
   const harness = createWebClient({
     hash: `#token=${TOKEN}`,
     responses: [uiSnapshot(), uiSnapshot()],
     etags: [ETAG_1, ETAG_2],
   });
   await harness.start();
+  harness.location.hash = "#/current/tools?scope=tree";
+  harness.hashchange();
+  await settle();
   harness.openSocket();
   harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.element("sort").focus();
 
   harness.receiveSocket({
     type: "delta",
@@ -1170,6 +1501,10 @@ test("a mismatched live delta recovers by HTTP without showing report loading", 
   });
   await settle();
 
+  assert.ok(
+    harness.activeElement() === harness.element("sort"),
+    "quiet HTTP resynchronization should restore focus to the sort selector",
+  );
   assert.deepEqual(harness.fetchRequests().slice(-1), [
     {
       url: "/api/v1/ui",

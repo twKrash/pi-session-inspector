@@ -3507,6 +3507,51 @@
     viewSettings[key] = settings;
   };
 
+  const captureViewFocus = (active, output) => {
+    if (active === null || output === null || active.id === "search") return null;
+    let current = active;
+    while (current !== null && current !== output) current = current.parentNode;
+    if (current !== output || typeof active.tagName !== "string") return null;
+    const tagName = active.tagName.toLowerCase();
+    if (active.id !== "") return { tagName: tagName, id: active.id };
+    const data = active.dataset;
+    if (data !== undefined && data.copyId !== undefined) {
+      // Copy buttons share a marker; their accessible label adds the row identity.
+      const label = active.getAttribute("aria-label");
+      if (label !== null && label !== "") {
+        return { tagName: tagName, attribute: "aria-label", value: label };
+      }
+    }
+    if (data !== undefined && Object.keys(data).length > 0) {
+      return { tagName: tagName, dataset: assign({}, data) };
+    }
+    for (const attribute of ["href", "name", "aria-label"]) {
+      const value = active.getAttribute(attribute);
+      if (value !== null && value !== "") {
+        return { tagName: tagName, attribute: attribute, value: value };
+      }
+    }
+    return null;
+  };
+
+  const restoreViewFocus = (identity, output) => {
+    if (identity === null || output === null) return;
+    const matches = Array.from(output.querySelectorAll(identity.tagName)).filter(
+      (candidate) => {
+        if (identity.id !== undefined) return candidate.id === identity.id;
+        if (identity.dataset !== undefined) {
+          return Object.keys(identity.dataset).every(
+            (key) => candidate.dataset[key] === identity.dataset[key],
+          );
+        }
+        return candidate.getAttribute(identity.attribute) === identity.value;
+      },
+    );
+    if (matches.length === 1 && typeof matches[0].focus === "function") {
+      matches[0].focus();
+    }
+  };
+
   const render = (effects) => {
     if (snapshot === null) return;
     const flags = effects === undefined ? {} : effects;
@@ -3514,7 +3559,12 @@
     // keystroke came from loses its focus and caret with it: hold both across
     // the swap and give them back to the search box that had them.
     const active = document.activeElement;
+    const output = q("view");
     const held = active !== null && active.id === "search";
+    const heldViewFocus =
+      flags.preserveViewFocus === true
+        ? captureViewFocus(active, output)
+        : null;
     const caret =
       held && typeof active.selectionStart === "number"
         ? active.selectionStart
@@ -3528,7 +3578,6 @@
     syncHeadings();
     // The chart is drawn on a canvas inside the subtree about to be replaced.
     destroyChart();
-    const output = q("view");
     if (output !== null) {
       const stack = el("div", "view-stack");
       stack.append(...viewNodes());
@@ -3553,6 +3602,8 @@
           search.setSelectionRange(caret, caret);
         }
       }
+    } else if (heldViewFocus !== null) {
+      restoreViewFocus(heldViewFocus, output);
     }
     const announcement = q("announcement");
     if (announcement !== null && flags.announce !== false) {
@@ -3632,7 +3683,8 @@
   };
 
   const recoverLiveSnapshot = () => {
-    if (loadedQuery !== null) request(loadedQuery, {}, true, true);
+    if (loadedQuery !== null)
+      request(loadedQuery, { preserveViewFocus: true }, true, true);
   };
 
   const applyLiveSnapshot = (message) => {
@@ -3646,9 +3698,10 @@
       return;
     }
     setLiveStatus(COPY["live.updating"], "updating");
+    known = null;
     snapshot = message.snapshot;
     etag = message.etag;
-    apply({}, true, true);
+    apply({ preserveViewFocus: true }, true, true);
     reconnectAttempt = 0;
     setLiveStatus(COPY["live.connected"], "live");
   };
@@ -3677,9 +3730,10 @@
       return;
     }
     setLiveStatus(COPY["live.updating"], "updating");
+    known = null;
     snapshot = assign(snapshot, changes);
     etag = message.etag;
-    render({ announce: false });
+    apply({ preserveViewFocus: true }, true, true);
     reconnectAttempt = 0;
     setLiveStatus(COPY["live.connected"], "live");
   };
@@ -3887,7 +3941,12 @@
     const query = requestQuery(location.hash || "");
     const stale = query !== loadedQuery;
     if (!stale && appliedKey === lastAppliedKey) {
-      if (force === true) render(renderEffects);
+      if (force === true) {
+        stateNotice = derived.notice !== undefined ? derived.notice : parsed.notice;
+        state = applied;
+        view = derived;
+        render(renderEffects);
+      }
       return;
     }
     lastAppliedKey = appliedKey;

@@ -31,3 +31,4 @@ Amend an ADR only to correct it. Add a superseding ADR for a changed decision.
 | [0021](0021-agent-run-effort-and-coverage.md) | Agent-run effort and coverage |
 | [0022](0022-pi-subagents-observability-contract-and-reconciliation-boundary.md) | pi-subagents observability contract and reconciliation boundary |
 | [0023](0023-detached-foreground-terminal-history.md) | Detached foreground terminal enrichment |
+| [0027](0027-localhost-live-websocket-deltas.md) | Same-process WebSocket deltas for the localhost UI |
