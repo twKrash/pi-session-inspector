@@ -549,7 +549,11 @@ function setupProductionSessionWal(input: {
         root,
         now: () => new Date(),
         onSegmentRotation,
-        onFlushed: () => sessionInvalidationSignal.notify(),
+        onFlushed: () =>
+          sessionInvalidationSignal.notify({
+            runtimeId: input.runtimeId,
+            sessionId: input.sessionId,
+          }),
       });
       // Keyed by session so a concurrent/repeated promotion never clobbers
       // another session's writer handle.

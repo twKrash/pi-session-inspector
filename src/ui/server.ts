@@ -477,10 +477,7 @@ async function handleRequest(
       req.resume();
       return;
     }
-    await new Promise<void>((resolve) => {
-      req.on("end", resolve);
-      req.resume();
-    });
+    req.resume();
     const capability = state.capabilities.exchange(token);
     if (capability === undefined) {
       sendProblem(res, "unauthorized", { reason: "bootstrap" });

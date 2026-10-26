@@ -30,6 +30,8 @@ type SocketState = {
   timer: NodeJS.Timeout;
   baselineKey?: string;
   authenticated: boolean;
+  initialized: boolean;
+  clientEtag?: string;
   alive: boolean;
 };
 type Baseline = {
@@ -91,8 +93,15 @@ export function attachLiveChannel(
   let unsubscribe: (() => void) | undefined;
   const subscribeInvalidation = (): void => {
     if (unsubscribe !== undefined) return;
-    unsubscribe = sessionInvalidationSignal.subscribe(() => {
-      if (closed || ![...sockets].some((state) => state.authenticated)) return;
+    unsubscribe = sessionInvalidationSignal.subscribe((event) => {
+      if (
+        closed ||
+        ![...sockets].some(
+          (state) =>
+            state.authenticated && state.context.runtimeId === event.runtimeId,
+        )
+      )
+        return;
       invalidationVersion++;
       if (activeRefresh !== undefined) {
         dirty = true;
@@ -132,6 +141,7 @@ export function attachLiveChannel(
           AUTH_TIMEOUT_MS,
         ),
         authenticated: false,
+        initialized: false,
         alive: true,
       };
       sockets.add(state);
@@ -173,6 +183,7 @@ export function attachLiveChannel(
         subscribeInvalidation();
         state.range = canonicalRange(parsed.intent);
         state.intent = parsed.intent;
+        state.clientEtag = input.etag;
         state.baselineKey = baselineKey(
           state.context,
           parsed.intent,
@@ -296,12 +307,63 @@ export function attachLiveChannel(
   }
   async function initialize(state: SocketState, etag: string): Promise<void> {
     try {
-      const baseline = await loadBaseline(state.context, state.intent);
+      const key = state.baselineKey;
+      const existedBeforeInitialize =
+        key !== undefined && (baselines.has(key) || loading.has(key));
+      let baseline = await loadBaseline(state.context, state.intent);
+      if (
+        existedBeforeInitialize &&
+        etag !== baseline.etag &&
+        baselines.get(key ?? "") === baseline
+      ) {
+        const requestGeneration = generation;
+        const previousBaseline = baseline;
+        const freshSnapshot = await state.context.loadUi(state.intent);
+        if (
+          closed ||
+          requestGeneration !== generation ||
+          !hasSubscriber(state.baselineKey ?? "")
+        )
+          return;
+        let currentBaseline = baselines.get(key ?? "");
+        if (currentBaseline === undefined && key !== undefined) {
+          baseline = await loadBaseline(state.context, state.intent);
+          currentBaseline = baselines.get(key);
+        } else if (currentBaseline !== previousBaseline) {
+          baseline = currentBaseline ?? baseline;
+        } else {
+          baseline = {
+            snapshot: freshSnapshot,
+            etag: serializeUiSnapshot(freshSnapshot).etag,
+            invalidationVersion,
+          };
+        }
+        if (key !== undefined && currentBaseline === previousBaseline) {
+          storeBaseline(key, baseline);
+          for (const subscriber of sockets) {
+            if (
+              subscriber !== state &&
+              subscriber.baselineKey === key &&
+              subscriber.authenticated &&
+              subscriber.ws.readyState === WebSocket.OPEN
+            ) {
+              sendMessage(subscriber, {
+                type: "snapshot",
+                etag: baseline.etag,
+                snapshot: baseline.snapshot,
+              });
+              subscriber.clientEtag = baseline.etag;
+            }
+          }
+        }
+      }
       if (state.ws.readyState !== WebSocket.OPEN) return;
       const knownKeys = etagKeys.get(etag);
       const staleRange =
         knownKeys !== undefined &&
         [...knownKeys].some((key) => key !== state.baselineKey);
+      state.initialized = true;
+      state.clientEtag = baseline.etag;
       sendMessage(
         state,
         etag === baseline.etag && !staleRange
@@ -353,13 +415,6 @@ export function attachLiveChannel(
           return;
         const first = group[0];
         if (first === undefined) continue;
-        const recipients = group.filter(
-          (state) =>
-            state.authenticated &&
-            state.ws.readyState === WebSocket.OPEN &&
-            sockets.has(state),
-        );
-        if (recipients.length === 0) continue;
         refreshPass.key = key;
         const previous = baselines.get(key);
         removeBaseline(key);
@@ -383,18 +438,36 @@ export function attachLiveChannel(
         )
           return;
         if (next.invalidationVersion < invalidationVersion) dirty = true;
-        if (previous === undefined || next.etag === previous.etag) continue;
-        const changes = diffUiSnapshot(previous.snapshot, next.snapshot);
-        if (changes !== undefined)
-          for (const state of recipients) {
-            if (state.ws.readyState === WebSocket.OPEN)
-              sendMessage(state, {
-                type: "delta",
-                baseEtag: previous.etag,
-                etag: next.etag,
-                changes,
-              });
+        if (previous === undefined) continue;
+        const changes =
+          next.etag === previous.etag
+            ? undefined
+            : diffUiSnapshot(previous.snapshot, next.snapshot);
+        for (const state of sockets) {
+          if (
+            !state.authenticated ||
+            !state.initialized ||
+            state.baselineKey !== key ||
+            state.ws.readyState !== WebSocket.OPEN
+          )
+            continue;
+          if (state.clientEtag === next.etag) continue;
+          if (changes !== undefined && state.clientEtag === previous.etag) {
+            sendMessage(state, {
+              type: "delta",
+              baseEtag: previous.etag,
+              etag: next.etag,
+              changes,
+            });
+          } else {
+            sendMessage(state, {
+              type: "snapshot",
+              etag: next.etag,
+              snapshot: next.snapshot,
+            });
           }
+          state.clientEtag = next.etag;
+        }
       }
     } finally {
       if (activeRefresh === refreshPass) {

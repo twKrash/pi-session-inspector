@@ -95,6 +95,57 @@ function subscribe(
 ) {
   ws.send(JSON.stringify({ type: "subscribe", capability, etag, range }));
 }
+function invalidate(runtimeId = "r", sessionId = "s") {
+  sessionInvalidationSignal.notify({ runtimeId, sessionId });
+}
+
+test("ignores invalidation events from another runtime", async () => {
+  const { server, address, origin } = await listen();
+  let loads = 0;
+  let theme: "light" | "dark" = "light";
+  const context = {
+    runtimeId: "r",
+    projectRoot: "/p",
+    initialScope: "active",
+    loadUi: async () => {
+      loads++;
+      return { ...snapshot, theme } as InspectorUiSnapshot;
+    },
+  };
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => context,
+    () => true,
+  );
+  const ws = openSocket(address.port, origin);
+  try {
+    await ready(ws);
+    const { etag } = (
+      await import("../../src/ui/snapshot-revision.ts")
+    ).serializeUiSnapshot(snapshot);
+    subscribe(ws, "secret", etag);
+    assert.equal(JSON.parse(await message(ws)).type, "ready");
+    assert.equal(loads, 1);
+
+    invalidate("another-runtime", "another-session");
+    await new Promise((resolve) => setTimeout(resolve, 240));
+    assert.equal(
+      loads,
+      1,
+      "foreign runtime invalidation must not refresh this channel",
+    );
+
+    theme = "dark";
+    const update = messageWithin(ws, 1_000);
+    invalidate("r", "s");
+    assert.equal(JSON.parse((await update) ?? "null").type, "delta");
+    assert.equal(loads, 2);
+  } finally {
+    ws.close();
+    await stop(server, channel);
+  }
+});
 
 test("auth before report read; unchanged DTOs and deltas are controlled by canonical revision", async () => {
   const { server, address, origin } = await listen();
@@ -125,12 +176,12 @@ test("auth before report read; unchanged DTOs and deltas are controlled by canon
   subscribe(ws, "secret", first.etag);
   assert.equal(JSON.parse(await message(ws)).type, "ready");
   assert.equal(loads, 1);
-  sessionInvalidationSignal.notify();
+  invalidate();
   await new Promise((r) => setTimeout(r, 240));
   assert.equal(loads, 2);
   assert.equal(ws.readyState, WebSocket.OPEN);
   theme = "dark";
-  sessionInvalidationSignal.notify();
+  invalidate();
   const delta = JSON.parse(await message(ws));
   assert.equal(delta.type, "delta");
   assert.deepEqual(Object.keys(delta.changes), ["theme"]);
@@ -172,7 +223,7 @@ test("retires a slow subscriber before its outbound DTO queue exceeds the byte b
       get: () => 3 * 1024 * 1024,
     });
     payload = "y" + payload.slice(1);
-    sessionInvalidationSignal.notify();
+    invalidate();
     await waitFor(
       () => ws.readyState === WebSocket.CLOSED,
       "slow WebSocket subscriber termination",
@@ -218,7 +269,7 @@ test("one report load per shared runtime/project/scope/range baseline during a b
   await Promise.all([message(a), message(b)]);
   assert.equal(loads, 1);
   theme = "dark";
-  for (let i = 0; i < 5; i++) sessionInvalidationSignal.notify();
+  for (let i = 0; i < 5; i++) invalidate("generation-1");
   const [ma, mb] = await Promise.all([message(a), message(b)]);
   assert.equal(JSON.parse(ma).type, "delta");
   assert.equal(JSON.parse(mb).type, "delta");
@@ -285,7 +336,7 @@ test("a retired multi-range refresh cannot overwrite replacement baselines", asy
     subscribe(secondSocket, "cap", "stale", "preset=14");
     await Promise.all([message(old7), message(secondSocket)]);
 
-    sessionInvalidationSignal.notify();
+    invalidate();
     await refreshStarted;
 
     const old7Closed = new Promise<void>((resolve) =>
@@ -307,7 +358,7 @@ test("a retired multi-range refresh cannot overwrite replacement baselines", asy
 
     theme = "light";
     const update = messageWithin(current, 500);
-    sessionInvalidationSignal.notify();
+    invalidate();
     const delta = JSON.parse((await update) ?? "null");
     assert.equal(delta.type, "delta");
     assert.deepEqual(Object.keys(delta.changes), ["theme"]);
@@ -371,7 +422,7 @@ test("a final disconnect retires its refresh lock and captured range groups", as
     subscribe(secondSocket, "cap", "stale", "preset=14");
     await Promise.all([old7Message, old14Message]);
 
-    sessionInvalidationSignal.notify();
+    invalidate();
     await refreshStarted;
 
     const old7Closed = new Promise<void>((resolve) =>
@@ -393,7 +444,7 @@ test("a final disconnect retires its refresh lock and captured range groups", as
 
     theme = "light";
     const firstUpdate = messageWithin(current, 500);
-    sessionInvalidationSignal.notify();
+    invalidate();
     const firstDelta = JSON.parse((await firstUpdate) ?? "null");
     assert.equal(firstDelta.type, "delta");
     assert.equal(firstDelta.changes.theme, "light");
@@ -402,7 +453,7 @@ test("a final disconnect retires its refresh lock and captured range groups", as
     firstRefresh.resolve(snapshotForRange(range7));
     await new Promise<void>((resolve) => setImmediate(resolve));
     const secondUpdate = messageWithin(current, 500);
-    sessionInvalidationSignal.notify();
+    invalidate();
     const secondDelta = JSON.parse((await secondUpdate) ?? "null");
     assert.equal(secondDelta.type, "delta");
     assert.equal(secondDelta.changes.theme, "dark");
@@ -465,7 +516,7 @@ test("retiring another range preserves the active range's pending delta", async 
     const initialSnapshot = JSON.parse(initial);
     assert.equal(initialSnapshot.snapshot.theme, "dark");
 
-    sessionInvalidationSignal.notify();
+    invalidate();
     await refreshStarted;
 
     const retiringClosed = new Promise<void>((resolve) =>
@@ -492,7 +543,7 @@ test("retiring another range preserves the active range's pending delta", async 
 
     theme = "dark";
     const nextUpdate = messageWithin(active, 500);
-    sessionInvalidationSignal.notify();
+    invalidate();
     const nextDelta = JSON.parse((await nextUpdate) ?? "null");
     assert.equal(nextDelta.type, "delta");
     assert.equal(nextDelta.baseEtag, delta.etag);
@@ -500,6 +551,437 @@ test("retiring another range preserves the active range's pending delta", async 
   } finally {
     active.close();
     retiring?.close();
+    await stop(server, channel);
+  }
+});
+
+test("refresh reconciles a late cross-range subscriber captured before its range load", async () => {
+  const { server, address, origin } = await listen();
+  const rangeALoad = deferred<InspectorUiSnapshot>();
+  let announceRangeA!: () => void;
+  const rangeAStarted = new Promise<void>((resolve) => {
+    announceRangeA = resolve;
+  });
+  const counts = new Map<number, number>();
+  let theme: "light" | "dark" = "light";
+  const context = {
+    runtimeId: "r",
+    projectRoot: "/p",
+    initialScope: "active",
+    loadUi: async (intent?: RangeIntent) => {
+      const preset = intent?.kind === "preset" ? intent.preset : 0;
+      const count = (counts.get(preset) ?? 0) + 1;
+      counts.set(preset, count);
+      if (preset === 7 && count === 2) {
+        announceRangeA();
+        return rangeALoad.promise;
+      }
+      return {
+        ...snapshotForRange(intent ?? null),
+        theme,
+      } as InspectorUiSnapshot;
+    },
+  };
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => context,
+    () => true,
+  );
+  const a = openSocket(address.port, origin);
+  let b: WebSocket | undefined;
+  let lateB: WebSocket | undefined;
+  const bSeen: string[] = [];
+  try {
+    await ready(a);
+    b = openSocket(address.port, origin);
+    await ready(b);
+    b.on("message", (data) => bSeen.push(data.toString()));
+    lateB = openSocket(address.port, origin);
+    await ready(lateB);
+    const revisions = await import("../../src/ui/snapshot-revision.ts");
+    const initialA = revisions.serializeUiSnapshot(
+      snapshotForRange({ kind: "preset", preset: 7 } as RangeIntent),
+    ).etag;
+    const initialB = revisions.serializeUiSnapshot(
+      snapshotForRange({ kind: "preset", preset: 14 } as RangeIntent),
+    ).etag;
+    const initialAMessage = messageWithin(a);
+    const initialBMessage = messageWithin(b);
+    subscribe(a, "cap", initialA, "preset=7");
+    subscribe(b, "cap", initialB, "preset=14");
+    await Promise.all([initialAMessage, initialBMessage]);
+    const aUpdate = messageWithin(a, 3_000);
+    invalidate();
+    await waitFor(() => counts.get(7) === 2, "range A refresh loader", 1_000);
+    const lateMessage = message(lateB);
+    subscribe(lateB, "cap", initialB, "preset=14");
+    const lateReady = JSON.parse(await lateMessage);
+    assert.equal(lateReady.type, "ready");
+    theme = "dark";
+    const bUpdate = messageWithin(b, 3_000);
+    const lateUpdateMessage = messageWithin(lateB, 3_000);
+    rangeALoad.resolve({
+      ...snapshotForRange({ kind: "preset", preset: 7 } as RangeIntent),
+      theme,
+    } as InspectorUiSnapshot);
+    const aResult = await aUpdate;
+    assert.ok(aResult, "original range-A subscriber gets refresh update");
+    assert.equal(JSON.parse(aResult).type, "delta");
+    const bResult = await bUpdate;
+    assert.ok(
+      bResult,
+      `original range-B subscriber gets refresh update; seen=${JSON.stringify(bSeen)}`,
+    );
+    assert.equal(JSON.parse(bResult).type, "delta");
+    assert.equal(
+      counts.get(14),
+      2,
+      "refresh should load range B after range A",
+    );
+    const lateUpdate = await lateUpdateMessage;
+    assert.equal(JSON.parse(lateUpdate ?? "null").type, "delta");
+  } finally {
+    a.close();
+    b?.close();
+    lateB?.close();
+    await stop(server, channel);
+  }
+});
+
+test("late subscriber joins refresh publication at its HTTP revision", async () => {
+  const { server, address, origin } = await listen();
+  const refreshLoad = deferred<InspectorUiSnapshot>();
+  let announceRefresh!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => {
+    announceRefresh = resolve;
+  });
+  let loads = 0;
+  let theme: "light" | "dark" = "light";
+  const context = {
+    runtimeId: "r",
+    projectRoot: "/p",
+    initialScope: "active",
+    loadUi: async () => {
+      loads++;
+      if (loads === 2) {
+        announceRefresh();
+        return refreshLoad.promise;
+      }
+      return { ...snapshot, theme } as InspectorUiSnapshot;
+    },
+  };
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => context,
+    () => true,
+  );
+  const a = openSocket(address.port, origin),
+    b = openSocket(address.port, origin);
+  try {
+    await Promise.all([ready(a), ready(b)]);
+    const revisions = await import("../../src/ui/snapshot-revision.ts");
+    const oldEtag = revisions.serializeUiSnapshot(snapshot).etag;
+    subscribe(a, "cap", oldEtag);
+    assert.equal(JSON.parse(await message(a)).type, "ready");
+    theme = "dark";
+    const freshEtag = revisions.serializeUiSnapshot({
+      ...snapshot,
+      theme,
+    } as InspectorUiSnapshot).etag;
+    const aUpdate = message(a);
+    invalidate();
+    await refreshStarted;
+    const bInitial = message(b);
+    subscribe(b, "cap", freshEtag);
+    refreshLoad.resolve({ ...snapshot, theme } as InspectorUiSnapshot);
+    const [aDelta, initial] = await Promise.all([aUpdate, bInitial]);
+    assert.equal(JSON.parse(aDelta).type, "delta");
+    assert.equal(JSON.parse(initial).type, "ready");
+    assert.equal(loads, 2);
+  } finally {
+    a.close();
+    b.close();
+    await stop(server, channel);
+  }
+});
+
+test("initializer uses newer baseline published before revalidation resolves", async () => {
+  const { server, address, origin } = await listen();
+  const revalidation = deferred<InspectorUiSnapshot>();
+  let loads = 0;
+  let announceRevalidation!: () => void;
+  const revalidationStarted = new Promise<void>((resolve) => {
+    announceRevalidation = resolve;
+  });
+  let theme: "light" | "dark" = "light";
+  const context = {
+    runtimeId: "r",
+    projectRoot: "/p",
+    initialScope: "active",
+    loadUi: async () => {
+      loads++;
+      if (loads === 2) {
+        announceRevalidation();
+        return revalidation.promise;
+      }
+      return { ...snapshot, theme } as InspectorUiSnapshot;
+    },
+  };
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => context,
+    () => true,
+  );
+  const a = openSocket(address.port, origin),
+    b = openSocket(address.port, origin);
+  try {
+    await Promise.all([ready(a), ready(b)]);
+    const { etag: oldEtag } = await import(
+      "../../src/ui/snapshot-revision.ts"
+    ).then((m) => m.serializeUiSnapshot(snapshot));
+    subscribe(a, "cap", oldEtag);
+    assert.equal(JSON.parse(await message(a)).type, "ready");
+    const { etag: freshEtag } = await import(
+      "../../src/ui/snapshot-revision.ts"
+    ).then((m) =>
+      m.serializeUiSnapshot({
+        ...snapshot,
+        theme: "dark",
+      } as InspectorUiSnapshot),
+    );
+    const bInitial = message(b);
+    subscribe(b, "cap", freshEtag);
+    await revalidationStarted;
+    theme = "dark";
+    const aDelta = message(a);
+    invalidate();
+    assert.equal(JSON.parse(await aDelta).type, "delta");
+    revalidation.resolve({
+      ...snapshot,
+      theme: "light",
+    } as InspectorUiSnapshot);
+    const initial = JSON.parse(await bInitial);
+    assert.equal(
+      initial.type,
+      "ready",
+      "fresh HTTP revision remains current; stale read is not sent",
+    );
+    assert.equal(initial.snapshot, undefined);
+    assert.equal(loads, 3);
+  } finally {
+    a.close();
+    b.close();
+    await stop(server, channel);
+  }
+});
+
+test("stale revalidation publishes an in-flight invalidation to existing subscribers", async () => {
+  const { server, address, origin } = await listen();
+  const revalidation = deferred<InspectorUiSnapshot>();
+  let announceRevalidation!: () => void;
+  const revalidationStarted = new Promise<void>((resolve) => {
+    announceRevalidation = resolve;
+  });
+  let loads = 0;
+  let theme: "light" | "dark" = "light";
+  const context = {
+    runtimeId: "r",
+    projectRoot: "/p",
+    initialScope: "active",
+    loadUi: async () => {
+      loads++;
+      if (loads === 2) {
+        announceRevalidation();
+        return revalidation.promise;
+      }
+      return { ...snapshot, theme } as InspectorUiSnapshot;
+    },
+  };
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => context,
+    () => true,
+  );
+  const a = openSocket(address.port, origin);
+  const b = openSocket(address.port, origin);
+  try {
+    await Promise.all([ready(a), ready(b)]);
+    const revisions = await import("../../src/ui/snapshot-revision.ts");
+    const oldEtag = revisions.serializeUiSnapshot(snapshot).etag;
+    const freshSnapshot = { ...snapshot, theme: "dark" } as InspectorUiSnapshot;
+    const freshEtag = revisions.serializeUiSnapshot(freshSnapshot).etag;
+    const aInitial = message(a);
+    subscribe(a, "cap", oldEtag);
+    assert.equal(JSON.parse(await aInitial).type, "ready");
+
+    const aUpdate = message(a);
+    const bInitial = message(b);
+    subscribe(b, "cap", freshEtag);
+    await revalidationStarted;
+    theme = "dark";
+    invalidate();
+    revalidation.resolve(freshSnapshot);
+
+    const [update, initial] = await Promise.all([aUpdate, bInitial]);
+    const updateMessage = JSON.parse(update);
+    assert.equal(updateMessage.type, "snapshot");
+    assert.equal(updateMessage.etag, freshEtag);
+    assert.equal(updateMessage.snapshot.theme, "dark");
+    assert.deepEqual(JSON.parse(initial), { type: "ready", etag: freshEtag });
+    assert.equal(
+      loads,
+      2,
+      "the initializer publishes before the coalesced refresh",
+    );
+  } finally {
+    a.close();
+    b.close();
+    await stop(server, channel);
+  }
+});
+
+test("mismatched subscriber revalidates shared baseline and advances all subscribers", async () => {
+  const { server, address, origin } = await listen();
+  let theme: "light" | "dark" = "light";
+  let loads = 0;
+  const context = {
+    runtimeId: "r",
+    projectRoot: "/p",
+    initialScope: "active",
+    loadUi: async () => {
+      loads++;
+      return { ...snapshot, theme } as InspectorUiSnapshot;
+    },
+  };
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => context,
+    () => true,
+  );
+  const a = openSocket(address.port, origin),
+    b = openSocket(address.port, origin);
+  try {
+    await Promise.all([ready(a), ready(b)]);
+    const { etag: firstEtag } = await import(
+      "../../src/ui/snapshot-revision.ts"
+    ).then((m) => m.serializeUiSnapshot(snapshot));
+    subscribe(a, "cap", firstEtag);
+    assert.equal(JSON.parse(await message(a)).type, "ready");
+    theme = "dark";
+    const { etag: freshEtag } = await import(
+      "../../src/ui/snapshot-revision.ts"
+    ).then((m) =>
+      m.serializeUiSnapshot({ ...snapshot, theme } as InspectorUiSnapshot),
+    );
+    const bInitialMessage = message(b);
+    const aAdvanceMessage = message(a);
+    subscribe(b, "cap", freshEtag);
+    const bInitial = JSON.parse(await bInitialMessage);
+    assert.equal(
+      bInitial.type,
+      "ready",
+      "fresh HTTP data must not be rolled back",
+    );
+    const aAdvance = JSON.parse(await aAdvanceMessage);
+    assert.equal(aAdvance.type, "snapshot");
+    assert.equal(aAdvance.snapshot.theme, "dark");
+    assert.equal(loads, 2);
+    theme = "light";
+    const aUpdate = message(a),
+      bUpdate = message(b);
+    invalidate();
+    const [aDelta, bDelta] = await Promise.all([aUpdate, bUpdate]);
+    assert.equal(JSON.parse(aDelta).type, "delta");
+    assert.equal(JSON.parse(bDelta).type, "delta");
+  } finally {
+    a.close();
+    b.close();
+    await stop(server, channel);
+  }
+});
+
+test("mismatched revalidation waits for an overlapping refresh publication", async () => {
+  const { server, address, origin } = await listen();
+  const revalidation = deferred<InspectorUiSnapshot>();
+  const refreshLoad = deferred<InspectorUiSnapshot>();
+  let loads = 0;
+  let refreshStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    refreshStarted = resolve;
+  });
+  let theme: "light" | "dark" = "light";
+  const context = {
+    runtimeId: "r",
+    projectRoot: "/p",
+    initialScope: "active",
+    loadUi: async () => {
+      loads++;
+      if (loads === 2) return revalidation.promise;
+      if (loads === 3) {
+        refreshStarted();
+        return refreshLoad.promise;
+      }
+      return { ...snapshot, theme } as InspectorUiSnapshot;
+    },
+  };
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => context,
+    () => true,
+  );
+  const a = openSocket(address.port, origin),
+    b = openSocket(address.port, origin);
+  try {
+    await Promise.all([ready(a), ready(b)]);
+    const { etag: oldEtag } = await import(
+      "../../src/ui/snapshot-revision.ts"
+    ).then((m) => m.serializeUiSnapshot(snapshot));
+    subscribe(a, "cap", oldEtag);
+    assert.equal(JSON.parse(await message(a)).type, "ready");
+    const { etag: freshEtag } = await import(
+      "../../src/ui/snapshot-revision.ts"
+    ).then((m) =>
+      m.serializeUiSnapshot({
+        ...snapshot,
+        theme: "dark",
+      } as InspectorUiSnapshot),
+    );
+    const bMessage = message(b);
+    subscribe(b, "cap", freshEtag);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    theme = "dark";
+    invalidate();
+    await started;
+    const aUpdateMessage = message(a);
+    revalidation.resolve({ ...snapshot, theme: "dark" } as InspectorUiSnapshot);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(b.readyState, WebSocket.OPEN);
+    refreshLoad.resolve({ ...snapshot, theme: "dark" } as InspectorUiSnapshot);
+    const [bInitial, aUpdate] = await Promise.all([bMessage, aUpdateMessage]);
+    assert.equal(
+      JSON.parse(bInitial).type,
+      "ready",
+      "B keeps its fresh HTTP revision",
+    );
+    assert.ok(
+      ["delta", "snapshot", "ready"].includes(JSON.parse(aUpdate).type),
+    );
+    theme = "light";
+    const nextA = message(a),
+      nextB = message(b);
+    invalidate();
+    const [aDelta, bDelta] = await Promise.all([nextA, nextB]);
+    assert.equal(JSON.parse(aDelta).type, "delta");
+    assert.equal(JSON.parse(bDelta).type, "delta");
+  } finally {
+    a.close();
+    b.close();
     await stop(server, channel);
   }
 });
@@ -551,7 +1033,7 @@ test("zero authenticated subscribers discard invalidations without report loads"
     () => true,
   );
   try {
-    sessionInvalidationSignal.notify();
+    invalidate();
     await new Promise((r) => setTimeout(r, 230));
     assert.equal(loads, 0);
 
@@ -569,7 +1051,7 @@ test("zero authenticated subscribers discard invalidations without report loads"
     ws.close();
     await closed;
 
-    sessionInvalidationSignal.notify();
+    invalidate();
     await new Promise((r) => setTimeout(r, 230));
     assert.equal(loads, 1);
 
@@ -748,10 +1230,10 @@ test("invalidation during a refresh schedules a follow-up pass", async () => {
     );
     subscribe(ws, "cap", etag);
     await message(ws);
-    sessionInvalidationSignal.notify();
+    invalidate();
     await firstRefreshStarted;
     theme = "dark";
-    sessionInvalidationSignal.notify();
+    invalidate();
     releaseFirstRefresh?.({
       ...snapshot,
       theme: "light",
@@ -801,7 +1283,7 @@ test("invalidation during first baseline construction triggers a fresh read", as
     await ready(ws);
     subscribe(ws, "cap", "stale");
     await initialStarted;
-    sessionInvalidationSignal.notify();
+    invalidate();
     theme = "dark";
     await new Promise((resolve) => setTimeout(resolve, 230));
 
@@ -863,7 +1345,7 @@ test("a reconnect retires an in-flight baseline and ignores its late completion"
     oldSocket.close();
     await oldClosed;
 
-    sessionInvalidationSignal.notify();
+    invalidate();
     theme = "dark";
     current = openSocket(address.port, origin);
     await ready(current);
@@ -878,7 +1360,7 @@ test("a reconnect retires an in-flight baseline and ignores its late completion"
     const update = messageWithin(current);
     initialLoad.resolve(snapshotForRange(null));
     await new Promise<void>((resolve) => setImmediate(resolve));
-    sessionInvalidationSignal.notify();
+    invalidate();
     const delta = JSON.parse((await update) ?? "null");
     assert.equal(delta.type, "delta");
     assert.equal(delta.baseEtag, initial.etag);
@@ -956,7 +1438,7 @@ test("missed pong evicts the connection, baseline, and socket slot", async (t) =
           ),
       ),
     );
-    sessionInvalidationSignal.notify();
+    invalidate();
     await new Promise((resolve) => setTimeout(resolve, 230));
     assert.equal(loads, 1, "unsubscribed peers must not retain report work");
   } finally {

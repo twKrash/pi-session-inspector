@@ -1,8 +1,14 @@
+/** In-process invalidation identifying only the runtime and session. */
+export type SessionInvalidation = {
+  runtimeId: string;
+  sessionId: string;
+};
+
 /** In-process, payload-free signal emitted after Inspector WAL persistence. */
 export class SessionInvalidationSignal {
-  private readonly listeners = new Set<() => void>();
+  private readonly listeners = new Set<(event: SessionInvalidation) => void>();
 
-  subscribe(listener: () => void): () => void {
+  subscribe(listener: (event: SessionInvalidation) => void): () => void {
     this.listeners.add(listener);
     let subscribed = true;
     return () => {
@@ -12,10 +18,10 @@ export class SessionInvalidationSignal {
     };
   }
 
-  notify(): void {
+  notify(event: SessionInvalidation): void {
     for (const listener of this.listeners) {
       try {
-        listener();
+        listener(event);
       } catch {
         // UI observers must never affect persistence or Pi execution.
       }

@@ -1108,6 +1108,198 @@ test("explicit refresh remains a full snapshot and resubscribes with its ETag", 
   );
 });
 
+test("malformed live snapshots and deltas preserve last good state and recover by HTTP", async () => {
+  for (const malformed of ["snapshot", "delta"] as const) {
+    const initial = uiSnapshot();
+    const harness = createWebClient({
+      hash: `#token=${TOKEN}`,
+      responses: [initial],
+      etags: [ETAG_1],
+    });
+    await harness.start();
+    harness.openSocket();
+    harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+    const before = harness.element("view").textContent;
+    const incoming = uiSnapshot();
+    if (malformed === "snapshot") {
+      (incoming as unknown as { current: unknown }).current = null;
+      harness.receiveSocket({
+        type: "snapshot",
+        etag: ETAG_2,
+        snapshot: incoming,
+      });
+    } else {
+      harness.receiveSocket({
+        type: "delta",
+        baseEtag: ETAG_1,
+        etag: ETAG_2,
+        changes: { current: null },
+      });
+    }
+    assert.equal(harness.element("view").textContent, before);
+    assert.equal(
+      harness
+        .fetchRequests()
+        .filter(
+          ({ url }) => url === "/api/v1/ui" || url.startsWith("/api/v1/ui?"),
+        ).length,
+      2,
+    );
+    await settle();
+    assert.equal(harness.element("view").textContent, before);
+    assert.equal(harness.socketCount(), 2);
+    harness.openSocket(1);
+    assert.equal(
+      JSON.parse(harness.socketMessages().at(-1) ?? "null").etag,
+      ETAG_1,
+    );
+  }
+});
+
+test("malformed nested live snapshots are rejected before commit", async () => {
+  const initial = uiSnapshot();
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const before = harness.element("view").textContent;
+  const malformed = uiSnapshot();
+  (malformed.current.tree as unknown as { availability: string }).availability =
+    "unexpected";
+  harness.receiveSocket({
+    type: "snapshot",
+    etag: ETAG_2,
+    snapshot: malformed,
+  });
+
+  assert.equal(
+    harness.fetchRequests().filter(({ url }) => url === "/api/v1/ui").length,
+    2,
+    "invalid nested DTO must recover through a full HTTP snapshot",
+  );
+  assert.equal(harness.element("view").textContent, before);
+  await settle();
+  assert.equal(harness.element("view").textContent, before);
+});
+
+test("failed live rendering restores the last good page before recovery", async () => {
+  const initial = uiSnapshot();
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const before = {
+    title: harness.element("title").textContent,
+    tabs: harness.element("tabs").textContent,
+    view: harness.element("view").textContent,
+    hash: harness.location.hash,
+  };
+  const output = harness.element("view");
+  const replaceChildren = output.replaceChildren.bind(output);
+  let failOnce = true;
+  output.replaceChildren = (...nodes) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("injected render failure");
+    }
+    replaceChildren(...nodes);
+  };
+
+  const incoming = uiSnapshot();
+  incoming.current.tree.capabilities = ["tools"];
+  harness.receiveSocket({
+    type: "snapshot",
+    etag: ETAG_2,
+    snapshot: incoming,
+  });
+
+  assert.equal(harness.element("title").textContent, before.title);
+  assert.equal(harness.element("tabs").textContent, before.tabs);
+  assert.equal(harness.element("view").textContent, before.view);
+  assert.equal(harness.location.hash, before.hash);
+  assert.equal(
+    harness.fetchRequests().filter(({ url }) => url === "/api/v1/ui").length,
+    2,
+  );
+  await settle();
+  assert.equal(harness.element("title").textContent, before.title);
+  assert.equal(harness.element("view").textContent, before.view);
+});
+
+test("malformed HTTP recovery preserves the last good report", async () => {
+  const initial = uiSnapshot();
+  const malformed = uiSnapshot();
+  (malformed.current.tree as unknown as { availability: string }).availability =
+    "unexpected";
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial, malformed],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const before = harness.element("view").textContent;
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { current: null },
+  });
+  await settle();
+
+  assert.equal(harness.element("view").textContent, before);
+  assert.equal(harness.socketCount(), 1);
+  assert.deepEqual(harness.timerDelays(), [1_000]);
+});
+
+test("failed HTTP rendering restores the last good page", async () => {
+  const initial = uiSnapshot();
+  const incoming = uiSnapshot();
+  incoming.current.tree.capabilities = ["tools"];
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial, incoming],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+
+  const before = {
+    title: harness.element("title").textContent,
+    tabs: harness.element("tabs").textContent,
+    view: harness.element("view").textContent,
+    hash: harness.location.hash,
+  };
+  const output = harness.element("view");
+  const replaceChildren = output.replaceChildren.bind(output);
+  let failOnce = true;
+  output.replaceChildren = (...nodes) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("injected HTTP render failure");
+    }
+    replaceChildren(...nodes);
+  };
+  harness.click(harness.element("refresh"));
+  await settle();
+
+  assert.equal(harness.element("title").textContent, before.title);
+  assert.equal(harness.element("tabs").textContent, before.tabs);
+  assert.equal(harness.element("view").textContent, before.view);
+  assert.equal(harness.location.hash, before.hash);
+});
+
 test("live snapshots refresh known session IDs and removed IDs are rejected", async () => {
   const initial = uiSnapshot();
   const member = initial.history.sessions.find(

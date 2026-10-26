@@ -593,8 +593,8 @@
       }
       const body = await response.json();
       if (id !== undefined && id !== latestRequest) return false;
-      if (body === undefined || body === null || body.kind !== "ui")
-        return false;
+      if (!renderableSnapshot(body)) return false;
+      const previousPage = captureLivePage();
       snapshot = body;
       etag = responseEtag(response);
       loadedQuery = query;
@@ -603,7 +603,7 @@
         loadedOnce = true;
         syncTheme();
       }
-      return true;
+      return { previousPage: previousPage };
     } catch (error) {
       return false;
     }
@@ -3687,21 +3687,236 @@
       request(loadedQuery, { preserveViewFocus: true }, true, true);
   };
 
+  const isFiniteNumber = (value) =>
+    typeof value === "number" && Number.isFinite(value);
+  const isNullableNumber = (value) => value === null || isFiniteNumber(value);
+  const isRecord = (value) => isNode(value) && !Array.isArray(value);
+  const isRecordArray = (value) =>
+    Array.isArray(value) && value.every((item) => isRecord(item));
+  const isAvailability = (value) =>
+    value === "available" || value === "unavailable";
+  const isDate = (value) =>
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const isRangeIntent = (value) =>
+    value === null ||
+    (isNode(value) &&
+      ((value.kind === "preset" && [7, 14, 30].includes(value.preset)) ||
+        (value.kind === "custom" &&
+          isDate(value.from) &&
+          isDate(value.to) &&
+          value.from <= value.to)));
+  const isRangeState = (value) =>
+    value === null ||
+    (isNode(value) &&
+      isDate(value.from) &&
+      isDate(value.to) &&
+      (value.preset === null || [7, 14, 30].includes(value.preset)));
+  const isTotals = (value, fields) =>
+    isRecord(value) && fields.every((field) => isFiniteNumber(value[field]));
+  const isComposition = (value) =>
+    isRecord(value) &&
+    typeof value.available === "boolean" &&
+    Array.isArray(value.parts) &&
+    value.parts.every(
+      (part) =>
+        isRecord(part) &&
+        ["generations", "toolResults", "compactions", "branchSummaries"].includes(part.key) &&
+        isFiniteNumber(part.totalTokens) &&
+        isFiniteNumber(part.cost) &&
+        part.confidence === "native",
+    ) &&
+    (value.total === undefined || isTotals(value.total, ["totalTokens", "cost"])) &&
+    typeof value.reconciles === "boolean";
+  const isUsageLabels = (value) =>
+    isRecord(value) &&
+    typeof value.cost === "string" &&
+    typeof value.tokens === "string" &&
+    typeof value.usageUnavailable === "boolean" &&
+    typeof value.sessions === "string";
+  const isCoverage = (value) =>
+    isRecord(value) &&
+    ["inspected", "available", "unavailable"].every((key) =>
+      isFiniteNumber(value[key]),
+    ) &&
+    (value.sessionRatio === null || isFiniteNumber(value.sessionRatio)) &&
+    typeof value.complete === "boolean" &&
+    typeof value.discoveryLimited === "boolean" &&
+    typeof value.reasons === "string" &&
+    typeof value.line === "string";
+  const isStatus = (value) =>
+    isRecord(value) &&
+    ["status.errors", "status.interrupted", "status.clean"].includes(value.key) &&
+    (value.tone === "neutral" || value.tone === "warn");
+  const isInventory = (value) =>
+    isRecord(value) &&
+    ["commands", "skills", "resources"].every((key) =>
+      isNullableNumber(value[key]),
+    );
+  const isUiRange = (value) =>
+    isNode(value) &&
+    isRangeIntent(value.requested) &&
+    isRangeState(value.resolved) &&
+    typeof value.truncated === "boolean" &&
+    isRecordArray(value.daily) &&
+    isTotals(value.totals, ["totalTokens", "cost", "generations", "tools", "days"]) &&
+    (value.usageEconomics === undefined || isRecord(value.usageEconomics)) &&
+    (value.composition === null || isComposition(value.composition)) &&
+    isRecordArray(value.models) &&
+    typeof value.modelsTruncated === "boolean" &&
+    isRecordArray(value.toolSummary) &&
+    isRecordArray(value.toolCalls) &&
+    isRecordArray(value.agents) &&
+    isRecord(value.childUsage) &&
+    isRecord(value.childUsage.byStatus) &&
+    isRecordArray(value.errors) &&
+    isRecordArray(value.ledger);
+  const isSessionReport = (value) =>
+    isNode(value) &&
+    typeof value.sessionId === "string" &&
+    (value.usage === undefined || isRecord(value.usage)) &&
+    (value.usageEconomics === undefined || isRecord(value.usageEconomics)) &&
+    (value.cacheHitPercent === null || isFiniteNumber(value.cacheHitPercent)) &&
+    isFiniteNumber(value.compactionCount) &&
+    isComposition(value.composition) &&
+    isFiniteNumber(value.generationCount) &&
+    isFiniteNumber(value.toolCount) &&
+    (value.durationMs === null || isFiniteNumber(value.durationMs)) &&
+    (value.durationLabel === null || typeof value.durationLabel === "string") &&
+    (value.span === null ||
+      (isNode(value.span) && isDate(value.span.from) && isDate(value.span.to))) &&
+    (value.agentCount === null || isFiniteNumber(value.agentCount)) &&
+    (typeof value.agentEvidence === "string" || isNode(value.agentEvidence)) &&
+    (typeof value.agentActivity === "string" || isNode(value.agentActivity)) &&
+    (typeof value.durationEvidence === "string" || isNode(value.durationEvidence)) &&
+    isNode(value.status) &&
+    ["models", "modelBars", "tools", "toolBars", "agents", "integrations", "errors", "ledger"].every(
+      (key) => isRecordArray(value[key]),
+    ) &&
+    ["commands", "skills", "resources"].every((key) => isRecord(value[key]));
+  const isSessionProjection = (value, scope) =>
+    isNode(value) &&
+    isAvailability(value.availability) &&
+    (scope === undefined || value.scope === scope) &&
+    (value.scope === undefined || value.scope === "active" || value.scope === "tree") &&
+    Array.isArray(value.capabilities) &&
+    value.capabilities.every((item) => typeof item === "string") &&
+    isRecordArray(value.evidence) &&
+    isNode(value.inventoryAvailability) &&
+    ["commands", "skills", "resources"].every((key) =>
+      isNullableNumber(value.inventoryAvailability[key]),
+    ) &&
+    (value.availability === "available"
+      ? isSessionReport(value.report) && isUiRange(value.range)
+      : value.report === undefined && value.range === undefined);
+  const isHistorySession = (value) =>
+    isNode(value) &&
+    typeof value.sessionId === "string" &&
+    isAvailability(value.availability) &&
+    ["member", "out", "unknown"].includes(value.membership) &&
+    isNullableNumber(value.totalTokens) &&
+    isNullableNumber(value.cost) &&
+    typeof value.partial === "boolean" &&
+    typeof value.published === "boolean" &&
+    (value.firstDate === null || isDate(value.firstDate)) &&
+    (value.lastDate === null || isDate(value.lastDate)) &&
+    (value.durationLabel === null || typeof value.durationLabel === "string") &&
+    (value.generationCount === null || isFiniteNumber(value.generationCount)) &&
+    (value.agentCount === null || isFiniteNumber(value.agentCount)) &&
+    (value.status === null || isStatus(value.status)) &&
+    (value.view === undefined || isSessionProjection(value.view));
+  const isHistoryProjection = (value) =>
+    isNode(value) &&
+    isAvailability(value.availability) &&
+    isRangeIntent(value.requested) &&
+    isRangeState(value.resolved) &&
+    typeof value.truncated === "boolean" &&
+    isRecordArray(value.daily) &&
+    isTotals(value.totals, ["totalTokens", "cost", "generations", "tools", "days"]) &&
+    (value.usageEconomics === undefined || isRecord(value.usageEconomics)) &&
+    (value.coverage === null || isCoverage(value.coverage)) &&
+    isUsageLabels(value.usageLabels) &&
+    isRecordArray(value.evidence) &&
+    Array.isArray(value.sessions) &&
+    value.sessions.every(isHistorySession);
+  const isGlobalProjection = (value) =>
+    isNode(value) &&
+    isAvailability(value.availability) &&
+    isRangeIntent(value.requested) &&
+    isRangeState(value.resolved) &&
+    typeof value.truncated === "boolean" &&
+    isRecordArray(value.daily) &&
+    isTotals(value.totals, ["totalTokens", "cost", "days"]) &&
+    (value.usageEconomics === undefined || isRecord(value.usageEconomics)) &&
+    isComposition(value.composition) &&
+    (value.coverage === null || isCoverage(value.coverage)) &&
+    isUsageLabels(value.usageLabels) &&
+    isRecordArray(value.evidence) &&
+    isInventory(value.inventory) &&
+    isFiniteNumber(value.trackedSessions) &&
+    isFiniteNumber(value.unavailableSessions);
+  const renderableSnapshot = (candidate) =>
+    isNode(candidate) &&
+    candidate.kind === "ui" &&
+    candidate.schemaVersion === 1 &&
+    (candidate.theme === "light" || candidate.theme === "dark") &&
+    (candidate.initialScope === "active" || candidate.initialScope === "tree") &&
+    isRecord(candidate.current) &&
+    isSessionProjection(candidate.current.active, "active") &&
+    isSessionProjection(candidate.current.tree, "tree") &&
+    typeof candidate.current.sameReportProjection === "boolean" &&
+    isHistoryProjection(candidate.history) &&
+    isGlobalProjection(candidate.global);
+
+  const captureLivePage = () => ({
+    snapshot,
+    etag,
+    loadedQuery,
+    loadedOnce,
+    state,
+    view,
+    stateNotice,
+    lastAppliedKey,
+    hash: location.hash,
+  });
+  const restoreLivePage = (previous) => {
+    snapshot = previous.snapshot;
+    etag = previous.etag;
+    loadedQuery = previous.loadedQuery;
+    loadedOnce = previous.loadedOnce;
+    state = previous.state;
+    view = previous.view;
+    stateNotice = previous.stateNotice;
+    lastAppliedKey = previous.lastAppliedKey;
+    known = null;
+    if (location.hash !== previous.hash) writeHash(previous.hash, true);
+    syncTheme();
+    render({ preserveViewFocus: true, announce: false });
+  };
+
   const applyLiveSnapshot = (message) => {
     if (
       !ETAG.test(message.etag) ||
-      message.snapshot === null ||
-      typeof message.snapshot !== "object" ||
-      message.snapshot.kind !== "ui"
+      !renderableSnapshot(message.snapshot)
     ) {
       recoverLiveSnapshot();
       return;
     }
     setLiveStatus(COPY["live.updating"], "updating");
+    const previousPage = captureLivePage();
     known = null;
     snapshot = message.snapshot;
     etag = message.etag;
-    apply({ preserveViewFocus: true }, true, true);
+    try {
+      apply({ preserveViewFocus: true }, true, true);
+    } catch (error) {
+      try {
+        restoreLivePage(previousPage);
+      } catch (restoreError) {
+        // HTTP recovery still runs if the previous DOM cannot be repainted.
+      }
+      recoverLiveSnapshot();
+      return;
+    }
     reconnectAttempt = 0;
     setLiveStatus(COPY["live.connected"], "live");
   };
@@ -3729,11 +3944,27 @@
       recoverLiveSnapshot();
       return;
     }
+    const candidate = assign(snapshot, changes);
+    if (!renderableSnapshot(candidate)) {
+      recoverLiveSnapshot();
+      return;
+    }
     setLiveStatus(COPY["live.updating"], "updating");
     known = null;
-    snapshot = assign(snapshot, changes);
+    const previousPage = captureLivePage();
+    snapshot = candidate;
     etag = message.etag;
-    apply({ preserveViewFocus: true }, true, true);
+    try {
+      apply({ preserveViewFocus: true }, true, true);
+    } catch (error) {
+      try {
+        restoreLivePage(previousPage);
+      } catch (restoreError) {
+        // HTTP recovery still runs if the previous DOM cannot be repainted.
+      }
+      recoverLiveSnapshot();
+      return;
+    }
     reconnectAttempt = 0;
     setLiveStatus(COPY["live.connected"], "live");
   };
@@ -3851,13 +4082,13 @@
       setLiveStatus("", undefined);
     }
     inFlight = (async () => {
-      const served = await load(query, id);
+      const loaded = await load(query, id);
       // A newer request owns the page now: it renders and it clears the loading
       // state, so this one leaves both alone.
       if (id !== latestRequest) return;
       pendingRequest = null;
       if (quiet !== true) setLoading(false);
-      if (!served) {
+      if (!loaded) {
         if (quiet === true) {
           setLiveStatus(COPY["live.stopped"], "stale");
           scheduleLiveReconnect();
@@ -3866,7 +4097,22 @@
         }
         return;
       }
-      apply(pending.effects, true, quiet === true);
+      try {
+        apply(pending.effects, true, quiet === true);
+      } catch (error) {
+        try {
+          restoreLivePage(loaded.previousPage);
+        } catch (restoreError) {
+          // Keep the request failure bounded if the old view cannot be repainted.
+        }
+        if (quiet === true) {
+          setLiveStatus(COPY["live.stopped"], "stale");
+          scheduleLiveReconnect();
+        } else {
+          setFailure(true);
+        }
+        return;
+      }
       if (id === latestRequest) connectLive(false);
     })();
   };

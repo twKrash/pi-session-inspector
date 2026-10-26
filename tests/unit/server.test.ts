@@ -425,6 +425,56 @@ test("bootstrap credentials expire at 60 seconds, are one-use, and retain one st
   assert.equal(capabilities.authorize(exchanged), false);
 });
 
+test("bodyless capability exchange responds before the request socket closes", async () => {
+  const { context } = fixtureContext();
+  const server = await getInspectorServer(context);
+  const token = bootstrapToken(server);
+  const { hostname, port } = new URL(server.origin);
+  const request = http.request({
+    hostname,
+    port: Number(port),
+    path: "/api/v1/ui-session",
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Length": "0" },
+    agent: false,
+  });
+  try {
+    const response = new Promise<TestResponse>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("bodyless exchange timed out")),
+        1_000,
+      );
+      request.once("response", (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          clearTimeout(timer);
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      });
+      request.once("error", reject);
+    });
+    request.flushHeaders();
+    const result = await response;
+    assert.equal(
+      request.writableEnded,
+      false,
+      "request must remain open until cleanup",
+    );
+    assert.equal(result.status, 200);
+    const capability = (JSON.parse(result.body) as { capability: string })
+      .capability;
+    assert.equal(Buffer.from(capability, "base64url").length, 32);
+  } finally {
+    request.destroy();
+    await closeInspectorServer();
+  }
+});
+
 test("successive bootstrap exchanges reuse the stable capability and reject spent tokens", async () => {
   const { context } = fixtureContext();
   const server = await getInspectorServer(context);

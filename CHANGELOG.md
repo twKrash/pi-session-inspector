@@ -2,6 +2,15 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0]
+
+### Added
+
+- The localhost UI streams authenticated, bounded same-process WebSocket DTO
+  deltas after successful Inspector WAL flushes; stale clients resynchronize from
+  canonical snapshots. Static snapshots remain unchanged, and cross-process
+  updates plus incremental report computation remain deferred.
+
 ## [1.5.5]
 
 ### Fixed
