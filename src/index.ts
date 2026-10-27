@@ -11,6 +11,13 @@ import {
   parseInspectorCommand,
 } from "./commands/grammar.ts";
 import { createInspectorHelpComponent } from "./commands/help.ts";
+import {
+  type InspectorSettings,
+  type ResolvedConfig,
+  readSettings,
+  readSettingsSync,
+  resolveConfig,
+} from "./config/settings.ts";
 import type { Scope, SessionEntry } from "./core/events.ts";
 import {
   type FoldedAggregateEvidence,
@@ -22,6 +29,12 @@ import {
   foldedFromCheckpointAggregates,
   mergeFoldedCounters,
 } from "./core/live-counter-fold.ts";
+import { presenceKeys } from "./core/presence.ts";
+import { createDebugFileSink } from "./debug/file.ts";
+import { configureDebugLog, debugLog, debugLogEnabled } from "./debug/log.ts";
+import { reportIntegrations } from "./integrations/catalog.ts";
+import { readCanonicalContributions } from "./integrations/contributions.ts";
+import { integrations } from "./integrations/index.ts";
 import type { InventorySnapshot } from "./integrations/inventory.ts";
 import {
   type LiveCounterApi,
@@ -32,23 +45,10 @@ import {
 } from "./integrations/live-counters.ts";
 import { readPresence } from "./integrations/presence.ts";
 import { readSkillInvocations } from "./integrations/skill-invocations.ts";
-import { reportIntegrations } from "./integrations/catalog.ts";
-import { integrations } from "./integrations/index.ts";
-import { configureDebugLog, debugLog, debugLogEnabled } from "./debug/log.ts";
-import { createDebugFileSink } from "./debug/file.ts";
-import {
-  readSettings,
-  readSettingsSync,
-  resolveConfig,
-  type InspectorSettings,
-  type ResolvedConfig,
-} from "./config/settings.ts";
 import {
   readSubagentEvidenceWithArchives,
   type SubagentSourceEvidence,
 } from "./integrations/subagents.ts";
-import { readCanonicalContributions } from "./integrations/contributions.ts";
-import { presenceKeys } from "./core/presence.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
 import {
   type LiveWalRegistration,
@@ -74,6 +74,7 @@ import { type RecoveredWalRecord, recoverSession } from "./storage/recovery.ts";
 import { createWalWriter } from "./storage/wal.ts";
 import { loadCurrentView, loadInspectorBundle } from "./ui/bundle.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
+import { sessionInvalidationSignal } from "./ui/invalidation.ts";
 import { renderJson } from "./ui/json.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
 import {
@@ -498,6 +499,9 @@ export function registerTracking(
   // out of the runtime that replaces it.
   registerSessionShutdown(api, () => {
     disposeRuntimeLiveCounters(runtimeId);
+    void import("./ui/server.ts")
+      .then(({ closeInspectorServer }) => closeInspectorServer(runtimeId))
+      .catch(() => {});
   });
 }
 
@@ -545,6 +549,11 @@ function setupProductionSessionWal(input: {
         root,
         now: () => new Date(),
         onSegmentRotation,
+        onFlushed: () =>
+          sessionInvalidationSignal.notify({
+            runtimeId: input.runtimeId,
+            sessionId: input.sessionId,
+          }),
       });
       // Keyed by session so a concurrent/repeated promotion never clobbers
       // another session's writer handle.
@@ -1159,6 +1168,7 @@ async function startInspectorUi(
         sessionManager: ctx.sessionManager,
         root,
         runtimeId,
+        projectRoot: ctx.cwd,
         // The initial theme is resolved configuration, never browser-local
         // state: an in-page toggle stays ephemeral (ADR 0019).
         theme: config.theme,
@@ -1193,6 +1203,7 @@ function createUiServerContext(input: {
   api: ExtensionAPI;
   sessionManager: ExtensionCommandContext["sessionManager"];
   root: string;
+  projectRoot: string;
   theme: "light" | "dark";
   initialScope: Scope;
   /** Identity of the runtime that owns this server's reads. */
@@ -1207,9 +1218,12 @@ function createUiServerContext(input: {
     sessionEvidence: readHistorySessionEvidence,
   });
   return {
+    runtimeId,
+    projectRoot: input.projectRoot,
     // Rendered into the shell so the first paint is the resolved theme, the
     // same value the DTO carries and the snapshot renders.
     theme: input.theme,
+    initialScope: input.initialScope,
     async loadUi(intent) {
       await flushLiveEvidence();
       // One synchronous observation of the live session, taken as soon as the

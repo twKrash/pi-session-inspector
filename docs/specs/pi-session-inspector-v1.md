@@ -161,6 +161,11 @@ resource calls are independent observations and do not promise cross-request
 snapshot consistency. The atomic session resource rejects `scope` and range
 input; range input returns `400 range-not-supported`.
 
+`GET /api/v1/ui` serializes the canonical `InspectorUiSnapshot` once and
+returns its quoted SHA-256/base64url ETag with the full body. It always returns
+`200`; conditional `If-None-Match`/`304` behavior is not used. This ETag is the
+revision shared with the live channel, not a second report or cache authority.
+
 An immutable snapshot is one resolved projection only. It contains no router,
 API client, authentication/bootstrap runtime, refresh path, range projection,
 or executable JavaScript. It uses native HTML/CSS and is self-contained for
@@ -168,10 +173,11 @@ or executable JavaScript. It uses native HTML/CSS and is self-contained for
 Snapshot HTML context-escapes every dynamic value. Report/session/model/tool/
 diagnostic values are data, never trusted markup.
 
-The interactive surface has three known assets under `src/ui/web/`:
-`shell.html`, `style.css`, and generated `client.js`. `client.js` is a
-build-time deterministic classic bundle from the readable route, range, chart
-adapter, and client sources under `scripts/web/`; the server serves the
+The interactive surface has three known package assets under `src/ui/web/`:
+`shell.html`, `style.css`, and generated `client.bundle.js` (served at the
+fixed `/client.js` route). `client.bundle.js` is the build-time deterministic
+classic bundle produced from readable sources under `scripts/web/`, including
+the route, range, chart adapter, and `client.js`; the server serves the
 generated asset without runtime module loading, and the chart library it uses
 is bundled rather than fetched. The chart is drawn on a canvas from
 DTO-projected labels and values, and the exact-value table beside it is the
@@ -192,28 +198,62 @@ announces once: the request first, then the view that answered it.
 ### Pre-M8.4 HTTP and security contract
 
 The server uses Node `node:http` and `node:crypto`, binds only to
-`127.0.0.1:0`, and is one lazy singleton per Pi process. Shell/assets accept
-`GET` and `HEAD`; the exact `/favicon.ico` compatibility route returns empty
-`204` for `GET` and `HEAD`; `/api/v1/*` accepts `GET` only. Unsupported methods
+`127.0.0.1:0`, and is one lazy singleton per Pi process/runtime. Shell/assets
+accept `GET` and `HEAD`; the exact `/favicon.ico` compatibility route returns
+empty `204` for `GET` and `HEAD`; `/api/v1/*` accepts `GET` except the
+bodyless bootstrap exchange `POST /api/v1/ui-session`. Unsupported methods
 return a bounded structured error.
 
-The server generates a process/server-instance capability token from 32 bytes
-of `node:crypto.randomBytes`, encoded base64url. It is not derived from any
-session, report, process, path, or timestamp data and remains in memory only.
-The bootstrap fragment is consumed before route parsing, replaced with the
-canonical default route using `history.replaceState()` without adding history,
-and can never return through Back/Forward. Reloading the sanitized canonical URL
-loses authentication and requires a fresh bootstrap URL.
+The server is owned by one Pi runtime and project. The project identity is the
+current `ExtensionCommandContext.cwd` (`projectRoot`), deliberately distinct
+from the shared Inspector data root. A runtime or project change retires the old
+listener and its credentials; shutdown closes only the listener owned by that
+runtime.
 
-Every report-bearing request uses `Authorization: Bearer <token>`. Exact Host,
-loopback peer, and exact Origin checks apply; CORS, redirects, forwarded-header
-trust, private-network exceptions, and arbitrary filesystem paths do not.
-Missing Origin is allowed for documented shell/static-asset navigations after
-Host/peer validation; non-browser/internal protected API calls may omit it only
-after Host/peer and bearer-auth validation. WSL2-to-Windows-browser localhost
-forwarding remains an explicit UAT case; a non-loopback peer is test evidence
-for a deliberate future security decision, not a reason to weaken this contract
-preemptively.
+Each UI launch issues a fresh 32-byte random, base64url bootstrap token that
+expires after 60 seconds; issuing another token invalidates an unexchanged one.
+The browser consumes the fragment before route parsing, removes it with
+`history.replaceState()` without adding history, and can never restore it through
+Back/Forward. It exchanges the token exactly once through a bodyless
+`POST /api/v1/ui-session` with `Authorization: Bearer <bootstrap-token>`.
+Successful exchange returns a separate 32-byte random, base64url runtime
+capability. The capability is stable for that server/runtime, remains in memory
+only, and is revoked when its owner closes or is replaced. Reloading the
+sanitized canonical URL loses authentication and requires a fresh bootstrap
+URL.
+
+Every report-bearing HTTP request uses `Authorization: Bearer <runtime-capability>`; only the bootstrap exchange accepts the one-use bootstrap token. Exact Host, loopback peer, and exact Origin checks apply; CORS, redirects, forwarded-header trust, private-network exceptions, and arbitrary filesystem paths do not. Missing Origin is allowed for documented shell/static-asset navigations after Host/peer validation; non-browser/internal protected API calls may omit it only after Host/peer and bearer-auth validation. WSL2-to-Windows-browser localhost forwarding remains an explicit UAT case; a non-loopback peer is test evidence for a deliberate future security decision, not a reason to weaken this contract preemptively.
+
+### Live WebSocket channel
+
+The interactive client may upgrade the same listener at the exact
+`/api/v1/ui-live` path. Before `ws` accepts an upgrade, the server checks the
+exact loopback Host, peer, Origin, path, and bounded connection count. The first
+WebSocket message must be a valid `subscribe` envelope containing the runtime
+capability, current ETag, and canonical range; the capability is never in the
+URL, and no report load or report data occurs before authorization. The channel
+is scoped by runtime, `ctx.cwd` project root, initial scope, and normalized
+range.
+
+A no-payload in-process invalidation fires only after an Inspector WAL flush
+succeeds. With no authenticated subscribers it causes no report load or diff.
+While subscribers exist, invalidations coalesce for 200 ms and the canonical
+report loader builds a new full DTO snapshot. If its revision differs, the
+server sends only changed top-level DTO sections when the client's `baseEtag`
+matches; a stale ETag/range receives a full snapshot for resynchronization.
+Unchanged snapshots produce no delta. The channel bounds all pending and
+accepted sockets to eight, authentication to five seconds, WebSocket frames to
+1 KiB, and liveness pings to 30 seconds; it clears subscriptions, timers, and
+baselines when unused or when its owner closes. The server CSP permits only the
+same-origin HTTP connections and the exact-port loopback WebSocket endpoint.
+
+The browser retains the last rendered report through transient reconnects and
+terminal live-channel closure. Initial load and explicit Refresh remain full HTTP
+snapshots. A malformed or mismatched delta recovers through a full HTTP snapshot
+and resubscription; a reconnect with a stale ETag or range can receive a full
+WebSocket snapshot. The `file://` snapshot remains immutable and has no
+WebSocket client. Live delivery is process-local; cross-process watching and
+incremental report computation are out of scope.
 
 API errors use bounded RFC 9457-style `application/problem+json` with fixed safe
 codes/messages, status, retryability, and an opaque correlation ID. Startup and
@@ -222,10 +262,11 @@ failures remain in the bounded HTTP response or browser error state and are not
 mirrored to Pi stderr, avoiding host-TUI noise from failed or repeated requests.
 Logging is best-effort and never changes Pi execution.
 
-Server CSP is same-origin and permits only the normal client assets and API.
-Snapshot CSP is separate and deterministic: snapshot HTML has no executable
-JavaScript, no network permission, and only the exact inlined stylesheet may be
-allowed by hash. Both modes use no-referrer and no-store/no-cache protections.
+Server CSP permits only same-origin assets/HTTP and the exact-port loopback
+WebSocket endpoint. Snapshot CSP is separate and deterministic: snapshot HTML
+has no executable JavaScript, no network permission, and only the exact inlined
+stylesheet may be allowed by hash. Both modes use no-referrer and
+no-store/no-cache protections.
 
 ## 4. Canonical data model
 

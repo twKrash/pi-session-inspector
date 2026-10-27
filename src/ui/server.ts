@@ -13,27 +13,34 @@
  * starts a server at import time and nothing maps a request path to the
  * filesystem.
  */
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
   type Server,
   type ServerResponse,
 } from "node:http";
-
 import { redactBoundedText } from "../core/redact.ts";
 import type { SessionReport } from "../core/reports.ts";
+import { createUiCapabilities } from "./capabilities.ts";
+import { attachLiveChannel, isLoopbackPeer } from "./live-channel.ts";
 import { parseRangeQuery, type RangeIntent } from "./range.ts";
+import { serializeUiSnapshot } from "./snapshot-revision.ts";
 import type {
   GlobalReportProjection,
   InspectorUiSnapshot,
 } from "./ui-projection.ts";
-import { renderShell, WEB_ASSETS, type ShellTheme } from "./web-assets.ts";
+import { renderShell, type ShellTheme, WEB_ASSETS } from "./web-assets.ts";
+
+export { isLoopbackPeer };
 
 /** The request-time data seams: only these callbacks may observe reports. */
 export type InspectorServerContext = {
+  runtimeId: string;
+  projectRoot: string;
   /** The resolved theme the shell is rendered in; presentation, never report data. */
   theme: ShellTheme;
+  initialScope?: "active" | "tree";
   loadUi(intent?: RangeIntent): Promise<InspectorUiSnapshot>;
   loadSession(sessionId: string): Promise<SessionReport | undefined>;
   loadGlobal(intent?: RangeIntent): Promise<GlobalReportProjection>;
@@ -47,8 +54,8 @@ export type InspectorServer = {
   close(): Promise<void>;
 };
 
-const SERVER_CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const serverCsp = (port: number): string =>
+  `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws://127.0.0.1:${port}; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 /** The two fixed assets; the shell is rendered per request with its theme. */
 const ASSETS = new Map<string, { body: string; contentType: string }>([
@@ -137,30 +144,25 @@ type Running = {
   server: Server;
   port: number;
   origin: string;
-  token: string;
+  capabilities: ReturnType<typeof createUiCapabilities>;
+  runtimeId: string;
+  projectRoot: string;
   context: InspectorServerContext;
   inspector: InspectorServer;
+  live?: { close(): Promise<void>; replaceContext(): void };
 };
 
 let running: Running | undefined;
 let pending: Promise<Startup> | undefined;
+let lifecycle: Promise<void> = Promise.resolve();
 
 /** What a shared start hands each caller: the instance and its context seam. */
 type Startup = {
   inspector: InspectorServer;
+  runtimeId: string;
+  projectRoot: string;
   setContext(context: InspectorServerContext): void;
 };
-
-/**
- * Accepted loopback peer forms. The listener binds IPv4 `127.0.0.1`, so the
- * only other form a kernel may report is the IPv4-mapped IPv6 representation
- * of the same address; native IPv6 loopback is not this listener and is
- * refused. Exported because a real non-loopback peer cannot be produced from
- * the test process.
- */
-export function isLoopbackPeer(address: string | undefined): boolean {
-  return address === "127.0.0.1" || address === "::ffff:127.0.0.1";
-}
 
 /**
  * Starts or reuses the module-local singleton and replaces its request-time
@@ -170,9 +172,23 @@ export function isLoopbackPeer(address: string | undefined): boolean {
 export async function getInspectorServer(
   context: InspectorServerContext,
 ): Promise<InspectorServer> {
+  return serializeLifecycle(() => getInspectorServerLocked(context));
+}
+
+async function getInspectorServerLocked(
+  context: InspectorServerContext,
+): Promise<InspectorServer> {
   if (running !== undefined) {
-    running.context = context;
-    return running.inspector;
+    if (
+      running.runtimeId !== context.runtimeId ||
+      running.projectRoot !== context.projectRoot
+    ) {
+      await closeInspectorServerLocked(running.runtimeId);
+    } else {
+      running.context = context;
+      running.live?.replaceContext();
+      return running.inspector;
+    }
   }
   if (pending === undefined) {
     const start = startServer(context);
@@ -180,25 +196,47 @@ export async function getInspectorServer(
       pending = undefined;
     });
   }
-  const startup = await pending;
+  const startupPromise = pending;
+  const startup = await startupPromise;
+  if (
+    startup.runtimeId !== context.runtimeId ||
+    startup.projectRoot !== context.projectRoot
+  ) {
+    await closeInspectorServerLocked(startup.runtimeId);
+    return getInspectorServerLocked(context);
+  }
   startup.setContext(context);
   return startup.inspector;
 }
 
 /** Closes and clears the singleton; safe to call when nothing is running. */
-export async function closeInspectorServer(): Promise<void> {
+export async function closeInspectorServer(runtimeId?: string): Promise<void> {
+  return serializeLifecycle(() => closeInspectorServerLocked(runtimeId));
+}
+
+async function closeInspectorServerLocked(runtimeId?: string): Promise<void> {
   const starting = pending;
   if (starting !== undefined) {
     const startup = await starting.catch(() => undefined);
-    if (startup !== undefined) {
+    if (
+      startup !== undefined &&
+      (runtimeId === undefined || startup.runtimeId === runtimeId)
+    ) {
       await startup.inspector.close();
     }
     return;
   }
   const current = running;
+  if (
+    current !== undefined &&
+    runtimeId !== undefined &&
+    current.runtimeId !== runtimeId
+  )
+    return;
   running = undefined;
   if (current !== undefined) {
-    await closeServer(current.server);
+    current.capabilities.revoke();
+    await closeServer(current.server, current);
   }
 }
 
@@ -266,6 +304,20 @@ function sendProblem(
   res.end(options.head === true ? undefined : body);
 }
 
+function sendUiSnapshot(
+  res: ServerResponse,
+  snapshot: InspectorUiSnapshot,
+): void {
+  const serialized = serializeUiSnapshot(snapshot);
+  const headers: Record<string, string> = {
+    ...securityHeaders("application/json"),
+    etag: serialized.etag,
+    "content-length": String(Buffer.byteLength(serialized.body)),
+  };
+  res.writeHead(200, headers);
+  res.end(serialized.body);
+}
+
 function sendJson(res: ServerResponse, value: unknown): void {
   if (value === undefined || value === null) {
     sendProblem(res, "internal-error", { reason: "callback-result" });
@@ -282,32 +334,26 @@ function sendAsset(
   res: ServerResponse,
   asset: { body: string; contentType: string },
   head: boolean,
+  port: number,
 ): void {
   const body = Buffer.from(asset.body, "utf8");
   res.writeHead(200, {
     ...securityHeaders(asset.contentType),
-    "content-security-policy": SERVER_CSP,
+    "content-security-policy": serverCsp(port),
     "content-length": String(body.byteLength),
   });
   res.end(head ? undefined : body);
 }
 
-function isAuthorized(state: Running, req: IncomingMessage): boolean {
+function bearerValue(req: IncomingMessage): string | undefined {
   const header = req.headers.authorization;
-  if (typeof header !== "string") {
-    return false;
-  }
-  const match = BEARER.exec(header);
-  if (match === null) {
-    return false;
-  }
-  // Constant-time only after bounded format and equal-length validation.
-  const candidate = Buffer.from(match[1], "utf8");
-  const expected = Buffer.from(state.token, "utf8");
-  if (candidate.length !== expected.length) {
-    return false;
-  }
-  return timingSafeEqual(candidate, expected);
+  if (typeof header !== "string") return undefined;
+  return BEARER.exec(header)?.[1];
+}
+
+function isAuthorized(state: Running, req: IncomingMessage): boolean {
+  const candidate = bearerValue(req);
+  return candidate !== undefined && state.capabilities.authorize(candidate);
 }
 
 /**
@@ -389,7 +435,7 @@ async function handleRequest(
       });
       return;
     }
-    sendAsset(res, asset, head);
+    sendAsset(res, asset, head, state.port);
     return;
   }
 
@@ -405,6 +451,39 @@ async function handleRequest(
     }
     res.writeHead(204, securityHeaders("image/x-icon"));
     res.end();
+    return;
+  }
+
+  if (path === "/api/v1/ui-session") {
+    if (method !== "POST") {
+      sendProblem(res, "method-not-allowed", {
+        head,
+        allow: "POST",
+        reason: "method",
+      });
+      return;
+    }
+    const token = bearerValue(req);
+    if (token === undefined) {
+      sendProblem(res, "unauthorized", { head, reason: "bearer" });
+      return;
+    }
+    if (
+      req.headers["transfer-encoding"] !== undefined ||
+      (req.headers["content-length"] !== undefined &&
+        req.headers["content-length"] !== "0")
+    ) {
+      sendProblem(res, "invalid-range", { reason: "exchange-body" });
+      req.resume();
+      return;
+    }
+    req.resume();
+    const capability = state.capabilities.exchange(token);
+    if (capability === undefined) {
+      sendProblem(res, "unauthorized", { reason: "bootstrap" });
+      return;
+    }
+    sendJson(res, { capability });
     return;
   }
 
@@ -427,7 +506,7 @@ async function handleRequest(
       return;
     }
     if (path === "/api/v1/ui") {
-      sendJson(res, await state.context.loadUi(range.intent));
+      sendUiSnapshot(res, await state.context.loadUi(range.intent));
     } else {
       sendJson(res, await state.context.loadGlobal(range.intent));
     }
@@ -498,12 +577,15 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
     server: createServer({ requireHostHeader: false }),
     port: 0,
     origin: "",
-    token: randomBytes(32).toString("base64url"),
+    capabilities: createUiCapabilities(),
+    runtimeId: context.runtimeId,
+    projectRoot: context.projectRoot,
     context,
     inspector: {
       port: 0,
       origin: "",
-      bootstrapUrl: () => `${state.origin}/#token=${state.token}`,
+      bootstrapUrl: () =>
+        `${state.origin}/#token=${state.capabilities.newBootstrapToken()}`,
       close: () => closeServer(state.server, state),
     },
   };
@@ -530,6 +612,15 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
   }
   state.port = address.port;
   state.origin = `http://127.0.0.1:${state.port}`;
+  state.live = attachLiveChannel(
+    state.server,
+    state.origin,
+    () => ({
+      ...state.context,
+      initialScope: state.context.initialScope ?? "active",
+    }),
+    (candidate) => state.capabilities.authorize(candidate),
+  );
   state.inspector.port = state.port;
   state.inspector.origin = state.origin;
   // Runtime listener errors are swallowed: they must never reach Pi.
@@ -543,13 +634,27 @@ async function startServer(context: InspectorServerContext): Promise<Startup> {
   running = state;
   return {
     inspector: state.inspector,
+    runtimeId: state.runtimeId,
+    projectRoot: state.projectRoot,
     setContext: (next) => {
       state.context = next;
+      state.live?.replaceContext();
     },
   };
 }
 
+function serializeLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+  const result = lifecycle.then(operation);
+  lifecycle = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 async function closeServer(server: Server, state?: Running): Promise<void> {
+  state?.capabilities.revoke();
+  if (state?.live !== undefined) await state.live.close();
   if (state !== undefined && running === state) {
     running = undefined;
   }

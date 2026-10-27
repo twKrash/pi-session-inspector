@@ -25,3 +25,8 @@ The boundaries themselves are stated in the spec's L0/L1/L2 sections and enforce
 | [0017](adr/0017-report-coverage-attribution-and-navigation.md) | report coverage, attribution, and navigation authority |
 | [0018](adr/0018-ephemeral-localhost-ui-and-immutable-snapshots.md) | ephemeral localhost UI and immutable snapshot exports |
 | [0019](adr/0019-integration-adapter-registry.md) | integration adapter registry, settings precedence, and debug-log privacy |
+| [0020](adr/0020-token-economics-and-cache-accounting.md) | token economics and cache accounting |
+| [0021](adr/0021-agent-run-effort-and-coverage.md) | agent-run effort and coverage |
+| [0022](adr/0022-pi-subagents-observability-contract-and-reconciliation-boundary.md) | pi-subagents observability contract and reconciliation boundary |
+| [0023](adr/0023-detached-foreground-terminal-history.md) | detached foreground terminal enrichment |
+| [0027](adr/0027-localhost-live-websocket-deltas.md) | same-process WebSocket deltas for the localhost UI |

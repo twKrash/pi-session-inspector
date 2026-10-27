@@ -187,7 +187,7 @@ scripts/web/
 src/ui/web/
   shell.html
   style.css
-  client.js          # deterministic esbuild output
+  client.bundle.js   # deterministic esbuild output; served at /client.js
 ```
 
 The build-time esbuild step bundles the source scripts, the chart adapter, the
@@ -243,11 +243,15 @@ than assumes.
 
 ### Localhost server and API
 
-The server uses only Node `node:http` and `node:crypto`. It is a lazy singleton
-per Pi process: no registration-time autostart, daemon, service, global
-cross-process listener, or server for `snapshot`/`json`/`tui`. It binds only to
-`127.0.0.1:0`, exposes an explicit `close()` for tests, and obtains current
-session/evidence context through request-time composition-root callbacks.
+The server uses Node `node:http` and `node:crypto` for HTTP and capabilities, and
+the `ws` package for the same-listener WebSocket protocol. It is a lazy
+singleton per Pi runtime and `ExtensionCommandContext.cwd` project: the project
+root is distinct from the shared Inspector storage root. There is no
+registration-time autostart, daemon, service, global cross-process listener, or
+server for `snapshot`/`json`/`tui`. It binds only to `127.0.0.1:0`, exposes an
+explicit `close()` for tests, and obtains current session/evidence context
+through request-time composition-root callbacks. A runtime/project replacement
+retires the old listener and credentials; shutdown is owner-checked.
 
 The initial protected API surface is:
 
@@ -257,10 +261,30 @@ GET /api/v1/reports/sessions/{sessionId}
 GET /api/v1/reports/global
 ```
 
-Shell and known static assets support `GET` and `HEAD`. The exact
-`/favicon.ico` compatibility route returns empty `204` for `GET` and `HEAD`
-without adding an asset. `/api/v1/*` supports `GET` only. There is no mutation
-API and no separate refresh route; refresh is a new request to `/api/v1/ui`.
+`GET /api/v1/ui` serializes the canonical `InspectorUiSnapshot` once and
+returns its quoted SHA-256/base64url ETag for WebSocket revision parity. It
+always returns the full snapshot body; conditional `If-None-Match`/304 behavior
+is not used. The interactive client may upgrade the same listener at
+`/api/v1/ui-live`. The upgrade validates the exact loopback Host, peer, Origin,
+and path before `ws` accepts the connection. The first WebSocket message must
+carry the capability, current ETag, and canonical range; no report load or
+report data is available before capability authorization. The channel shares
+one bounded snapshot baseline per runtime generation, project root, initial
+scope, and normalized range. Persisted UI invalidations are coalesced for
+200 ms; only authenticated subscribers receive changed top-level DTO sections,
+and a stale ETag or range receives a full snapshot. It caps pending plus
+authenticated sockets at eight, authentication at five seconds, and frames at
+1 KiB; ping and baseline state are cleared when the channel becomes unused or
+its owner closes. The transport/lifetime rationale is recorded in accepted
+[ADR 0027](0027-localhost-live-websocket-deltas.md).
+
+The only bootstrap exception to read-only report routes is a bodyless
+`POST /api/v1/ui-session`, authenticated with the one-use bootstrap credential;
+it returns the in-memory runtime capability. Shell and known static assets
+support `GET` and `HEAD`. The exact `/favicon.ico` compatibility route returns
+empty `204` for `GET` and `HEAD` without adding an asset. Report APIs support
+`GET` only. There is no report mutation API or separate refresh route; refresh
+is a new request to `/api/v1/ui`.
 The deferred collection resource is:
 
 ```text
@@ -275,35 +299,33 @@ capped.
 
 ### Authentication and network boundary
 
-The server generates one process/server-instance capability token with
-`node:crypto.randomBytes(32)`, encoded in a bounded base64url representation.
-The token has 256 random bits, is never derived from session, report, process,
-path, or timestamp data, and is retained only in process memory. It expires
-when the server closes or the Pi process exits; no idle/time-to-live rotation
-exists.
-
-The bootstrap URL is:
+Each UI launch receives a 32-byte random, base64url bootstrap credential;
+it expires after 60 seconds, and a newer unexchanged credential replaces it.
+The browser receives it only in the fragment:
 
 ```text
-http://127.0.0.1:<port>/#token=<token>
+http://127.0.0.1:<port>/#token=<bootstrap-token>
 ```
 
-The fragment is the only transient non-route hash state. The browser consumes
-it before route parsing, keeps the token in memory, and uses
-`history.replaceState()` to replace it with the canonical default route
-without adding a history entry. Back/Forward can never restore the bootstrap
-fragment. Reloading the sanitized canonical URL loses authentication and
+The fragment is consumed before route parsing and removed with
+`history.replaceState()` without adding a history entry. Back/Forward cannot
+restore it. The browser performs one bodyless `POST /api/v1/ui-session` with
+`Authorization: Bearer <bootstrap-token>`; successful exchange consumes the
+token and returns a separate 32-byte random, base64url runtime capability. That
+capability remains stable and in memory only until its server/runtime closes or
+is replaced. Reloading the sanitized canonical URL loses authentication and
 requires a fresh bootstrap URL.
 
-Report-bearing requests send only:
+Report-bearing HTTP requests use only:
 
 ```http
-Authorization: Bearer <token>
+Authorization: Bearer <runtime-capability>
 ```
 
 Tokens are never accepted from query strings, cookies, storage, route state,
-exports, referrers, logs, or diagnostics. Bearer comparison is constant-time
-after bounded format/length validation.
+exports, referrers, logs, or diagnostics. The live-channel capability is sent
+only in the first WebSocket message, never in the URL. Bearer comparison is
+constant-time after bounded format/length validation.
 
 Every request requires exact `Host: 127.0.0.1:<port>` and a loopback peer.
 IPv4-mapped loopback is normalized only as the same loopback representation.
@@ -323,7 +345,7 @@ Server shell/assets use a restrictive same-origin CSP:
 
 ```text
 default-src 'self'; script-src 'self'; style-src 'self';
-connect-src 'self'; object-src 'none'; base-uri 'none';
+connect-src 'self' ws://127.0.0.1:<port>; object-src 'none'; base-uri 'none';
 form-action 'none'; frame-ancestors 'none'
 ```
 

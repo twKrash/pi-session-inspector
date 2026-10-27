@@ -1,6 +1,6 @@
 {
   "name": "@twkrash/pi-session-inspector",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "description": "Local Pi session analytics for token usage, cost, models, tools, subagents, skills, and history",
   "type": "module",
   "license": "MIT",
@@ -69,6 +69,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
     "@types/node": "^22.19.7",
+    "@types/ws": "8.18.2",
     "dependency-cruiser": "^18.2.0",
     "esbuild": "0.28.2",
     "fast-check": "^4.10.0",
@@ -83,7 +84,8 @@
   },
   "dependencies": {
     "chart.js": "4.5.1",
-    "i18next": "26.4.2"
+    "i18next": "26.4.2",
+    "ws": "8.22.0"
   },
   "publishConfig": {
     "access": "public"

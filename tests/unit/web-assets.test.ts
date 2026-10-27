@@ -150,12 +150,15 @@ test("the shell is report-free and loads the generated client asset", () => {
     "tabs",
     "view",
     "announcement",
+    "live-status",
   ]) {
     assert.equal(shell.includes(`id="${landmark}"`), true, landmark);
   }
 });
 
-test("no shipped asset carries a storage, socket, or html sink", () => {
+test("no shipped asset carries unsafe storage, alternate sockets, or html sinks", () => {
+  assert.equal((WEB_ASSETS.client.match(/\bnew WebSocket\(/g) ?? []).length, 1);
+  assert.equal(WEB_ASSETS.client.includes("/api/v1/ui-live"), true);
   for (const name of [...SCRIPTS, "shell"] as const) {
     const source = WEB_ASSETS[name];
     for (const forbidden of [
@@ -166,7 +169,6 @@ test("no shipped asset carries a storage, socket, or html sink", () => {
       "localStorage",
       "sessionStorage",
       "document.cookie",
-      "WebSocket",
       "EventSource",
       "XMLHttpRequest",
       "eval(",
@@ -413,6 +415,8 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
     "fetch",
     "console",
     "setTimeout",
+    "clearTimeout",
+    "WebSocket",
     "getComputedStyle",
     "ResizeObserver",
     "MutationObserver",
@@ -937,6 +941,10 @@ test("the range module parses and serializes intent, and rejects the rest", () =
 // ---------------------------------------------------------------------------
 
 const TOKEN = "Kq3Zt0m3Yc4v6b8n1m2Q4w5E6r7T8y9U0iO1p2A3s4D";
+const ETAG_1 = `"${"A".repeat(43)}"`;
+const ETAG_2 = `"${"B".repeat(43)}"`;
+const ETAG_3 = `"${"C".repeat(43)}"`;
+const RUNTIME_CAPABILITY = "R".repeat(43);
 
 /** The kinds of the first events, in the order the client performed them. */
 function kinds(events: readonly { kind: string }[]): string[] {
@@ -954,7 +962,11 @@ test("the loaded browser scripts bootstrap data and wire the theme control", asy
   await settle();
 
   assert.deepEqual(harness.fetches(), [
-    { url: "/api/v1/ui", authorization: `Bearer ${TOKEN}` },
+    { url: "/api/v1/ui-session", authorization: `Bearer ${TOKEN}` },
+    {
+      url: "/api/v1/ui",
+      authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+    },
   ]);
   assert.equal(harness.element("title").textContent, "A session, in focus.");
   const theme = harness.element("theme");
@@ -977,8 +989,10 @@ test("the bootstrap consumes the token fragment before parsing or requesting", a
   assert.deepEqual(kinds(harness.events), [
     "replaceState",
     "fetch",
+    "fetch",
     "parse",
     "replaceState",
+    "socket",
   ]);
   assert.equal(kinds(harness.events).includes("hashAssign"), false);
   for (const hash of harness.routeParses()) {
@@ -987,13 +1001,778 @@ test("the bootstrap consumes the token fragment before parsing or requesting", a
   assert.equal(harness.location.hash.includes("token"), false);
   assert.equal(harness.replacements() > 0, true);
 
-  // The token travels as the bearer credential and nowhere else.
+  // The one-time token is exchanged; only the runtime capability reaches the report API.
   assert.deepEqual(harness.fetches(), [
-    { url: "/api/v1/ui", authorization: `Bearer ${TOKEN}` },
+    { url: "/api/v1/ui-session", authorization: `Bearer ${TOKEN}` },
+    {
+      url: "/api/v1/ui",
+      authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+    },
   ]);
   // The applied route is canonical, and its scope is the DTO's own initial scope.
   assert.equal(harness.location.hash, "#/current/overview?scope=tree");
   assert.equal(harness.element("title").textContent, "A session, in focus.");
+});
+
+test("bootstrap exchanges once and subscribes with the in-memory capability and ETag", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot()],
+    etags: [ETAG_1],
+    capability: RUNTIME_CAPABILITY,
+  });
+  await harness.start();
+
+  assert.deepEqual(harness.fetchRequests(), [
+    {
+      url: "/api/v1/ui-session",
+      method: "POST",
+      authorization: `Bearer ${TOKEN}`,
+    },
+    {
+      url: "/api/v1/ui",
+      method: "GET",
+      authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+    },
+  ]);
+  assert.equal(harness.location.hash.includes(TOKEN), false);
+  assert.equal(
+    harness.fetchRequests().some(({ url }) => url.includes(TOKEN)),
+    false,
+  );
+  assert.deepEqual(harness.socketUrls(), [
+    "ws://127.0.0.1:1234/api/v1/ui-live",
+  ]);
+  harness.openSocket();
+  assert.deepEqual(JSON.parse(harness.socketMessages()[0] ?? "null"), {
+    type: "subscribe",
+    capability: RUNTIME_CAPABILITY,
+    etag: ETAG_1,
+    range: "",
+  });
+  assert.equal(harness.socketMessages()[0]?.includes(TOKEN), false);
+  assert.deepEqual(harness.storageWrites(), []);
+  assert.deepEqual(harness.cookieWrites(), []);
+});
+
+test("live subscriptions reuse the normalized range of each full snapshot", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot(), uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+
+  harness.location.hash = "#/current/overview?scope=tree&preset=7&q=local-only";
+  harness.hashchange();
+  await settle();
+
+  assert.deepEqual(harness.fetchRequests().at(-1), {
+    url: "/api/v1/ui?preset=7",
+    method: "GET",
+    authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+  });
+  assert.equal(harness.socketCount(), 2);
+  harness.openSocket(1);
+  assert.deepEqual(JSON.parse(harness.socketMessages().at(-1) ?? "null"), {
+    type: "subscribe",
+    capability: RUNTIME_CAPABILITY,
+    etag: ETAG_2,
+    range: "preset=7",
+  });
+});
+
+test("explicit refresh remains a full snapshot and resubscribes with its ETag", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot(), uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.click(harness.element("refresh"));
+  await settle();
+
+  assert.equal(harness.fetchRequests().length, 3);
+  assert.deepEqual(harness.fetchRequests().at(-1), {
+    url: "/api/v1/ui",
+    method: "GET",
+    authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+  });
+  assert.equal(harness.socketCount(), 2);
+  harness.openSocket(1);
+  assert.equal(
+    JSON.parse(harness.socketMessages().at(-1) ?? "null").etag,
+    ETAG_2,
+  );
+});
+
+test("malformed live snapshots and deltas preserve last good state and recover by HTTP", async () => {
+  for (const malformed of ["snapshot", "delta"] as const) {
+    const initial = uiSnapshot();
+    const harness = createWebClient({
+      hash: `#token=${TOKEN}`,
+      responses: [initial],
+      etags: [ETAG_1],
+    });
+    await harness.start();
+    harness.openSocket();
+    harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+    const before = harness.element("view").textContent;
+    const incoming = uiSnapshot();
+    if (malformed === "snapshot") {
+      (incoming as unknown as { current: unknown }).current = null;
+      harness.receiveSocket({
+        type: "snapshot",
+        etag: ETAG_2,
+        snapshot: incoming,
+      });
+    } else {
+      harness.receiveSocket({
+        type: "delta",
+        baseEtag: ETAG_1,
+        etag: ETAG_2,
+        changes: { current: null },
+      });
+    }
+    assert.equal(harness.element("view").textContent, before);
+    assert.equal(
+      harness
+        .fetchRequests()
+        .filter(
+          ({ url }) => url === "/api/v1/ui" || url.startsWith("/api/v1/ui?"),
+        ).length,
+      2,
+    );
+    await settle();
+    assert.equal(harness.element("view").textContent, before);
+    assert.equal(harness.socketCount(), 2);
+    harness.openSocket(1);
+    assert.equal(
+      JSON.parse(harness.socketMessages().at(-1) ?? "null").etag,
+      ETAG_1,
+    );
+  }
+});
+
+test("malformed nested live snapshots are rejected before commit", async () => {
+  const initial = uiSnapshot();
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const before = harness.element("view").textContent;
+  const malformed = uiSnapshot();
+  (malformed.current.tree as unknown as { availability: string }).availability =
+    "unexpected";
+  harness.receiveSocket({
+    type: "snapshot",
+    etag: ETAG_2,
+    snapshot: malformed,
+  });
+
+  assert.equal(
+    harness.fetchRequests().filter(({ url }) => url === "/api/v1/ui").length,
+    2,
+    "invalid nested DTO must recover through a full HTTP snapshot",
+  );
+  assert.equal(harness.element("view").textContent, before);
+  await settle();
+  assert.equal(harness.element("view").textContent, before);
+});
+
+test("failed live rendering restores the last good page before recovery", async () => {
+  const initial = uiSnapshot();
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const before = {
+    title: harness.element("title").textContent,
+    tabs: harness.element("tabs").textContent,
+    view: harness.element("view").textContent,
+    hash: harness.location.hash,
+  };
+  const output = harness.element("view");
+  const replaceChildren = output.replaceChildren.bind(output);
+  let failOnce = true;
+  output.replaceChildren = (...nodes) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("injected render failure");
+    }
+    replaceChildren(...nodes);
+  };
+
+  const incoming = uiSnapshot();
+  incoming.current.tree.capabilities = ["tools"];
+  harness.receiveSocket({
+    type: "snapshot",
+    etag: ETAG_2,
+    snapshot: incoming,
+  });
+
+  assert.equal(harness.element("title").textContent, before.title);
+  assert.equal(harness.element("tabs").textContent, before.tabs);
+  assert.equal(harness.element("view").textContent, before.view);
+  assert.equal(harness.location.hash, before.hash);
+  assert.equal(
+    harness.fetchRequests().filter(({ url }) => url === "/api/v1/ui").length,
+    2,
+  );
+  await settle();
+  assert.equal(harness.element("title").textContent, before.title);
+  assert.equal(harness.element("view").textContent, before.view);
+});
+
+test("malformed HTTP recovery preserves the last good report", async () => {
+  const initial = uiSnapshot();
+  const malformed = uiSnapshot();
+  (malformed.current.tree as unknown as { availability: string }).availability =
+    "unexpected";
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial, malformed],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const before = harness.element("view").textContent;
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { current: null },
+  });
+  await settle();
+
+  assert.equal(harness.element("view").textContent, before);
+  assert.equal(harness.socketCount(), 1);
+  assert.deepEqual(harness.timerDelays(), [1_000]);
+});
+
+test("failed HTTP rendering restores the last good page", async () => {
+  const initial = uiSnapshot();
+  const incoming = uiSnapshot();
+  incoming.current.tree.capabilities = ["tools"];
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial, incoming],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+
+  const before = {
+    title: harness.element("title").textContent,
+    tabs: harness.element("tabs").textContent,
+    view: harness.element("view").textContent,
+    hash: harness.location.hash,
+  };
+  const output = harness.element("view");
+  const replaceChildren = output.replaceChildren.bind(output);
+  let failOnce = true;
+  output.replaceChildren = (...nodes) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("injected HTTP render failure");
+    }
+    replaceChildren(...nodes);
+  };
+  harness.click(harness.element("refresh"));
+  await settle();
+
+  assert.equal(harness.element("title").textContent, before.title);
+  assert.equal(harness.element("tabs").textContent, before.tabs);
+  assert.equal(harness.element("view").textContent, before.view);
+  assert.equal(harness.location.hash, before.hash);
+});
+
+test("live snapshots refresh known session IDs and removed IDs are rejected", async () => {
+  const initial = uiSnapshot();
+  const member = initial.history.sessions.find(
+    (session) => session.sessionId === "session-a",
+  );
+  if (member?.view?.report === undefined) {
+    throw new Error("fixture must publish an available session");
+  }
+  const incoming = {
+    ...initial,
+    history: {
+      ...initial.history,
+      sessions: [
+        ...initial.history.sessions,
+        {
+          ...member,
+          sessionId: "live-session",
+          view: {
+            ...member.view,
+            report: { ...member.view.report, sessionId: "live-session" },
+          },
+        },
+      ],
+    },
+  };
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.receiveSocket({ type: "snapshot", etag: ETAG_2, snapshot: incoming });
+
+  harness.location.hash = "#/history/overview?session=live-session";
+  harness.hashchange();
+  assert.equal(
+    harness.location.hash,
+    "#/history/overview?session=live-session",
+  );
+  assert.equal(harness.element("breadcrumb").textContent, "live-session");
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_2,
+    etag: ETAG_3,
+    changes: {
+      history: {
+        ...incoming.history,
+        sessions: incoming.history.sessions.filter(
+          (session) => session.sessionId !== "live-session",
+        ),
+      },
+    },
+  });
+  assert.equal(harness.location.hash, "#/history/overview");
+  assert.notEqual(harness.element("breadcrumb").textContent, "live-session");
+});
+
+test("live deltas expose links for newly published model IDs", async () => {
+  const initial = uiSnapshot();
+  const incoming = uiSnapshot();
+  const range = incoming.current.tree.range;
+  const report = incoming.current.tree.report;
+  const rangeModel = range?.models[0];
+  const reportModel = report?.models[0];
+  if (
+    range === undefined ||
+    report === undefined ||
+    rangeModel === undefined ||
+    reportModel === undefined
+  ) {
+    throw new Error("fixture must publish a model in the tree range");
+  }
+  range.models = [
+    ...range.models,
+    { ...rangeModel, provider: "live", model: "delta" },
+  ];
+  report.models = [
+    ...report.models,
+    { ...reportModel, provider: "live", model: "delta" },
+  ];
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { current: incoming.current },
+  });
+  harness.location.hash = "#/current/llm?scope=tree";
+  harness.hashchange();
+
+  const liveLink = harness
+    .element("view")
+    .querySelectorAll("a")
+    .find((link) => link.dataset.entity === "model:live/delta");
+  assert.notEqual(liveLink, undefined);
+  harness.click(liveLink as StubElement);
+  assert.equal(
+    harness.location.hash,
+    (liveLink as StubElement).attributes.href,
+  );
+  assert.equal(harness.activeElement()?.dataset.entity, "model:live/delta");
+});
+
+test("live deltas reconcile added and withdrawn tab capabilities", async () => {
+  const initial = uiSnapshot();
+  initial.initialScope = "active";
+  initial.current.active.capabilities = [];
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [initial],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  assert.deepEqual(visibleTabs(harness), []);
+
+  const available = uiSnapshot();
+  available.current.active.capabilities = ALL_TABS;
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { current: available.current },
+  });
+  assert.deepEqual(visibleTabs(harness), ALL_TABS);
+  assert.equal(currentTab(harness), "overview");
+
+  harness.location.hash = "#/current/llm?scope=active";
+  harness.hashchange();
+  assert.equal(currentTab(harness), "llm");
+  const withdrawn = uiSnapshot();
+  withdrawn.current.active.capabilities = ["overview"];
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_2,
+    etag: ETAG_3,
+    changes: { current: withdrawn.current },
+  });
+  assert.deepEqual(visibleTabs(harness), ["overview"]);
+  assert.equal(currentTab(harness), "overview");
+  assert.equal(harness.location.hash, "#/current/overview?scope=active");
+  assert.equal(harness.element("route-notice").hidden, false);
+  assert.equal(
+    harness.element("route-notice").textContent,
+    "That view isn't available here.",
+  );
+});
+
+test("file snapshots do not exchange a capability or open a live channel", async () => {
+  const harness = createWebClient({
+    protocol: "file:",
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot()],
+  });
+  await harness.start();
+  assert.equal(
+    harness.fetchRequests().some(({ method }) => method === "POST"),
+    false,
+  );
+  assert.equal(harness.socketCount(), 0);
+});
+
+test("a matching live delta replaces only its DTO section without an HTTP load", async () => {
+  const first = uiSnapshot();
+  const changed = uiSnapshot();
+  if (changed.current.tree.report === undefined) {
+    throw new Error("fixture must carry the tree report");
+  }
+  changed.current.tree.report.compactionCount = 42;
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [first],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  const renders = harness.renders();
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { current: changed.current },
+  });
+
+  assert.equal(harness.fetchRequests().length, 2);
+  assert.equal(harness.renders() > renders, true);
+  assert.equal(harness.element("loading").hidden, true);
+  assert.equal(
+    metrics(harness).some(
+      (card) => card.includes("Compactions") && card.includes("42"),
+    ),
+    true,
+  );
+  assert.equal(harness.element("live-status").textContent, "Live");
+});
+
+test("live deltas preserve sort focus across unrelated and same-view updates", async () => {
+  const first = uiSnapshot();
+  const unrelated = uiSnapshot();
+  unrelated.global.trackedSessions = 999;
+  const changed = uiSnapshot();
+  if (changed.current.tree.report === undefined) {
+    throw new Error("fixture must carry the tree report");
+  }
+  changed.current.tree.report.compactionCount = 42;
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [first],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.location.hash = "#/current/tools?scope=tree";
+  harness.hashchange();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  harness.element("sort").focus();
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { global: unrelated.global },
+  });
+  assert.ok(
+    harness.activeElement() === harness.element("sort"),
+    "live delta should retain focus on the sort selector",
+  );
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_2,
+    etag: ETAG_3,
+    changes: { current: changed.current },
+  });
+  assert.ok(
+    harness.activeElement() === harness.element("sort"),
+    "same-view delta should retain focus on the sort selector",
+  );
+});
+
+test("live snapshots preserve focus on non-search view controls", async () => {
+  const first = uiSnapshot();
+  const unrelated = uiSnapshot();
+  unrelated.global.trackedSessions = 999;
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [first],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.location.hash = "#/history/overview";
+  harness.hashchange();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  const control = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.notEqual(control, undefined);
+  (control as StubElement).focus();
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { global: unrelated.global },
+  });
+  const restored = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.ok(
+    harness.activeElement() === restored,
+    "live delta should retain focus on the available-only button",
+  );
+
+  harness.receiveSocket({ type: "snapshot", etag: ETAG_3, snapshot: first });
+  const afterSnapshot = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  assert.ok(
+    harness.activeElement() === afterSnapshot,
+    "live snapshot should retain focus on the available-only button",
+  );
+});
+
+test("live updates preserve focus on repeated Copy ID controls", async () => {
+  const first = uiSnapshot();
+  const unrelated = uiSnapshot();
+  unrelated.global.trackedSessions = 999;
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [first, uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.location.hash = "#/history/overview";
+  harness.hashchange();
+  const reveal = harness
+    .element("view")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.filter === "availableOnly");
+  if (reveal === undefined)
+    throw new Error("history reveal control is missing");
+  harness.click(reveal);
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const copyButtons = (): StubElement[] =>
+    harness
+      .element("view")
+      .querySelectorAll("button")
+      .filter((button) => button.dataset.copyId !== undefined);
+  assert.equal(copyButtons().length, 2);
+  const copyButton = (): StubElement | undefined =>
+    copyButtons().find((button) =>
+      button.getAttribute("aria-label")?.endsWith("session-a"),
+    );
+  const focusCopyButton = (): void => {
+    const button = copyButton();
+    if (button === undefined)
+      throw new Error("session-a copy button is missing");
+    button.focus();
+  };
+  const assertCopyButtonFocus = (message: string): void => {
+    assert.ok(harness.activeElement() === copyButton(), message);
+  };
+
+  focusCopyButton();
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { global: unrelated.global },
+  });
+  assertCopyButtonFocus(
+    "a delta should retain focus on the session-a copy button",
+  );
+
+  harness.receiveSocket({ type: "snapshot", etag: ETAG_3, snapshot: first });
+  assertCopyButtonFocus(
+    "a snapshot should retain focus on the session-a copy button",
+  );
+
+  focusCopyButton();
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { global: unrelated.global },
+  });
+  await settle();
+  assertCopyButtonFocus(
+    "quiet HTTP resynchronization should retain focus on the session-a copy button",
+  );
+});
+
+test("a mismatched live delta recovers quietly without losing view focus", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot(), uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.location.hash = "#/current/tools?scope=tree";
+  harness.hashchange();
+  await settle();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.element("sort").focus();
+
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_3,
+    etag: ETAG_3,
+    changes: { current: uiSnapshot().current },
+  });
+  await settle();
+
+  assert.ok(
+    harness.activeElement() === harness.element("sort"),
+    "quiet HTTP resynchronization should restore focus to the sort selector",
+  );
+  assert.deepEqual(harness.fetchRequests().slice(-1), [
+    {
+      url: "/api/v1/ui",
+      method: "GET",
+      authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+    },
+  ]);
+  assert.equal(harness.element("loading").hidden, true);
+  assert.notEqual(
+    harness.element("announcement").textContent,
+    "Loading report…",
+  );
+  assert.equal(harness.socketCount(), 2);
+  harness.openSocket(1);
+  assert.deepEqual(JSON.parse(harness.socketMessages().at(-1) ?? "null"), {
+    type: "subscribe",
+    capability: RUNTIME_CAPABILITY,
+    etag: ETAG_2,
+    range: "",
+  });
+});
+
+test("live reconnect uses the last ETag with capped exponential delays", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot()],
+    etags: [ETAG_1],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+
+  const expected = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000];
+  for (let index = 0; index < expected.length; index += 1) {
+    harness.closeSocket(1006, "temporary disconnect", index);
+    assert.equal(harness.fireNextTimer(), expected[index]);
+    const reconnect = harness.socketCount() - 1;
+    harness.openSocket(reconnect);
+    const subscribe = JSON.parse(harness.socketMessages().at(-1) ?? "null");
+    assert.equal(subscribe.etag, ETAG_1);
+  }
+  assert.deepEqual(harness.timerDelays(), expected);
+});
+
+test("terminal live closes retain the report and do not reconnect", async () => {
+  for (const code of [1001, 4401]) {
+    const harness = createWebClient({
+      hash: `#token=${TOKEN}`,
+      responses: [uiSnapshot()],
+      etags: [ETAG_1],
+    });
+    await harness.start();
+    harness.openSocket();
+    const renders = harness.renders();
+    harness.closeSocket(code, "terminal", 0);
+    assert.equal(harness.element("live-status").hidden, false);
+    assert.equal(
+      harness
+        .element("live-status")
+        .textContent.toLowerCase()
+        .includes("stale"),
+      true,
+    );
+    assert.equal(harness.renders(), renders);
+    assert.deepEqual(harness.timerDelays(), []);
+    assert.equal(harness.element("view").children.length > 0, true);
+  }
+});
+
+test("the shell exposes one hidden, atomic live status landmark", () => {
+  const shell = WEB_ASSETS.shell;
+  assert.match(
+    shell,
+    /id="live-status"[^>]*role="status"[^>]*aria-atomic="true"[^>]*hidden/,
+  );
+  assert.equal((shell.match(/role="status"/g) ?? []).length, 2);
 });
 
 test("a token is never accepted from a query, storage, or a cookie", async () => {
