@@ -200,7 +200,7 @@ Inspector usage rules if that seam lands:
   internals.
 ### 4. Push-based live updates (WebSocket)
 
-**Status:** Complete in the feature branch; release pending. **Depends on:**
+**Status:** Complete in PR #69; release publication follows the PR merge. **Depends on:**
 nothing; independent of the localhost transport that shipped in `0.10.0`.
 
 **Shipped:** an in-process payload-free invalidation after a successful Inspector

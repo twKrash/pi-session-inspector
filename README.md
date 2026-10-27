@@ -43,9 +43,9 @@ session, the session history, or the global aggregate.
 > The localhost UI paints the configured theme before report data arrives and
 > announces loading once. One UI response shares its History and Global scan; repeated in-flight
 > range requests are coalesced, while explicit Refresh remains fresh. Request
-> failures stay in bounded HTTP responses, not Pi stderr. Live localhost views
-> receive authenticated, same-process WebSocket DTO deltas after successful WAL
-> flushes; immutable snapshots remain unchanged.
+> failures stay in bounded HTTP responses, not Pi stderr. **1.6.0 highlight:**
+> live localhost views receive authenticated, same-process WebSocket DTO deltas
+> after successful WAL flushes; immutable snapshots remain unchanged.
 
 ## Install
 
@@ -62,7 +62,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.5.4
+pi install npm:@twkrash/pi-session-inspector@1.6.0
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the
