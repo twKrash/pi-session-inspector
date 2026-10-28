@@ -2681,7 +2681,7 @@ function timeKnown(value: unknown, basis: TimeBasis): TimeEvidence {
     : { state: "unavailable" };
 }
 
-function isBoundedTimestamp(value: unknown): value is string {
+export function isBoundedTimestamp(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length > 0 &&

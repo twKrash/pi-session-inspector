@@ -33,6 +33,7 @@ import type {
   HistoricalSession,
   HistoryReport,
 } from "./load-history.ts";
+import type { HistorySessionPage } from "./history-page.ts";
 import {
   filterView,
   historyRowRange,
@@ -265,6 +266,17 @@ export type UiHistoryProjection = {
   sessions: readonly UiHistorySession[];
 };
 
+/** The bounded, non-aggregate History collection response. */
+export type UiHistorySessionPage = {
+  kind: "history-sessions";
+  schemaVersion: 1;
+  availability: HistorySessionPage["availability"];
+  sessions: readonly UiHistorySession[];
+  diagnostics: HistoryReport["diagnostics"];
+  previousCursor: string | null;
+  nextCursor: string | null;
+};
+
 /** One global day: the aggregate's own bounded row, flattened for rendering. */
 export type UiGlobalDailyRow = {
   date: string;
@@ -308,6 +320,7 @@ export type InspectorUiSnapshot = {
   kind: "ui";
   schemaVersion: 1;
   theme: "light" | "dark";
+  projectName: string;
   initialScope: Scope;
   current: {
     active: UiSessionProjection;
@@ -605,6 +618,33 @@ export function projectGlobalReport(
   };
 }
 
+/** Projects page rows with existing range semantics while retaining cursor order. */
+export function projectHistorySessionPage(
+  page: HistorySessionPage,
+  intent?: RangeIntent,
+): UiHistorySessionPage {
+  const projection = projectHistoryReport(
+    {
+      availability: page.availability,
+      sessions: page.sessions,
+      diagnostics: page.diagnostics,
+    },
+    intent,
+  );
+  const rows = new Map(
+    projection.sessions.map((session) => [session.sessionId, session]),
+  );
+  return {
+    kind: "history-sessions",
+    schemaVersion: 1,
+    availability: page.availability,
+    sessions: page.sessions.map((session) => rows.get(session.sessionId)!),
+    diagnostics: page.diagnostics,
+    previousCursor: page.previousCursor,
+    nextCursor: page.nextCursor,
+  };
+}
+
 /**
  * The one inspector UI projection: both current views projected separately
  * (each against its own dates), history with each available session's own view,
@@ -615,12 +655,14 @@ export function projectGlobalReport(
 export function projectInspectorUi(input: {
   bundle: InspectorBundle;
   intent?: RangeIntent;
+  projectName: string;
 }): InspectorUiSnapshot {
-  const { bundle, intent } = input;
+  const { bundle, intent, projectName } = input;
   return {
     kind: "ui",
     schemaVersion: 1,
     theme: bundle.theme,
+    projectName,
     initialScope: bundle.initialScope,
     current: {
       active: projectCurrentView(bundle.current.active, "active", intent),

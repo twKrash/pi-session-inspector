@@ -29,6 +29,7 @@ export function diffUiSnapshot(
     "history",
     "global",
     "initialScope",
+    "projectName",
     "theme",
   ] as const) {
     if (JSON.stringify(previous[key]) !== JSON.stringify(next[key])) {

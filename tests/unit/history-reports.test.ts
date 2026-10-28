@@ -1560,6 +1560,36 @@ test("loads exactly one requested session through the same bounded discovery pat
   }
 });
 
+test("exact session lookup reaches beyond the cap while Global stays bounded", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-history-pages-cap-"));
+  const sessionDirectory = join(root, "public-sessions");
+  await mkdir(sessionDirectory);
+  try {
+    for (let index = 0; index < 207; index += 1) {
+      await addManifestSession(
+        root,
+        sessionDirectory,
+        `session-${String(index).padStart(3, "0")}`,
+      );
+    }
+
+    const options = {
+      root,
+      sessionDirectory: () => sessionDirectory,
+      maintenance,
+    };
+    const later = await loadHistorySessionReport("session-206", options);
+    assert.equal(later?.availability, "available");
+    assert.equal(later?.sessionId, "session-206");
+
+    const global = await loadGlobalReport({ ...options, scope: "tree" });
+    assert.equal(global.sessions.length, 206);
+    assert.ok(global.diagnostics.includes("history-limit-reached"));
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("one requested session's failures stay bounded and fabricate no report", async () => {
   const unmarked = await optionsWithSource(validSource(), { marker: false });
   try {

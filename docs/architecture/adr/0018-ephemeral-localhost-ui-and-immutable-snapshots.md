@@ -95,14 +95,30 @@ than one global `{from,to}` pair.
 Independent resource requests are independent observations:
 
 ```text
+GET /api/v1/reports/sessions?cursor&from&to
 GET /api/v1/reports/sessions/{sessionId}
 GET /api/v1/reports/global
 ```
 
-They do not promise cross-request snapshot consistency. The session resource
-returns one bounded canonical `SessionReport`, is atomic, and rejects `scope`
-and range parameters; range input returns `400 range-not-supported`. The global
+They do not promise cross-request snapshot consistency. The History collection
+accepts only a bounded cursor and a complete custom `from`/`to` range. It
+returns a path-free `history-sessions` page DTO with at most 50 projected rows,
+bounded diagnostics, previous/next cursors, and no exact total. The cursor uses
+validated Pi-native session header/entry timestamps (including sub-millisecond
+precision) newest-first, ASCII session ID for equal instants, and missing dates
+last; it never uses filesystem timestamps or discovery order. Complete manifest
+enumeration locates page candidates, but only selected rows are replayed. The
+default History and Global aggregates remain on their existing 206-session
+bounded scan. The exact-session resource uses targeted manifest discovery and
+remains atomic beyond that aggregate cap; it rejects `scope` and range
+parameters, with range input returning `400 range-not-supported`. The global
 resource returns the bounded range-resolved `GlobalReport`.
+
+`InspectorUiSnapshot.projectName` is a bounded basename of the active
+`ExtensionCommandContext.cwd`, with a generic fallback. It is sent only through
+the authenticated snapshot DTO, never exposes the project root, and is rendered
+as text. A project/runtime replacement updates the server context and retires
+the prior listener and credentials as already specified above.
 Success responses are endpoint-specific DTOs; no generic data wrapper is
 introduced. Errors use the bounded Problem Details contract below.
 
@@ -253,10 +269,11 @@ explicit `close()` for tests, and obtains current session/evidence context
 through request-time composition-root callbacks. A runtime/project replacement
 retires the old listener and credentials; shutdown is owner-checked.
 
-The initial protected API surface is:
+The protected API surface is:
 
 ```text
 GET /api/v1/ui
+GET /api/v1/reports/sessions?cursor&from&to
 GET /api/v1/reports/sessions/{sessionId}
 GET /api/v1/reports/global
 ```
@@ -285,17 +302,6 @@ support `GET` and `HEAD`. The exact `/favicon.ico` compatibility route returns
 empty `204` for `GET` and `HEAD` without adding an asset. Report APIs support
 `GET` only. There is no report mutation API or separate refresh route; refresh
 is a new request to `/api/v1/ui`.
-The deferred collection resource is:
-
-```text
-GET /api/v1/reports/sessions
-```
-
-It may later add bounded, allowlisted `from`, `to`, `availability`, `sort`,
-`limit`, and `cursor` parameters without requiring v2. Pagination must limit
-returned rows only, preserve evidence discovery/coverage semantics, use stable
-deterministic ordering, and never fabricate an exact total when discovery is
-capped.
 
 ### Authentication and network boundary
 

@@ -37,9 +37,11 @@ import {
 } from "../pi/sessions.ts";
 import {
   discoverHistory,
+  discoverHistorySession,
   resolveManifestSourceFile,
   type CoverageReason,
   type HistoryDiagnostic,
+  type HistoryDiscoveryResult,
   type HistorySession,
 } from "../storage/history.ts";
 import {
@@ -287,37 +289,71 @@ export async function loadHistorySessionReport(
   sessionId: string,
   options: HistorySessionLoadOptions,
 ): Promise<HistoricalSession | undefined> {
-  const discovery = await discoverHistorySessions({
+  const discovered = await discoverHistorySession({
     ...options,
-    scope: "tree",
+    sessionId,
+    markerEvidence: historyMarkerEvidence(options),
   });
-  const discovered = discovery.sessions.find(
-    (session) => session.sessionId === sessionId,
-  );
   if (discovered === undefined) return undefined;
-  return toHistoricalSession(await scanDiscoveredSession(options, discovered));
+  return replayDiscoveredHistorySession(options, discovered);
 }
 
+export type HistoryDiscoveryReadOptions = {
+  maxSessions?: number | null;
+  observeParsedSession?: (sessionId: string, parsed: ParsedSession) => void;
+};
+
 /**
- * The bounded manifest discovery every history read shares: pending metadata is
- * promoted and marker-checked exactly as `discoverHistory` documents, and one
- * unresolvable source never prevents the other sessions from being found.
+ * Discovers manifest-backed history through the shared source and marker
+ * checks. Optional date collection is request-local; aggregate callers omit it
+ * and retain the bounded default.
  */
-function discoverHistorySessions(options: HistoryLoadOptions) {
+export function discoverHistorySessions(
+  options: HistoryLoadOptions,
+  readOptions: HistoryDiscoveryReadOptions = {},
+): Promise<HistoryDiscoveryResult> {
   return discoverHistory({
     ...options,
-    // Promotion evidence is the tracking marker itself; whether the source can
-    // be replayed is the loader's re-check below (`sourceReadFailure`).
-    markerEvidence: async (_sessionId, sourceFile) => {
-      const source = await resolveManifestSourceFile({
-        sourceFile,
-        sessionDirectory: options.sessionDirectory(),
-      });
-      if (source === undefined) return false;
-      const parsed = parseSessionJsonl(await readFile(source, "utf8"));
-      return hasTrackingStartMarker(parsed.entries);
-    },
+    ...(readOptions.maxSessions === undefined
+      ? {}
+      : { maxSessions: readOptions.maxSessions }),
+    markerEvidence: historyMarkerEvidence(
+      options,
+      readOptions.observeParsedSession,
+    ),
   });
+}
+
+function historyMarkerEvidence(
+  options: Pick<HistoryLoadOptions, "sessionDirectory">,
+  observeParsedSession?: (sessionId: string, parsed: ParsedSession) => void,
+) {
+  return async (sessionId: string, sourceFile: string) => {
+    const source = await resolveManifestSourceFile({
+      sourceFile,
+      sessionDirectory: options.sessionDirectory(),
+    });
+    if (source === undefined) return false;
+    const parsed = parseSessionJsonl(await readFile(source, "utf8"));
+    const marked = hasTrackingStartMarker(parsed.entries);
+    if (
+      marked &&
+      observeParsedSession !== undefined &&
+      parsed.formatVersion === 3 &&
+      sourceReadFailure(parsed, sessionId) === undefined
+    ) {
+      observeParsedSession(sessionId, parsed);
+    }
+    return marked;
+  };
+}
+
+/** Replays a previously discovered row through the same atomic report path. */
+export async function replayDiscoveredHistorySession(
+  options: HistorySessionLoadOptions,
+  discovered: HistorySession,
+): Promise<HistoricalSession> {
+  return toHistoricalSession(await scanDiscoveredSession(options, discovered));
 }
 
 async function scanHistory(options: HistoryLoadOptions): Promise<HistoryScan> {

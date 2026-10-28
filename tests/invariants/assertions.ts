@@ -433,7 +433,7 @@ function assertRangeTotals(
 
 export function assertBundleReconciliation(fixture: BundleFixture): void {
   const { id, bundle } = fixture;
-  const ui = projectInspectorUi({ bundle });
+  const ui = projectInspectorUi({ projectName: "test-project", bundle });
   const current = [
     [bundle.current.active, ui.current.active],
     [bundle.current.tree, ui.current.tree],
@@ -825,7 +825,11 @@ export function runProperty<Ts extends unknown[]>(
 }
 
 export function assertGeneratedRangeProjection(intent: RangeIntent): void {
-  const ui = projectInspectorUi({ bundle: rangeBundle, intent });
+  const ui = projectInspectorUi({
+    projectName: "test-project",
+    bundle: rangeBundle,
+    intent,
+  });
   assertBoundedNumbers("range", ui);
   const sessionRanges = [ui.current.active.range, ui.current.tree.range];
   for (const range of sessionRanges) {

@@ -574,7 +574,7 @@ function treeSnapshot(bundle: InspectorBundle): {
   ui: ReturnType<typeof projectInspectorUi>;
   html: string;
 } {
-  const ui = projectInspectorUi({ bundle });
+  const ui = projectInspectorUi({ projectName: "test-project", bundle });
   return {
     ui,
     html: renderSnapshot({

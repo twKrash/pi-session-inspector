@@ -378,6 +378,10 @@ export const ENGLISH_CATALOG = {
   "history.note":
     "Open a row to inspect its full-tree sections with the same tabs.",
   "history.sessions.note": "Tracked sessions in the selected range",
+  "history.pagination": "History page navigation",
+  "history.previous": "Previous page",
+  "history.next": "Next page",
+  "history.pageUnavailable": "History page unavailable",
   // The aggregate's own notice when a contributing session's retained dated
   // window cannot represent its spend; same bounded sentence as the current
   // view's `range.truncated` (design §5.1).

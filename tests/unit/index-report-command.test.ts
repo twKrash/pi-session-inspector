@@ -59,6 +59,7 @@ type Harness = {
       mode: string;
       leafId: string | null;
       sessionFile: string | undefined;
+      cwd: string;
     }>,
   ): ExtensionCommandContext;
   cleanup(): Promise<void>;
@@ -177,10 +178,12 @@ async function createHarness(inventory?: {
       mode: string;
       leafId: string | null;
       sessionFile: string | undefined;
+      cwd: string;
     }> = {},
   ): ExtensionCommandContext =>
     ({
       mode: overrides.mode ?? "tui",
+      cwd: overrides.cwd ?? join(directory, "active-project"),
       sessionManager: {
         getSessionId: () => liveSession.sessionId,
         getSessionFile: () =>
@@ -290,6 +293,7 @@ async function apiGet(
 
 /** The one `/api/v1/ui` field set these command tests assert on. */
 type UiSnapshotBody = {
+  projectName: string;
   current: {
     active: { range?: { totals: { totalTokens: number } } };
     tree: {
@@ -459,13 +463,18 @@ test("ui notifies one tokenized URL, writes no report, and serves current reques
     const snapshot = ui.body as UiSnapshotBody & { theme: string };
     assert.equal(snapshot.current.active.range?.totals.totalTokens, 11);
     assert.equal(snapshot.current.tree.range?.totals.totalTokens, 18);
+    assert.equal(snapshot.projectName, "active-project");
 
     // A later invocation replaces that request-time context: the theme is the
     // new command's and the leaf is still the session manager's current one.
     harness.notices.length = 0;
+    const otherProjectRoot = join(harness.directory, "other-project\u0085");
     await harness.handler()(
       "ui --no-open",
-      harness.context({ mode: "interactive" }),
+      harness.context({
+        mode: "interactive",
+        cwd: otherProjectRoot,
+      }),
     );
     const third = bootstrapOf(harness.notices.at(-1) ?? "");
     assert.ok(third);
@@ -479,6 +488,11 @@ test("ui notifies one tokenized URL, writes no report, and serves current reques
     const replacedBody = replaced.body as UiSnapshotBody & { theme: string };
     assert.equal(replacedBody.theme, "light");
     assert.equal(replacedBody.current.active.range?.totals.totalTokens, 11);
+    assert.equal(replacedBody.projectName, "other-project");
+    assert.equal(
+      JSON.stringify(replacedBody).includes(harness.directory),
+      false,
+    );
     await writeSessionManifest(harness);
 
     const session = await apiGet(
@@ -494,6 +508,27 @@ test("ui notifies one tokenized URL, writes no report, and serves current reques
     assert.equal(
       (session.body as { usage: { totalTokens: number } }).usage.totalTokens,
       18,
+    );
+
+    const historyPage = await apiGet(
+      bootstrap.origin,
+      "/api/v1/reports/sessions",
+      bootstrap.token,
+    );
+    assert.equal(historyPage.status, 200);
+    assert.equal(
+      (historyPage.body as { kind: string }).kind,
+      "history-sessions",
+    );
+    assert.deepEqual(
+      (
+        historyPage.body as { sessions: Array<{ sessionId: string }> }
+      ).sessions.map((session) => session.sessionId),
+      ["real-session"],
+    );
+    assert.equal(
+      JSON.stringify(historyPage.body).includes(harness.sessionFile),
+      false,
     );
 
     const global = await apiGet(

@@ -59,7 +59,16 @@ Inventory (commands, skills, resource sources) is **environment** state: `state`
 
 ### The route is the single authority for navigation state
 
-`src/ui/route.ts` is a pure, inlined, total parse/serialize/derive module. The hash (`#/…`, design ruling R5: works from `file://` and inside the single generated document) is the only route carrier, with one canonical parameter order (`scope, view, panel, preset, from, to, session, entity, q, sort`) so one route has exactly one string. Parsing never throws: an unknown section/tab/option/date degrades to the section default with a bounded one-line notice, an id outside the payload's known-id set is dropped and never echoed, and an invalid (`from > to`) or half range pair is not applied at all. All rendering state — active section, active tab, scope buttons, range controls, search/sort values, focus target — is derived from the route; click handlers only mutate the route.
+`src/ui/route.ts` is a pure, inlined, total parse/serialize/derive module. The hash (`#/…`, design ruling R5: works from `file://` and inside the single generated document) is the only route carrier, with one canonical parameter order (`scope, view, panel, preset, from, to, cursor, session, entity, q, sort`) so one route has exactly one string. Parsing never throws: an unknown section/tab/option/date degrades to the section default with a bounded one-line notice, an id outside the payload's known-id set is dropped and never echoed, and an invalid (`from > to`) or half range pair is not applied at all. All rendering state — active section, active tab, scope buttons, range controls, search/sort values, focus target — is derived from the route; click handlers only mutate the route.
+
+History's `cursor` is a bounded versioned keyset token and is serialized only on
+History routes. The History collection API returns at most 50 rows per request;
+Previous/Next navigation pushes the selected cursor into the route so
+Back/Forward restores the page. A range change clears the page cursor, while a
+selected session retains it. The browser fetches only that page and uses its IDs
+to validate a History session deep link; it does not paginate a full client-side
+collection. The page cursor is not an exact total or a new coverage claim, and
+it does not widen the bounded History/Global aggregate scan.
 
 `view` is the second closed route vocabulary beside `scope`, and it carries the same kind of claim: which presentation of the same rows the reader is looking at. It is a member of the route rather than a setting or an in-memory cache because the artifact has to reproduce what a reader saw — Back/Forward restores the presentation, and a deep link that focuses a nested agent opens the hierarchy it lives in. Only the non-default member is serialized, so the default presentation still has exactly one string, and the vocabulary stays closed: a value outside it is dropped rather than echoed.
 

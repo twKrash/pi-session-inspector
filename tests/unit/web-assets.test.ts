@@ -8,6 +8,7 @@ import { createTranslator } from "../../src/ui/i18n.ts";
 import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
   type InspectorUiSnapshot,
+  type UiHistorySessionPage,
   projectInspectorUi,
   type UiAgentParent,
   type UiAgentRow,
@@ -59,7 +60,7 @@ function uiSnapshot(): InspectorUiSnapshot {
       "utf8",
     ),
   ) as InspectorBundle;
-  return projectInspectorUi({ bundle });
+  return projectInspectorUi({ projectName: "test-project", bundle });
 }
 
 const ALL_TABS = [
@@ -522,6 +523,7 @@ type ParsedRoute = {
     tab: string;
     scope: string;
     session?: string;
+    cursor?: string;
     range?: { kind: string; preset?: number; from?: string; to?: string };
     entity?: { kind: string; id: string };
     table?: { query?: string; sort?: string };
@@ -670,6 +672,52 @@ test("the route round-trips the canonical parameter order", () => {
     assert.equal(parsed.notice, undefined, expected);
     assert.equal(route.serialize(parsed.route), expected, expected);
   }
+});
+
+test("History cursors are bounded, canonical, and retained with session routes", () => {
+  const { route } = namespaces();
+  const cursor = "eyJ2ZXJzaW9uIjoxfQ";
+  const hash = route.serialize({
+    section: "history",
+    tab: "overview",
+    cursor,
+    range: { kind: "custom", from: "2026-01-01", to: "2026-01-31" },
+    session: "session-a",
+  });
+  assert.equal(
+    hash,
+    "#/history/overview?from=2026-01-01&to=2026-01-31&cursor=" +
+      cursor +
+      "&session=session-a",
+  );
+  const parsed = route.parse(hash, {
+    scope: "tree",
+    capabilities: CAPABILITIES,
+    knownIds: ["session-a"],
+  });
+  assert.equal(parsed.route.cursor, cursor);
+  assert.equal(parsed.route.session, "session-a");
+  assert.equal(route.serialize(parsed.route), hash);
+
+  for (const invalid of ["bad=cursor", "x".repeat(449)]) {
+    const dropped = route.parse(
+      `#/history/overview?cursor=${encodeURIComponent(invalid)}`,
+      { scope: "tree", capabilities: CAPABILITIES, knownIds: [] },
+    );
+    assert.equal("cursor" in dropped.route, false);
+  }
+  assert.equal(
+    route.serialize({ section: "current", tab: "overview", cursor }),
+    "#/current/overview?scope=active",
+  );
+  assert.equal(
+    route.serialize({
+      section: "history",
+      tab: "overview",
+      cursor: "bad=cursor",
+    }),
+    "#/history/overview",
+  );
 });
 
 test("the route coerces its closed vocabularies and never echoes an unknown id", () => {
@@ -1329,6 +1377,16 @@ test("live snapshots refresh known session IDs and removed IDs are rejected", as
     hash: `#token=${TOKEN}`,
     responses: [initial],
     etags: [ETAG_1],
+    historyPages: [
+      historyPage(incoming.history.sessions, null, null),
+      historyPage(
+        incoming.history.sessions.filter(
+          (session) => session.sessionId !== "live-session",
+        ),
+        null,
+        null,
+      ),
+    ],
   });
   await harness.start();
   harness.openSocket();
@@ -1337,6 +1395,7 @@ test("live snapshots refresh known session IDs and removed IDs are rejected", as
 
   harness.location.hash = "#/history/overview?session=live-session";
   harness.hashchange();
+  await settle();
   assert.equal(
     harness.location.hash,
     "#/history/overview?session=live-session",
@@ -1356,6 +1415,7 @@ test("live snapshots refresh known session IDs and removed IDs are rejected", as
       },
     },
   });
+  await settle();
   assert.equal(harness.location.hash, "#/history/overview");
   assert.notEqual(harness.element("breadcrumb").textContent, "live-session");
 });
@@ -1565,6 +1625,7 @@ test("live snapshots preserve focus on non-search view controls", async () => {
   await harness.start();
   harness.location.hash = "#/history/overview";
   harness.hashchange();
+  await settle();
   harness.openSocket();
   harness.receiveSocket({ type: "ready", etag: ETAG_1 });
   const control = harness
@@ -1590,6 +1651,7 @@ test("live snapshots preserve focus on non-search view controls", async () => {
   );
 
   harness.receiveSocket({ type: "snapshot", etag: ETAG_3, snapshot: first });
+  await settle();
   const afterSnapshot = harness
     .element("view")
     .querySelectorAll("button")
@@ -1612,6 +1674,7 @@ test("live updates preserve focus on repeated Copy ID controls", async () => {
   await harness.start();
   harness.location.hash = "#/history/overview";
   harness.hashchange();
+  await settle();
   const reveal = harness
     .element("view")
     .querySelectorAll("button")
@@ -2109,6 +2172,7 @@ test("one navigation renders once, however many events report it", async () => {
   const before = harness.renders();
 
   harness.click(navLink(harness, "history"));
+  await settle();
   assert.equal(harness.element("title").textContent, "Pick up the trail.");
   assert.equal(harness.location.hash, "#/history/overview");
   assert.equal(harness.renders() - before, 1);
@@ -2118,7 +2182,12 @@ test("one navigation renders once, however many events report it", async () => {
   harness.hashchange();
   harness.popstate();
   assert.equal(harness.renders() - before, 1);
-  assert.equal(harness.fetches().length, 1);
+  assert.equal(
+    harness
+      .fetchRequests()
+      .filter(({ url }) => url.startsWith("/api/v1/reports/sessions")).length,
+    1,
+  );
 });
 
 test("a retired tab id coerces to the section default with one bounded notice", async () => {
@@ -2148,6 +2217,7 @@ test("a deep link coerces a tab the section cannot render", async () => {
     hash: "#/history/llm",
   });
   await aggregate.start();
+  await settle();
   assert.deepEqual(visibleTabs(aggregate), ["overview"]);
   assert.equal(currentTab(aggregate), "overview");
   assert.equal(
@@ -2162,6 +2232,7 @@ test("a deep link coerces a tab the section cannot render", async () => {
     hash: "#/history/llm?session=session-a",
   });
   await detail.start();
+  await settle();
   assert.deepEqual(visibleTabs(detail), ALL_TABS);
   assert.equal(currentTab(detail), "llm");
   assert.equal(detail.element("breadcrumb").textContent, "session-a");
@@ -2414,11 +2485,14 @@ test("focus moves to the section heading on a section change only", async () => 
   };
 
   harness.click(navLink(harness, "history"));
+  await settle();
   assert.equal(focused, 1);
   // A range change re-renders the same section without stealing focus.
   harness.click(control(harness, "range", "days", "14"));
+  await settle();
   assert.equal(focused, 1);
   harness.click(navLink(harness, "current"));
+  await settle();
   assert.equal(focused, 2);
 });
 
@@ -2439,7 +2513,7 @@ test("a tab that held keyboard focus keeps it across a re-render", async () => {
   // A section change leaves focus to the heading instead.
   harness.click(navLink(harness, "history"));
   await settle();
-  assert.equal(harness.activeElement(), harness.element("title"));
+  assert.equal(harness.activeElement()?.id, "title");
 });
 
 test("the search box keeps its focus and caret across its own re-render", async () => {
@@ -2491,6 +2565,7 @@ test("an address bar that refuses canonicalization never suppresses the render",
   // Navigation still works: a real hash change is applied and rendered.
   harness.location.hash = "#/history/overview";
   harness.hashchange();
+  await settle();
   assert.equal(harness.renders(), 2);
   assert.equal(harness.element("title").textContent, "Pick up the trail.");
 });
@@ -2549,6 +2624,7 @@ test("the history table carries an opaque id column with a copy control", async 
     hash: "#/history/overview",
   });
   await harness.start();
+  await settle();
   const view = harness.element("view");
   // Unavailable sessions are hidden by default (the History view's own
   // predicate), so the reveal control is what makes every row reachable.
@@ -3266,6 +3342,7 @@ test("the history aggregate renders coverage, membership, and its own rows", asy
     hash: "#/history/overview",
   });
   await harness.start();
+  await settle();
   // The membership claims below include the session the view hides by default,
   // so reveal it through the view's own control first.
   const reveal = harness
@@ -3317,6 +3394,7 @@ test("the history range hides known out-of-range sessions but keeps unknown rows
     hash: "#/history/overview",
   });
   await harness.start();
+  await settle();
   const memberships = () =>
     harness
       .element("view")
@@ -3714,6 +3792,7 @@ test("the renderer's words are catalog words, including at its four lookups", as
     hash: "#/history/overview",
   });
   await history.start();
+  await settle();
   const member = history
     .element("view")
     .querySelectorAll("tr")
@@ -3887,6 +3966,7 @@ test("no rendered control promises a route it does not have", async () => {
   ]) {
     const harness = createWebClient({ responses: [snapshot], hash });
     await harness.start();
+    if (hash.startsWith("#/history/")) await settle();
     const anchors = ["navigation", "tabs", "view"].flatMap((id) =>
       harness.element(id).querySelectorAll("a"),
     );
@@ -3947,12 +4027,43 @@ test("the Skills view filters to invoked skills and never calls the rest unavail
   assert.equal(texts().includes("2 shown · 0 hidden"), true);
 });
 
+const HISTORY_CURSOR_1 = "Y3Vyc29yLWE";
+const HISTORY_CURSOR_2 = "Y3Vyc29yLWI";
+
+async function startAt(
+  harness: ReturnType<typeof createWebClient>,
+  hash: string,
+): Promise<void> {
+  await harness.start();
+  harness.location.hash = hash;
+  harness.hashchange();
+  await settle();
+}
+
+function historyPage(
+  sessions: UiHistorySessionPage["sessions"],
+  previousCursor: string | null,
+  nextCursor: string | null,
+  availability: UiHistorySessionPage["availability"] = "available",
+): UiHistorySessionPage {
+  return {
+    kind: "history-sessions",
+    schemaVersion: 1,
+    availability,
+    sessions,
+    diagnostics: [],
+    previousCursor,
+    nextCursor,
+  };
+}
+
 test("the History table hides unavailable sessions by default and reveals them", async () => {
   const harness = createWebClient({
     responses: [uiSnapshot()],
     hash: "#/history/overview",
   });
   await harness.start();
+  await settle();
   const view = (): StubElement => harness.element("view");
   const membership = (): (string | undefined)[] =>
     view()
@@ -3972,6 +4083,274 @@ test("the History table hides unavailable sessions by default and reveals them",
   harness.click(toggle as StubElement);
   assert.deepEqual(membership(), ["member", "unknown"]);
   assert.equal(harness.texts(view()).join(" ").includes("session-b"), true);
+});
+
+test("History pages are authenticated, range-bound, route-backed, and reversible", async () => {
+  const snapshot = uiSnapshot();
+  const first = snapshot.history.sessions[0];
+  assert.ok(first);
+  const second = { ...first, sessionId: "session-c" };
+  const pages = [
+    historyPage([first], null, HISTORY_CURSOR_2),
+    historyPage([second], HISTORY_CURSOR_1, null),
+    historyPage([first], null, HISTORY_CURSOR_2),
+  ];
+  const harness = createWebClient({
+    responses: [snapshot],
+    historyPages: pages,
+    hash: "#token=bootstrap-token",
+  });
+  await startAt(harness, "#/history/overview");
+
+  const pageRequests = () =>
+    harness
+      .fetchRequests()
+      .filter(({ url }) => url.startsWith("/api/v1/reports/sessions"));
+  const resolved = snapshot.history.resolved;
+  assert.deepEqual(
+    pageRequests().map(({ url, method, authorization }) => ({
+      url,
+      method,
+      authorization,
+    })),
+    [
+      {
+        url: `/api/v1/reports/sessions?from=${resolved?.from}&to=${resolved?.to}`,
+        method: "GET",
+        authorization: `Bearer ${RUNTIME_CAPABILITY}`,
+      },
+    ],
+  );
+  assert.equal(harness.element("history-previous").disabled, true);
+  assert.equal(harness.element("history-next").disabled, false);
+  assert.equal(
+    harness.texts(harness.element("view")).join(" ").includes(first.sessionId),
+    true,
+  );
+
+  harness.click(harness.element("history-next"));
+  await settle();
+  assert.equal(
+    harness.location.hash,
+    `#/history/overview?cursor=${HISTORY_CURSOR_2}`,
+  );
+  assert.equal(harness.element("history-previous").disabled, false);
+  assert.equal(harness.element("history-next").disabled, true);
+  assert.equal(
+    harness.texts(harness.element("view")).join(" ").includes("session-c"),
+    true,
+  );
+  assert.equal(
+    pageRequests()[1]?.url.includes(`cursor=${HISTORY_CURSOR_2}`),
+    true,
+  );
+
+  // Back/Forward events re-request the route's page rather than slicing a cached list.
+  harness.location.hash = "#/history/overview";
+  harness.popstate();
+  await settle();
+  assert.equal(harness.location.hash, "#/history/overview");
+  assert.equal(
+    harness.texts(harness.element("view")).join(" ").includes(first.sessionId),
+    true,
+  );
+  assert.equal(pageRequests().length, 3);
+});
+
+test("History page failures end loading and a later page request recovers", async () => {
+  const initial = uiSnapshot();
+  const row = initial.history.sessions[0];
+  assert.ok(row);
+
+  for (const failure of ["http", "invalid-dto", "json", "network"] as const) {
+    const harness = createWebClient({ responses: [initial] });
+    await harness.start();
+    const originalFetch = harness.context.fetch as (
+      url: string,
+      init?: unknown,
+    ) => Promise<unknown>;
+    let shouldFail = true;
+    harness.context.fetch = (url: string, init?: unknown) => {
+      if (!url.startsWith("/api/v1/reports/sessions")) {
+        return originalFetch(url, init);
+      }
+      if (!shouldFail) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => historyPage([row], null, null),
+        });
+      }
+      if (failure === "network") {
+        return Promise.reject(new TypeError("network failure"));
+      }
+      if (failure === "json") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => {
+            throw new Error("bad JSON");
+          },
+        });
+      }
+      if (failure === "invalid-dto") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ kind: "wrong" }),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: Number(failure),
+        json: async () => null,
+      });
+    };
+
+    harness.location.hash = "#/history/overview";
+    harness.hashchange();
+    await settle();
+    assert.equal(harness.element("loading").hidden, true, failure);
+    assert.equal(harness.element("error").hidden, false, failure);
+
+    shouldFail = false;
+    harness.hashchange();
+    await settle();
+    assert.equal(harness.element("loading").hidden, true, failure);
+    assert.equal(harness.element("error").hidden, true, failure);
+    assert.equal(
+      harness.texts(harness.element("view")).join(" ").includes(row.sessionId),
+      true,
+      failure,
+    );
+  }
+});
+
+test("a stale History failure does not set the error state after leaving History", async () => {
+  const harness = createWebClient({ responses: [uiSnapshot()] });
+  await harness.start();
+  const originalFetch = harness.context.fetch as (
+    url: string,
+    init?: unknown,
+  ) => Promise<unknown>;
+  let rejectPage: ((error: Error) => void) | undefined;
+  harness.context.fetch = (url: string, init?: unknown) =>
+    url.startsWith("/api/v1/reports/sessions")
+      ? new Promise((_resolve, reject) => {
+          rejectPage = reject;
+        })
+      : originalFetch(url, init);
+
+  harness.location.hash = "#/history/overview";
+  harness.hashchange();
+  assert.ok(rejectPage);
+  harness.location.hash = "#/current/overview";
+  harness.hashchange();
+  rejectPage(new Error("stale History response"));
+  await settle();
+
+  assert.equal(harness.element("loading").hidden, true);
+  assert.equal(harness.element("error").hidden, true);
+  assert.equal(harness.element("title").textContent, "A session, in focus.");
+});
+
+test("a page-cursor deep link loads its page before validating the selected session", async () => {
+  const snapshot = uiSnapshot();
+  const base = snapshot.history.sessions[0];
+  assert.ok(base);
+  const row = { ...base, sessionId: "session-on-page-two" };
+  const initialHash = `#/history/overview?cursor=${HISTORY_CURSOR_2}&session=${row.sessionId}`;
+  const harness = createWebClient({
+    responses: [snapshot],
+    historyPages: [historyPage([row], HISTORY_CURSOR_1, null)],
+    hash: "#token=bootstrap-token",
+  });
+  await startAt(harness, initialHash);
+
+  assert.equal(
+    harness
+      .fetchRequests()
+      .some(
+        ({ url }) =>
+          url ===
+          `/api/v1/reports/sessions?cursor=${HISTORY_CURSOR_2}&from=${snapshot.history.resolved?.from}&to=${snapshot.history.resolved?.to}`,
+      ),
+    true,
+  );
+  assert.equal(harness.location.hash, initialHash);
+});
+
+test("changing the History range resets its cursor and requests the resolved page range", async () => {
+  const firstSnapshot = uiSnapshot();
+  const nextSnapshot = uiSnapshot();
+  if (nextSnapshot.history.resolved !== null) {
+    nextSnapshot.history.resolved = {
+      ...nextSnapshot.history.resolved,
+      preset: 7,
+      from: "2026-01-27",
+      to: "2026-02-02",
+    };
+  }
+  const row = firstSnapshot.history.sessions[0];
+  assert.ok(row);
+  const harness = createWebClient({
+    responses: [firstSnapshot, nextSnapshot],
+    historyPages: [
+      historyPage([row], null, HISTORY_CURSOR_2),
+      historyPage([row], null, null),
+    ],
+    hash: "#token=bootstrap-token",
+  });
+  await startAt(harness, `#/history/overview?cursor=${HISTORY_CURSOR_2}`);
+  const sevenDay = harness
+    .element("range")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.days === "7");
+  assert.notEqual(sevenDay, undefined);
+  harness.click(sevenDay as StubElement);
+  await settle();
+
+  assert.equal(harness.location.hash, "#/history/overview?preset=7");
+  const pageRequest = harness
+    .fetchRequests()
+    .filter(({ url }) => url.startsWith("/api/v1/reports/sessions"))
+    .at(-1);
+  assert.equal(
+    pageRequest?.url,
+    "/api/v1/reports/sessions?from=2026-01-27&to=2026-02-02",
+  );
+});
+
+test("the authorized project name is visible text and updates from a live delta", async () => {
+  const snapshot = uiSnapshot();
+  snapshot.projectName = "<img src=x onerror=alert(1)>";
+  const harness = createWebClient({
+    responses: [snapshot],
+    etags: [ETAG_1],
+    hash: "#token=bootstrap-token",
+  });
+  assert.equal(harness.element("project-name").textContent, "");
+  assert.equal(harness.element("project-name").hidden, true);
+  await harness.start();
+  assert.equal(
+    harness.element("project-name").textContent,
+    "<img src=x onerror=alert(1)>",
+  );
+  assert.equal(
+    (harness.context.document as { title: string }).title,
+    "Pi Session Inspector — <img src=x onerror=alert(1)>",
+  );
+
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.receiveSocket({
+    type: "delta",
+    baseEtag: ETAG_1,
+    etag: ETAG_2,
+    changes: { projectName: "new-project" },
+  });
+  assert.equal(harness.element("project-name").textContent, "new-project");
+  assert.equal(
+    (harness.context.document as { title: string }).title,
+    "Pi Session Inspector — new-project",
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ import {
   projectGlobalReport,
   projectHistoricalSession,
   projectHistoryReport,
+  projectHistorySessionPage,
   projectInspectorUi,
   type GlobalReportProjection,
 } from "../../src/ui/ui-projection.ts";
@@ -795,7 +796,11 @@ test("historical session projection preserves detailed usage and coverage", () =
 
 test("each current view resolves a preset against its own observed dates", async () => {
   const bundle = await bundleWithDifferentObservedDates();
-  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const projected = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
 
   assert.equal(projected.kind, "ui");
   assert.equal(projected.schemaVersion, 1);
@@ -845,7 +850,11 @@ test("each current view resolves a preset against its own observed dates", async
 
 test("a custom range changes daily, model, tool, agent, error and ledger rows", async () => {
   const bundle = await bundleWithDifferentObservedDates();
-  const projected = projectInspectorUi({ bundle, intent: FIRST_DAY });
+  const projected = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: FIRST_DAY,
+  });
   const range = projected.current.tree.range;
   if (range === undefined) throw new Error("the tree view must carry a range");
 
@@ -903,7 +912,11 @@ test("a custom range changes daily, model, tool, agent, error and ledger rows", 
   );
 
   // The wider preset keeps the sibling day's rows in the same projections.
-  const wider = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const wider = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
   const widerRange = wider.current.tree.range;
   assert.equal(widerRange?.agents.length, 1);
   assert.equal(widerRange?.errors.length, 1);
@@ -919,7 +932,11 @@ test("a custom range changes daily, model, tool, agent, error and ledger rows", 
 
 test("child usage stays a breakdown and never enters the native range total", async () => {
   const bundle = await bundleWithDifferentObservedDates();
-  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const projected = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
   const range = projected.current.tree.range;
   if (range === undefined) throw new Error("the tree view must carry a range");
 
@@ -1197,7 +1214,11 @@ test("each inventory publishes its availability figure, never its rows", () => {
 
 test("each named entry point projects one section on its own", async () => {
   const bundle = await bundleWithDifferentObservedDates();
-  const whole = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const whole = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
   const partial = bundle.history.sessions.find(
     (session) => session.sessionId === "session-partial",
   );
@@ -1247,6 +1268,7 @@ test("each named entry point projects one section on its own", async () => {
 test("a truncated row inside omitted history reports unknown, never zero", async () => {
   const bundle = await bundleWithDifferentObservedDates();
   const projected = projectInspectorUi({
+    projectName: "test-project",
     bundle,
     intent: { kind: "custom", from: "2026-01-01", to: "2026-02-03" },
   });
@@ -1368,6 +1390,7 @@ test("a truncated entry with an empty retained window is partial, not complete",
 test("an in-range retained row stays partial with its known sum", async () => {
   const bundle = await bundleWithDifferentObservedDates();
   const projected = projectInspectorUi({
+    projectName: "test-project",
     bundle,
     intent: { kind: "custom", from: "2026-01-01", to: "2026-02-20" },
   });
@@ -1384,7 +1407,11 @@ test("an in-range retained row stays partial with its known sum", async () => {
 
 test("history carries the coverage ladder, membership order and per-session views", async () => {
   const bundle = await bundleWithDifferentObservedDates();
-  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const projected = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
 
   assert.equal(projected.history.availability, "available");
   assert.deepEqual(projected.history.usageLabels, {
@@ -1439,7 +1466,11 @@ test("history carries the coverage ladder, membership order and per-session view
 
 test("an unavailable current view and history section degrade without zeros", async () => {
   const bundle = await unavailableBundle();
-  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const projected = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
 
   for (const view of [projected.current.active, projected.current.tree]) {
     assert.equal(view.availability, "unavailable");
@@ -1465,7 +1496,11 @@ test("an unavailable current view and history section degrade without zeros", as
 
 test("a view with no observed dates resolves no range instead of inventing one", async () => {
   const bundle = await bundleWithoutObservedDates();
-  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const projected = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
 
   assert.equal(projected.current.active.availability, "available");
   assert.equal(projected.current.active.range?.resolved, null);
@@ -1481,7 +1516,11 @@ test("a view with no observed dates resolves no range instead of inventing one",
 
 test("global folds its own dates and counts tracked and unavailable sessions", async () => {
   const bundle = await bundleWithDifferentObservedDates();
-  const projected = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const projected = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
   const global = projected.global;
 
   assert.equal(global.availability, "available");
@@ -1508,6 +1547,7 @@ test("global folds its own dates and counts tracked and unavailable sessions", a
   assert.equal(global.composition.available, false);
 
   const narrowed = projectInspectorUi({
+    projectName: "test-project",
     bundle,
     intent: { kind: "custom", from: "2026-02-02", to: "2026-02-02" },
   });
@@ -1521,15 +1561,29 @@ test("global folds its own dates and counts tracked and unavailable sessions", a
 test("the projection is pure and deterministic for identical bounded inputs", async () => {
   const bundle = await bundleWithDifferentObservedDates();
   const before = JSON.stringify(bundle);
-  const first = projectInspectorUi({ bundle, intent: PRESET_7 });
-  const second = projectInspectorUi({ bundle, intent: PRESET_7 });
+  const first = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
+  const second = projectInspectorUi({
+    bundle,
+    projectName: "test-project",
+    intent: PRESET_7,
+  });
   assert.equal(JSON.stringify(first), JSON.stringify(second));
   assert.equal(JSON.stringify(bundle), before);
 
   // An independently loaded bundle with the same data projects identically.
   const other = await bundleWithDifferentObservedDates();
   assert.equal(
-    JSON.stringify(projectInspectorUi({ bundle: other, intent: PRESET_7 })),
+    JSON.stringify(
+      projectInspectorUi({
+        bundle: other,
+        projectName: "test-project",
+        intent: PRESET_7,
+      }),
+    ),
     JSON.stringify(first),
   );
 });
@@ -1537,7 +1591,11 @@ test("the projection is pure and deterministic for identical bounded inputs", as
 test("no producer-only field or planted secret reaches the projection", async () => {
   const bundle = await bundleWithDifferentObservedDates();
   const serialized = JSON.stringify(
-    projectInspectorUi({ bundle, intent: PRESET_7 }),
+    projectInspectorUi({
+      bundle,
+      projectName: "test-project",
+      intent: PRESET_7,
+    }),
   );
   for (const key of FORBIDDEN_PRODUCER_KEYS) {
     assert.equal(serialized.includes(`"${key}"`), false, key);
@@ -2281,5 +2339,57 @@ test("the label resolver separates value availability from coverage availability
   assert.deepEqual(
     [empty.usageUnavailable, empty.sessions],
     [true, "coverage.none"],
+  );
+});
+
+test("authenticated UI projection carries the active project name without a root path", async () => {
+  const bundle = await bundleWithoutObservedDates();
+  const projected = projectInspectorUi({
+    bundle,
+    projectName: "active-project",
+  });
+  assert.equal(projected.projectName, "active-project");
+  assert.equal("projectRoot" in projected, false);
+  assert.equal(
+    JSON.stringify(projected).includes("/home/user/active-project"),
+    false,
+  );
+});
+
+test("History page projection preserves cursor order while reusing row membership", async () => {
+  const bundle = await bundleWithDifferentObservedDates();
+  const missing = bundle.history.sessions.find(
+    (session) => session.sessionId === "session-missing",
+  );
+  const available = bundle.history.sessions.find(
+    (session) => session.sessionId === SESSION_PROJECTION,
+  );
+  if (missing === undefined || available === undefined) {
+    throw new Error("projection fixture sessions must exist");
+  }
+  const sessions = [missing, available];
+  const projected = projectHistorySessionPage(
+    {
+      availability: bundle.history.availability,
+      sessions,
+      diagnostics: bundle.history.diagnostics,
+      previousCursor: null,
+      nextCursor: null,
+    },
+    { kind: "custom", from: "2026-02-02", to: "2026-02-02" },
+  );
+  assert.deepEqual(
+    projected.sessions.map((session) => session.sessionId),
+    ["session-missing", SESSION_PROJECTION],
+  );
+  assert.deepEqual(
+    projected.sessions.map((session) => session.membership),
+    ["unknown", "member"],
+  );
+  assert.equal(projected.sessions[0].availability, "unavailable");
+  assert.deepEqual(projected.diagnostics, bundle.history.diagnostics);
+  assert.equal(
+    projected.sessions.some((session) => "sourceFile" in session),
+    false,
   );
 });

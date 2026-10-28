@@ -90,16 +90,27 @@ export async function discoverHistory({
   sessionDirectory,
   markerEvidence,
   maintenance,
+  maxSessions = MAX_HISTORY_SESSIONS,
 }: {
   root: string;
   sessionDirectory(): string;
   markerEvidence(sessionId: string, sourceFile: string): Promise<boolean>;
   maintenance: MaintenanceOptions;
+  /** Null explicitly requests complete manifest enumeration. */
+  maxSessions?: number | null;
 }): Promise<HistoryDiscoveryResult> {
+  if (
+    maxSessions !== null &&
+    (!Number.isSafeInteger(maxSessions) || maxSessions < 0)
+  ) {
+    throw new RangeError(
+      "maxSessions must be a non-negative safe integer or null",
+    );
+  }
   const diagnostics = new Set<HistoryDiagnostic>();
   let discoveryLimited = false;
   const sessionsDirectory = join(root, "sessions");
-  const sessionIds = await readSessionIds(sessionsDirectory);
+  const sessionIds = await readSessionIds(sessionsDirectory, maxSessions);
   if (sessionIds === undefined) {
     return {
       availability: "unavailable",
@@ -108,10 +119,10 @@ export async function discoverHistory({
       discoveryLimited: false,
     };
   }
-  if (sessionIds.length > MAX_HISTORY_SESSIONS) {
+  if (maxSessions !== null && sessionIds.length > maxSessions) {
     discoveryLimited = true;
     diagnostics.add("history-limit-reached");
-    sessionIds.length = MAX_HISTORY_SESSIONS;
+    sessionIds.length = maxSessions;
   }
 
   const sessions: HistorySession[] = [];
@@ -124,18 +135,7 @@ export async function discoverHistory({
       maintenance,
       diagnostics,
     });
-    const row: HistorySession = {
-      sessionId,
-      availability: inspected.availability,
-      ...(inspected.reason === undefined ? {} : { reason: inspected.reason }),
-    };
-    if (inspected.sourceFile !== undefined) {
-      Object.defineProperty(row, "sourceFile", {
-        value: inspected.sourceFile,
-        enumerable: false,
-      });
-    }
-    sessions.push(row);
+    sessions.push(historySessionRow(sessionId, inspected));
   }
   return {
     availability: "available",
@@ -143,6 +143,58 @@ export async function discoverHistory({
     diagnostics: [...diagnostics].sort(),
     discoveryLimited,
   };
+}
+
+/** Looks up one manifest directory without enumerating sibling sessions. */
+export async function discoverHistorySession({
+  root,
+  sessionDirectory,
+  sessionId,
+  markerEvidence,
+  maintenance,
+}: {
+  root: string;
+  sessionDirectory(): string;
+  sessionId: string;
+  markerEvidence(sessionId: string, sourceFile: string): Promise<boolean>;
+  maintenance: MaintenanceOptions;
+}): Promise<HistorySession | undefined> {
+  if (!isTrackingSessionId(sessionId)) return undefined;
+  try {
+    if (!(await lstat(join(root, "sessions", sessionId))).isDirectory()) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  const diagnostics = new Set<HistoryDiagnostic>();
+  const inspected = await inspectManifest({
+    root,
+    sessionId,
+    sessionDirectory,
+    markerEvidence,
+    maintenance,
+    diagnostics,
+  });
+  return historySessionRow(sessionId, inspected);
+}
+
+function historySessionRow(
+  sessionId: string,
+  inspected: Pick<HistorySession, "availability" | "sourceFile" | "reason">,
+): HistorySession {
+  const row: HistorySession = {
+    sessionId,
+    availability: inspected.availability,
+    ...(inspected.reason === undefined ? {} : { reason: inspected.reason }),
+  };
+  if (inspected.sourceFile !== undefined) {
+    Object.defineProperty(row, "sourceFile", {
+      value: inspected.sourceFile,
+      enumerable: false,
+    });
+  }
+  return row;
 }
 
 async function inspectManifest({
@@ -271,6 +323,7 @@ async function hasAvailableSource(
 
 async function readSessionIds(
   sessionsDirectory: string,
+  maxSessions: number | null,
 ): Promise<string[] | undefined> {
   try {
     const directory = await opendir(sessionsDirectory, { encoding: "utf8" });
@@ -278,7 +331,7 @@ async function readSessionIds(
     for await (const entry of directory) {
       if (!entry.isDirectory() || !isTrackingSessionId(entry.name)) continue;
       sessionIds.push(entry.name);
-      if (sessionIds.length > MAX_HISTORY_SESSIONS) break;
+      if (maxSessions !== null && sessionIds.length > maxSessions) break;
     }
     return sessionIds.sort();
   } catch {

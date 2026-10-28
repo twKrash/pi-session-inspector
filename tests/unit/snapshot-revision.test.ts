@@ -6,11 +6,15 @@ import {
 } from "../../src/ui/snapshot-revision.ts";
 import type { InspectorUiSnapshot } from "../../src/ui/ui-projection.ts";
 
-const snapshot = (theme: "light" | "dark" = "light") =>
+const snapshot = (
+  theme: "light" | "dark" = "light",
+  projectName = "active-project",
+) =>
   ({
     kind: "ui",
     schemaVersion: 1,
     theme,
+    projectName,
     initialScope: "active",
     current: { active: { x: 1 }, tree: {}, sameReportProjection: false },
     history: {},
@@ -21,5 +25,8 @@ test("revision serializes stable snapshots and diffs only changed sections", () 
     b = snapshot("dark");
   assert.equal(diffUiSnapshot(a, a), undefined);
   assert.deepEqual(diffUiSnapshot(a, b), { theme: "dark" });
+  assert.deepEqual(diffUiSnapshot(a, snapshot("light", "other-project")), {
+    projectName: "other-project",
+  });
   assert.equal(serializeUiSnapshot(a).etag, serializeUiSnapshot(a).etag);
 });
