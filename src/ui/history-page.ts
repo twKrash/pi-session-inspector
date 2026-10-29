@@ -1,5 +1,5 @@
 import { isBoundedTimestamp } from "../core/canonical.ts";
-import { isTrackingSessionId } from "../storage/tracking.ts";
+import { isSafeSessionId } from "../core/session-id.ts";
 import {
   discoverHistorySessions,
   replayDiscoveredHistorySession,
@@ -208,7 +208,7 @@ function isHistoryCursor(value: unknown): value is HistoryCursor {
     (cursor.direction === "after" || cursor.direction === "before") &&
     (cursor.sortAt === null || isBoundedTimestamp(cursor.sortAt)) &&
     typeof cursor.sessionId === "string" &&
-    isTrackingSessionId(cursor.sessionId)
+    isSafeSessionId(cursor.sessionId)
   );
 }
 
