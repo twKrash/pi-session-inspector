@@ -20,7 +20,10 @@ import {
   type ShellTheme,
   WEB_ASSETS,
 } from "../../src/ui/web-assets.ts";
-import type { InspectorUiSnapshot } from "../../src/ui/ui-projection.ts";
+import type {
+  InspectorUiSnapshot,
+  UiHistorySessionPage,
+} from "../../src/ui/ui-projection.ts";
 /**
  * The two observers a chart library binds on construction. They never fire: the
  * harness asserts what the shipped bundle renders, not how a library schedules.
@@ -288,6 +291,7 @@ export type WebClientEvent =
  */
 export type WebClientInput = {
   responses?: readonly InspectorUiSnapshot[];
+  historyPages?: readonly UiHistorySessionPage[];
   etags?: readonly string[];
   capability?: string;
   protocol?: string;
@@ -732,7 +736,9 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
   // The client reads at most one bounded capability token from the fragment; the
   // stub below reports exactly the three request facts a test may assert.
   const responses = input.responses ?? [];
+  const historyPages = input.historyPages ?? [];
   let served = 0;
+  let historyPageServed = 0;
   let release: (() => void) | null = null;
   const snapshotFor = (): InspectorUiSnapshot | undefined =>
     responses.length === 0
@@ -764,6 +770,23 @@ export function createWebClient(input: WebClientInput = {}): WebClientHarness {
           capability: input.capability ?? "R".repeat(43),
         }),
       );
+    }
+    if (url.startsWith("/api/v1/reports/sessions")) {
+      const snapshot = snapshotFor();
+      const page =
+        historyPages.length === 0
+          ? {
+              kind: "history-sessions",
+              schemaVersion: 1,
+              availability: snapshot?.history.availability ?? "unavailable",
+              sessions: snapshot?.history.sessions ?? [],
+              diagnostics: [],
+              previousCursor: null,
+              nextCursor: null,
+            }
+          : historyPages[Math.min(historyPageServed, historyPages.length - 1)];
+      historyPageServed += 1;
+      return Promise.resolve(Response(true, undefined, undefined, page));
     }
     const snapshot = snapshotFor();
     const etag =

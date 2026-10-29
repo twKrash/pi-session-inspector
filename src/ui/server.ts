@@ -23,12 +23,14 @@ import {
 import { redactBoundedText } from "../core/redact.ts";
 import type { SessionReport } from "../core/reports.ts";
 import { createUiCapabilities } from "./capabilities.ts";
+import { decodeHistoryCursor } from "./history-page.ts";
 import { attachLiveChannel, isLoopbackPeer } from "./live-channel.ts";
 import { parseRangeQuery, type RangeIntent } from "./range.ts";
 import { serializeUiSnapshot } from "./snapshot-revision.ts";
 import type {
   GlobalReportProjection,
   InspectorUiSnapshot,
+  UiHistorySessionPage,
 } from "./ui-projection.ts";
 import { renderShell, type ShellTheme, WEB_ASSETS } from "./web-assets.ts";
 
@@ -42,6 +44,10 @@ export type InspectorServerContext = {
   theme: ShellTheme;
   initialScope?: "active" | "tree";
   loadUi(intent?: RangeIntent): Promise<InspectorUiSnapshot>;
+  loadHistoryPage(
+    cursor?: string,
+    intent?: RangeIntent,
+  ): Promise<UiHistorySessionPage>;
   loadSession(sessionId: string): Promise<SessionReport | undefined>;
   loadGlobal(intent?: RangeIntent): Promise<GlobalReportProjection>;
 };
@@ -361,6 +367,50 @@ function isAuthorized(state: Running, req: IncomingMessage): boolean {
  * rejects as an unknown query form. The key scan is bounded and never resolves
  * a value.
  */
+function parseHistoryPageQuery(
+  search: string,
+): { ok: true; cursor?: string; intent?: RangeIntent } | { ok: false } {
+  if (search.length > MAX_QUERY_LENGTH) return { ok: false };
+  const params = new Map<string, string>();
+  if (search !== "") {
+    for (const part of search.split("&")) {
+      const separator = part.indexOf("=");
+      if (separator < 1) return { ok: false };
+      let key: string;
+      let value: string;
+      try {
+        key = decodeURIComponent(part.slice(0, separator));
+        value = decodeURIComponent(part.slice(separator + 1));
+      } catch {
+        return { ok: false };
+      }
+      if (
+        (key !== "cursor" && key !== "from" && key !== "to") ||
+        value === "" ||
+        params.has(key)
+      ) {
+        return { ok: false };
+      }
+      params.set(key, value);
+    }
+  }
+  const cursor = params.get("cursor");
+  if (cursor !== undefined && decodeHistoryCursor(cursor) === undefined) {
+    return { ok: false };
+  }
+  const rangeQuery = ["from", "to"]
+    .filter((key) => params.has(key))
+    .map((key) => `${key}=${encodeURIComponent(params.get(key)!)}`)
+    .join("&");
+  const range = parseRangeQuery(rangeQuery);
+  if (!range.ok) return { ok: false };
+  return {
+    ok: true,
+    ...(cursor === undefined ? {} : { cursor }),
+    ...(range.intent === undefined ? {} : { intent: range.intent }),
+  };
+}
+
 function sessionQueryDecision(
   search: string,
 ): "none" | "range-not-supported" | "invalid-range" {
@@ -510,6 +560,31 @@ async function handleRequest(
     } else {
       sendJson(res, await state.context.loadGlobal(range.intent));
     }
+    return;
+  }
+
+  if (path === "/api/v1/reports/sessions") {
+    if (method !== "GET") {
+      sendProblem(res, "method-not-allowed", {
+        head,
+        allow: "GET",
+        reason: "method",
+      });
+      return;
+    }
+    if (!isAuthorized(state, req)) {
+      sendProblem(res, "unauthorized", { head, reason: "bearer" });
+      return;
+    }
+    const query = parseHistoryPageQuery(search);
+    if (!query.ok) {
+      sendProblem(res, "invalid-range", { head, reason: "history-query" });
+      return;
+    }
+    sendJson(
+      res,
+      await state.context.loadHistoryPage(query.cursor, query.intent),
+    );
     return;
   }
 

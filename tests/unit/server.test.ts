@@ -15,9 +15,11 @@ import {
   isLoopbackPeer,
 } from "../../src/ui/server.ts";
 import { serializeUiSnapshot } from "../../src/ui/snapshot-revision.ts";
+import { encodeHistoryCursor } from "../../src/ui/history-page.ts";
 import type {
   GlobalReportProjection,
   InspectorUiSnapshot,
+  UiHistorySessionPage,
 } from "../../src/ui/ui-projection.ts";
 import { type ShellTheme, WEB_ASSETS } from "../../src/ui/web-assets.ts";
 
@@ -54,10 +56,21 @@ const SESSION = {
   marker: "SESSION_DTO",
 } as unknown as SessionReport;
 
+const HISTORY_PAGE = {
+  kind: "history-sessions",
+  schemaVersion: 1,
+  availability: "available",
+  sessions: [],
+  diagnostics: [],
+  previousCursor: null,
+  nextCursor: null,
+} as unknown as UiHistorySessionPage;
+
 type Calls = {
   ui: (RangeIntent | undefined)[];
   sessions: string[];
   global: (RangeIntent | undefined)[];
+  historyPages: { cursor?: string; range?: RangeIntent }[];
 };
 
 /** The counting context: every callback records its bounded input. */
@@ -65,7 +78,7 @@ function fixtureContext(theme: ShellTheme = "light"): {
   context: InspectorServerContext;
   calls: Calls;
 } {
-  const calls: Calls = { ui: [], sessions: [], global: [] };
+  const calls: Calls = { ui: [], sessions: [], global: [], historyPages: [] };
   return {
     calls,
     context: {
@@ -83,6 +96,13 @@ function fixtureContext(theme: ShellTheme = "light"): {
       loadGlobal: async (intent) => {
         calls.global.push(intent);
         return GLOBAL;
+      },
+      loadHistoryPage: async (cursor, range) => {
+        calls.historyPages.push({
+          ...(cursor === undefined ? {} : { cursor }),
+          ...(range === undefined ? {} : { range }),
+        });
+        return HISTORY_PAGE;
       },
     },
   };
@@ -800,6 +820,76 @@ test("the global resource accepts exactly the same range grammar", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// /api/v1/reports/sessions collection
+// ---------------------------------------------------------------------------
+
+test("the History collection returns only an authenticated cursor page", async () => {
+  const { context, calls } = fixtureContext();
+  const server = await getInspectorServer(context);
+  try {
+    const denied = await call(server, "/api/v1/reports/sessions");
+    assertProblem(denied, 401, "unauthorized");
+    assert.equal(calls.historyPages.length, 0);
+
+    const first = await call(server, "/api/v1/reports/sessions", {
+      headers: await bearer(server),
+    });
+    assert.equal(first.status, 200);
+    assert.equal(first.body, JSON.stringify(HISTORY_PAGE));
+    assert.deepEqual(calls.historyPages, [{}]);
+
+    const cursor = encodeHistoryCursor({
+      direction: "after",
+      sortAt: "2026-09-12T00:00:00.000Z",
+      sessionId: SESSION_ID,
+    });
+    const next = await call(
+      server,
+      `/api/v1/reports/sessions?cursor=${cursor}&from=2026-09-01&to=2026-09-12`,
+      { headers: await bearer(server) },
+    );
+    assert.equal(next.status, 200);
+    assert.deepEqual(calls.historyPages.at(-1), {
+      cursor,
+      range: { kind: "custom", from: "2026-09-01", to: "2026-09-12" },
+    });
+    assert.equal(next.body.includes(context.projectRoot), false);
+  } finally {
+    await closeInspectorServer();
+  }
+});
+
+test("the History collection rejects malformed and duplicate query fields before loading", async () => {
+  const { context, calls } = fixtureContext();
+  const server = await getInspectorServer(context);
+  try {
+    const cursor = encodeHistoryCursor({
+      direction: "after",
+      sortAt: "2026-09-12T00:00:00.000Z",
+      sessionId: SESSION_ID,
+    });
+    const rejected = [
+      "cursor=%%%",
+      `cursor=${cursor}&cursor=${cursor}`,
+      `cursor=${cursor}&from=2026-09-01`,
+      `cursor=${cursor}&from=2026-09-01&to=2026-08-31`,
+      `cursor=${cursor}&extra=not-allowed`,
+      `cursor=${cursor}&from=2026-09-01&to=2026-09-12&from=2026-09-02`,
+      `cursor=${cursor}&x=${"a".repeat(600)}`,
+    ];
+    for (const query of rejected) {
+      const response = await call(server, `/api/v1/reports/sessions?${query}`, {
+        headers: await bearer(server),
+      });
+      assertProblem(response, 400, "invalid-range");
+      assert.equal(calls.historyPages.length, 0, query);
+    }
+  } finally {
+    await closeInspectorServer();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // /api/v1/reports/sessions/{sessionId}
 // ---------------------------------------------------------------------------
 
@@ -872,7 +962,7 @@ test("unknown and malformed session ids return one bounded generic failure", asy
 
     for (const path of [
       "/api/v1/reports/sessions/",
-      "/api/v1/reports/sessions",
+      "/api/v1/reports/sessions/",
       "/api/v1/reports/sessions/a/b",
       "/api/v1/reports/sessions/..%2f..%2fetc%2fpasswd",
       "/api/v1/reports/sessions/%2e%2e",

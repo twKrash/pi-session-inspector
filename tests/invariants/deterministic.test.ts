@@ -136,7 +136,7 @@ test("unavailable values never become synthetic zero", () => {
     ({ state }) => state === "unavailable",
   );
   assert.ok(unavailableFixture);
-  const ui = projectInspectorUi({ bundle });
+  const ui = projectInspectorUi({ projectName: "test-project", bundle });
   const snapshots = [
     snapshotForCurrent(ui.current.tree),
     snapshotForHistory(ui.history),
@@ -252,7 +252,7 @@ test("hostile producer-shaped fields stop at projection boundaries", () => {
     arguments: "RAW_PRODUCER_ARGUMENT",
     result: "RAW_PRODUCER_RESULT",
   });
-  const ui = projectInspectorUi({ bundle });
+  const ui = projectInspectorUi({ projectName: "test-project", bundle });
   const json = renderJson(ui.current.tree.report);
   const html = renderSnapshot(snapshotForCurrent(ui.current.tree));
   assertPrivacySafe(
@@ -327,6 +327,7 @@ test("current dated truncation preserves known rows", () => {
   const bundle = completeBundleFor(fixture);
   assertBundleReconciliation({ id: "current-partial-dated", bundle });
   const ui = projectInspectorUi({
+    projectName: "test-project",
     bundle,
     intent: {
       kind: "custom",
@@ -362,7 +363,7 @@ test("all report surfaces consume one canonical projection", () => {
   const report = bundle.current.tree.report;
   assert.ok(report);
   const datedUsage = sessionDatedUsage(fixture.canonical);
-  const ui = projectInspectorUi({ bundle });
+  const ui = projectInspectorUi({ projectName: "test-project", bundle });
   const snapshots = [
     snapshotForCurrent(ui.current.tree),
     snapshotForHistory(ui.history),

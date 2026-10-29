@@ -100,7 +100,10 @@ function readJson<T>(path: string): T {
 }
 
 function fixture() {
-  return projectInspectorUi({ bundle: readJson(FIXTURE) });
+  return projectInspectorUi({
+    bundle: readJson(FIXTURE),
+    projectName: "Pi project",
+  });
 }
 
 /** The daily rows a chart draws, projected exactly as the API returns them. */

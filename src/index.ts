@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   type ExtensionAPI,
   type ExtensionCommandContext,
@@ -75,6 +75,7 @@ import { createWalWriter } from "./storage/wal.ts";
 import { loadCurrentView, loadInspectorBundle } from "./ui/bundle.ts";
 import { createCurrentTuiComponent } from "./ui/current-tui.ts";
 import { sessionInvalidationSignal } from "./ui/invalidation.ts";
+import { loadHistorySessionPage } from "./ui/history-page.ts";
 import { renderJson } from "./ui/json.ts";
 import { loadCurrentSessionReport } from "./ui/load-current.ts";
 import {
@@ -97,6 +98,7 @@ import {
   projectGlobalReport,
   projectHistoricalSession,
   projectHistoryReport,
+  projectHistorySessionPage,
   projectInspectorUi,
 } from "./ui/ui-projection.ts";
 
@@ -1210,6 +1212,11 @@ function createUiServerContext(input: {
   runtimeId: string;
 }): InspectorServerContext {
   const { api, root, sessionManager, runtimeId } = input;
+  const projectName =
+    basename(input.projectRoot)
+      .replace(/\p{Cc}/gu, " ")
+      .trim()
+      .slice(0, 80) || "Pi project";
   // Rebuilt per read so each history/global read gets its own maintenance seam.
   const historyRead = () => ({
     root,
@@ -1266,7 +1273,12 @@ function createUiServerContext(input: {
         historyEvidence: readHistorySessionEvidence,
         maintenance: productionMaintenance(),
       });
-      return projectInspectorUi({ bundle, intent });
+      return projectInspectorUi({ bundle, intent, projectName });
+    },
+    async loadHistoryPage(cursor, intent) {
+      await flushLiveEvidence();
+      const page = await loadHistorySessionPage(historyRead(), cursor);
+      return projectHistorySessionPage(page, intent);
     },
     async loadSession(sessionId) {
       await flushLiveEvidence();

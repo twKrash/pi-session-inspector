@@ -443,7 +443,10 @@ test("a child sharing the parent's model never doubles that model's row", async 
 test("the browser Tree and the static snapshot render the same session figures", async () => {
   const loaded = await loadFixture(UAT_FIXTURE);
   try {
-    const payload = projectInspectorUi({ bundle: loaded.bundle });
+    const payload = projectInspectorUi({
+      projectName: "test-project",
+      bundle: loaded.bundle,
+    });
     const harness = createWebClient({
       responses: [payload],
       hash: "#/current/llm?scope=tree&preset=7",

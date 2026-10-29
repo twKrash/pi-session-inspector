@@ -1,10 +1,10 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { isSafeSessionId } from "../core/session-id.ts";
 import type { TrackingStorage } from "../pi/tracking.ts";
 
-const ASCII_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const MAX_SESSION_ID_LENGTH = 128;
+export { isSafeSessionId as isTrackingSessionId } from "../core/session-id.ts";
 const MAX_SOURCE_FILE_LENGTH = 255;
 
 export type TrackingMetadata = {
@@ -13,15 +13,6 @@ export type TrackingMetadata = {
   sourceFile: string;
   state: "tracking";
 };
-
-/** Returns whether a session ID can safely name an Inspector-owned directory. */
-export function isTrackingSessionId(sessionId: string): boolean {
-  return (
-    sessionId.length > 0 &&
-    sessionId.length <= MAX_SESSION_ID_LENGTH &&
-    ASCII_TOKEN.test(sessionId)
-  );
-}
 
 /** Returns whether a Pi source filename is a bounded direct JSONL basename. */
 export function isTrackingSourceFile(sourceFile: string): boolean {
@@ -55,7 +46,7 @@ export function parseTrackingMetadata(
     typeof metadata.sourceFile !== "string" ||
     !isTrackingSourceFile(metadata.sourceFile) ||
     metadata.state !== "tracking" ||
-    !isTrackingSessionId(sessionId)
+    !isSafeSessionId(sessionId)
   ) {
     return undefined;
   }
@@ -86,7 +77,7 @@ export function trackingMetadataPaths(
 }
 
 function validateSessionId(sessionId: string): void {
-  if (!isTrackingSessionId(sessionId)) {
+  if (!isSafeSessionId(sessionId)) {
     throw new TypeError("sessionId must be a path-safe ASCII token");
   }
 }

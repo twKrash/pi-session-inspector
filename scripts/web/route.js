@@ -54,6 +54,7 @@
     "source",
   ];
   const DATE = /^\d{4}-\d{2}-\d{2}$/;
+  const CURSOR = /^[A-Za-z0-9_-]{1,448}$/;
   /**
    * The one closed vocabulary of an Agents presentation, and the default it is
    * absent from. Tree is the default because the execution topology is what the
@@ -124,6 +125,10 @@
       ) {
         pairs.push("from=" + intent.from, "to=" + intent.to);
       }
+    }
+    const cursor = source.cursor;
+    if (section === "history" && typeof cursor === "string" && CURSOR.test(cursor)) {
+      pairs.push("cursor=" + cursor);
     }
     const session = source.session;
     if (section === "history" && typeof session === "string" && session !== "") {
@@ -298,6 +303,10 @@
     const requestedView = params.get("view");
     if (requestedView !== undefined && AGENT_VIEWS.indexOf(requestedView) >= 0) {
       route.view = requestedView;
+    }
+    const cursor = params.get("cursor");
+    if (section === "history" && cursor !== undefined && CURSOR.test(cursor)) {
+      route.cursor = cursor;
     }
     const session = params.get("session");
     if (

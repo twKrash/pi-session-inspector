@@ -263,6 +263,7 @@ test("two identical generations of the fixture projection are byte-identical", a
   // accidents, or a clock read.
   const generate = (): string => {
     const projection = projectInspectorUi({
+      projectName: "test-project",
       bundle: JSON.parse(source) as InspectorBundle,
     });
     assert.equal(projection.current.tree.range?.resolved !== null, true);
@@ -400,6 +401,7 @@ test("the resolved projection document is deterministic across repeated loads", 
 
     const render = async (): Promise<string> => {
       const ui = projectInspectorUi({
+        projectName: "test-project",
         bundle: await loadInspectorBundle(input),
       });
       assert.equal(ui.current.tree.availability, "available");

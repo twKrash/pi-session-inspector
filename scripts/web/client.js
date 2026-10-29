@@ -125,6 +125,10 @@
   let liveGeneration = 0;
   let liveTerminal = false;
   let snapshot = null;
+  let historyPage = null;
+  let historyPageKey = null;
+  let pendingHistoryPageKey = null;
+  let historyPageEpoch = 0;
   let loadedQuery = null;
   let loadedOnce = false;
   let isLoading = false;
@@ -210,9 +214,9 @@
     snapshot !== null && snapshot.initialScope === "tree" ? "tree" : "active";
 
   const sessionEntries = () =>
-    snapshot === null || !Array.isArray(snapshot.history.sessions)
+    historyPage === null || !Array.isArray(historyPage.sessions)
       ? []
-      : snapshot.history.sessions;
+      : historyPage.sessions;
 
   /** The selected history session row, or null when the route names none. */
   const selectedSession = (target) => {
@@ -378,6 +382,15 @@
       tab: patch.tab !== undefined ? patch.tab : state.tab,
       scope: patch.scope !== undefined ? patch.scope : state.scope,
     };
+    const rawCursor =
+      patch.cursor !== undefined
+        ? patch.cursor
+        : section === state.section && patch.range === undefined
+          ? state.cursor
+          : undefined;
+    if (section === "history" && typeof rawCursor === "string") {
+      next.cursor = rawCursor;
+    }
     if (session !== undefined) next.session = session;
     const sameIdentity = viewIdentity(next) === viewIdentity(state);
     const intent =
@@ -564,6 +577,112 @@
       : "";
   };
 
+  const syncProjectIdentity = () => {
+    if (snapshot === null || typeof snapshot.projectName !== "string") return;
+    const label = q("project-name");
+    if (label !== null) {
+      label.textContent = snapshot.projectName;
+      label.hidden = false;
+    }
+    document.title = "Pi Session Inspector — " + snapshot.projectName;
+  };
+
+  const historyPageUrl = (cursor) => {
+    const query = [];
+    if (typeof cursor === "string") {
+      query.push("cursor=" + encodeURIComponent(cursor));
+    }
+    const resolved = snapshot === null ? null : snapshot.history.resolved;
+    if (resolved !== null && resolved !== undefined) {
+      query.push("from=" + resolved.from, "to=" + resolved.to);
+    }
+    return "/api/v1/reports/sessions" +
+      (query.length === 0 ? "" : "?" + query.join("&"));
+  };
+
+  const currentHistoryPageUrl = () => {
+    if (snapshot === null) return null;
+    const parsed = route.parse(location.hash || "", {
+      scope: initialScope(),
+      capabilities: parseCapabilities(),
+      knownIds: knownIds(),
+    });
+    return parsed.route.section === "history"
+      ? historyPageUrl(parsed.route.cursor)
+      : null;
+  };
+
+  const ensureHistoryPage = (cursor, quiet, effects) => {
+    if (snapshot === null) return false;
+    const url = historyPageUrl(cursor);
+    if (historyPageKey === url) return true;
+    if (pendingHistoryPageKey !== null) return false;
+    const epoch = historyPageEpoch;
+    pendingHistoryPageKey = url;
+    const pageEffects =
+      effects === undefined && quiet === true
+        ? { preserveViewFocus: true }
+        : effects;
+    if (quiet !== true) {
+      setFailure(false);
+      setLoading(true);
+    }
+    (async () => {
+      try {
+        const response = await fetch(url, {
+          headers: token === null ? {} : { Authorization: "Bearer " + token },
+        });
+        const page =
+          response === undefined || response === null || response.ok !== true
+            ? null
+            : await response.json();
+        if (pendingHistoryPageKey !== url) return;
+        if (epoch !== historyPageEpoch) {
+          pendingHistoryPageKey = null;
+          if (quiet !== true) setLoading(false);
+          apply(pageEffects, true, quiet === true);
+          return;
+        }
+        const currentUrl = currentHistoryPageUrl();
+        if (currentUrl !== url) {
+          pendingHistoryPageKey = null;
+          if (quiet !== true) setLoading(false);
+          apply(pageEffects, true, quiet === true);
+          return;
+        }
+        if (!renderableHistoryPage(page)) throw new Error("invalid history page");
+        historyPage = page;
+        historyPageKey = url;
+        known = null;
+        if (quiet !== true) setLoading(false);
+        setFailure(false);
+        apply(pageEffects, true, quiet === true);
+        pendingHistoryPageKey = null;
+      } catch (error) {
+        if (pendingHistoryPageKey !== url) return;
+        pendingHistoryPageKey = null;
+        if (epoch !== historyPageEpoch) {
+          if (quiet !== true) setLoading(false);
+          apply(pageEffects, true, quiet === true);
+          return;
+        }
+        const currentUrl = currentHistoryPageUrl();
+        if (currentUrl !== url) {
+          if (quiet !== true) setLoading(false);
+          apply(pageEffects, true, quiet === true);
+          return;
+        }
+        if (quiet === true) {
+          setLiveStatus(COPY["live.stopped"], "stale");
+        } else {
+          setLoading(false);
+          setFailure(true);
+        }
+      }
+    })();
+    return false;
+  };
+
   const requestUrl = (query) =>
     query === "" ? "/api/v1/ui" : "/api/v1/ui?" + query;
   const responseEtag = (response) => {
@@ -596,6 +715,9 @@
       if (!renderableSnapshot(body)) return false;
       const previousPage = captureLivePage();
       snapshot = body;
+      historyPageKey = null;
+      historyPageEpoch += 1;
+      syncProjectIdentity();
       etag = responseEtag(response);
       loadedQuery = query;
       known = null;
@@ -3089,6 +3211,34 @@
           COPY["panel.allDates"],
       ),
     );
+    if (historyPage !== null && historyPage.availability !== "available") {
+      section.append(
+        emptyCard(
+          COPY["history.pageUnavailable"],
+          COPY["evidence.unavailable"],
+        ),
+      );
+    }
+    const navigation = el("nav", "actions history-pagination");
+    navigation.setAttribute("aria-label", COPY["history.pagination"]);
+    const previous = el("button", "", COPY["history.previous"]);
+    previous.id = "history-previous";
+    previous.dataset.historyCursor =
+      historyPage === null ? "" : historyPage.previousCursor ?? "";
+    previous.disabled =
+      historyPage === null ||
+      historyPage.availability !== "available" ||
+      historyPage.previousCursor === null;
+    const next = el("button", "", COPY["history.next"]);
+    next.id = "history-next";
+    next.dataset.historyCursor =
+      historyPage === null ? "" : historyPage.nextCursor ?? "";
+    next.disabled =
+      historyPage === null ||
+      historyPage.availability !== "available" ||
+      historyPage.nextCursor === null;
+    navigation.append(previous, next);
+    section.append(navigation);
     const wrap = section.querySelector(".table-wrap");
     const node = section.querySelector("table");
     if (wrap !== null) wrap.className = "table-wrap history-table-wrap";
@@ -3554,6 +3704,7 @@
 
   const render = (effects) => {
     if (snapshot === null) return;
+    syncProjectIdentity();
     const flags = effects === undefined ? {} : effects;
     // The view subtree is replaced on every render, so the search box a
     // keystroke came from loses its focus and caret with it: hold both across
@@ -3854,10 +4005,26 @@
     isInventory(value.inventory) &&
     isFiniteNumber(value.trackedSessions) &&
     isFiniteNumber(value.unavailableSessions);
+  const routeCursor = (value) =>
+    typeof value === "string" &&
+    route.serialize({ section: "history", tab: "overview", cursor: value }) ===
+      "#/history/overview?cursor=" + value;
+  const renderableHistoryPage = (value) =>
+    isNode(value) &&
+    value.kind === "history-sessions" &&
+    value.schemaVersion === 1 &&
+    isAvailability(value.availability) &&
+    Array.isArray(value.sessions) &&
+    value.sessions.length <= 50 &&
+    value.sessions.every(isHistorySession) &&
+    isRecordArray(value.diagnostics) &&
+    (value.previousCursor === null || routeCursor(value.previousCursor)) &&
+    (value.nextCursor === null || routeCursor(value.nextCursor));
   const renderableSnapshot = (candidate) =>
     isNode(candidate) &&
     candidate.kind === "ui" &&
     candidate.schemaVersion === 1 &&
+    typeof candidate.projectName === "string" &&
     (candidate.theme === "light" || candidate.theme === "dark") &&
     (candidate.initialScope === "active" || candidate.initialScope === "tree") &&
     isRecord(candidate.current) &&
@@ -3869,6 +4036,8 @@
 
   const captureLivePage = () => ({
     snapshot,
+    historyPage,
+    historyPageKey,
     etag,
     loadedQuery,
     loadedOnce,
@@ -3879,7 +4048,11 @@
     hash: location.hash,
   });
   const restoreLivePage = (previous) => {
+    historyPageEpoch += 1;
+    pendingHistoryPageKey = null;
     snapshot = previous.snapshot;
+    historyPage = previous.historyPage;
+    historyPageKey = previous.historyPageKey;
     etag = previous.etag;
     loadedQuery = previous.loadedQuery;
     loadedOnce = previous.loadedOnce;
@@ -3905,6 +4078,9 @@
     const previousPage = captureLivePage();
     known = null;
     snapshot = message.snapshot;
+    historyPageKey = null;
+    historyPageEpoch += 1;
+    syncProjectIdentity();
     etag = message.etag;
     try {
       apply({ preserveViewFocus: true }, true, true);
@@ -3927,7 +4103,7 @@
       changes !== null && typeof changes === "object" && !Array.isArray(changes)
         ? Object.keys(changes)
         : [];
-    const sections = ["current", "history", "global", "initialScope", "theme"];
+    const sections = ["current", "history", "global", "initialScope", "theme", "projectName"];
     if (
       message.baseEtag !== etag ||
       !ETAG.test(message.baseEtag) ||
@@ -3953,6 +4129,11 @@
     known = null;
     const previousPage = captureLivePage();
     snapshot = candidate;
+    if (Object.prototype.hasOwnProperty.call(changes, "history")) {
+      historyPageKey = null;
+      historyPageEpoch += 1;
+    }
+    syncProjectIdentity();
     etag = message.etag;
     try {
       apply({ preserveViewFocus: true }, true, true);
@@ -4132,6 +4313,13 @@
       capabilities: parseCapabilities(),
       knownIds: knownIds(),
     });
+    if (
+      parsed.route.section === "history" &&
+      requestQuery(location.hash || "") === loadedQuery &&
+      !ensureHistoryPage(parsed.route.cursor, quiet, effects)
+    ) {
+      return;
+    }
     const next = assign({}, parsed.route);
     // One Environment subview shows one entity kind, so a route naming the other
     // kind is canonicalized here by dropping the entity: the focus can then
@@ -4339,9 +4527,18 @@
       retry();
       return;
     }
+    if (data.historyCursor !== undefined) {
+      if (data.historyCursor !== "") {
+        navigate(routeFor({ cursor: data.historyCursor }));
+      }
+      return;
+    }
     if (data.days !== undefined) {
       navigate(
-        routeFor({ range: { kind: "preset", preset: Number(data.days) } }),
+        routeFor({
+          range: { kind: "preset", preset: Number(data.days) },
+          cursor: null,
+        }),
       );
       return;
     }

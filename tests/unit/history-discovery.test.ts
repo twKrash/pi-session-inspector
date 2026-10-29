@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -67,4 +67,29 @@ test("an unreadable sessions directory stays unavailable and unlimited", async (
     diagnostics: ["history-unavailable"],
     discoveryLimited: false,
   });
+});
+
+test("explicit complete discovery reaches every tracked manifest without changing the default cap", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inspector-discovery-complete-"));
+  const sessions = join(root, "sessions");
+  for (let index = 0; index < 478; index += 1) {
+    const id = `session-${String(index).padStart(3, "0")}`;
+    await mkdir(join(sessions, id), { recursive: true });
+    await writeFile(join(sessions, id, "meta.json"), "{}");
+  }
+
+  try {
+    const result = await discoverHistory({
+      root,
+      sessionDirectory: () => join(root, "pi-sessions"),
+      markerEvidence: async () => true,
+      maintenance,
+      maxSessions: null,
+    });
+    assert.equal(result.sessions.length, 478);
+    assert.equal(result.discoveryLimited, false);
+    assert.equal(result.diagnostics.includes("history-limit-reached"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

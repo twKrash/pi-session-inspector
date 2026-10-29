@@ -35,7 +35,7 @@ it is not a service or persistent backend.
 | PRD-07 | JSON is deterministic; `snapshot` HTML is immutable, self-contained/offline, contains no executable JavaScript, and uses no CDN/network; `ui` is a local HTTP application; TUI uses full-screen `ctx.ui.custom()`. |
 | PRD-08 | Local persistence excludes prompt/output/result/raw arguments and applies allowlist/redaction before any Inspector write. |
 | PRD-09 | Per-process writers are append-only shards; maintenance is crash-recoverable and cannot regress source cursors. |
-| PRD-10 | History discovery is bounded to Inspector manifests, not a full Pi-session rescan. |
+| PRD-10 | History discovery is scoped to Inspector-owned manifests, not a full Pi-session rescan; collection pages cover eligible manifests with at most 50 replays, while aggregate discovery stays capped at 206. |
 | PRD-11 | v1 supports Pi `0.85.1` API/format baseline and latest stable Pi at implementation release; older versions are unsupported. |
 | PRD-12 | Public telemetry is process-local, best-effort, at-most-once as observed; it is safe with no consumer. |
 
@@ -143,10 +143,11 @@ range intent, navigation, loading/error state, and presentation only. It does
 not resolve report ranges, filter report rows, aggregate usage, or interpret
 evidence.
 
-The initial protected API surface is:
+The protected API surface is:
 
 ```text
 GET /api/v1/ui
+GET /api/v1/reports/sessions?cursor&from&to
 GET /api/v1/reports/sessions/{sessionId}
 GET /api/v1/reports/global
 ```
@@ -154,12 +155,40 @@ GET /api/v1/reports/global
 `GET /api/v1/ui` calls `loadInspectorBundle()` once per response and then runs
 TypeScript L2 projection. The default History and Global projections share one
 bounded tree-scope history scan within that bundle; this reuse is request-local,
-with no cross-request cache. Its range metadata is per projection/view: the
-shared intent is retained, while `current.active`, `current.tree`, History,
-and Global may carry different resolved anchors. Independent session/global
-resource calls are independent observations and do not promise cross-request
-snapshot consistency. The atomic session resource rejects `scope` and range
-input; range input returns `400 range-not-supported`.
+with no cross-request cache. That aggregate path remains capped at 206 sessions;
+it is not widened by the separate History collection resource. The collection
+resource enumerates all eligible Inspector manifests, orders sessions by their
+latest canonically valid Pi-native header/entry timestamp descending, ties by
+ASCII session ID ascending, and places missing dates last. It returns one
+keyset page of at most 50 projected rows, with `previousCursor` and `nextCursor`
+and no exact total. The cursor is a bounded opaque versioned base64url token;
+its sort timestamp preserves native sub-millisecond precision and timezone
+meaning. Only rows selected for that page are replayed. A missing or changed
+cursor anchor remains an ordering boundary. The exact-session resource uses
+manifest-backed targeted discovery, so a session beyond the aggregate cap
+remains loadable through the same source, marker, and atomic report checks.
+
+The page route accepts only one optional cursor and a complete optional
+`from`/`to` pair; duplicate, unknown, malformed, oversized, or half-range
+queries are rejected. The page response carries `kind: "history-sessions"`,
+`schemaVersion: 1`, availability, sessions, bounded diagnostics, and nullable
+previous/next cursors. Page-row membership uses the selected range's normal L2
+semantics; pagination does not move range filtering into the browser. The
+browser stores the cursor only on History routes, preserves it when selecting a
+row, resets it when the range changes, and requests only the selected page.
+
+The UI snapshot's authenticated top-level `projectName` is a bounded, safe
+basename of the active `ExtensionCommandContext.cwd` (`projectRoot`), with a
+generic fallback. The full root path is not included in the DTO or static shell;
+the browser displays the name as text after authorization and updates it from
+full or delta snapshots when the project context changes.
+
+Range metadata is per projection/view: the shared intent is retained, while
+`current.active`, `current.tree`, History, and Global may carry different
+resolved anchors. Independent session, History-page, and global resource calls
+are independent observations and do not promise cross-request snapshot
+consistency. The atomic session resource rejects `scope` and range input; range
+input returns `400 range-not-supported`.
 
 `GET /api/v1/ui` serializes the canonical `InspectorUiSnapshot` once and
 returns its quoted SHA-256/base64url ETag with the full body. It always returns
@@ -845,8 +874,12 @@ the same `SessionReport`.
 The hash (`#/…`) is the single authority for browser navigation state. API query
 parameters are transport inputs only and never become route state; the server
 never parses or owns browser navigation. One canonical parameter order —
-`scope, view, panel, preset, from, to, session, entity, q, sort` — means one
-route has exactly one string. `scope` chooses the entry set, `view` the Agents
+`scope, view, panel, preset, from, to, cursor, session, entity, q, sort` — means
+one route has exactly one string. `cursor` is accepted only on History routes;
+it names the bounded server page and is not a client-side slice position.
+Changing the active History range clears the cursor, while selecting a session
+preserves it so reload can fetch that page before validating the selected ID.
+`scope` chooses the entry set, `view` the Agents
 presentation (Tree or Table) and `panel` the Environment subview (Commands or
 Sources); each is a closed vocabulary whose non-default member is the only one
 serialized, so a default choice adds no parameter. The bootstrap `#token=…`
@@ -860,9 +893,10 @@ replaced with the canonical default route.
   route. (The theme toggle also uses `aria-pressed`, but it is ephemeral client
   state outside the route: it describes the reader's screen, not what they are
   reading.)
-- A **discrete** route change (section, tab, scope, view, panel, session, entity,
-  range preset, custom range, sort) **pushes** a history entry so Back restores the
-  previous state; only in-progress search typing **replaces** the current entry. The
+- A **discrete** route change (section, tab, scope, view, panel, cursor page,
+  session, entity, range preset, custom range, sort) **pushes** a history entry so
+  Back restores the previous state; only in-progress search typing **replaces**
+  the current entry. The
   Tools summary → calls tool filter, and a tree node's collapsed state, are
   per-view-identity ephemeral client state, not route state, and push nothing.
 - A route may name a focus **and** the view that can show it. When the two
