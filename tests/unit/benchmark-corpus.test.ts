@@ -1,72 +1,69 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import test from "node:test";
+import { writeLiveUiCorpus } from "../../benchmark/corpus.ts";
 
-import {
-  buildSessionLines,
-  CORPUS_SEED,
-  CORPUS_VERSION,
-  writeCheckpointCorpus,
-  writeSessionCorpus,
-} from "../../benchmark/corpus.ts";
-import { reduceEntries } from "../../src/core/reduce.ts";
-import { parseSessionJsonl } from "../../src/pi/adapter.ts";
-import { selectScope } from "../../src/pi/sessions.ts";
-import { readCheckpoint } from "../../src/storage/checkpoint.ts";
-
-test("builds a byte-identical fixed-seed corpus for a given version", () => {
-  assert.equal(CORPUS_VERSION, 1);
-  const first = buildSessionLines({ records: 40, seed: CORPUS_SEED });
-  const second = buildSessionLines({ records: 40, seed: CORPUS_SEED });
-  assert.deepEqual(first, second);
-  assert.notDeepEqual(first, buildSessionLines({ records: 40, seed: 1 }));
-  assert.equal(first.length, 42);
-});
-
-test("writes a replayable session corpus with the requested record count", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "inspector-corpus-"));
+test("live UI corpus produces 100 safe, manifest-backed sessions deterministically", async () => {
+  const firstDirectory = await mkdtemp(
+    join(tmpdir(), "pi-live-ui-corpus-first-"),
+  );
+  const secondDirectory = await mkdtemp(
+    join(tmpdir(), "pi-live-ui-corpus-second-"),
+  );
   try {
-    const corpus = await writeSessionCorpus({
-      directory,
-      name: "session",
-      records: 25,
+    const first = await writeLiveUiCorpus({
+      directory: firstDirectory,
+      sessions: 100,
+      records: 40,
+      seed: 20261030,
     });
-    assert.equal(corpus.records, 25);
-    assert.ok(corpus.bytes > 0);
-    const session = parseSessionJsonl(
-      await (await import("node:fs/promises")).readFile(corpus.path, "utf8"),
+    const second = await writeLiveUiCorpus({
+      directory: secondDirectory,
+      sessions: 100,
+      records: 40,
+      seed: 20261030,
+    });
+    const summary = (corpus: typeof first) =>
+      corpus.sessions.map(({ sessionId, records, bytes }) => ({
+        sessionId,
+        records,
+        bytes,
+      }));
+
+    assert.equal(first.sessions.length, 100);
+    assert.equal(
+      new Set(first.sessions.map(({ sessionId }) => sessionId)).size,
+      100,
     );
-    assert.equal(session.hasMalformedJson, false);
-    const entries = selectScope(session.entries, null, "tree");
-    const reduced = reduceEntries(session.id, entries);
-    assert.equal(reduced.generations.length, corpus.generations);
-    assert.equal(reduced.tools.length, corpus.generations);
-    assert.ok(reduced.tools.length > 0);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("writes checkpoint corpus entries that the real reader accepts", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "inspector-checkpoints-"));
-  try {
-    const directories = await writeCheckpointCorpus({
-      directory,
-      count: 4,
-    });
-    assert.equal(directories.length, 4);
-    let totalTokens = 0;
-    for (const checkpointDirectory of directories) {
-      const checkpoint = await readCheckpoint({
-        directory: checkpointDirectory,
+    assert.ok(
+      first.sessions.every(({ sessionId }) =>
+        /^[a-z0-9]+-session-\d{3}$/.test(sessionId),
+      ),
+    );
+    assert.deepEqual(summary(first), summary(second));
+    for (const session of first.sessions) {
+      assert.equal(session.records, 40);
+      const header = JSON.parse(
+        (await readFile(session.path, "utf8")).split("\n", 1)[0] ?? "null",
+      ) as { id?: string };
+      assert.equal(header.id, session.sessionId);
+      const manifest = JSON.parse(
+        await readFile(
+          join(first.root, "sessions", session.sessionId, "meta.json"),
+          "utf8",
+        ),
+      ) as Record<string, unknown>;
+      assert.deepEqual(manifest, {
+        schemaVersion: 2,
+        sessionId: session.sessionId,
+        sourceFile: `${session.sessionId}.jsonl`,
+        state: "tracking",
       });
-      assert.ok(checkpoint, "corpus checkpoint must be valid");
-      totalTokens += checkpoint.aggregates.totalTokens;
     }
-    assert.equal(totalTokens, 1_000 + 1_001 + 1_002 + 1_003);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm(firstDirectory, { recursive: true, force: true });
+    await rm(secondDirectory, { recursive: true, force: true });
   }
 });

@@ -17,6 +17,11 @@ import { createCurrentTuiModel, type CurrentTuiModel } from "./current.ts";
 import { sessionDatedUsage } from "./dated-usage.ts";
 import { countersFrom } from "./l2-projection.ts";
 import type { SessionObservation } from "./observation.ts";
+import {
+  measureAsync,
+  measureSync,
+  type LoadInstrumentation,
+} from "./load-instrumentation.ts";
 
 /**
  * Options for {@link loadCurrentSessionReport}; one object so later wiring
@@ -39,6 +44,7 @@ export type LoadCurrentSessionReportOptions = {
   /** Process-local presence/inventory observation; never a storage read. */
   observation?: SessionObservation;
   /** Composition-root cooperative archive provider; L2 never performs archive I/O. */
+  instrumentation?: LoadInstrumentation;
   subagentEvidence?: (
     entries: readonly import("../core/events.ts").SessionEntry[],
     sessionId: string,
@@ -61,61 +67,116 @@ export async function loadCurrentSessionReport(
   options: LoadCurrentSessionReportOptions,
 ): Promise<CurrentTuiModel | undefined> {
   if (!sessionFile) return undefined;
-  const { leafId, observation } = options;
+  const parsed = await readCurrentSession(sessionFile, options.instrumentation);
+  if (parsed === undefined) return undefined;
+  return buildCurrentSessionReport(parsed, sessionFile, scope, options);
+}
 
+/** Reads once, then independently builds active and tree views from that snapshot. */
+export async function loadCurrentSessionReports(
+  sessionFile: string | undefined,
+  options: LoadCurrentSessionReportOptions,
+): Promise<{
+  active: CurrentTuiModel | undefined;
+  tree: CurrentTuiModel | undefined;
+}> {
+  if (!sessionFile) return { active: undefined, tree: undefined };
+  const parsed = await readCurrentSession(sessionFile, options.instrumentation);
+  if (parsed === undefined) return { active: undefined, tree: undefined };
+  const [active, tree] = await Promise.all([
+    buildCurrentSessionReport(parsed, sessionFile, "active", options),
+    buildCurrentSessionReport(parsed, sessionFile, "tree", options),
+  ]);
+  return { active, tree };
+}
+
+async function readCurrentSession(
+  sessionFile: string,
+  instrumentation: LoadInstrumentation | undefined,
+): Promise<ReturnType<typeof parseSessionJsonl> | undefined> {
   try {
-    const parsed = parseSessionJsonl(await readFile(sessionFile, "utf8"));
-    const buildInput = {
-      parsed,
-      scope,
-      leafId,
-      evidence: options.evidence ?? NO_EVIDENCE,
-      ...(options.walRecords === undefined
-        ? {}
-        : { walRecords: options.walRecords }),
-      ...(options.liveOverflow === undefined
-        ? {}
-        : { liveOverflow: options.liveOverflow }),
-      ...(observation?.inventory === undefined
-        ? {}
-        : { inventory: observation.inventory }),
-    };
-    // The builder is the single scope authority, so its resolution is what the
-    // subagent adapter reads. Attach its already-validated cooperative result
-    // without replaying native entries or integration adapters (P1.2).
-    const resolved = buildCanonicalSession(buildInput);
-    if (resolved.state !== "ready") return undefined;
-    // R49: the entry set is the builder's resolution in order, mapped back to
-    // parsed entries; an id without a parsed entry (an unknown-semantic node)
-    // is skipped instead of fabricating a node. Scope is never re-derived here.
-    const entries = selectResolvedEntries(
-      parsed.entries,
-      resolved.session.scopedEntryIds,
+    const source = await measureAsync(
+      instrumentation,
+      "current-jsonl-read",
+      () => readFile(sessionFile, "utf8"),
+      (contents) => Buffer.byteLength(contents, "utf8"),
     );
-    // Subagent runs are auto-discovered from persisted tool results; the
-    // evidence usage stays a child-agent breakdown, never a session total.
-    // Only validated published archive references add presence evidence.
-    const subagentEvidence =
-      (await options.subagentEvidence?.(
-        entries,
-        resolved.session.sessionId,
-        sessionFile,
-      )) ?? readSubagentEvidence(entries, resolved.session.sessionId);
-    const session = attachSubagentEvidence(resolved.session, subagentEvidence);
-    return createCurrentTuiModel(
-      toSessionReport(session, {
-        agents: {
-          state: subagentEvidence.state,
-          runs: session.agents,
-        },
-        agentActivity: subagentEvidence.activity,
-        presence: observation?.presence,
-        ...countersFrom(session),
-      }),
-      scope,
-      // R19: the already-built canonical session is projected once; no extra
-      // parse, no extra build, no walk of the report's timestamps.
-      sessionDatedUsage(session),
+    return measureSync(instrumentation, "current-jsonl-parse", () =>
+      parseSessionJsonl(source),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+async function buildCurrentSessionReport(
+  parsed: ReturnType<typeof parseSessionJsonl>,
+  sessionFile: string,
+  scope: Scope,
+  options: LoadCurrentSessionReportOptions,
+): Promise<CurrentTuiModel | undefined> {
+  const { leafId, observation, instrumentation } = options;
+  try {
+    return await measureAsync(
+      instrumentation,
+      "current-report-build",
+      async () => {
+        const buildInput = {
+          parsed,
+          scope,
+          leafId,
+          evidence: options.evidence ?? NO_EVIDENCE,
+          ...(options.walRecords === undefined
+            ? {}
+            : { walRecords: options.walRecords }),
+          ...(options.liveOverflow === undefined
+            ? {}
+            : { liveOverflow: options.liveOverflow }),
+          ...(observation?.inventory === undefined
+            ? {}
+            : { inventory: observation.inventory }),
+        };
+        // The builder is the single scope authority, so its resolution is what the
+        // subagent adapter reads. Attach its already-validated cooperative result
+        // without replaying native entries or integration adapters (P1.2).
+        const resolved = buildCanonicalSession(buildInput);
+        if (resolved.state !== "ready") return undefined;
+        // R49: the entry set is the builder's resolution in order, mapped back to
+        // parsed entries; an id without a parsed entry (an unknown-semantic node)
+        // is skipped instead of fabricating a node. Scope is never re-derived here.
+        const entries = selectResolvedEntries(
+          parsed.entries,
+          resolved.session.scopedEntryIds,
+        );
+        // Subagent runs are auto-discovered from persisted tool results; the
+        // evidence usage stays child-agent breakdown, never a session total.
+        // Only validated published archive references add presence evidence.
+        const subagentEvidence =
+          (await options.subagentEvidence?.(
+            entries,
+            resolved.session.sessionId,
+            sessionFile,
+          )) ?? readSubagentEvidence(entries, resolved.session.sessionId);
+        const session = attachSubagentEvidence(
+          resolved.session,
+          subagentEvidence,
+        );
+        return createCurrentTuiModel(
+          toSessionReport(session, {
+            agents: {
+              state: subagentEvidence.state,
+              runs: session.agents,
+            },
+            agentActivity: subagentEvidence.activity,
+            presence: observation?.presence,
+            ...countersFrom(session),
+          }),
+          scope,
+          // R19: the already-built canonical session is projected once; no extra
+          // parse, no extra build, no walk of the report's timestamps.
+          sessionDatedUsage(session),
+        );
+      },
     );
   } catch {
     return undefined;
