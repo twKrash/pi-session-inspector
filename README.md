@@ -12,7 +12,7 @@ no external database, no analytics service, no session uploads.
 [![GitHub release](https://img.shields.io/github/v/release/twKrash/pi-session-inspector)](https://github.com/twKrash/pi-session-inspector/releases/latest)
 [![license: MIT](https://img.shields.io/github/license/twKrash/pi-session-inspector)](https://github.com/twKrash/pi-session-inspector/blob/main/LICENSE)
 [![node: >=22.19.0](https://img.shields.io/node/v/@twkrash/pi-session-inspector)](https://www.npmjs.com/package/@twkrash/pi-session-inspector)
-[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/twKrash/badge.svg)](https://hub.xerj.org/contributors/twKrashk)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/twKrash/badge.svg)](https://hub.xerj.org/contributors/twKrash)
 
 <img src="https://github.com/twKrash/pi-session-inspector/releases/download/v1.2.0/overview-global-dark.png" alt="Overview tab of the global report, dark theme">
 
