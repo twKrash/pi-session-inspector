@@ -426,6 +426,12 @@
     return next;
   };
 
+  const rangeRoute = (intent) =>
+    routeFor({
+      range: intent,
+      cursor: state.session === undefined ? null : state.cursor,
+    });
+
   /** The destination tab of one entity kind. */
   const tabFor = (kind) => {
     if (kind === "model" || kind === "agent") return "llm";
@@ -4535,10 +4541,7 @@
     }
     if (data.days !== undefined) {
       navigate(
-        routeFor({
-          range: { kind: "preset", preset: Number(data.days) },
-          cursor: null,
-        }),
+        rangeRoute({ kind: "preset", preset: Number(data.days) }),
       );
       return;
     }
@@ -4706,7 +4709,7 @@
         const dialog = q("date-dialog");
         if (dialog !== null && typeof dialog.close === "function")
           dialog.close();
-        navigate(routeFor({ range: parsed.intent }));
+        navigate(rangeRoute(parsed.intent));
       });
     }
   };

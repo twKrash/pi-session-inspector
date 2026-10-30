@@ -12,6 +12,7 @@ no external database, no analytics service, no session uploads.
 [![GitHub release](https://img.shields.io/github/v/release/twKrash/pi-session-inspector)](https://github.com/twKrash/pi-session-inspector/releases/latest)
 [![license: MIT](https://img.shields.io/github/license/twKrash/pi-session-inspector)](https://github.com/twKrash/pi-session-inspector/blob/main/LICENSE)
 [![node: >=22.19.0](https://img.shields.io/node/v/@twkrash/pi-session-inspector)](https://www.npmjs.com/package/@twkrash/pi-session-inspector)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/twKrash/badge.svg)](https://hub.xerj.org/contributors/twKrash)
 
 <img src="https://github.com/twKrash/pi-session-inspector/releases/download/v1.2.0/overview-global-dark.png" alt="Overview tab of the global report, dark theme">
 
@@ -82,19 +83,19 @@ right-click save is still the browser's own affordance.
 
 ## What you can inspect
 
-| Surface | What it shows |
-| --- | --- |
-| Overview | Native session usage and cost, generations, tool calls, and errors for the selected range, a daily activity chart whose metrics the reader picks, plus an evidence panel that keeps native, live/cooperative, and unavailable inputs apart |
-| LLM | Generation-attributed model usage and cost for the range; the same tab's Agent execution tree carries the session's own native total |
-| Agent execution | The LLM tab's second subject: Tree and Table readings of the same subagent runs — nested topology, run containers, model, status, per-run effort and usage coverage, async execution kind, detached disposition, and the native activity behind them. Grouping nodes are presentation only (see [Agent execution](#agent-execution)) |
-| Tools | Calls with duration and per-row usage coverage; partial usage and partial duration are flagged, never averaged away |
-| Skills | Discovered skill inventory plus explicit invocation evidence only |
-| Integrations | Semantic telemetry from supported Pi extensions (see below) |
-| Environment | Discovered commands and capability sources (the `builtin`, `npm:…` providers an environment loads) — availability, never activity |
-| Errors | Persisted error records by bounded kind |
-| Ledger | Chronological generations, tools, compactions, branch summaries, and errors with their status and confidence |
-| History / Global | Historical session rows and the multi-session aggregate report, each with its own inspection coverage |
-| Snapshot / JSON | Deterministic export surfaces: one self-contained HTML document, or the report DTO itself |
+| Surface          | What it shows                                                                                                                                                                                                                                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Overview         | Native session usage and cost, generations, tool calls, and errors for the selected range, a daily activity chart whose metrics the reader picks, plus an evidence panel that keeps native, live/cooperative, and unavailable inputs apart                                                                                           |
+| LLM              | Generation-attributed model usage and cost for the range; the same tab's Agent execution tree carries the session's own native total                                                                                                                                                                                                 |
+| Agent execution  | The LLM tab's second subject: Tree and Table readings of the same subagent runs — nested topology, run containers, model, status, per-run effort and usage coverage, async execution kind, detached disposition, and the native activity behind them. Grouping nodes are presentation only (see [Agent execution](#agent-execution)) |
+| Tools            | Calls with duration and per-row usage coverage; partial usage and partial duration are flagged, never averaged away                                                                                                                                                                                                                  |
+| Skills           | Discovered skill inventory plus explicit invocation evidence only                                                                                                                                                                                                                                                                    |
+| Integrations     | Semantic telemetry from supported Pi extensions (see below)                                                                                                                                                                                                                                                                          |
+| Environment      | Discovered commands and capability sources (the `builtin`, `npm:…` providers an environment loads) — availability, never activity                                                                                                                                                                                                    |
+| Errors           | Persisted error records by bounded kind                                                                                                                                                                                                                                                                                              |
+| Ledger           | Chronological generations, tools, compactions, branch summaries, and errors with their status and confidence                                                                                                                                                                                                                         |
+| History / Global | Historical session rows and the multi-session aggregate report, each with its own inspection coverage                                                                                                                                                                                                                                |
+| Snapshot / JSON  | Deterministic export surfaces: one self-contained HTML document, or the report DTO itself                                                                                                                                                                                                                                            |
 
 ## Accounting and evidence rules
 
@@ -109,7 +110,7 @@ Child (subagent) usage breakdown of subagent usage already inside native
 - **Unavailable is not zero.** A figure that was never observed renders
   unavailable; an observed zero stays zero. Counters are never fabricated.
 - **Partial coverage is explicit.** Coverage counts, `N of M runs reported
-  usage` fractions, and partial flags travel with the rows they qualify.
+usage` fractions, and partial flags travel with the rows they qualify.
 - **Pi session JSONL is the durable usage/cost authority.**
   Native usage and cost are read from it; no live or cooperative source
   outranks it for native accounting.
@@ -136,16 +137,16 @@ Inspector distinguishes two things:
 
 Shipped integrations ([full contract](docs/integrations.md)):
 
-| Integration | Evidence it reads | Reported telemetry |
-| --- | --- | --- |
-| [`context`](https://github.com/mksglu/context-mode) | `ctx_*` custom entries plus native `ctx_*` tool calls, folded by maximum | `calls` |
-| [`rtk`](https://github.com/MasuRii/pi-rtk-optimizer) | `message.details.rtkCompaction` (versioned shapes collapse to one contract) | `compactions`, char/line counts, `truncated` |
-| [`ponytail`](https://github.com/DietrichGebert/ponytail) | `ponytail-mode` custom entries | `changes` |
-| [`caveman`](https://github.com/jonjonrankin/pi-caveman) | `caveman-level` custom entries | `changes` |
-| [`permission`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system) | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision` | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors` |
-| [`subagents`](https://github.com/nicobailon/pi-subagents) | persisted native subagent tool results: foreground `results[]`, wait `completions[]`, workflow child summaries, published archive references, plus current-session-only referenced `status.json` v3 and the per-child `_meta.json` referenced by a detached foreground result | Rich run and activity evidence in the Agents view: status, effort and usage coverage, async kind, detached disposition, and the native activity behind the runs; the row itself declares no counters |
-| [`lens`](https://github.com/apmantza/pi-lens) | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls | `calls` |
-| [`mcp`](https://github.com/nicobailon/pi-mcp-adapter) | native `mcp`, `mcpScript`, and `mcp__<server>` tool calls, plus `pi-mcp-adapter` `mcp-approval-v1` entries re-validated against the declared shape, and its `pi-mcp-adapter/status/v1` runtime snapshot | `calls`, `toolApprovals`, `iframeApprovals`, `iframeDenials`; `calls` counts invocations of the adapter's own tool surface and only counters with evidence are published; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
+| Integration                                                                                     | Evidence it reads                                                                                                                                                                                                                                                             | Reported telemetry                                                                                                                                                                                                                                                                          |
+| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`context`](https://github.com/mksglu/context-mode)                                             | `ctx_*` custom entries plus native `ctx_*` tool calls, folded by maximum                                                                                                                                                                                                      | `calls`                                                                                                                                                                                                                                                                                     |
+| [`rtk`](https://github.com/MasuRii/pi-rtk-optimizer)                                            | `message.details.rtkCompaction` (versioned shapes collapse to one contract)                                                                                                                                                                                                   | `compactions`, char/line counts, `truncated`                                                                                                                                                                                                                                                |
+| [`ponytail`](https://github.com/DietrichGebert/ponytail)                                        | `ponytail-mode` custom entries                                                                                                                                                                                                                                                | `changes`                                                                                                                                                                                                                                                                                   |
+| [`caveman`](https://github.com/jonjonrankin/pi-caveman)                                         | `caveman-level` custom entries                                                                                                                                                                                                                                                | `changes`                                                                                                                                                                                                                                                                                   |
+| [`permission`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system) | live `permissions:ready`, `permissions:ui_prompt`, `permissions:decision`                                                                                                                                                                                                     | `decisions`, `allowed`, `denied`, `prompts`, prompt detail counters, `gateErrors`                                                                                                                                                                                                           |
+| [`subagents`](https://github.com/nicobailon/pi-subagents)                                       | persisted native subagent tool results: foreground `results[]`, wait `completions[]`, workflow child summaries, published archive references, plus current-session-only referenced `status.json` v3 and the per-child `_meta.json` referenced by a detached foreground result | Rich run and activity evidence in the Agents view: status, effort and usage coverage, async kind, detached disposition, and the native activity behind the runs; the row itself declares no counters                                                                                        |
+| [`lens`](https://github.com/apmantza/pi-lens)                                                   | native `lens`, `lens_*`, `pi_lens_*`, `lsp_*`, `ast_grep_*` tool calls                                                                                                                                                                                                        | `calls`                                                                                                                                                                                                                                                                                     |
+| [`mcp`](https://github.com/nicobailon/pi-mcp-adapter)                                           | native `mcp`, `mcpScript`, and `mcp__<server>` tool calls, plus `pi-mcp-adapter` `mcp-approval-v1` entries re-validated against the declared shape, and its `pi-mcp-adapter/status/v1` runtime snapshot                                                                       | `calls`, `toolApprovals`, `iframeApprovals`, `iframeDenials`; `calls` counts invocations of the adapter's own tool surface and only counters with evidence are published; the runtime snapshot is a presence sighting, never a counter, and server/tool names and hashes are never retained |
 
 Presence and evidence are independent claims. `Present / Unavailable` means the
 integration is installed but produced no observable evidence in the tracked
@@ -204,12 +205,12 @@ application, `snapshot` is the only immutable HTML artifact command, `tui`
 renders inside Pi, and `json` is the deterministic export. Only `ui` starts a
 server.
 
-| Mode | Targets | Options |
-| --- | --- | --- |
-| `ui` | none; the application carries its own navigation | `--scope active\|tree`, `--theme dark\|light`, `--debug`, `--no-open` |
+| Mode       | Targets                                                            | Options                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `ui`       | none; the application carries its own navigation                   | `--scope active\|tree`, `--theme dark\|light`, `--debug`, `--no-open`                                                                    |
 | `snapshot` | required: `current`, `history`, `global`, or `session <sessionId>` | `--scope active\|tree` (current only), `--preset 7\|14\|30`, `--from DATE --to DATE`, `--theme`, `--debug`, `--output FILE`, `--no-open` |
-| `tui` | `current` (default) or `ledger` | `--scope`, `--debug` |
-| `json` | `current` (default), `history`, `global`, or `session <sessionId>` | `--scope` (current only), `--debug`, `--output FILE` |
+| `tui`      | `current` (default) or `ledger`                                    | `--scope`, `--debug`                                                                                                                     |
+| `json`     | `current` (default), `history`, `global`, or `session <sessionId>` | `--scope` (current only), `--debug`, `--output FILE`                                                                                     |
 
 ```text
 /session-ins
@@ -272,10 +273,10 @@ Inspector reads one optional JSON file it owns, next to its own data:
 { "theme": "dark", "debug": true }
 ```
 
-| Key | Values | Effect |
-| --- | --- | --- |
+| Key     | Values                        | Effect                                                                                                                                                             |
+| ------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `theme` | `"light"` (default), `"dark"` | The theme a `ui` page and a `snapshot` document are rendered with: the shell carries it in the first paint, and the in-page toggle still switches the running page |
-| `debug` | `true`, `false` (default) | Writes Inspector's bounded local debug log (`0o600` JSONL under `session-inspector/v1/debug/`) |
+| `debug` | `true`, `false` (default)     | Writes Inspector's bounded local debug log (`0o600` JSONL under `session-inspector/v1/debug/`)                                                                     |
 
 Precedence is `explicit CLI option > settings.json > product default`, so
 `--theme light` overrides `"theme": "dark"` and a per-invocation `--debug`

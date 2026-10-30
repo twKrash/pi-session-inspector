@@ -877,8 +877,9 @@ never parses or owns browser navigation. One canonical parameter order —
 `scope, view, panel, preset, from, to, cursor, session, entity, q, sort` — means
 one route has exactly one string. `cursor` is accepted only on History routes;
 it names the bounded server page and is not a client-side slice position.
-Changing the active History range clears the cursor, while selecting a session
-preserves it so reload can fetch that page before validating the selected ID.
+Changing the active History aggregate range clears the cursor. When a session is
+selected, retain its current cursor while loading the changed range so its ID is
+validated against its selected page rather than an unrelated first page.
 `scope` chooses the entry set, `view` the Agents
 presentation (Tree or Table) and `panel` the Environment subview (Commands or
 Sources); each is a closed vocabulary whose non-default member is the only one

@@ -64,11 +64,14 @@ Inventory (commands, skills, resource sources) is **environment** state: `state`
 History's `cursor` is a bounded versioned keyset token and is serialized only on
 History routes. The History collection API returns at most 50 rows per request;
 Previous/Next navigation pushes the selected cursor into the route so
-Back/Forward restores the page. A range change clears the page cursor, while a
-selected session retains it. The browser fetches only that page and uses its IDs
-to validate a History session deep link; it does not paginate a full client-side
-collection. The page cursor is not an exact total or a new coverage claim, and
-it does not widen the bounded History/Global aggregate scan.
+Back/Forward restores the page. A range change clears the cursor in aggregate
+History. When a session is selected, its current cursor is retained while the
+page is reloaded under the new range, so the browser validates that session
+against its selected page rather than an unrelated first page. The browser
+fetches only that page and uses its IDs to validate a History session deep link;
+it does not paginate a full client-side collection. The page cursor is not an
+exact total or a new coverage claim, and it does not widen the bounded
+History/Global aggregate scan.
 
 `view` is the second closed route vocabulary beside `scope`, and it carries the same kind of claim: which presentation of the same rows the reader is looking at. It is a member of the route rather than a setting or an in-memory cache because the artifact has to reproduce what a reader saw — Back/Forward restores the presentation, and a deep link that focuses a nested agent opens the hierarchy it lives in. Only the non-default member is serialized, so the default presentation still has exactly one string, and the vocabulary stays closed: a value outside it is dropped rather than echoed.
 
