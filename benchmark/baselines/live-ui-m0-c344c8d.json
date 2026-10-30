@@ -521,5 +521,6 @@
     "parses": 202,
     "historyReplays": 100
   },
-  "milestone": "m0"
+  "milestone": "m0",
+  "tooling": "produced by the uncommitted M0 benchmark script; the committed script emits expectedCountsPerRequest, accepts --expected-reads and requires --milestone, so this artifact cannot be regenerated from the committed tool"
 }

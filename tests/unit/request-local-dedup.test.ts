@@ -10,7 +10,10 @@ import {
 } from "../../src/ui/bundle.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { loadHistorySessionPage } from "../../src/ui/history-page.ts";
-import { loadHistoryReports } from "../../src/ui/load-history.ts";
+import {
+  loadHistoryReports,
+  replayDiscoveredHistorySession,
+} from "../../src/ui/load-history.ts";
 import { serializeUiSnapshot } from "../../src/ui/snapshot-revision.ts";
 import { projectInspectorUi } from "../../src/ui/ui-projection.ts";
 
@@ -240,6 +243,74 @@ test("a marked but malformed session keeps its place in history-page ordering", 
         [SESSION_ID, "available"],
       ],
     );
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed current read leaves both views equally unavailable", async () => {
+  const fixture = await createFixture();
+  try {
+    await rm(fixture.sessionFile, { force: true });
+    const bundle = await loadInspectorBundle(bundleInput(fixture));
+    assert.equal(bundle.current.active.availability, "unavailable");
+    assert.equal(bundle.current.tree.availability, "unavailable");
+    assert.equal(bundle.current.active.diagnostic, "current-unavailable");
+    assert.equal(bundle.current.tree.diagnostic, "current-unavailable");
+    // One read outcome: the views cannot disagree about availability.
+    assert.equal(bundle.current.sameReportProjection, true);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("only the read is shared: one scope can fail while the other builds", async () => {
+  const fixture = await createFixture();
+  try {
+    const bundle = await loadInspectorBundle({
+      ...bundleInput(fixture),
+      current: { sessionFile: fixture.sessionFile, leafId: "missing-leaf" },
+    });
+    assert.equal(bundle.current.active.availability, "unavailable");
+    assert.equal(bundle.current.tree.availability, "available");
+    assert.equal(bundle.current.tree.report?.usage?.totalTokens, 2);
+    assert.equal(bundle.current.sameReportProjection, false);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("an unmarked reused parse is rejected instead of replayed", async () => {
+  const fixture = await createFixture();
+  try {
+    const unmarked = sessionBody(1).replace(
+      "session-inspector:tracking-start",
+      "some-other-custom-type",
+    );
+    await writeFile(fixture.sessionFile, unmarked, "utf8");
+    const discovered = {
+      sessionId: SESSION_ID,
+      availability: "available" as const,
+      sourceFile: `${SESSION_ID}.jsonl`,
+    };
+    Object.defineProperty(discovered, "sourceFile", {
+      value: `${SESSION_ID}.jsonl`,
+    });
+    const replay = await replayDiscoveredHistorySession(
+      {
+        root: fixture.root,
+        sessionDirectory: () => fixture.sessionDirectory,
+        maintenance,
+      },
+      discovered,
+      // An unmarked parse must not be trusted just because it parses.
+      (await import("../../src/pi/adapter.ts")).parseSessionJsonl(unmarked),
+    );
+    assert.deepEqual(replay, {
+      availability: "unavailable",
+      sessionId: SESSION_ID,
+      reason: "marker-unavailable",
+    });
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
   }

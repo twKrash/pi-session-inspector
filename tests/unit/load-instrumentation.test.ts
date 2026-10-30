@@ -41,7 +41,7 @@ test("current report loading emits sanitized stage metrics without changing its 
   const sessionFile = join(directory, "session.jsonl");
   await writeFile(
     sessionFile,
-    [
+    `${[
       JSON.stringify({ type: "session", version: 3, id: "metric-session" }),
       JSON.stringify({
         type: "custom",
@@ -77,7 +77,7 @@ test("current report loading emits sanitized stage metrics without changing its 
           usage: { totalTokens: 2, cost: { total: 0.02 } },
         },
       }),
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
   try {
     const events: { stage: string; durationMs: number; bytes?: number }[] = [];
@@ -196,7 +196,7 @@ test("history report loading measures validation, replay, evidence, and aggregat
   await mkdir(sessionDirectory, { recursive: true });
   await writeFile(
     join(sessionDirectory, `${sessionId}.jsonl`),
-    [
+    `${[
       JSON.stringify({ type: "session", version: 3, id: sessionId }),
       JSON.stringify({
         type: "custom",
@@ -232,7 +232,7 @@ test("history report loading measures validation, replay, evidence, and aggregat
           usage: { totalTokens: 2, cost: { total: 0.02 } },
         },
       }),
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
   const manifestDirectory = join(root, "sessions", sessionId);
   await mkdir(manifestDirectory, { recursive: true });

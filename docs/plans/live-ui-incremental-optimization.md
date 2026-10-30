@@ -6,8 +6,8 @@
 - **Current milestone:** none active. Next authorized milestone is M2, planning-only in this run.
 - **Reference implementation commit:** `caebe204eae780775e13e09d757f3cce6d9848e3` (PR #69 design baseline).
 - **Baseline implementation commit:** `c344c8d5121034b544514211265abe3a5358e1ee` — the pre-M1 code both benchmark artifacts were measured against/on.
-- **Current branch/worktree:** `perf/live-ui-m1` at `/home/dvory/code/pi-session-inspector/.worktrees/live-ui-m1`, HEAD `b019eec` (1.6.1 release) on base `c344c8d`. Pushed; open PR https://github.com/twKrash/pi-session-inspector/pull/72 (not merged).
-- **Last completed verification (HEAD `f9f331b`):** `npm test` — exit 0; 1,275 passed, 1 skipped, 0 failed (16.3 s); `npm run typecheck`, `npm run lint`, `npm run format:check`, `knip`, `build-web --check` all exit 0. Benchmark artifacts: `benchmark/baselines/live-ui-m0-c344c8d.json` and `live-ui-m1-request-local.json`.
+- **Delivery state:** branch `perf/live-ui-m1` at `/home/dvory/code/pi-session-inspector/.worktrees/live-ui-m1` is pushed and open for review as PR #72 (not merged). Base `c344c8d`; see the commit list in that PR for the exact head.
+- **Last completed verification:** recorded per commit below; the release commit and the CI commit are documentation/CI-only. Re-run the suite whenever the working tree changes. Benchmark artifacts: `benchmark/baselines/live-ui-m0-c344c8d.json` and `live-ui-m1-request-local.json`.
 - **Next concrete action:** write the M2 plan artifact (no M2 code) — see "Next action for M2" at the end of this file.
 - **Open blockers:** none for M1. M3 stays blocked on the source-only JSONL invalidation gap (see below).
 - **Explicitly deferred:** M2 code; all cross-refresh/persistent caches; incremental aggregation; M3 session report cache; M4 incremental fold; live filesystem watchers/polling/cross-process signals; release/version metadata; unrelated HTML-size optimization.
@@ -44,10 +44,12 @@
 
   | Scenario | Group wall p50 M0 → M1 | Load p50 M0 → M1 |
   |---|---:|---:|
-  | warm full load | 335.8 → 303.7 ms (−9.6%) | 299.9 → 263.6 ms |
-  | one-session append | 324.3 → 242.8 ms (−25.1%) | 288.5 → 215.7 ms |
-  | multiple-session updates | 310.5 → 232.5 ms (−25.1%) | 277.4 → 205.9 ms |
-  | three concurrent range groups | 741.7 → 523.7 ms (−29.4%) | 560.6 → 395.9 ms |
+  | warm full load | 335.8 → 257.6 ms | 299.9 → 224.9 ms |
+  | one-session append | 324.3 → 246.9 ms | 288.5 → 217.2 ms |
+  | multiple-session updates | 310.5 → 266.5 ms | 277.4 → 230.3 ms |
+  | three concurrent range groups | 741.7 → 564.7 ms | 560.6 → 421.8 ms |
+
+  Successive M1 runs on the same corpus measured warm wall p50 303.7 / 257.6 ms, so treat these figures as one sample of a noisy quantity, not a precise speed-up.
 
   - **JSONL reads 202 → 101 (−50%), parses 202 → 101 (−50%), bytes read 7,735,974 → 3,867,987 (−50%)**; history replays unchanged at 100. These counts are exact and variance-free.
   - Timings move with machine state: the M1 run's *unchanged* stages also drifted (serialization 9.0 → 8.4 ms, diff 14.3 → 12.3 ms, projection 14.1 → 15.7 ms), so the wall deltas include run noise and are not all attributable to dedup. The read/parse halving is the attributable result; the wall improvement is consistent with it.
@@ -142,7 +144,7 @@
 
 Verdicts, each with the evidence the Oracle cited:
 
-1. **M1 parse reuse is sound and ADR-compatible — no re-read or stat check needed.** Only already-validated parses are handed to replay (observed only when the marker is present, `formatVersion === 3`, and `sourceReadFailure` is clean — the same check the fallback runs), so the skipped work is the second resolution+read, not validation. The fallback is still live in production through `src/ui/history-page.ts:113`. A stat check is a detector, not a guarantee: it narrows the window by one syscall and still loses to a later write, while the spec asks the L2 loader to hand the file's bytes to L0 once per load and ADR 0027's freshness model is snapshot-per-load plus ETag resync.
+1. **M1 parse reuse is sound and ADR-compatible — no re-read or stat check needed.** Only already-validated parses are handed to replay (observed only when the marker is present, `formatVersion === 3`, and `sourceReadFailure` is clean — the same check the fallback runs), so the skipped work is the second resolution+read, not validation. The fallback is still live in production through `src/ui/history-page.ts:113`. A stat check is a detector, not a guarantee: it narrows the window by one syscall and still loses to a later write, while the spec only requires the L2 loader to hand the file's bytes to L0 (it does not mandate a second read) and ADR 0027's freshness model is snapshot-per-load plus ETag resync.
 2. **The source-only JSONL invalidation gap is real; M3 stays BLOCKED.** Emitter is `onFlushed` only. Uncovered mutations are enumerated in the M3 section. A cache would produce an ETag that is self-consistent but wrong and would therefore disable stale-ETag resynchronization — the design's only recovery path.
 3. **M2 is a pass/channel concern, not a bundle-layer change.** The bundle carries no range; only `projectInspectorUi` does. Design, ownership, mid-pass subscriber exclusion, failure semantics, invariants and proving tests are recorded in the M2 section.
 4. **M2 as "one load per refresh pass" is the whole of M2**, and it cannot help a single-range client. The measured three-range gain is a proxy: the benchmark loads concurrently while the channel awaits groups sequentially and additionally flushes evidence, so a channel-level measurement is a prerequisite for any M2 before/after claim.
@@ -171,6 +173,27 @@ Verdict: safe to commit after three should-fixes; all three are applied.
 - *(nit, recorded)* The History page still double-reads its ≤50 replayed rows; it parses every candidate for ordering, so retaining all parses would be unbounded. Bounded, accepted, and a candidate follow-up.
 
 Reviewer could not run the diff or tests (no shell in that agent), so the supervisor re-ran everything: `npm test` 1,275 passed / 1 skipped / 0 failed, `typecheck`, `lint`, `format:check`, `knip`, `build-web --check` all clean at `f9f331b`.
+
+### KAPISCH standalone review — 2026-10-30 (`deepseek/deepseek-flash`, findings only)
+
+Scope `c344c8d...f78905c`, clean tree. No blockers. Findings and dispositions:
+
+- **KAP-01 (should-fix, applied):** the all-or-nothing current-view availability change had no test. Added two: a deleted source leaves both views `unavailable` with the same diagnostic and `sameReportProjection === true`, and an unresolvable `leafId` leaves `active` unavailable while `tree` still builds (`false`) — proving only the read, never the build, is shared.
+- **KAP-02 (should-fix, applied):** the committed benchmark could not regenerate the M0 artifact (its schema came from the uncommitted script) and its default `--milestone=m0` mislabeled a fresh run. The script now requires `--milestone=`, accepts `--expected-reads=` so another revision can be measured, and no longer emits the M0-only field; `benchmark:live-ui` runs release mode; the M0 artifact carries a `tooling` note stating it is not reproducible from committed code.
+- **KAP-03 (should-fix, applied):** "reads each session source once" was false — the current session is read once as itself and once as a history row (hence 101 reads for 100 sessions). CHANGELOG and README now say what the artifact shows.
+- **KAP-04 (should-fix, applied):** the tracker's own delivery state was stale and self-contradictory (fixed HEAD, "unpushed" beside "PR open", verification pinned two commits back). Replaced with one delivery statement plus per-commit verification.
+- **KAP-05 (nit, applied):** the reuse gate checked identity/readability but not the marker, while its comment implied the fallback's full check set. `hasTrackingStartMarker` is now part of the gate, with a test that an unmarked reused parse is rejected (`marker-unavailable`, not `replay-failed`).
+- **KAP-06 (nit, applied):** `instrumentation`'s doc comment had displaced `subagentEvidence`'s. Both are documented for what they are.
+- **KAP-07 (nit, applied):** the two new `useTemplate` infos in the added test are gone (lint now 5 warnings / 9 infos, all pre-existing).
+- **KAP-08 (nit, applied):** `deliveryBoundary.stageNesting` records that `history-discovery` encloses the per-source read/parse metrics and `current-report-build` encloses each per-scope build, so stage timings must not be summed.
+- **KAP-09 (nit, applied):** `deliveryBoundary.memoryMeasurement` records that `heapDeltaBytes` is post-load retained heap and `peakRssBytes` is the process-lifetime max, so neither is a load-peak measurement.
+- **KAP-10 (nit, applied):** the History ordering/`sortAt` correction for marked-but-malformed sources is now a CHANGELOG line instead of an undocumented user-visible change.
+- **KAP-11 (observation, recorded):** `manifest-unavailable` is unreachable on the reused-parse path; the replayed bytes were resolved, read and identity-validated moments earlier by the same load.
+- **KAP-12 (observation, recorded):** the History page still double-reads its ≤50 replayed rows; that is why the fallback must stay live.
+- **KAP-13 (observation, recorded):** the required per-PR static gate now runs on 24.x while the declared floor is still gated by the required `test` job (22.x) and by `release.yml` (22.22.1), which reruns every gate at tag time. Deliberate trade, not an accident.
+- **KAP-14 (observation, recorded):** the branch bundles performance, release, and CI commits. Each is self-consistent; the release and CI commits were independently mergeable, and the user asked for both here.
+
+One reviewer correction to the record: the KAP-07 lint count was slightly off — the two added warnings are `useTemplate` *infos*, not warnings, so the PR added no new warnings.
 
 ## Decision log
 
@@ -210,7 +233,7 @@ Not part of this workstream. Do not change HTML/chart/bundle budgets or redesign
 ## Session handoff
 
 - Pointer: `~/.pi/tmp/handoffs/01a18e70-48f2-75bc-b142-341d6129da5b/ACTIVE.md`.
-- Resume by: reading `AGENTS.md`, then this tracker, then verifying branch/HEAD (`perf/live-ui-m1` at `f9f331b`) and re-running `npm test` if the tree changed. M1 is committed locally and unpushed; do not push, merge, or open a PR without explicit authorization.
+- Resume by: reading `AGENTS.md`, then this tracker, then verifying the branch/head with `git log` and re-running `npm test` if the tree changed. PR #72 is open and awaiting review; merging it needs explicit authorization.
 - Nothing in this tracker is a substitute for current repository evidence; re-check the cited files before acting on M2.
 
 ## Next action for M2

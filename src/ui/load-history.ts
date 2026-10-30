@@ -456,7 +456,8 @@ async function scanDiscoveredSession(
     if (
       prevalidated !== undefined &&
       prevalidated.formatVersion === 3 &&
-      sourceReadFailure(prevalidated, sessionId) === undefined
+      sourceReadFailure(prevalidated, sessionId) === undefined &&
+      hasTrackingStartMarker(prevalidated.entries)
     ) {
       parsed = prevalidated;
     } else {

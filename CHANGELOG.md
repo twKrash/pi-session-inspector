@@ -6,12 +6,16 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Changed
 
-- One bundle load now reads and parses each session source once: the parse that
-  history marker validation already produced is handed to replay, and one
-  current-session parse feeds the independent active and tree builds. Measured
-  on the fixed-seed 100-session corpus, JSONL reads and parses per refresh drop
-  from 202 to 101 (7.74 MB to 3.87 MB read). Reuse is scoped to a single load;
+- History sources are read and parsed once per load instead of twice: the parse
+  marker validation already produced is handed to replay, and one
+  current-session parse feeds the independent active and tree builds. On the
+  fixed-seed 100-session corpus, JSONL reads and parses per refresh drop from
+  202 to 101 (7.74 MB to 3.87 MB); the current session is still read once as
+  itself and once as a history row. Reuse is scoped to a single load, so
   nothing is cached across requests or refreshes.
+- History orders a marked session whose source contains a malformed line by its
+  own timestamps again, instead of sorting it last and embedding that in the
+  page cursor.
 
 ## [1.6.0]
 

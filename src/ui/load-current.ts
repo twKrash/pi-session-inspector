@@ -43,8 +43,12 @@ export type LoadCurrentSessionReportOptions = {
   liveOverflow?: number;
   /** Process-local presence/inventory observation; never a storage read. */
   observation?: SessionObservation;
-  /** Composition-root cooperative archive provider; L2 never performs archive I/O. */
+  /**
+   * Optional numeric-only timing/metrics sink. It cannot alter a report: the
+   * observer's throws are swallowed and nothing it returns is consumed.
+   */
   instrumentation?: LoadInstrumentation;
+  /** Composition-root cooperative archive provider; L2 never performs archive I/O. */
   subagentEvidence?: (
     entries: readonly import("../core/events.ts").SessionEntry[],
     sessionId: string,

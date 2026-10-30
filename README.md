@@ -45,8 +45,8 @@ session, the session history, or the global aggregate.
 > announces loading once. One UI response shares its History and Global scan; repeated in-flight
 > range requests are coalesced, while explicit Refresh remains fresh. Request
 > failures stay in bounded HTTP responses, not Pi stderr. **1.6.1 highlight:**
-> live refresh now reads and parses each session source once per load instead
-> of twice, halving JSONL reads without adding a cross-request cache.
+> history sources are read and parsed once per load instead of twice, halving
+> JSONL reads per refresh without adding a cross-request cache.
 
 ## Install
 

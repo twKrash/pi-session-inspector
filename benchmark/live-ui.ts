@@ -249,7 +249,13 @@ async function measureRetainedMemory(
 
 async function main(): Promise<void> {
   const mode = process.argv.includes("--mode=release") ? "release" : "smoke";
-  const milestone = parseArgument("--milestone=") ?? "m0";
+  // An artifact names the milestone it measured; there is no safe default.
+  const milestone = parseArgument("--milestone=");
+  if (milestone === undefined || milestone.length === 0) {
+    throw new Error(
+      "pass --milestone=<id> so the artifact names what it measured",
+    );
+  }
   const sampleCount = mode === "release" ? 10 : 2;
   const output = parseArgument("--out=");
   const baselineCommit =
@@ -369,9 +375,15 @@ async function main(): Promise<void> {
       rangeGroupWallMs,
     );
 
-    // M1 request-local deduplication: one current read plus one per history
-    // session, and one history replay per session. M0 measured 202 -> 202 -> 100.
-    const expectedReadsPerRequest = 101;
+    // Request-local deduplication: one current read plus one per history
+    // session, and one history replay per session. Pass --expected-reads to
+    // measure a revision with a different expectation (M0 was 202).
+    const expectedReadsPerRequest = Number(
+      parseArgument("--expected-reads=") ?? 101,
+    );
+    if (!Number.isSafeInteger(expectedReadsPerRequest)) {
+      throw new Error("--expected-reads must be a non-negative safe integer");
+    }
     const expectedReplaysPerRequest = 100;
     for (const scenario of [warm, singleAppend, multiAppend, multiRange]) {
       if (
@@ -408,16 +420,16 @@ async function main(): Promise<void> {
           "WebSocket serialization, queue-bound check, socket.send, network delivery",
         implementationBoundary:
           "src/ui/live-channel.ts sendMessage: JSON.stringify, bufferedAmount + payload byte bound, then ws.send",
+        // Stage timings nest, so they must not be summed across stages.
+        stageNesting:
+          "history-discovery encloses history-jsonl-read and history-jsonl-parse; current-report-build encloses each per-scope build",
+        memoryMeasurement:
+          "heapDeltaBytes is retained heap after a post-load gc, and peakRssBytes is the process-lifetime max: neither isolates the load peak",
       },
       expectedCountsPerRequest: {
         jsonlReads: expectedReadsPerRequest,
         parses: expectedReadsPerRequest,
         historyReplays: expectedReplaysPerRequest,
-      },
-      m0BaselineCountsPerRequest: {
-        jsonlReads: 202,
-        parses: 202,
-        historyReplays: 100,
       },
     };
     console.log(JSON.stringify(results, null, 2));

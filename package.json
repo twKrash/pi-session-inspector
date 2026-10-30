@@ -65,7 +65,7 @@
     "benchmark:browser": "node --import tsx benchmark/browser.ts --mode=smoke",
     "benchmark:browser:release": "node --import tsx benchmark/browser.ts --mode=release --out=benchmark/artifacts/browser-latest.json",
     "benchmark:browser:check": "node --import tsx benchmark/browser.ts --mode=smoke --check",
-    "benchmark:live-ui": "node --expose-gc --import tsx benchmark/live-ui.ts"
+    "benchmark:live-ui": "node --expose-gc --import tsx benchmark/live-ui.ts --mode=release"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
