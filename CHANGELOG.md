@@ -2,6 +2,17 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1]
+
+### Changed
+
+- One bundle load now reads and parses each session source once: the parse that
+  history marker validation already produced is handed to replay, and one
+  current-session parse feeds the independent active and tree builds. Measured
+  on the fixed-seed 100-session corpus, JSONL reads and parses per refresh drop
+  from 202 to 101 (7.74 MB to 3.87 MB read). Reuse is scoped to a single load;
+  nothing is cached across requests or refreshes.
+
 ## [1.6.0]
 
 ### Added
