@@ -4318,6 +4318,54 @@ test("changing the History range resets its cursor and requests the resolved pag
   );
 });
 
+test("changing the History range preserves the selected session page cursor", async () => {
+  const firstSnapshot = uiSnapshot();
+  const nextSnapshot = uiSnapshot();
+  if (nextSnapshot.history.resolved !== null) {
+    nextSnapshot.history.resolved = {
+      ...nextSnapshot.history.resolved,
+      preset: 7,
+      from: "2026-01-27",
+      to: "2026-02-02",
+    };
+  }
+  const base = firstSnapshot.history.sessions[0];
+  assert.ok(base);
+  const selected = { ...base, sessionId: "session-on-page-two" };
+  const initialHash = `#/history/overview?cursor=${HISTORY_CURSOR_2}&session=${selected.sessionId}`;
+  const harness = createWebClient({
+    responses: [firstSnapshot, nextSnapshot],
+    historyPages: [
+      historyPage([selected], HISTORY_CURSOR_1, null),
+      historyPage([selected], HISTORY_CURSOR_1, null),
+    ],
+    hash: "#token=bootstrap-token",
+  });
+  await startAt(harness, initialHash);
+  assert.equal(harness.location.hash, initialHash);
+
+  const sevenDay = harness
+    .element("range")
+    .querySelectorAll("button")
+    .find((button) => button.dataset.days === "7");
+  assert.notEqual(sevenDay, undefined);
+  harness.click(sevenDay as StubElement);
+  await settle();
+
+  assert.equal(
+    harness.location.hash,
+    `#/history/overview?preset=7&cursor=${HISTORY_CURSOR_2}&session=${selected.sessionId}`,
+  );
+  const pageRequest = harness
+    .fetchRequests()
+    .filter(({ url }) => url.startsWith("/api/v1/reports/sessions"))
+    .at(-1);
+  assert.equal(
+    pageRequest?.url,
+    `/api/v1/reports/sessions?cursor=${HISTORY_CURSOR_2}&from=2026-01-27&to=2026-02-02`,
+  );
+});
+
 test("the authorized project name is visible text and updates from a live delta", async () => {
   const snapshot = uiSnapshot();
   snapshot.projectName = "<img src=x onerror=alert(1)>";
