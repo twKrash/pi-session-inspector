@@ -6,9 +6,9 @@
 - **Current milestone:** none active. Next authorized milestone is M2, planning-only in this run.
 - **Reference implementation commit:** `caebe204eae780775e13e09d757f3cce6d9848e3` (PR #69 design baseline).
 - **Baseline implementation commit:** `c344c8d5121034b544514211265abe3a5358e1ee` — the pre-M1 code both benchmark artifacts were measured against/on.
-- **Current branch/worktree:** `perf/live-ui-m1` at `/home/dvory/code/pi-session-inspector/.worktrees/live-ui-m1` (M1 changes are uncommitted in the working tree on top of `c344c8d`).
-- **Last completed verification:** `npm test` on the M1 working tree — exit 0; 1,271 passed, 1 skipped, 0 failed (20.5 s). `npm run typecheck` clean. `npm run benchmark:live-ui -- --mode=release` wrote `benchmark/baselines/live-ui-m1-request-local.json`.
-- **Next concrete action:** commit M1, then write the M2 implementation plan (no M2 code) — see "Next action for M2" at the end of this file.
+- **Current branch/worktree:** `perf/live-ui-m1` at `/home/dvory/code/pi-session-inspector/.worktrees/live-ui-m1`, HEAD `f9f331b` (M1) on base `c344c8d`. Unpushed, no PR opened.
+- **Last completed verification (HEAD `f9f331b`):** `npm test` — exit 0; 1,275 passed, 1 skipped, 0 failed (16.3 s); `npm run typecheck`, `npm run lint`, `npm run format:check`, `knip`, `build-web --check` all exit 0. Benchmark artifacts: `benchmark/baselines/live-ui-m0-c344c8d.json` and `live-ui-m1-request-local.json`.
+- **Next concrete action:** write the M2 plan artifact (no M2 code) — see "Next action for M2" at the end of this file.
 - **Open blockers:** none for M1. M3 stays blocked on the source-only JSONL invalidation gap (see below).
 - **Explicitly deferred:** M2 code; all cross-refresh/persistent caches; incremental aggregation; M3 session report cache; M4 incremental fold; live filesystem watchers/polling/cross-process signals; release/version metadata; unrelated HTML-size optimization.
 
@@ -28,7 +28,7 @@
 - **Tests / verification:** `npm test` on `c344c8d` — 1,269 passed, 0 failed, 1 skipped; M0 instrumentation tests added and passing.
 - **Notes:** the reported 202 reads/7.74 MB in the prior investigation are now instrumented facts, not inference. The earlier 354.4/271.3/308.4/290.6 ms figures are superseded by this artifact.
 - **Oracle/reviewer findings:** see the Oracle review section (covers M0+M1).
-- **Commit references:** artifact pinned to baseline `c344c8d`.
+- **Commit references:** artifact pinned to `c344c8d (uncommitted M0 instrumentation and multi-session corpus; no report dedup)`, which is what produced those numbers.
 
 ### M1 — Request-local deduplication
 
@@ -42,22 +42,22 @@
 - **Acceptance criteria and result:** identical canonical reports and identical serialized DTO/ETag versus the per-scope loader path (`request-local-dedup.test.ts`); one current read+parse per bundle; one history read+parse per discovered session; no cross-request state; malformed source still degrades to `session-unreadable`; a later load re-reads and sees the append.
 - **Baseline and result** (`live-ui-m1-request-local.json`, same corpus/workload/runtime, 10 samples):
 
-  | Scenario | Wall p50 M0 → M1 | Load p50 M0 → M1 |
+  | Scenario | Group wall p50 M0 → M1 | Load p50 M0 → M1 |
   |---|---:|---:|
-  | warm full load | 335.8 → 308.3 ms (−8.2%) | 299.9 → 268.7 ms |
-  | one-session append | 324.3 → 278.9 ms (−14.0%) | 288.5 → 245.0 ms |
-  | multiple-session updates | 310.5 → 277.2 ms (−10.7%) | 277.4 → 242.6 ms |
-  | three concurrent range groups | 741.7 → 672.9 ms (−9.3%) | 560.6 → 500.1 ms |
+  | warm full load | 335.8 → 303.7 ms (−9.6%) | 299.9 → 263.6 ms |
+  | one-session append | 324.3 → 242.8 ms (−25.1%) | 288.5 → 215.7 ms |
+  | multiple-session updates | 310.5 → 232.5 ms (−25.1%) | 277.4 → 205.9 ms |
+  | three concurrent range groups | 741.7 → 523.7 ms (−29.4%) | 560.6 → 395.9 ms |
 
-  - **JSONL reads 202 → 101 (−50%), parses 202 → 101 (−50%), bytes read 7,735,974 → 3,867,987 (−50%)**; history replays unchanged at 100.
-  - DTO bytes unchanged (3,524,309 / 3,524,920 / 3,525,524) — the dedup changes cost, not output.
-  - projection p50 14.1 → 16.7 ms, serialization 9.0 → 8.6 ms, diff 14.3 → 13.9 ms (within run-to-run variance; no code change on those paths).
-  - heap delta 3.38 → 3.40 MB (+0.4%, i.e. within noise) — no retained state was added.
-- **Tests / verification:** `npm test` 1,271 passed / 1 skipped / 0 failed; `npm run typecheck` clean; focused suites `load-instrumentation`, `request-local-dedup`, `history-reports`, `history-page`, `history-discovery`, `bundle` green.
+  - **JSONL reads 202 → 101 (−50%), parses 202 → 101 (−50%), bytes read 7,735,974 → 3,867,987 (−50%)**; history replays unchanged at 100. These counts are exact and variance-free.
+  - Timings move with machine state: the M1 run's *unchanged* stages also drifted (serialization 9.0 → 8.4 ms, diff 14.3 → 12.3 ms, projection 14.1 → 15.7 ms), so the wall deltas include run noise and are not all attributable to dedup. The read/parse halving is the attributable result; the wall improvement is consistent with it.
+  - DTO equivalence is proven by test (`request-local-dedup.test.ts` compares serialized bodies and ETags of the shared-parse bundle against the per-scope loader bundle), not by comparing artifacts: the warm DTO is byte-identical (3,524,309) but the append scenarios' fixture changed (append id shortened), so their byte counts shift by a few bytes without any projection change.
+  - heap delta 3.38 → 3.40 MB (+0.4%, within noise) — no retained state was added.
+- **Tests / verification:** `npm test` 1,275 passed / 1 skipped / 0 failed; `npm run typecheck` clean; focused suites `load-instrumentation`, `request-local-dedup`, `history-reports`, `history-page`, `history-discovery`, `bundle` green.
 - **Newly dominant cost:** history discovery plus read/parse of every discovered source (≈150 ms of the ≈270 ms load), and a full bundle re-load per distinct range group (three-range refresh ≈2.7× a single load).
 - **Recorded semantics change:** both current views now share one read outcome, so they are all-or-nothing (both available or both unavailable). Previously each scope read independently and a source that became unreadable between the two reads could leave one view available and the other not. The composition root already captured one session snapshot per request (`src/index.ts:1237-1239`), so this matches the request-level contract rather than narrowing it.
 - **Request-local snapshot note:** a source rewritten between the discovery read and the replay is not re-read within that same load; the report reflects the bytes that were validated microseconds earlier. This is a single-load snapshot, not a cache, and the next load re-reads. No timestamp/stat check was added because it would trade the saved read for a weaker freshness signal.
-- **Commit references:** uncommitted on `perf/live-ui-m1` (base `c344c8d`).
+- **Commit references:** `f9f331b` on `perf/live-ui-m1` (base `c344c8d`); artifact records `c344c8d (uncommitted)` because it was measured before the commit.
 - **Next action:** commit, then M2 planning.
 
 ### M2 — One canonical load per refresh pass (planned only in this run)
@@ -157,6 +157,21 @@ Findings raised and disposition:
 - *(risk, addressed)* ADR 0027 forbids "incremental report computation". M2 stays full recomputation once per pass; M4 would need an amendment before it could proceed, so M4 remains DEFERRED rather than struck.
 - *(risk, noted)* A pass holds one bundle plus up to N projected/serialized snapshots (~3.5 MB each): bounded, but M2 must assert no retained growth after the pass ends.
 
+### Reviewer review — 2026-10-30 (M0+M1 diff, `deepseek/deepseek-flash`, read-only)
+
+Verdict: safe to commit after three should-fixes; all three are applied.
+
+- *(should-fix, applied)* Reusing a parse for the History page changed ordering for marked-but-malformed sources: the observe gate gained `formatVersion === 3 && sourceReadFailure === undefined`, while the page's `latestTimestamp` deliberately ignores malformed lines, so such a row lost its `sortAt` and sorted last. Fixed by moving the gate to the consumer: the observer reports every marked parse (page ordering unchanged) and `scanDiscoveredSession` accepts a reused parse only when it passes the same identity/readability checks the fallback runs. Regression test added (`request-local-dedup.test.ts`, "keeps its place in history-page ordering"), which failed before the fix.
+- *(should-fix, applied)* Benchmark provenance was untruthful: both artifacts claimed `benchmark: live-ui-incremental-m0` and `implementationCommit: c344c8d`, so two contradictory measurements named one commit and one milestone. Added `--milestone=`, `workingTree` (`clean`/`uncommitted`) in `implementationCommit`, an honest provenance string on the M0 artifact, and regenerated the M1 artifact as `live-ui-incremental-m1`.
+- *(should-fix, applied)* The comment "a source that changed since discovery is never replayed" contradicted the new code; rewritten to describe the single-load snapshot and its window.
+- *(nit, applied)* A throwing `bytesOf` could escape `measureAsync` and fail the load; byte counting is now contained so instrumentation stays observation-only.
+- *(nit, applied)* Benchmark fixtures hardcoded `parentId: "entry-00000040"`, `recordsPerSession: 40` and an `m0-session-…` test regex; the parent id now derives from the corpus record count through the exported `entryId`, and the regex accepts any milestone prefix.
+- *(nit, accepted)* The tracker lives at `docs/plans/` because the task specification names that path as authoritative, even though `AGENTS.md` keeps plan artifacts local. Session-specific execution state stays in the handoff file, not in the tracker.
+- *(nit, accepted)* Two idioms express parse reuse (optional trailing `prevalidated` in history, a combined loader in current). Reviewer judged a rewrite not worthwhile; recorded here so the divergence is deliberate.
+- *(nit, recorded)* The History page still double-reads its ≤50 replayed rows; it parses every candidate for ordering, so retaining all parses would be unbounded. Bounded, accepted, and a candidate follow-up.
+
+Reviewer could not run the diff or tests (no shell in that agent), so the supervisor re-ran everything: `npm test` 1,275 passed / 1 skipped / 0 failed, `typecheck`, `lint`, `format:check`, `knip`, `build-web --check` all clean at `f9f331b`.
+
 ## Decision log
 
 - **2026-10-30 — M1 remains request-local.** Reuse is scoped to one `loadInspectorBundle()` execution; no module/global cache or persisted derived state. Rationale: ADR 0027 makes Pi JSONL the source authority and the invalidation signal is only an Inspector WAL flush. Reconsider only after a separate, Oracle-reviewed architecture decision establishes complete freshness/fallback behavior.
@@ -194,5 +209,13 @@ Not part of this workstream. Do not change HTML/chart/bundle budgets or redesign
 
 ## Session handoff
 
-- Handoff file not created yet.
-- On continuation, reread this tracker and verify branch/worktree/HEAD, then continue the single active milestone.
+- Pointer: `~/.pi/tmp/handoffs/01a18e70-48f2-75bc-b142-341d6129da5b/ACTIVE.md`.
+- Resume by: reading `AGENTS.md`, then this tracker, then verifying branch/HEAD (`perf/live-ui-m1` at `f9f331b`) and re-running `npm test` if the tree changed. M1 is committed locally and unpushed; do not push, merge, or open a PR without explicit authorization.
+- Nothing in this tracker is a substitute for current repository evidence; re-check the cited files before acting on M2.
+
+## Next action for M2
+
+1. Start from updated `main` (M1 is a local branch commit; it must land first), in a new worktree.
+2. Write the SDD plan for the pass seam described in M2 — three production files (`src/ui/live-channel.ts`, `src/ui/server.ts`, `src/index.ts`) plus tests, with the mid-pass subscriber exclusion and the "never store the pass source" invariant.
+3. First task inside that plan: add a channel-level measurement to `benchmark/live-ui.ts` (real passes, sequential groups, one vs three ranges) so the before/after is attributable; the current three-range number is a concurrent proxy.
+4. Do not key or retain the shared bundle, and do not touch M3/M4 without the invalidation design and an ADR 0027 amendment.
