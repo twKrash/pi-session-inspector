@@ -6,7 +6,7 @@
 - **Current milestone:** none active. Next authorized milestone is M2, planning-only in this run.
 - **Reference implementation commit:** `caebe204eae780775e13e09d757f3cce6d9848e3` (PR #69 design baseline).
 - **Baseline implementation commit:** `c344c8d5121034b544514211265abe3a5358e1ee` — the pre-M1 code both benchmark artifacts were measured against/on.
-- **Current branch/worktree:** `perf/live-ui-m1` at `/home/dvory/code/pi-session-inspector/.worktrees/live-ui-m1`, HEAD `f9f331b` (M1) on base `c344c8d`. Unpushed, no PR opened.
+- **Current branch/worktree:** `perf/live-ui-m1` at `/home/dvory/code/pi-session-inspector/.worktrees/live-ui-m1`, HEAD `b019eec` (1.6.1 release) on base `c344c8d`. Pushed; open PR https://github.com/twKrash/pi-session-inspector/pull/72 (not merged).
 - **Last completed verification (HEAD `f9f331b`):** `npm test` — exit 0; 1,275 passed, 1 skipped, 0 failed (16.3 s); `npm run typecheck`, `npm run lint`, `npm run format:check`, `knip`, `build-web --check` all exit 0. Benchmark artifacts: `benchmark/baselines/live-ui-m0-c344c8d.json` and `live-ui-m1-request-local.json`.
 - **Next concrete action:** write the M2 plan artifact (no M2 code) — see "Next action for M2" at the end of this file.
 - **Open blockers:** none for M1. M3 stays blocked on the source-only JSONL invalidation gap (see below).
