@@ -8,6 +8,8 @@ import {
   type InspectorBundleInput,
   loadInspectorBundle,
 } from "../../src/ui/bundle.ts";
+import type { ParsedSession } from "../../src/pi/adapter.ts";
+import type { LoadMetric } from "../../src/ui/load-instrumentation.ts";
 import { loadCurrentSessionReport } from "../../src/ui/load-current.ts";
 import { loadHistorySessionPage } from "../../src/ui/history-page.ts";
 import {
@@ -217,7 +219,7 @@ async function writeTrackedSession(
   );
 }
 
-test("a marked but malformed session keeps its place in history-page ordering", async () => {
+test("a marked but malformed session sorts last in history-page ordering", async () => {
   const fixture = await createFixture();
   try {
     await writeTrackedSession(
@@ -234,15 +236,82 @@ test("a marked but malformed session keeps its place in history-page ordering", 
       },
       undefined,
     );
-    // Newest first: the malformed session still sorts by its own timestamp even
-    // though its row is unavailable, exactly as before the parse was reused.
+    // Released behavior: a malformed source gets no parse, so it has no sortAt
+    // and sorts after every readable session despite its newer timestamp.
     assert.deepEqual(
       page.sessions.map((session) => [session.sessionId, session.availability]),
       [
-        ["dedup-later", "unavailable"],
         [SESSION_ID, "available"],
+        ["dedup-later", "unavailable"],
       ],
     );
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+function countReads(): { metrics: LoadMetric[]; reads: () => number } {
+  const metrics: LoadMetric[] = [];
+  return {
+    metrics,
+    reads: () =>
+      metrics.filter((metric) => metric.stage === "history-jsonl-read").length,
+  };
+}
+
+test("a valid reused parse costs one read per history source", async () => {
+  const fixture = await createFixture();
+  try {
+    const counter = countReads();
+    const report = await loadHistoryReports({
+      root: fixture.root,
+      sessionDirectory: () => fixture.sessionDirectory,
+      scope: "tree",
+      maintenance,
+      instrumentation: (metric) => counter.metrics.push(metric),
+    });
+    assert.equal(report.sessions[0]?.availability, "available");
+    assert.equal(counter.reads(), 1);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("replay reads again, and measures it, only when the parse is rejected", async () => {
+  const fixture = await createFixture();
+  try {
+    const { parseSessionJsonl } = await import("../../src/pi/adapter.ts");
+    const discovered = {
+      sessionId: SESSION_ID,
+      availability: "available" as const,
+      sourceFile: `${SESSION_ID}.jsonl`,
+    };
+    const replayWith = async (prevalidated: ParsedSession | undefined) => {
+      const counter = countReads();
+      const replay = await replayDiscoveredHistorySession(
+        {
+          root: fixture.root,
+          sessionDirectory: () => fixture.sessionDirectory,
+          maintenance,
+          instrumentation: (metric) => counter.metrics.push(metric),
+        },
+        discovered,
+        prevalidated,
+      );
+      return { replay, reads: counter.reads() };
+    };
+    const body = sessionBody(1);
+    const accepted = await replayWith(parseSessionJsonl(body));
+    assert.equal(accepted.replay.availability, "available");
+    assert.equal(accepted.reads, 0);
+
+    const unmarked = body.replace(
+      "session-inspector:tracking-start",
+      "some-other-custom-type",
+    );
+    const rejected = await replayWith(parseSessionJsonl(unmarked));
+    assert.equal(rejected.replay.availability, "available");
+    assert.equal(rejected.reads, 1);
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
   }

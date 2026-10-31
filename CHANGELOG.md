@@ -12,10 +12,9 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   fixed-seed 100-session corpus, JSONL reads and parses per refresh drop from
   202 to 101 (7.74 MB to 3.87 MB); the current session is still read once as
   itself and once as a history row. Reuse is scoped to a single load, so
-  nothing is cached across requests or refreshes.
-- History orders a marked session whose source contains a malformed line by its
-  own timestamps again, instead of sorting it last and embedding that in the
-  page cursor.
+  nothing is cached across requests or refreshes. History ordering is
+  unchanged: a marked session whose source contains a malformed line still
+  sorts after readable sessions.
 
 ## [1.6.0]
 

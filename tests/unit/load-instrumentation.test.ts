@@ -287,7 +287,8 @@ test("history report loading measures validation, replay, evidence, and aggregat
     assert.equal(counts.get("history-jsonl-parse"), 1);
     assert.equal(counts.get("history-replay"), 1);
     assert.equal(counts.get("history-evidence-provider"), 1);
-    assert.equal(counts.get("history-aggregation"), 2);
+    assert.equal(counts.get("history-aggregation"), 1);
+    assert.equal(counts.get("global-aggregation"), 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

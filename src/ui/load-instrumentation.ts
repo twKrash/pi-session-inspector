@@ -9,7 +9,8 @@ export type LoadStage =
   | "history-jsonl-parse"
   | "history-replay"
   | "history-evidence-provider"
-  | "history-aggregation";
+  | "history-aggregation"
+  | "global-aggregation";
 
 export type LoadMetric = {
   stage: LoadStage;

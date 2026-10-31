@@ -312,7 +312,7 @@ export async function loadHistorySessionReport(
   return replayDiscoveredHistorySession(
     options,
     discovered,
-    validated.get(sessionId),
+    takeParse(validated, sessionId),
   );
 }
 
@@ -364,9 +364,14 @@ function historyMarkerEvidence(
       () => parseSessionJsonl(contents),
     );
     const marked = hasTrackingStartMarker(parsed.entries);
-    // The caller decides what a parse is good for; a page uses it for ordering
-    // even when the source is malformed, while replay refuses it (below).
-    if (marked && observeParsedSession !== undefined) {
+    // Only a v3 source that reads cleanly is observed; a malformed source gets
+    // no parse, so a page orders it last and replay re-reads it to degrade.
+    if (
+      marked &&
+      observeParsedSession !== undefined &&
+      parsed.formatVersion === 3 &&
+      sourceReadFailure(parsed, sessionId) === undefined
+    ) {
       observeParsedSession(sessionId, parsed);
     }
     return marked;
@@ -409,7 +414,11 @@ async function scanHistory(options: HistoryLoadOptions): Promise<HistoryScan> {
   );
   const sessions = await Promise.all(
     discovery.sessions.map((session) =>
-      scanDiscoveredSession(options, session, validated.get(session.sessionId)),
+      scanDiscoveredSession(
+        options,
+        session,
+        takeParse(validated, session.sessionId),
+      ),
     ),
   );
   return {
@@ -423,6 +432,16 @@ async function scanHistory(options: HistoryLoadOptions): Promise<HistoryScan> {
       sessions,
     }),
   };
+}
+
+/** Hands a validated parse to its single replay and drops the map's reference. */
+function takeParse(
+  validated: Map<string, ParsedSession>,
+  sessionId: string,
+): ParsedSession | undefined {
+  const parsed = validated.get(sessionId);
+  validated.delete(sessionId);
+  return parsed;
 }
 
 /**
@@ -471,7 +490,16 @@ async function scanDiscoveredSession(
           sessionId,
           reason: "manifest-unavailable",
         };
-      parsed = parseSessionJsonl(await readFile(source, "utf8"));
+      // Same stages as discovery's read, so every source read is measured.
+      const contents = await measureAsync(
+        options.instrumentation,
+        "history-jsonl-read",
+        () => readFile(source, "utf8"),
+        (text) => Buffer.byteLength(text, "utf8"),
+      );
+      parsed = measureSync(options.instrumentation, "history-jsonl-parse", () =>
+        parseSessionJsonl(contents),
+      );
       const readFailure = sourceReadFailure(parsed, sessionId);
       if (
         readFailure !== undefined ||
@@ -679,7 +707,7 @@ export function loadHistoryAndGlobalReports(options: GlobalLoadOptions): {
       ),
     ),
     global: scan.then((result) =>
-      measureSync(options.instrumentation, "history-aggregation", () =>
+      measureSync(options.instrumentation, "global-aggregation", () =>
         globalReportFromScan(result, options),
       ),
     ),
@@ -691,7 +719,7 @@ export async function loadGlobalReport(
   options: GlobalLoadOptions,
 ): Promise<GlobalReport> {
   const scan = await scanHistory(options);
-  return measureSync(options.instrumentation, "history-aggregation", () =>
+  return measureSync(options.instrumentation, "global-aggregation", () =>
     globalReportFromScan(scan, options),
   );
 }
