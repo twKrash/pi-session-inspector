@@ -1,6 +1,6 @@
 {
   "name": "@twkrash/pi-session-inspector",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Local Pi session analytics for token usage, cost, models, tools, subagents, skills, and history",
   "type": "module",
   "license": "MIT",
@@ -64,7 +64,8 @@
     "prepack": "node scripts/build-web.mjs --check",
     "benchmark:browser": "node --import tsx benchmark/browser.ts --mode=smoke",
     "benchmark:browser:release": "node --import tsx benchmark/browser.ts --mode=release --out=benchmark/artifacts/browser-latest.json",
-    "benchmark:browser:check": "node --import tsx benchmark/browser.ts --mode=smoke --check"
+    "benchmark:browser:check": "node --import tsx benchmark/browser.ts --mode=smoke --check",
+    "benchmark:live-ui": "node --expose-gc --import tsx benchmark/live-ui.ts --mode=release"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",

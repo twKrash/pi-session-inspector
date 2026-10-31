@@ -54,6 +54,11 @@ import {
   usageFieldCoverageOf,
 } from "./dated-usage.ts";
 import type { SessionObservation } from "./observation.ts";
+import {
+  measureAsync,
+  measureSync,
+  type LoadInstrumentation,
+} from "./load-instrumentation.ts";
 import { countersFrom, resourceCountsFrom } from "./l2-projection.ts";
 
 type MaintenanceOptions = {
@@ -211,6 +216,7 @@ export type HistoryLoadOptions = {
    * that session is `unavailable`.
    */
   sessionEvidence?: SessionEvidenceProvider;
+  instrumentation?: LoadInstrumentation;
   /** Test seam only; production uses `defaultReplay`. */
   replay?: (input: HistoryReplayInput) => SessionReport;
 };
@@ -265,7 +271,10 @@ const NO_EVIDENCE: L0Evidence = { atomic: [], folded: [] };
 export async function loadHistoryReports(
   options: HistoryLoadOptions,
 ): Promise<HistoryReport> {
-  return historyReportFromScan(await scanHistory(options));
+  const scan = await scanHistory(options);
+  return measureSync(options.instrumentation, "history-aggregation", () =>
+    historyReportFromScan(scan),
+  );
 }
 
 function historyReportFromScan(scan: HistoryScan): HistoryReport {
@@ -289,13 +298,22 @@ export async function loadHistorySessionReport(
   sessionId: string,
   options: HistorySessionLoadOptions,
 ): Promise<HistoricalSession | undefined> {
+  // Request-local: the parse marker validation already produced is handed to the
+  // replay, so one requested session is read and parsed once per load.
+  const validated = new Map<string, ParsedSession>();
   const discovered = await discoverHistorySession({
     ...options,
     sessionId,
-    markerEvidence: historyMarkerEvidence(options),
+    markerEvidence: historyMarkerEvidence(options, (id, parsed) =>
+      validated.set(id, parsed),
+    ),
   });
   if (discovered === undefined) return undefined;
-  return replayDiscoveredHistorySession(options, discovered);
+  return replayDiscoveredHistorySession(
+    options,
+    discovered,
+    takeParse(validated, sessionId),
+  );
 }
 
 export type HistoryDiscoveryReadOptions = {
@@ -325,7 +343,7 @@ export function discoverHistorySessions(
 }
 
 function historyMarkerEvidence(
-  options: Pick<HistoryLoadOptions, "sessionDirectory">,
+  options: Pick<HistoryLoadOptions, "sessionDirectory" | "instrumentation">,
   observeParsedSession?: (sessionId: string, parsed: ParsedSession) => void,
 ) {
   return async (sessionId: string, sourceFile: string) => {
@@ -334,8 +352,20 @@ function historyMarkerEvidence(
       sessionDirectory: options.sessionDirectory(),
     });
     if (source === undefined) return false;
-    const parsed = parseSessionJsonl(await readFile(source, "utf8"));
+    const contents = await measureAsync(
+      options.instrumentation,
+      "history-jsonl-read",
+      () => readFile(source, "utf8"),
+      (text) => Buffer.byteLength(text, "utf8"),
+    );
+    const parsed = measureSync(
+      options.instrumentation,
+      "history-jsonl-parse",
+      () => parseSessionJsonl(contents),
+    );
     const marked = hasTrackingStartMarker(parsed.entries);
+    // Only a v3 source that reads cleanly is observed; a malformed source gets
+    // no parse, so a page orders it last and replay re-reads it to degrade.
     if (
       marked &&
       observeParsedSession !== undefined &&
@@ -352,8 +382,12 @@ function historyMarkerEvidence(
 export async function replayDiscoveredHistorySession(
   options: HistorySessionLoadOptions,
   discovered: HistorySession,
+  /** The parse this load already validated; absent means read and validate now. */
+  prevalidated?: ParsedSession,
 ): Promise<HistoricalSession> {
-  return toHistoricalSession(await scanDiscoveredSession(options, discovered));
+  return toHistoricalSession(
+    await scanDiscoveredSession(options, discovered, prevalidated),
+  );
 }
 
 async function scanHistory(options: HistoryLoadOptions): Promise<HistoryScan> {
@@ -366,10 +400,25 @@ async function scanHistory(options: HistoryLoadOptions): Promise<HistoryScan> {
       coverage: undefined,
     };
   }
-  const discovery = await discoverHistorySessions(options);
+  // Request-local: discovery's marker-validation parse is reused by the replay
+  // below, so one bundle load reads and parses each history source once.
+  const validated = new Map<string, ParsedSession>();
+  const discovery = await measureAsync(
+    options.instrumentation,
+    "history-discovery",
+    () =>
+      discoverHistorySessions(options, {
+        observeParsedSession: (sessionId, parsed) =>
+          validated.set(sessionId, parsed),
+      }),
+  );
   const sessions = await Promise.all(
     discovery.sessions.map((session) =>
-      scanDiscoveredSession(options, session),
+      scanDiscoveredSession(
+        options,
+        session,
+        takeParse(validated, session.sessionId),
+      ),
     ),
   );
   return {
@@ -385,6 +434,16 @@ async function scanHistory(options: HistoryLoadOptions): Promise<HistoryScan> {
   };
 }
 
+/** Hands a validated parse to its single replay and drops the map's reference. */
+function takeParse(
+  validated: Map<string, ParsedSession>,
+  sessionId: string,
+): ParsedSession | undefined {
+  const parsed = validated.get(sessionId);
+  validated.delete(sessionId);
+  return parsed;
+}
+
 /**
  * Replays one discovered manifest into its scan result. Discovery already named
  * why a manifest never became a session; a row without a named reason is an
@@ -394,6 +453,7 @@ async function scanHistory(options: HistoryLoadOptions): Promise<HistoryScan> {
 async function scanDiscoveredSession(
   options: HistorySessionLoadOptions,
   { sessionId, availability, sourceFile, reason }: HistorySession,
+  prevalidated?: ParsedSession,
 ): Promise<SessionScan> {
   if (availability !== "available" || sourceFile === undefined) {
     return {
@@ -403,28 +463,54 @@ async function scanDiscoveredSession(
     };
   }
   // (a)+(b) The source read phase: resolution, parse, header/id/marker.
-  // Every failure it can name is one bounded reason, and a source that
-  // changed since discovery is never replayed.
+  // Every failure it can name is one bounded reason. `prevalidated` is the parse
+  // this same load already resolved, read and validated against the marker, so
+  // replay skips only that repeated read: the report is a snapshot of the bytes
+  // validated moments earlier, never a cross-load cache, and the next load
+  // re-reads the source. Without it the full check below runs unchanged.
   let parsed: ParsedSession;
   try {
-    const source = await resolveManifestSourceFile({
-      sourceFile,
-      sessionDirectory: options.sessionDirectory(),
-    });
-    if (source === undefined)
-      return {
-        availability: "unavailable",
-        sessionId,
-        reason: "manifest-unavailable",
-      };
-    parsed = parseSessionJsonl(await readFile(source, "utf8"));
-    const readFailure = sourceReadFailure(parsed, sessionId);
-    if (readFailure !== undefined || !hasTrackingStartMarker(parsed.entries)) {
-      return {
-        availability: "unavailable",
-        sessionId,
-        reason: readFailure ?? "marker-unavailable",
-      };
+    // Replay accepts a reused parse only when it passed the same identity and
+    // readability checks the fallback below runs; otherwise it re-reads.
+    if (
+      prevalidated !== undefined &&
+      prevalidated.formatVersion === 3 &&
+      sourceReadFailure(prevalidated, sessionId) === undefined &&
+      hasTrackingStartMarker(prevalidated.entries)
+    ) {
+      parsed = prevalidated;
+    } else {
+      const source = await resolveManifestSourceFile({
+        sourceFile,
+        sessionDirectory: options.sessionDirectory(),
+      });
+      if (source === undefined)
+        return {
+          availability: "unavailable",
+          sessionId,
+          reason: "manifest-unavailable",
+        };
+      // Same stages as discovery's read, so every source read is measured.
+      const contents = await measureAsync(
+        options.instrumentation,
+        "history-jsonl-read",
+        () => readFile(source, "utf8"),
+        (text) => Buffer.byteLength(text, "utf8"),
+      );
+      parsed = measureSync(options.instrumentation, "history-jsonl-parse", () =>
+        parseSessionJsonl(contents),
+      );
+      const readFailure = sourceReadFailure(parsed, sessionId);
+      if (
+        readFailure !== undefined ||
+        !hasTrackingStartMarker(parsed.entries)
+      ) {
+        return {
+          availability: "unavailable",
+          sessionId,
+          reason: readFailure ?? "marker-unavailable",
+        };
+      }
     }
   } catch {
     return {
@@ -436,86 +522,100 @@ async function scanDiscoveredSession(
   // (c)+(d)+(e) The replay phase: evidence, canonical build, projection.
   // A failure here degrades exactly this session, never the report.
   try {
-    const directory = join(options.root, "sessions", sessionId);
-    // R51: the per-session L0 evidence is injected. A provider that
-    // throws or cannot supply this session is an unavailable session,
-    // never a report with fabricated zeros.
-    const supplied =
-      options.sessionEvidence === undefined
-        ? undefined
-        : await options.sessionEvidence({
+    return await measureAsync(
+      options.instrumentation,
+      "history-replay",
+      async () => {
+        const directory = join(options.root, "sessions", sessionId);
+        // R51: the per-session L0 evidence is injected. A provider that
+        // throws or cannot supply this session is an unavailable session,
+        // never a report with fabricated zeros.
+        const supplied =
+          options.sessionEvidence === undefined
+            ? undefined
+            : await measureAsync(
+                options.instrumentation,
+                "history-evidence-provider",
+                () =>
+                  options.sessionEvidence!({
+                    sessionId,
+                    root: options.root,
+                    directory,
+                    entries: selectScope(parsed.entries, null, "tree"),
+                  }),
+              );
+        if (options.sessionEvidence !== undefined && supplied === undefined) {
+          return {
+            availability: "unavailable",
             sessionId,
-            root: options.root,
-            directory,
-            entries: selectScope(parsed.entries, null, "tree"),
-          });
-    if (options.sessionEvidence !== undefined && supplied === undefined) {
-      return {
-        availability: "unavailable",
-        sessionId,
-        reason: "replay-failed",
-      };
-    }
-    const observation = supplied?.observation;
-    const buildInput = {
-      parsed,
-      // `tree` only: active ancestry is a live concept the builder owns
-      // elsewhere, and both callers of this replay are tree-scoped.
-      scope: "tree" as const,
-      leafId: null,
-      evidence: supplied?.evidence ?? NO_EVIDENCE,
-      ...(supplied?.walRecords === undefined
-        ? {}
-        : { walRecords: supplied.walRecords }),
-      ...(supplied?.liveOverflow === undefined
-        ? {}
-        : { liveOverflow: supplied.liveOverflow }),
-      ...(observation?.inventory === undefined
-        ? {}
-        : { inventory: observation.inventory }),
-    };
-    // The builder is the single scope authority (R49) and the single
-    // health/availability authority for the session.
-    const resolved = buildCanonicalSession(buildInput);
-    if (resolved.state !== "ready")
-      return {
-        availability: "unavailable",
-        sessionId,
-        reason: "replay-failed",
-      };
-    // R49: the entry set is the builder's resolution in order, mapped
-    // back to parsed entries; an id without a parsed entry (an
-    // unknown-semantic node) is skipped instead of fabricating a node.
-    const entries = selectResolvedEntries(
-      parsed.entries,
-      resolved.session.scopedEntryIds,
+            reason: "replay-failed",
+          };
+        }
+        const observation = supplied?.observation;
+        const buildInput = {
+          parsed,
+          // `tree` only: active ancestry is a live concept the builder owns
+          // elsewhere, and both callers of this replay are tree-scoped.
+          scope: "tree" as const,
+          leafId: null,
+          evidence: supplied?.evidence ?? NO_EVIDENCE,
+          ...(supplied?.walRecords === undefined
+            ? {}
+            : { walRecords: supplied.walRecords }),
+          ...(supplied?.liveOverflow === undefined
+            ? {}
+            : { liveOverflow: supplied.liveOverflow }),
+          ...(observation?.inventory === undefined
+            ? {}
+            : { inventory: observation.inventory }),
+        };
+        // The builder is the single scope authority (R49) and the single
+        // health/availability authority for the session.
+        const resolved = buildCanonicalSession(buildInput);
+        if (resolved.state !== "ready")
+          return {
+            availability: "unavailable",
+            sessionId,
+            reason: "replay-failed",
+          };
+        // R49: the entry set is the builder's resolution in order, mapped
+        // back to parsed entries; an id without a parsed entry (an
+        // unknown-semantic node) is skipped instead of fabricating a node.
+        const entries = selectResolvedEntries(
+          parsed.entries,
+          resolved.session.scopedEntryIds,
+        );
+        // Subagent runs are auto-discovered from persisted tool results;
+        // their usage is a breakdown of this session's toolResult usage.
+        // Published archive presence is validated, bounded, and never a path.
+        const subagentEvidence =
+          supplied?.subagents ?? readSubagentEvidence(entries, sessionId);
+        // Task 15 discipline: attach the same cooperative evidence the DTO
+        // publishes without replaying native entries or integration adapters.
+        const session = attachSubagentEvidence(
+          resolved.session,
+          subagentEvidence,
+        );
+        // R47: `expired` keeps its existing meaning — some prune seal exists.
+        const sealed = Object.values(
+          session.retainedAggregates.boundary.sealedThrough,
+        ).some((cursor) => cursor > 0);
+        return {
+          availability: "available",
+          sessionId,
+          // R19: the one dated projection of the canonical session reaches
+          // the DTO here; nothing downstream re-walks report timestamps.
+          ...datedFields(session),
+          report: (options.replay ?? defaultReplay)({
+            session,
+            entries,
+            observation,
+            subagentEvidence,
+            sealed,
+          }),
+        };
+      },
     );
-    // Subagent runs are auto-discovered from persisted tool results;
-    // their usage is a breakdown of this session's toolResult usage.
-    // Published archive presence is validated, bounded, and never a path.
-    const subagentEvidence =
-      supplied?.subagents ?? readSubagentEvidence(entries, sessionId);
-    // Task 15 discipline: attach the same cooperative evidence the DTO
-    // publishes without replaying native entries or integration adapters.
-    const session = attachSubagentEvidence(resolved.session, subagentEvidence);
-    // R47: `expired` keeps its existing meaning — some prune seal exists.
-    const sealed = Object.values(
-      session.retainedAggregates.boundary.sealedThrough,
-    ).some((cursor) => cursor > 0);
-    return {
-      availability: "available",
-      sessionId,
-      // R19: the one dated projection of the canonical session reaches
-      // the DTO here; nothing downstream re-walks report timestamps.
-      ...datedFields(session),
-      report: (options.replay ?? defaultReplay)({
-        session,
-        entries,
-        observation,
-        subagentEvidence,
-        sealed,
-      }),
-    };
   } catch {
     // (c)+(e) A provider or report projection that threw is this one
     // session's replay failure, never a guessed report.
@@ -601,8 +701,16 @@ export function loadHistoryAndGlobalReports(options: GlobalLoadOptions): {
 } {
   const scan = scanHistory(options);
   return {
-    history: scan.then(historyReportFromScan),
-    global: scan.then((result) => globalReportFromScan(result, options)),
+    history: scan.then((result) =>
+      measureSync(options.instrumentation, "history-aggregation", () =>
+        historyReportFromScan(result),
+      ),
+    ),
+    global: scan.then((result) =>
+      measureSync(options.instrumentation, "global-aggregation", () =>
+        globalReportFromScan(result, options),
+      ),
+    ),
   };
 }
 
@@ -610,7 +718,10 @@ export function loadHistoryAndGlobalReports(options: GlobalLoadOptions): {
 export async function loadGlobalReport(
   options: GlobalLoadOptions,
 ): Promise<GlobalReport> {
-  return globalReportFromScan(await scanHistory(options), options);
+  const scan = await scanHistory(options);
+  return measureSync(options.instrumentation, "global-aggregation", () =>
+    globalReportFromScan(scan, options),
+  );
 }
 
 function globalReportFromScan(

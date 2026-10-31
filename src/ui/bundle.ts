@@ -6,7 +6,11 @@ import type { SessionReport } from "../core/reports.ts";
 import type { CurrentTuiModel } from "./current.ts";
 import { buildDailyRows, type DailyRow } from "./daily.ts";
 import type { DatedModelRow, DateUsageRow } from "./dated-usage.ts";
-import { loadCurrentSessionReport } from "./load-current.ts";
+import {
+  loadCurrentSessionReport,
+  loadCurrentSessionReports,
+  type LoadCurrentSessionReportOptions,
+} from "./load-current.ts";
 import {
   loadGlobalReport,
   loadHistoryAndGlobalReports,
@@ -16,6 +20,7 @@ import {
   type SessionEvidenceProvider,
 } from "./load-history.ts";
 import type { SessionObservation } from "./observation.ts";
+import type { LoadInstrumentation } from "./load-instrumentation.ts";
 
 // The one daily-row shape every surface charts (spec §5.4).
 export type { DailyRow } from "./daily.ts";
@@ -145,6 +150,8 @@ export type InspectorBundleInput = {
    * caller that injects its own loaders may omit it.
    */
   historyEvidence?: SessionEvidenceProvider;
+  /** Optional numeric-only load measurements; never contains session data. */
+  instrumentation?: LoadInstrumentation;
   current?: { sessionFile?: string; leafId: string | null };
   loadCurrent?: CurrentSessionLoader;
   loadHistory?: HistoryLoader;
@@ -176,11 +183,16 @@ export async function loadInspectorBundle(
     input.loadGlobal ?? loadHistoryGlobal?.global ?? defaultGlobalLoader(input);
 
   // Both views are always attempted; initialScope never changes what is
-  // precomputed, only which view the renderer displays first.
-  const [active, tree] = await Promise.all([
-    loadCurrentView(loadCurrent, "active"),
-    loadCurrentView(loadCurrent, "tree"),
-  ]);
+  // precomputed, only which view the renderer displays first. The default path
+  // reads and parses the current source once and builds each scope from it; an
+  // injected loader keeps its own per-scope call contract.
+  const [active, tree] =
+    input.loadCurrent === undefined && input.current?.sessionFile !== undefined
+      ? await currentViewsFromOneSource(input)
+      : await Promise.all([
+          loadCurrentView(loadCurrent, "active"),
+          loadCurrentView(loadCurrent, "tree"),
+        ]);
   const [history, global] = await Promise.all([
     historySection(loadHistory),
     globalSection(loadGlobal),
@@ -217,6 +229,11 @@ export async function loadCurrentView(
   } catch {
     return noCurrentView();
   }
+  return currentViewFromModel(model);
+}
+
+/** One already-loaded model as its view; the loader call already happened. */
+function currentViewFromModel(model: CurrentTuiModel | undefined): CurrentView {
   if (model === undefined) {
     return noCurrentView();
   }
@@ -325,21 +342,52 @@ async function globalSection(loadGlobal: GlobalLoader): Promise<GlobalReport> {
   }
 }
 
+function currentReportOptions(
+  input: InspectorBundleInput,
+): LoadCurrentSessionReportOptions {
+  const { observation, currentEvidence } = input;
+  return {
+    leafId: input.current?.leafId ?? null,
+    ...(observation === undefined ? {} : { observation }),
+    ...(currentEvidence === undefined ? {} : currentEvidence),
+    ...(input.subagentEvidence === undefined
+      ? {}
+      : { subagentEvidence: input.subagentEvidence }),
+    ...(input.instrumentation === undefined
+      ? {}
+      : { instrumentation: input.instrumentation }),
+  };
+}
+
 function defaultCurrentLoader(
   input: InspectorBundleInput,
 ): CurrentSessionLoader {
   const sessionFile = input.current?.sessionFile;
-  const leafId = input.current?.leafId ?? null;
-  const { observation, currentEvidence } = input;
-  return (scope) =>
-    loadCurrentSessionReport(sessionFile, scope, {
-      leafId,
-      ...(observation === undefined ? {} : { observation }),
-      ...(currentEvidence === undefined ? {} : currentEvidence),
-      ...(input.subagentEvidence === undefined
-        ? {}
-        : { subagentEvidence: input.subagentEvidence }),
-    });
+  const options = currentReportOptions(input);
+  return (scope) => loadCurrentSessionReport(sessionFile, scope, options);
+}
+
+/**
+ * Both default current views from one source read. The parse is shared; each
+ * scope still runs its own canonical build, so scope, availability and evidence
+ * stay independent per view.
+ */
+async function currentViewsFromOneSource(
+  input: InspectorBundleInput,
+): Promise<[CurrentView, CurrentView]> {
+  let models: Awaited<ReturnType<typeof loadCurrentSessionReports>>;
+  try {
+    models = await loadCurrentSessionReports(
+      input.current?.sessionFile,
+      currentReportOptions(input),
+    );
+  } catch {
+    return [noCurrentView(), noCurrentView()];
+  }
+  return [
+    currentViewFromModel(models.active),
+    currentViewFromModel(models.tree),
+  ];
 }
 
 function defaultHistoryGlobalLoaders(input: InspectorBundleInput): {
@@ -356,6 +404,9 @@ function defaultHistoryGlobalLoaders(input: InspectorBundleInput): {
       ...(input.historyEvidence === undefined
         ? {}
         : { sessionEvidence: input.historyEvidence }),
+      ...(input.instrumentation === undefined
+        ? {}
+        : { instrumentation: input.instrumentation }),
     }));
   return {
     history: () => get().history,
@@ -373,6 +424,9 @@ function defaultHistoryLoader(input: InspectorBundleInput): HistoryLoader {
       ...(input.historyEvidence === undefined
         ? {}
         : { sessionEvidence: input.historyEvidence }),
+      ...(input.instrumentation === undefined
+        ? {}
+        : { instrumentation: input.instrumentation }),
     });
 }
 
@@ -386,5 +440,8 @@ function defaultGlobalLoader(input: InspectorBundleInput): GlobalLoader {
       ...(input.historyEvidence === undefined
         ? {}
         : { sessionEvidence: input.historyEvidence }),
+      ...(input.instrumentation === undefined
+        ? {}
+        : { instrumentation: input.instrumentation }),
     });
 }
