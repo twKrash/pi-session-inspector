@@ -7,7 +7,6 @@ import {
   type CanonicalSession,
   type RetainedWalRecord,
 } from "../core/canonical.ts";
-import type { L0Evidence } from "../core/evidence.ts";
 import {
   type Scope,
   type SessionEntry,
@@ -16,12 +15,13 @@ import {
   type UsageFieldCoverageMap,
   usageFieldCoverage,
 } from "../core/events.ts";
+import type { L0Evidence } from "../core/evidence.ts";
 import { addUsage } from "../core/reduce.ts";
 import {
   mergeUsageEconomics,
   projectUsageEconomics,
-  toSessionReport,
   type SessionReport,
+  toSessionReport,
   type UsageEconomics,
 } from "../core/reports.ts";
 import {
@@ -29,37 +29,37 @@ import {
   type SessionCoverage,
 } from "../core/session-coverage.ts";
 import { readSubagentEvidence } from "../integrations/subagents.ts";
-import { parseSessionJsonl, type ParsedSession } from "../pi/adapter.ts";
+import { type ParsedSession, parseSessionJsonl } from "../pi/adapter.ts";
 import {
   hasTrackingStartMarker,
   selectResolvedEntries,
   selectScope,
 } from "../pi/sessions.ts";
 import {
+  type CoverageReason,
   discoverHistory,
   discoverHistorySession,
-  resolveManifestSourceFile,
-  type CoverageReason,
   type HistoryDiagnostic,
   type HistoryDiscoveryResult,
   type HistorySession,
+  resolveManifestSourceFile,
 } from "../storage/history.ts";
 import {
   attachUsageFieldCoverage,
-  mergeUsageFieldCoverage,
-  sessionDatedUsage,
   type DatedModelRow,
   type DateUsageRow,
+  mergeUsageFieldCoverage,
+  sessionDatedUsage,
   type UsageCoverageCarrier,
   usageFieldCoverageOf,
 } from "./dated-usage.ts";
-import type { SessionObservation } from "./observation.ts";
+import { countersFrom, resourceCountsFrom } from "./l2-projection.ts";
 import {
+  type LoadInstrumentation,
   measureAsync,
   measureSync,
-  type LoadInstrumentation,
 } from "./load-instrumentation.ts";
-import { countersFrom, resourceCountsFrom } from "./l2-projection.ts";
+import type { SessionObservation } from "./observation.ts";
 
 type MaintenanceOptions = {
   writerId: string;
@@ -530,21 +530,22 @@ async function scanDiscoveredSession(
         // R51: the per-session L0 evidence is injected. A provider that
         // throws or cannot supply this session is an unavailable session,
         // never a report with fabricated zeros.
+        const sessionEvidence = options.sessionEvidence;
         const supplied =
-          options.sessionEvidence === undefined
+          sessionEvidence === undefined
             ? undefined
             : await measureAsync(
                 options.instrumentation,
                 "history-evidence-provider",
                 () =>
-                  options.sessionEvidence!({
+                  sessionEvidence({
                     sessionId,
                     root: options.root,
                     directory,
                     entries: selectScope(parsed.entries, null, "tree"),
                   }),
               );
-        if (options.sessionEvidence !== undefined && supplied === undefined) {
+        if (sessionEvidence !== undefined && supplied === undefined) {
           return {
             availability: "unavailable",
             sessionId,

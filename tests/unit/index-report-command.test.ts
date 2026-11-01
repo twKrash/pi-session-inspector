@@ -14,16 +14,16 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import registerSessionInspector, { registerTracking } from "../../src/index.ts";
+import { readInventory } from "../../src/integrations/inventory.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { selectScope } from "../../src/pi/sessions.ts";
-import { readInventory } from "../../src/integrations/inventory.ts";
 import { ENGLISH_CATALOG } from "../../src/ui/i18n/catalog.ts";
 import {
   generatedReportPath,
@@ -1421,11 +1421,10 @@ test("history preserves exact async launch/completion aliases from production ev
       "wait-call-a",
       "wait-result-a",
     ]);
-    const fixture =
-      fixtureRows
-        .filter((entry) => retainedIds.has(entry.id ?? ""))
-        .map((entry) => JSON.stringify(entry))
-        .join("\n") + "\n";
+    const fixture = `${fixtureRows
+      .filter((entry) => retainedIds.has(entry.id ?? ""))
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`;
     const sessionId = "persisted-async-visibility";
     await writeFile(harness.sessionFile, fixture);
     harness.replaceSession({
@@ -1516,10 +1515,10 @@ test("keeps one async public id from launch-only current report through completi
       .split("\n")
       .map((line) => JSON.parse(line) as { id?: string });
     const slice = (ids: ReadonlySet<string>) =>
-      fixtureRows
+      `${fixtureRows
         .filter((entry) => ids.has(entry.id ?? ""))
         .map((entry) => JSON.stringify(entry))
-        .join("\n") + "\n";
+        .join("\n")}\n`;
     const sessionId = "persisted-async-visibility";
     const launchOnlyIds = new Set([
       "persisted-async-visibility",

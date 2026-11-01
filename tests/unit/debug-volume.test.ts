@@ -7,8 +7,8 @@ import { test } from "node:test";
 import { buildCanonicalSession } from "../../src/core/canonical.ts";
 import type { LiveTimingObservation } from "../../src/core/evidence.ts";
 import { canonicalOpaqueDigest } from "../../src/core/opaque-id.ts";
-import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { configureDebugLog, resetDebugLog } from "../../src/debug/log.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import { recoverSession } from "../../src/storage/recovery.ts";
 
 /**
@@ -230,9 +230,9 @@ function buildCorrelated(
 ) {
   return buildCanonicalSession({
     parsed: parseSessionJsonl(
-      [{ ...HEADER, id: sessionId }, MARKER, ...generations(toolCalls)]
+      `${[{ ...HEADER, id: sessionId }, MARKER, ...generations(toolCalls)]
         .map((record) => JSON.stringify(record))
-        .join("\n") + "\n",
+        .join("\n")}\n`,
     ),
     scope: "tree",
     leafId: null,

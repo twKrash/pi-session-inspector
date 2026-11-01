@@ -6,13 +6,13 @@ import {
   usageFieldCoverage,
 } from "../core/events.ts";
 import type { LedgerItem } from "../core/ledger.ts";
-import { roundCost } from "../core/rounding.ts";
 import {
   markUsageEconomicsPartial,
   mergeUsageEconomics,
   projectUsageEconomics,
   type UsageEconomics,
 } from "../core/reports.ts";
+import { roundCost } from "../core/rounding.ts";
 import {
   CAPABILITIES,
   type CurrentView,
@@ -21,49 +21,49 @@ import {
 import { buildDailyRows, type DailyRow } from "./daily.ts";
 import {
   attachUsageFieldCoverage,
+  type DatedModelRow,
   mergeUsageFieldCoverage,
   OPTIONAL_USAGE_FIELDS,
-  type DatedModelRow,
   type OptionalUsageFields,
   type UsageCoverageCarrier,
   usageFieldCoverageOf,
 } from "./dated-usage.ts";
+import type { HistorySessionPage } from "./history-page.ts";
 import type {
   GlobalReport,
   HistoricalSession,
   HistoryReport,
 } from "./load-history.ts";
-import type { HistorySessionPage } from "./history-page.ts";
 import {
   filterView,
   historyRowRange,
   isInRange,
-  resolveRange,
   type RangeIntent,
   type RangeState,
+  resolveRange,
 } from "./range.ts";
 import {
+  type AgentRow,
   aggregateUsageLabels,
+  type CompositionView,
+  type CoverageProjection,
   compareHistoryEntries,
   coverageProjection,
+  type ErrorRow,
+  type EvidenceRow,
   globalEvidenceRows,
   historyEvidenceRows,
+  type ModelRow,
   modelRangeRows,
+  type SessionReportView,
+  type StatusView,
   safeUsage,
   sessionEvidenceRows,
   sessionView,
-  toolCalls,
-  toolSummary,
-  type AgentRow,
-  type CompositionView,
-  type CoverageProjection,
-  type ErrorRow,
-  type EvidenceRow,
-  type ModelRow,
-  type SessionReportView,
-  type StatusView,
   type ToolRow,
   type ToolSummaryRow,
+  toolCalls,
+  toolSummary,
   type UsageLabels,
 } from "./report-projection.ts";
 
@@ -638,7 +638,13 @@ export function projectHistorySessionPage(
     kind: "history-sessions",
     schemaVersion: 1,
     availability: page.availability,
-    sessions: page.sessions.map((session) => rows.get(session.sessionId)!),
+    sessions: page.sessions.map((session) => {
+      const row = rows.get(session.sessionId);
+      if (row === undefined) {
+        throw new Error("history page projection omitted a session row");
+      }
+      return row;
+    }),
     diagnostics: page.diagnostics,
     previousCursor: page.previousCursor,
     nextCursor: page.nextCursor,

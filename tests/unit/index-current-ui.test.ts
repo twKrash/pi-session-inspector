@@ -72,7 +72,7 @@ test("overflow usage remains unavailable through the snapshot and JSON productio
   const max = Number.MAX_SAFE_INTEGER;
   await writeFile(
     sessionFile,
-    [
+    `${[
       JSON.stringify({
         type: "session",
         version: 3,
@@ -111,7 +111,7 @@ test("overflow usage remains unavailable through the snapshot and JSON productio
           usage: { totalTokens: max, cost: { total: 0.02 } },
         },
       }),
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
   try {
     const model = await loadCurrentSessionReport(sessionFile, "tree", {
@@ -149,7 +149,7 @@ test("current loader maps a duplicated tree id to its first parsed entry", async
   const sessionFile = join(directory, "duplicate-session.jsonl");
   await writeFile(
     sessionFile,
-    [
+    `${[
       JSON.stringify({
         type: "session",
         version: 3,
@@ -188,7 +188,7 @@ test("current loader maps a duplicated tree id to its first parsed entry", async
           usage: { totalTokens: 99, cost: { total: 0.99 } },
         },
       }),
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
   try {
     const model = await loadCurrentSessionReport(sessionFile, "tree", {

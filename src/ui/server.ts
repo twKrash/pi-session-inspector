@@ -400,7 +400,7 @@ function parseHistoryPageQuery(
   }
   const rangeQuery = ["from", "to"]
     .filter((key) => params.has(key))
-    .map((key) => `${key}=${encodeURIComponent(params.get(key)!)}`)
+    .map((key) => `${key}=${encodeURIComponent(params.get(key) ?? "")}`)
     .join("&");
   const range = parseRangeQuery(rangeQuery);
   if (!range.ok) return { ok: false };

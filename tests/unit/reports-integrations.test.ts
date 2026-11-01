@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { ReducedSession, SessionEntry } from "../../src/core/events.ts";
-import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import {
   buildEvidenceHealth,
   MAX_EVIDENCE_COUNT,
@@ -13,6 +12,7 @@ import {
   toSessionReport,
 } from "../../src/core/reports.ts";
 import type { CanonicalRetainedAggregates } from "../../src/core/retained-aggregates.ts";
+import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import { isAllowedIntegrationCounter } from "../../src/integrations/catalog.ts";
 import { integrations } from "../../src/integrations/index.ts";
 import { readPersistedEvidence } from "../../src/integrations/persisted.ts";
@@ -1422,7 +1422,7 @@ test("keeps a __proto__ writer id in the boundary with its aggregate", () => {
   // plain-object cursor map silently loses it, which would drop the writer
   // from the boundary while keeping the aggregate: exactly what the
   // projection forbids. Computed keys keep it an own property on the way in.
-  const boundaryCursor = { ["__proto__"]: 4 };
+  const boundaryCursor = Object.fromEntries([["__proto__", 4]]);
   const report = toSessionReport(parent, {
     retainedAggregates: {
       schemaVersion: 1,
@@ -1447,7 +1447,7 @@ test("keeps a __proto__ writer id in the boundary with its aggregate", () => {
     | undefined;
   assert.ok(folded);
   assert.equal(Object.hasOwn(folded, "__proto__"), true);
-  assert.equal(folded["__proto__"], 4);
+  assert.equal(Object.getOwnPropertyDescriptor(folded, "__proto__")?.value, 4);
   assert.equal(
     Object.hasOwn(
       report.retainedAggregates?.boundary.sealedThrough ?? {},
