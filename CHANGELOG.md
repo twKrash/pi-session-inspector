@@ -2,6 +2,20 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1]
+
+### Changed
+
+- History sources are read and parsed once per load instead of twice: the parse
+  marker validation already produced is handed to replay, and one
+  current-session parse feeds the independent active and tree builds. On the
+  fixed-seed 100-session corpus, JSONL reads and parses per refresh drop from
+  202 to 101 (7.74 MB to 3.87 MB); the current session is still read once as
+  itself and once as a history row. Reuse is scoped to a single load, so
+  nothing is cached across requests or refreshes. History ordering is
+  unchanged: a marked session whose source contains a malformed line still
+  sorts after readable sessions.
+
 ## [1.6.0]
 
 ### Added

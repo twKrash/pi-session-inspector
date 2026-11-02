@@ -222,7 +222,7 @@ test("retires a slow subscriber before its outbound DTO queue exceeds the byte b
       ...originalBufferedAmount,
       get: () => 3 * 1024 * 1024,
     });
-    payload = "y" + payload.slice(1);
+    payload = `y${payload.slice(1)}`;
     invalidate();
     await waitFor(
       () => ws.readyState === WebSocket.CLOSED,
@@ -559,7 +559,7 @@ test("refresh reconciles a late cross-range subscriber captured before its range
   const { server, address, origin } = await listen();
   const rangeALoad = deferred<InspectorUiSnapshot>();
   let announceRangeA!: () => void;
-  const rangeAStarted = new Promise<void>((resolve) => {
+  const _rangeAStarted = new Promise<void>((resolve) => {
     announceRangeA = resolve;
   });
   const counts = new Map<number, number>();

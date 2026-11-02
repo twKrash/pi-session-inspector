@@ -32,7 +32,8 @@ function pick<T>(random: () => number, values: readonly T[]): T {
   return values[Math.floor(random() * values.length)] as T;
 }
 
-function entryId(index: number): string {
+/** The one Pi entry-id form the corpus and its append fixtures share. */
+export function entryId(index: number): string {
   return `entry-${String(index).padStart(8, "0")}`;
 }
 
@@ -41,18 +42,20 @@ function timestamp(index: number): string {
 }
 
 /** Builds one deterministic Pi session body of approximately `targetBytes`. */
-export function buildSessionLines({
+function buildSessionLines({
   records,
   targetBytes,
   seed = CORPUS_SEED,
+  sessionId = "corpus-session",
 }: {
   records?: number;
   targetBytes?: number;
   seed?: number;
+  sessionId?: string;
 }): string[] {
   const random = createRandom(seed);
   const lines: string[] = [
-    JSON.stringify({ type: "session", version: 3, id: "corpus-session" }),
+    JSON.stringify({ type: "session", version: 3, id: sessionId }),
     JSON.stringify({
       type: "custom",
       id: entryId(0),
@@ -127,11 +130,15 @@ export async function writeSessionCorpus({
   name,
   records,
   targetBytes,
+  seed,
+  sessionId,
 }: {
   directory: string;
   name: string;
   records?: number;
   targetBytes?: number;
+  seed?: number;
+  sessionId?: string;
 }): Promise<{
   path: string;
   bytes: number;
@@ -139,7 +146,7 @@ export async function writeSessionCorpus({
   generations: number;
 }> {
   await mkdir(directory, { recursive: true });
-  const lines = buildSessionLines({ records, targetBytes });
+  const lines = buildSessionLines({ records, targetBytes, seed, sessionId });
   const body = `${lines.join("\n")}\n`;
   const path = join(directory, `${name}.jsonl`);
   await writeFile(path, body, { encoding: "utf8" });
@@ -196,4 +203,74 @@ export async function writeCheckpointCorpus({
     directories.push(sessionDirectory);
   }
   return directories;
+}
+
+export type LiveUiCorpusSession = {
+  sessionId: string;
+  path: string;
+  records: number;
+  bytes: number;
+};
+
+/** Writes a deterministic manifest-backed corpus for real multi-session UI loads. */
+export async function writeLiveUiCorpus({
+  directory,
+  sessions = 100,
+  records = 40,
+  seed = CORPUS_SEED,
+}: {
+  directory: string;
+  sessions?: number;
+  records?: number;
+  seed?: number;
+}): Promise<{
+  root: string;
+  sessionDirectory: string;
+  sessions: LiveUiCorpusSession[];
+  records: number;
+  bytes: number;
+}> {
+  const root = join(directory, "inspector");
+  const sessionDirectory = join(directory, "pi-sessions");
+  await mkdir(sessionDirectory, { recursive: true });
+  const corpusSessions: LiveUiCorpusSession[] = [];
+  for (let index = 0; index < sessions; index += 1) {
+    const sessionId = `m0-session-${String(index + 1).padStart(3, "0")}`;
+    const lines = buildSessionLines({
+      records,
+      seed: seed + index,
+      sessionId,
+    });
+    const body = `${lines.join("\n")}\n`;
+    const path = join(sessionDirectory, `${sessionId}.jsonl`);
+    await writeFile(path, body, { encoding: "utf8" });
+    const manifestDirectory = join(root, "sessions", sessionId);
+    await mkdir(manifestDirectory, { recursive: true });
+    await writeFile(
+      join(manifestDirectory, "meta.json"),
+      `${JSON.stringify({
+        schemaVersion: 2,
+        sessionId,
+        sourceFile: `${sessionId}.jsonl`,
+        state: "tracking",
+      })}\n`,
+      { encoding: "utf8" },
+    );
+    corpusSessions.push({
+      sessionId,
+      path,
+      records: lines.length - 2,
+      bytes: Buffer.byteLength(body, "utf8"),
+    });
+  }
+  return {
+    root,
+    sessionDirectory,
+    sessions: corpusSessions,
+    records: corpusSessions.reduce(
+      (total, session) => total + session.records,
+      0,
+    ),
+    bytes: corpusSessions.reduce((total, session) => total + session.bytes, 0),
+  };
 }

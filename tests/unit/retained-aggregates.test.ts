@@ -57,8 +57,8 @@ test("a __proto__ writer id survives the canonical boundary", () => {
     sessionId: "s1",
     checkpoint: {
       aggregates: { presence: { permission: true } },
-      cursors: { wal: { ["__proto__"]: 3 } },
-      sealedWal: { ["__proto__"]: 3 },
+      cursors: { wal: Object.fromEntries([["__proto__", 3]]) },
+      sealedWal: Object.fromEntries([["__proto__", 3]]),
       evidence: { checkpointedAt: "2026-09-12T10:00:00.000Z" },
     },
     retained: { skillNames: [], counters: {}, permissionPresence: false },
@@ -68,12 +68,24 @@ test("a __proto__ writer id survives the canonical boundary", () => {
     Object.hasOwn(aggregates.boundary.foldedThrough, "__proto__"),
     true,
   );
-  assert.equal(aggregates.boundary.foldedThrough["__proto__"], 3);
+  assert.equal(
+    Object.getOwnPropertyDescriptor(
+      aggregates.boundary.foldedThrough,
+      "__proto__",
+    )?.value,
+    3,
+  );
   assert.equal(
     Object.hasOwn(aggregates.boundary.sealedThrough, "__proto__"),
     true,
   );
-  assert.equal(aggregates.boundary.sealedThrough["__proto__"], 3);
+  assert.equal(
+    Object.getOwnPropertyDescriptor(
+      aggregates.boundary.sealedThrough,
+      "__proto__",
+    )?.value,
+    3,
+  );
   assert.equal(aggregates.boundary.detail, "aggregate-only");
 });
 

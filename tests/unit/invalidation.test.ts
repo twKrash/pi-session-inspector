@@ -6,8 +6,8 @@ test("listeners receive only the runtime and session IDs", () => {
   const signal = new SessionInvalidationSignal();
   const event = { runtimeId: "runtime-1", sessionId: "session-1" };
   let received: unknown;
-  signal.subscribe(function () {
-    received = arguments[0];
+  signal.subscribe((event) => {
+    received = event;
   });
 
   signal.notify(event);

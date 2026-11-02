@@ -32,7 +32,7 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.6.0`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.6.1`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
 > semantic integration, native token economics/cache accounting, and subagent
 > AgentRun observability are available: current async runs can use bounded
@@ -44,9 +44,9 @@ session, the session history, or the global aggregate.
 > The localhost UI paints the configured theme before report data arrives and
 > announces loading once. One UI response shares its History and Global scan; repeated in-flight
 > range requests are coalesced, while explicit Refresh remains fresh. Request
-> failures stay in bounded HTTP responses, not Pi stderr. **1.6.0 highlight:**
-> live localhost views receive authenticated, same-process WebSocket DTO deltas
-> after successful WAL flushes; immutable snapshots remain unchanged.
+> failures stay in bounded HTTP responses, not Pi stderr. **1.6.1 highlight:**
+> history sources are read and parsed once per load instead of twice, halving
+> JSONL reads per refresh without adding a cross-request cache.
 
 ## Install
 
@@ -63,7 +63,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.6.0
+pi install npm:@twkrash/pi-session-inspector@1.6.1
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the
