@@ -2,6 +2,13 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2]
+
+### Fixed
+
+- History pages accept bounded manifest diagnostics, so an unavailable manifest
+  no longer hides an otherwise valid page behind the generic load error.
+
 ## [1.6.1]
 
 ### Changed

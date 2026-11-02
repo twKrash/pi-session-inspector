@@ -3850,6 +3850,15 @@
   const isRecord = (value) => isNode(value) && !Array.isArray(value);
   const isRecordArray = (value) =>
     Array.isArray(value) && value.every((item) => isRecord(item));
+  const HISTORY_DIAGNOSTICS = new Set([
+    "history-limit-reached",
+    "history-unavailable",
+    "manifest-unavailable",
+    "marker-unavailable",
+  ]);
+  const isHistoryDiagnosticArray = (value) =>
+    Array.isArray(value) &&
+    value.every((diagnostic) => HISTORY_DIAGNOSTICS.has(diagnostic));
   const isAvailability = (value) =>
     value === "available" || value === "unavailable";
   const isDate = (value) =>
@@ -4023,7 +4032,7 @@
     Array.isArray(value.sessions) &&
     value.sessions.length <= 50 &&
     value.sessions.every(isHistorySession) &&
-    isRecordArray(value.diagnostics) &&
+    isHistoryDiagnosticArray(value.diagnostics) &&
     (value.previousCursor === null || routeCursor(value.previousCursor)) &&
     (value.nextCursor === null || routeCursor(value.nextCursor));
   const renderableSnapshot = (candidate) =>

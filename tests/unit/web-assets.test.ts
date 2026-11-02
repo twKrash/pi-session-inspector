@@ -4157,6 +4157,27 @@ test("History pages are authenticated, range-bound, route-backed, and reversible
   assert.equal(pageRequests().length, 3);
 });
 
+test("History page accepts bounded manifest diagnostics", async () => {
+  const snapshot = uiSnapshot();
+  const row = snapshot.history.sessions[0];
+  assert.ok(row);
+  const page = historyPage([row], null, null);
+  page.diagnostics = ["manifest-unavailable"];
+  const harness = createWebClient({
+    responses: [snapshot],
+    historyPages: [page],
+    hash: "#token=bootstrap-token",
+  });
+  await startAt(harness, "#/history/overview");
+
+  assert.equal(harness.element("loading").hidden, true);
+  assert.equal(harness.element("error").hidden, true);
+  assert.equal(
+    harness.texts(harness.element("view")).join(" ").includes(row.sessionId),
+    true,
+  );
+});
+
 test("History page failures end loading and a later page request recovers", async () => {
   const initial = uiSnapshot();
   const row = initial.history.sessions[0];
