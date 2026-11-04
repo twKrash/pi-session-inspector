@@ -47,6 +47,10 @@ session, the session history, or the global aggregate.
 > failures stay in bounded HTTP responses, not Pi stderr. **1.6.3 highlight:**
 > Live WebSocket refresh passes share one range-independent bundle across
 > captured range groups while preserving separate projections and ETags.
+> The UI and snapshots get accessible control borders, distinct warning, error
+> and chart colors, no horizontal overflow from wide tables, and History and
+> Global no longer repeat the fixed-scope note or describe a set of sessions
+> as one session.
 
 ## Install
 

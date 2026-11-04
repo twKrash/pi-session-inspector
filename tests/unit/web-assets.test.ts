@@ -1933,7 +1933,10 @@ test("the resolved theme is in the first paint, before any payload arrives", asy
   const darkStarted = darkHarness.start();
   assert.equal(darkHarness.body().className.includes("theme-dark"), true);
   assert.equal(darkHarness.element("theme").textContent, "Light theme");
-  assert.equal(darkHarness.element("theme").attributes["aria-pressed"], "true");
+  assert.equal(
+    darkHarness.element("theme").attributes["aria-pressed"],
+    undefined,
+  );
   darkHarness.releaseFetch();
   await darkStarted;
   assert.equal(darkHarness.body().className.includes("theme-dark"), true);
@@ -1950,7 +1953,7 @@ test("the resolved theme is in the first paint, before any payload arrives", asy
   assert.equal(lightHarness.element("theme").textContent, "Dark theme");
   assert.equal(
     lightHarness.element("theme").attributes["aria-pressed"],
-    "false",
+    undefined,
   );
   assert.deepEqual(lightHarness.storageWrites(), []);
   lightHarness.click(lightHarness.element("theme"));
@@ -1958,7 +1961,7 @@ test("the resolved theme is in the first paint, before any payload arrives", asy
   assert.equal(lightHarness.element("theme").textContent, "Light theme");
   assert.equal(
     lightHarness.element("theme").attributes["aria-pressed"],
-    "true",
+    undefined,
   );
   assert.deepEqual(lightHarness.storageWrites(), []);
 });
@@ -2608,14 +2611,40 @@ test("the theme control toggles the DTO's theme in memory only", async () => {
   const theme = harness.element("theme");
   // The DTO's own theme is the initial one (dark for this fixture).
   assert.equal(harness.body().className.includes("theme-dark"), true);
-  assert.equal(theme.attributes["aria-pressed"], "true");
   assert.equal(theme.textContent, "Light theme");
   harness.click(theme);
   assert.equal(harness.body().className.includes("theme-dark"), false);
-  assert.equal(theme.attributes["aria-pressed"], "false");
   assert.equal(theme.textContent, "Dark theme");
   harness.click(theme);
   assert.equal(harness.body().className.includes("theme-dark"), true);
+  // The label names the action, so the control is a plain button: a pressed
+  // state beside a label that already flips would contradict it.
+  assert.equal(theme.attributes["aria-pressed"], undefined);
+});
+
+test("History and Global state the fixed scope once and describe sessions, not one session", async () => {
+  const snapshot = uiSnapshot();
+  for (const section of ["history", "global"] as const) {
+    const harness = createWebClient({
+      responses: [snapshot],
+      hash: `#/${section}/overview`,
+    });
+    await harness.start();
+    await settle();
+    const fixed = harness.element("scope-fixed");
+    const sub = harness.element("scope-sub");
+    assert.equal(fixed.hidden, false, section);
+    assert.equal(sub.hidden, true, section);
+    assert.equal(sub.textContent, "", section);
+    assert.equal(harness.element("scope-note").textContent, "", section);
+    const coverage = snapshot[section].coverage;
+    assert.notEqual(coverage, null, section);
+    assert.equal(
+      harness.element("session-label").textContent,
+      coverage?.line,
+      section,
+    );
+  }
 });
 
 test("the history table carries an opaque id column with a copy control", async () => {

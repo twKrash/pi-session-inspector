@@ -10,6 +10,27 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   independently for each captured range, avoiding repeated report loads for
   multi-range subscribers without caching across passes.
 
+### Fixed
+
+- History and Global state "History & Global use full tree." once instead of
+  twice, and their context line shows the session coverage line instead of a
+  bare count beside "All tracked branches in this session".
+- Wide tables no longer stretch the report wider than the window: report
+  sections may shrink, so tables scroll inside their card. Large static
+  snapshots were the most visible case.
+- Input, select and button borders now meet the 3:1 non-text contrast minimum
+  in both themes.
+- Dark-theme secondary text is dimmer, so it reads as secondary next to
+  primary text again.
+- The theme switch is a plain action button: it no longer carries
+  `aria-pressed` beside a label that already names the action, and no longer
+  looks permanently pressed in the dark theme.
+- The accent top border marks only the report's lead metric, not the first
+  card of every metric group (Environment, Agents).
+- Warning badges and the custom-range error use their own warning and danger
+  colors instead of the accent tint. The chart's default Cost and Tokens lines
+  use clearly different hues: Tokens is blue, and Generations takes the gold.
+
 ## [1.6.2]
 
 ### Fixed

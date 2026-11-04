@@ -3403,12 +3403,15 @@
       : resolved.from + " → " + resolved.to;
   };
 
-  /** The control names the theme it would switch to, never the one in effect. */
+  /**
+   * The control names the theme it would switch to, never the one in effect.
+   * It is an action button, not a toggle: a label that changes with the state
+   * must not also carry `aria-pressed`, and the pressed styling read as "on".
+   */
   const syncThemeControl = (dark) => {
     const button = q("theme");
     if (button === null) return;
     button.textContent = dark ? COPY["theme.light"] : COPY["theme.dark"];
-    button.setAttribute("aria-pressed", String(dark));
   };
 
   /** Puts the DTO's own initial theme in effect, once, on the first payload. */
@@ -3503,9 +3506,11 @@
     if (note !== null) {
       // The scope switch is inert when both views carry the same report data, so
       // the DTO's own equality statement is what says so, instead of the switch
-      // appearing to do nothing.
+      // appearing to do nothing. Outside Current, `scope-fixed` alone explains
+      // the fixed scope, so this note stays hidden rather than repeating it.
       const same =
         snapshot !== null && snapshot.current.sameReportProjection === true;
+      note.hidden = view.activeSection !== "current";
       note.textContent =
         view.activeSection === "current"
           ? same
@@ -3515,7 +3520,7 @@
                   ? "scope.active.note"
                   : "scope.tree.note"
               ]
-          : COPY["scope.fixed"];
+          : "";
     }
   };
 
@@ -3605,20 +3610,22 @@
             : target.report.sessionId;
       } else if (entry !== null) {
         label.textContent = entry.sessionId;
-      } else if (section === "global") {
-        label.textContent =
-          snapshot === null
-            ? COPY["evidence.unavailable"]
-            : number(snapshot.global.trackedSessions);
       } else {
+        // History and Global both describe a set of sessions, so both name it by
+        // the same coverage line rather than a bare count beside a session slot.
+        const coverage =
+          snapshot === null
+            ? null
+            : section === "global"
+              ? snapshot.global.coverage
+              : snapshot.history.coverage;
         label.textContent =
-          snapshot.history.coverage === null
-            ? COPY["coverage.title"]
-            : snapshot.history.coverage.line;
+          coverage === null ? COPY["coverage.title"] : coverage.line;
       }
     }
     const scopeNote = q("scope-note");
     if (scopeNote !== null) {
+      // "In this session" only holds when one session is in view.
       scopeNote.textContent =
         section === "current"
           ? COPY[state.scope === "active" ? "scope.active" : "scope.tree"] +
@@ -3626,7 +3633,9 @@
             COPY[
               state.scope === "active" ? "scope.active.note" : "scope.tree.note"
             ]
-          : COPY["scope.tree.note"];
+          : entry !== null
+            ? COPY["scope.tree.note"]
+            : "";
     }
     const expired = q("wal-detail");
     const target = targetView();
@@ -4643,8 +4652,7 @@
     if (theme !== null) {
       theme.addEventListener("click", () => {
         const dark = document.body.classList.toggle("theme-dark");
-        theme.textContent = dark ? COPY["theme.light"] : COPY["theme.dark"];
-        theme.setAttribute("aria-pressed", String(dark));
+        syncThemeControl(dark);
         // The canvas cannot read the stylesheet's custom properties: recolor the
         // live chart from the palette of the theme now in effect.
         const chartModule = web.chart;
