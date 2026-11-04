@@ -30,6 +30,31 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 - Warning badges and the custom-range error use their own warning and danger
   colors instead of the accent tint. The chart's default Cost and Tokens lines
   use clearly different hues: Tokens is blue, and Generations takes the gold.
+- Live updates no longer loop on "Reconnecting live updates…" for large
+  projects. A revision bigger than the 4 MiB live-message budget (a 16.7 MB
+  report was observed) used to terminate the socket on every send; the server
+  now sends a small `resync` and the page reads that revision over HTTP, then
+  resubscribes at its ETag (ADR 0027).
+- Coverage reasons read in plain words ("no Inspector record 1 · session file
+  unavailable 146") instead of raw codes; `json` output keeps the codes. A
+  capped History/Global set also states how many sessions were unavailable.
+- Timestamps show local time as `YYYY-MM-DD HH:MM:SS` (the browser's zone in
+  the live UI, the generating machine's in a snapshot) with the persisted ISO
+  instant in the `<time>` element and its tooltip; headers say "(local)".
+- A column that is Unavailable in every row (two or more rows) folds into one
+  footnote that still says so, in the live UI and in snapshots.
+- A table whose filter or search hides every row says why and how to see them,
+  instead of showing bare headers (Skills with "Invoked only").
+- The ledger and the tool-calls timeline start collapsed past 100 rows. The
+  live UI builds their rows only when opened (a focused entity or a search
+  opens them); snapshots use a native `<details>`, so every row stays in the
+  file.
+- Confidence badges use one casing and tone rule on both surfaces; a known
+  source reads plain, as in the snapshot.
+- Tighter table cells, wrapping column headers and bounded message columns;
+  Copy ID appears on row hover or focus instead of on every row; the page
+  heading no longer shows a focus ring after navigation; the scope and date
+  panel is more compact on phones.
 
 ## [1.6.2]
 

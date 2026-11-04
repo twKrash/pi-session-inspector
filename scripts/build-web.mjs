@@ -21,7 +21,11 @@ const resolveDir = fileURLToPath(new URL("../", import.meta.url));
 // The shared boundaries are installed before the client runs, so the browser
 // resolves copy, cost and execution topology through the same modules the
 // TypeScript renderers use, rather than through a second implementation.
-const prelude = `import { formatCost } from "./src/ui/format.ts";
+const prelude = `import {
+  confidenceTone,
+  formatCost,
+  formatLocalTimestamp,
+} from "./src/ui/format.ts";
 import { createTranslator } from "./src/ui/i18n.ts";
 import {
   buildAgentForest,
@@ -31,7 +35,11 @@ import {
 import { applyChartTheme, chartTheme, createDailyChart } from "./scripts/web/chart.ts";
 const web = (globalThis.SessionInspectorWeb = globalThis.SessionInspectorWeb || {});
 web.i18n = { t: createTranslator("en") };
-web.format = { cost: formatCost };
+web.format = {
+  confidenceTone,
+  cost: formatCost,
+  localTimestamp: formatLocalTimestamp,
+};
 web.agentTree = {
   build: buildAgentForest,
   filter: filterAgentForest,

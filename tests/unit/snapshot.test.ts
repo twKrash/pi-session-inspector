@@ -512,7 +512,12 @@ test("renders a history snapshot with coverage, daily and session rows", () => {
   assert.equal(html.includes(CATALOG["heading.history"]), true);
   assert.equal(html.includes(CATALOG["coverage.title"]), true);
   assert.equal(html.includes("2 / 3 sessions · 1 unavailable"), true);
-  assert.equal(html.includes("marker-unavailable: 1"), true);
+  // The bounded reason reads in plain words; the code stays in `json`.
+  assert.equal(
+    html.includes("Why sessions are unavailable: tracking marker unreadable 1"),
+    true,
+  );
+  assert.equal(html.includes("marker-unavailable"), false);
   // The aggregate's own resolved range and its in-range daily row.
   assert.equal(html.includes("2026-03-10"), true);
   assert.equal(html.includes("2026-02-25 → 2026-03-10"), true);
@@ -821,8 +826,14 @@ test("escapes hostile values for their exact text and attribute context", () => 
   // A visible cell and a visible attribute decode back to the hostile value.
   const cell = /<td class="status-cell">([^<]*)<\/td>/.exec(html)?.[1];
   assert.equal(decodeHtml(cell ?? ""), hostile);
-  const stamp = /<time datetime="([^"]*)">/.exec(html)?.[1];
-  assert.equal(decodeHtml(stamp ?? ""), hostile);
+  // Every <time> carries the persisted value in `datetime`; an unparseable one
+  // is also its visible text, unguessed.
+  const stamps = [...html.matchAll(/<time datetime="([^"]*)"[^>]*>([^<]*)</g)];
+  const hostileStamp = stamps.find(
+    (match) => decodeHtml(match[1] ?? "") === hostile,
+  );
+  assert.notEqual(hostileStamp, undefined);
+  assert.equal(decodeHtml(hostileStamp?.[2] ?? ""), hostile);
 });
 
 test("escapes a hostile history row and exposes no DTO JSON", () => {
@@ -1115,6 +1126,9 @@ test("prints a grouped duration with its coverage, and Unavailable without one",
             durationLabel: "4.0 s",
             averageLabel: "2.0 s",
             lastUsed: READ_AT,
+            // One published source keeps the Source column (it folds only when
+            // every row reads Unavailable).
+            source: "builtin",
             partial: false,
             durationPartial: false,
           },
@@ -2092,4 +2106,77 @@ test("separates the Tools summary from its calls timeline", () => {
     ),
     true,
   );
+});
+
+test("a column that is Unavailable in every row folds into one footnote", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const range = base.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const error = {
+    id: "tool:call_1",
+    timestamp: "2026-03-10T10:00:00.000Z",
+    kind: "tool-error",
+    confidence: "native",
+    message: "failed",
+    toolName: null,
+    toolSource: null,
+    toolStatus: null,
+    relatedChildIds: [] as string[],
+  };
+  const render = (errors: (typeof error)[]): string => {
+    const html = renderSnapshot({
+      ...base,
+      projection: { ...base.projection, range: { ...range, errors } },
+    });
+    return html.slice(html.indexOf(`<h2>${CATALOG["tab.errors"]}</h2>`));
+  };
+
+  const folded = render([error, { ...error, id: "tool:call_2" }]);
+  assert.equal(
+    folded.includes(`>${CATALOG["errors.relatedChildren"]}</th>`),
+    false,
+  );
+  assert.equal(
+    folded.includes(
+      `<div class="footnote">${escapeSnapshotText(CATALOG["errors.relatedChildren"])}: Unavailable for every row</div>`,
+    ),
+    true,
+  );
+  // One published value keeps the column, and its Unavailable cells stay.
+  const kept = render([error, { ...error, relatedChildIds: ["child-1"] }]);
+  assert.equal(
+    kept.includes(`>${CATALOG["errors.relatedChildren"]}</th>`),
+    true,
+  );
+  assert.equal(kept.includes("Unavailable for every row"), false);
+});
+
+test("a ledger past 100 rows starts collapsed in a native details, every row kept", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const range = base.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const item = range.ledger[0];
+  if (item === undefined)
+    throw new Error("the fixture must carry a ledger row");
+  const render = (rows: number): string => {
+    const ledger = Array.from({ length: rows }, (_, index) => ({
+      ...item,
+      id: `ledger-row-${index}`,
+    }));
+    const html = renderSnapshot({
+      ...base,
+      projection: { ...base.projection, range: { ...range, ledger } },
+    });
+    return html.slice(html.indexOf(`<h2>${CATALOG["tab.ledger"]}</h2>`));
+  };
+
+  const long = render(101);
+  assert.equal(
+    long.includes(`<details class="rows"><summary>Show all 101 rows</summary>`),
+    true,
+  );
+  assert.equal(long.includes("ledger-row-100"), true);
+  assert.equal(render(100).includes('<details class="rows">'), false);
 });

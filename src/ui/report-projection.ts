@@ -6,7 +6,10 @@ import {
   type UsageEconomics,
 } from "../core/reports.ts";
 import { roundCost } from "../core/rounding.ts";
-import type { SessionCoverage } from "../core/session-coverage.ts";
+import type {
+  CoverageReason,
+  SessionCoverage,
+} from "../core/session-coverage.ts";
 import type { DateUsageRow, DatedModelRow } from "./dated-usage.ts";
 import type { GlobalReport, HistoryReport } from "./load-history.ts";
 import { createTranslator } from "./i18n.ts";
@@ -274,10 +277,19 @@ export type CoverageProjection = {
   sessionRatio: number | null;
   complete: boolean;
   discoveryLimited: boolean;
-  /** Pre-joined bounded reason tokens, `reason: count` in enumeration order. */
+  /** Pre-joined bounded reason labels, `label count` in enumeration order. */
   reasons: string;
   /** Pre-rendered session line; the catalog key comes from the one ladder. */
   line: string;
+};
+
+/** Plain-language label per bounded reason code; the code itself stays in `json`. */
+const COVERAGE_REASON_LABELS: Readonly<Record<CoverageReason, MessageKey>> = {
+  "no-manifest": "coverage.reason.no-manifest",
+  "manifest-unavailable": "coverage.reason.manifest-unavailable",
+  "marker-unavailable": "coverage.reason.marker-unavailable",
+  "session-unreadable": "coverage.reason.session-unreadable",
+  "replay-failed": "coverage.reason.replay-failed",
 };
 
 /**
@@ -295,8 +307,9 @@ export function coverageProjection(
   const key = aggregateUsageLabels({ availability, coverage }).sessions;
   return {
     ...coverage,
-    reasons: Object.entries(coverage.reasons)
-      .map(([reason, count]) => `${reason}: ${count}`)
+    // SAFETY: the record is keyed by CoverageReason; Object.entries widens keys to string.
+    reasons: (Object.entries(coverage.reasons) as [CoverageReason, number][])
+      .map(([reason, count]) => `${t(COVERAGE_REASON_LABELS[reason])} ${count}`)
       .join(" · "),
     line: t(key as MessageKey, {
       available: coverage.available,

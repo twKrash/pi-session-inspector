@@ -565,10 +565,20 @@ function sendMessage(
   state: SocketState,
   message: Record<string, unknown>,
 ): void {
-  const payload = JSON.stringify(message);
+  let payload = JSON.stringify(message);
   if (payload === undefined) {
     state.ws.close(1011, "unavailable");
     return;
+  }
+  // A message larger than the whole budget is not a slow consumer: a large
+  // project's DTO can exceed it on every send, and terminating then makes the
+  // client reconnect into the same message forever. Name the revision instead
+  // and let the client read it over HTTP, which has no frame budget.
+  if (Buffer.byteLength(payload) > MAX_OUTBOUND_BUFFER_BYTES) {
+    payload = JSON.stringify({
+      type: "resync",
+      ...(typeof message.etag === "string" ? { etag: message.etag } : {}),
+    });
   }
   if (
     state.ws.bufferedAmount + Buffer.byteLength(payload) >

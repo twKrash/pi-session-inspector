@@ -12,3 +12,8 @@
 .tab-section{display:grid;gap:16px;margin-top:22px;border-top:1px solid var(--line);padding-top:16px}.tab-section>.section-title{font:11px var(--mono);text-transform:uppercase;letter-spacing:1.4px;color:var(--muted);font-weight:600}@media(max-width:760px){.tab-section{gap:12px;margin-top:18px;padding-top:14px}}
 .metric-picker{display:flex;gap:6px;flex-wrap:wrap}.metric-picker button{font-size:12px;min-height:32px;padding:4px 10px}
 html{scroll-behavior:smooth}.view-stack,.snapshot-stack{display:grid;gap:20px}.view-stack>*,.snapshot-stack>*{min-width:0}.view-stack>.section-gap,.view-stack>.tab-section,.snapshot-stack>.section-gap,.snapshot-stack>.tab-section{margin-top:0}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+th,td{padding:10px 14px}th:first-child,td:first-child{padding-left:22px}th:last-child,td:last-child{padding-right:22px}th.status-cell,th.num{white-space:normal}td.wrap{min-width:14ch;max-width:52ch;overflow-wrap:anywhere}.table-empty{padding:16px 22px;color:var(--muted);font-size:13px}
+h1[tabindex="-1"]:focus,main[tabindex="-1"]:focus{outline:none}
+@media(hover:hover){.id-cell{position:relative}.id-cell .copy-id{position:absolute;top:6px;right:6px;min-height:0;padding:2px 8px;font-size:11px;opacity:0}tr:hover .id-cell .copy-id,.id-cell .copy-id:focus-visible{opacity:1}}
+@media(max-width:760px){.data-scope{padding:12px 14px;gap:10px;margin-bottom:16px}.data-scope .time-range{padding-top:10px;gap:8px}.scope-group{gap:6px}.scope-group button,.data-scope .time-range button{min-height:40px;padding:6px 12px}}
+.disclose-bar{padding:4px 22px 20px}details.rows>summary{padding:4px 22px 20px;cursor:pointer;color:var(--accent);font-weight:500}details.rows[open]>summary{padding-bottom:12px}

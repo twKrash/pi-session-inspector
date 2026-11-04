@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { createTranslator } from "../../src/ui/i18n.ts";
+import { ENGLISH_CATALOG as CATALOG } from "../../src/ui/i18n/catalog.ts";
 import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
   type InspectorUiSnapshot,
@@ -442,7 +443,18 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
   assert.equal(typeof namespace.start, "function");
   // The cost rule is the shared one, not a second implementation.
   const format = namespace.format as Record<string, unknown>;
-  assert.deepEqual(Object.keys(format).sort(), ["cost"]);
+  assert.deepEqual(Object.keys(format).sort(), [
+    "confidenceTone",
+    "cost",
+    "localTimestamp",
+  ]);
+  assert.equal(
+    (format.localTimestamp as (iso: string, zone: string) => string)(
+      "2026-10-30T20:03:35.831Z",
+      "UTC",
+    ),
+    "2026-10-30 20:03:35",
+  );
   assert.equal(typeof format.cost, "function");
   assert.equal((format.cost as (value: number) => string)(0.0049), "$0.0049");
   assert.equal((format.cost as (value: number) => string)(0), "$0.00");
@@ -5964,4 +5976,121 @@ test("the Tools tab separates its summary from the calls timeline", async () => 
   harness.click(control(harness, "view", "clearFilter", "true"));
   assert.equal(harness.texts(view).join(" ").includes("Filtered by"), false);
   assert.equal(harness.location.hash, "#/current/tools?scope=tree&preset=7");
+});
+
+test("a column Unavailable in every row folds into one footnote, and a hidden table says why", async () => {
+  const snapshot = uiSnapshot();
+  const view = snapshot.current.tree;
+  const range = view.range;
+  const report = view.report;
+  if (range === undefined || report === undefined) {
+    throw new Error("fixture must carry a tree range and report");
+  }
+  const error = range.errors[0];
+  if (error === undefined) throw new Error("fixture must carry an error row");
+  range.errors = [
+    { ...error, id: "tool:call_1", relatedChildIds: [] },
+    { ...error, id: "tool:call_2", relatedChildIds: [] },
+  ];
+  const errors = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/errors?scope=tree",
+  });
+  await errors.start();
+  const headers = errors
+    .element("view")
+    .querySelectorAll("th")
+    .map((th) => th.textContent);
+  assert.equal(headers.includes(CATALOG["errors.relatedChildren"]), false);
+  assert.equal(
+    viewText(errors).includes(
+      `${CATALOG["errors.relatedChildren"]}: Unavailable for every row`,
+    ),
+    true,
+  );
+
+  // Skills nothing invoked: the default filter hides every row, and the table
+  // says so instead of showing bare headers.
+  const skill = report.skills.items[0];
+  if (skill === undefined) throw new Error("fixture must carry a skill row");
+  report.skills = {
+    ...report.skills,
+    items: [
+      { ...skill, name: "alpha", explicitInvocations: 0 },
+      { ...skill, name: "beta", explicitInvocations: 0 },
+    ],
+  };
+  const skills = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/skills?scope=tree",
+  });
+  await skills.start();
+  assert.equal(
+    viewText(skills).includes(
+      `“${CATALOG["filter.invokedOnly"]}” hides all 2 rows. Turn it off to see them.`,
+    ),
+    true,
+  );
+});
+
+test("a ledger past 100 rows builds no rows until opened, and keeps focus on its control", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const item = range.ledger[0];
+  if (item === undefined) throw new Error("fixture must carry a ledger row");
+  range.ledger = Array.from({ length: 101 }, (_, index) => ({
+    ...item,
+    id: `ledger-row-${index}`,
+  }));
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/ledger?scope=tree",
+  });
+  await harness.start();
+  const view = harness.element("view");
+  const control = (): StubElement | undefined =>
+    view
+      .querySelectorAll("button")
+      .find((button) => button.dataset.disclose === "ledgerOpen");
+  assert.equal(view.querySelectorAll("tbody").length, 0);
+  assert.equal(control()?.textContent, "Show all 101 rows");
+  assert.equal(control()?.attributes["aria-expanded"], "false");
+
+  const show = control() as StubElement;
+  show.focus();
+  harness.click(show);
+  // 101 body rows plus the header row.
+  assert.equal(view.querySelectorAll("tr").length, 102);
+  assert.equal(control()?.textContent, CATALOG["table.hideRows"]);
+  assert.equal(control()?.attributes["aria-expanded"], "true");
+  assert.equal(harness.activeElement()?.dataset.disclose, "ledgerOpen");
+
+  harness.click(control() as StubElement);
+  assert.equal(view.querySelectorAll("tbody").length, 0);
+});
+
+test("a live resync reads the new revision over HTTP and resubscribes at its ETag", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot(), uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.receiveSocket({ type: "resync", etag: ETAG_2 });
+  assert.equal(
+    harness.fetchRequests().filter(({ url }) => url === "/api/v1/ui").length,
+    2,
+  );
+  await settle();
+  // The old channel is retired and a new one subscribes at the fresh ETag,
+  // so a too-large revision never becomes a reconnect loop.
+  assert.equal(harness.socketCount(), 2);
+  harness.openSocket(1);
+  assert.equal(
+    JSON.parse(harness.socketMessages().at(-1) ?? "null").etag,
+    ETAG_2,
+  );
 });

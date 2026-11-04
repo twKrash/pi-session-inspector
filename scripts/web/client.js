@@ -42,7 +42,12 @@
    * rows it was handed. Both are the same code the snapshot renderer runs.
    */
   const format = web.format;
-  if (format === undefined || typeof format.cost !== "function") {
+  if (
+    format === undefined ||
+    typeof format.cost !== "function" ||
+    typeof format.confidenceTone !== "function" ||
+    typeof format.localTimestamp !== "function"
+  ) {
     throw new Error("browser format module must initialize first");
   }
   const executions = web.agentTree;
@@ -98,8 +103,9 @@
     const point = chartPoint(value);
     return point === null ? COPY["evidence.unavailable"] : render(point);
   };
+  // An explicit "" tone reads plain (a known source), exactly as the snapshot.
   const badge = (label, tone) =>
-    el("span", "badge " + (tone || "neutral"), label);
+    el("span", tone === "" ? "badge" : "badge " + (tone || "neutral"), label);
   const assign = (base, extra) => {
     const result = {};
     Object.keys(base).forEach((key) => {
@@ -815,7 +821,48 @@
     return button;
   };
 
-  const simpleTable = (section, headers, rows, classes) => {
+  /**
+   * Columns whose every row reads Unavailable (two rows or more). They fold into
+   * one footnote that still says Unavailable, so the statement survives without
+   * a column of repeated non-values. `basis` is the full row set, so search and
+   * filters never change which columns exist.
+   */
+  const unavailableColumns = (headers, basis) => {
+    if (basis.length < 2) return [];
+    const unavailable = COPY["evidence.unavailable"];
+    return headers
+      .map((_, index) => index)
+      .filter((index) =>
+        basis.every((row) => {
+          const cells = row.cells === undefined ? row : row.cells;
+          return (
+            cells.length === headers.length &&
+            cellText(cells[index]).trim() === unavailable
+          );
+        }),
+      );
+  };
+
+  /**
+   * `options.basis` is the full row set the column folding reads (defaults to
+   * `rows`); `options.emptyNote` explains a table whose rows are all hidden.
+   */
+  const simpleTable = (section, headers, rows, classes, options = {}) => {
+    const folded = unavailableColumns(headers, options.basis || rows);
+    let foldedNote = null;
+    if (folded.length > 0) {
+      const keep = (_, index) => folded.indexOf(index) < 0;
+      const allHeaders = headers;
+      headers = headers.filter(keep);
+      classes = classes === undefined ? undefined : classes.filter(keep);
+      rows = rows.map((row) => {
+        const cells = (row.cells === undefined ? row : row.cells).filter(keep);
+        return row.cells === undefined ? cells : { ...row, cells };
+      });
+      foldedNote = tr("table.allUnavailable", {
+        columns: folded.map((index) => allHeaders[index]).join(", "),
+      });
+    }
     const wrap = el("div", "table-wrap");
     const table = document.createElement("table");
     const head = document.createElement("thead");
@@ -853,6 +900,10 @@
     table.append(head, body);
     wrap.append(table);
     section.append(wrap);
+    if (rows.length === 0 && options.emptyNote !== undefined) {
+      section.append(el("p", "table-empty", options.emptyNote));
+    }
+    if (foldedNote !== null) section.append(el("div", "footnote", foldedNote));
     return section;
   };
 
@@ -946,13 +997,76 @@
         );
     }
     if (order === "reverse") shown = shown.slice().reverse();
-    return simpleTable(section, headers, shown, classes);
+    let emptyNote;
+    if (shown.length === 0 && rows.length > 0) {
+      // Rows exist but this view hides them all: say why and how to get them back.
+      emptyNote =
+        query.length > 0
+          ? tr("table.noMatch", { query: activeQuery() })
+          : tr("table.filteredAll", {
+              filter: COPY[filter.labelKey],
+              hidden: number(rows.length),
+            });
+    }
+    return simpleTable(section, headers, shown, classes, {
+      basis: rows,
+      emptyNote,
+    });
   };
 
   const badgeCell = (label, tone) => {
     const span = el("span");
     span.append(badge(label, tone));
     return span;
+  };
+  /** One confidence badge: the catalog label and the tone rule the snapshot uses. */
+  const confidenceCell = (confidence) =>
+    badgeCell(
+      COPY["evidence." + confidence],
+      format.confidenceTone(confidence),
+    );
+  /**
+   * Long row-per-event tables (the ledger, the calls timeline) start collapsed:
+   * their rows are built only once the reader asks. A route that focuses an
+   * entity or carries a search opens them, so a deep link never lands on a
+   * hidden row. The choice is this view's own browser state, never a route.
+   */
+  const COLLAPSE_ROWS = 100;
+  const collapsedFor = (name, count) =>
+    count > COLLAPSE_ROWS &&
+    activeSettings()[name] !== true &&
+    state.entity === undefined &&
+    activeQuery() === "";
+  const discloseControl = (name, expanded, count) => {
+    const button = el(
+      "button",
+      "disclose",
+      expanded
+        ? COPY["table.hideRows"]
+        : tr("table.showRows", { count: number(count) }),
+    );
+    button.dataset.disclose = name;
+    button.setAttribute("aria-expanded", String(expanded));
+    return button;
+  };
+  /** The Hide control exists only when the reader opened the table themselves. */
+  const hideControl = (name, count) =>
+    count > COLLAPSE_ROWS && activeSettings()[name] === true
+      ? discloseControl(name, true, count)
+      : undefined;
+  const collapsedCard = (title, note, name, count) => {
+    const section = card(title, note);
+    const bar = el("div", "disclose-bar");
+    bar.append(discloseControl(name, false, count));
+    section.append(bar);
+    return section;
+  };
+  /** Local time where the page is viewed; the persisted instant stays in `datetime`. */
+  const timeCell = (iso) => {
+    const node = el("time", "", format.localTimestamp(text(iso)));
+    node.setAttribute("datetime", text(iso));
+    node.title = text(iso);
+    return node;
   };
   const agentStatusCell = (run) => {
     const span = el("span");
@@ -1046,11 +1160,7 @@
         COPY["table.confidence"],
       ],
       rows.map((row) => ({
-        cells: [
-          row.source,
-          row.observation,
-          badgeCell(row.confidence, "neutral"),
-        ],
+        cells: [row.source, row.observation, confidenceCell(row.confidence)],
       })),
       ["status-cell", "wrap", "status-cell"],
     );
@@ -1074,7 +1184,7 @@
         tr("metric.usage." + part.key),
         number(part.totalTokens),
         money(part.cost),
-        badgeCell(COPY["evidence.native"], ""),
+        confidenceCell("native"),
       ],
     }));
     if (composition.total !== undefined) {
@@ -1083,7 +1193,7 @@
           COPY["usage.total"],
           number(composition.total.totalTokens),
           money(composition.total.cost),
-          badgeCell(COPY["evidence.native"], ""),
+          confidenceCell("native"),
         ],
       });
     }
@@ -1096,7 +1206,7 @@
           composition.reconciles
             ? COPY["usage.reconciled"]
             : COPY["usage.unreconciled"],
-          composition.reconciles ? "neutral" : "warn",
+          composition.reconciles ? "" : "warn",
         ),
       );
     return simpleTable(
@@ -1687,7 +1797,7 @@
           toolUsageCell(money(row.cost), "metric.knownCost", row),
           toolDurationCell(row.durationLabel, row),
           toolAverageCell(row.averageLabel, row),
-          row.lastUsed,
+          timeCell(row.lastUsed),
           orUnavailable(row.source),
         ],
       })),
@@ -1711,42 +1821,53 @@
     const callsCard =
       calls.length === 0
         ? emptyCard(COPY["tools.calls"], COPY["chart.empty"])
-        : simpleTable(
-            card(COPY["tools.calls"], COPY["tools.note"]),
-            [
-              COPY["table.timestamp"],
-              COPY["table.tool"],
-              COPY["table.source"],
-              COPY["table.status"],
-              COPY["table.tokens"],
-              COPY["table.cost"],
-            ],
-            calls.map((row) => ({
-              cells: [
-                row.timestamp,
-                entityLink("tool", row.name, row.name, "mono"),
-                orUnavailable(row.source),
-                badgeCell(
-                  COPY["tools." + row.status],
-                  row.status === "succeeded" ? "" : "warn",
-                ),
-                row.usage === null
-                  ? COPY["evidence.unavailable"]
-                  : number(row.usage.totalTokens),
-                row.usage === null
-                  ? COPY["evidence.unavailable"]
-                  : money(row.usage.cost),
+        : collapsedFor("callsOpen", calls.length)
+          ? collapsedCard(
+              COPY["tools.calls"],
+              COPY["tools.note"],
+              "callsOpen",
+              calls.length,
+            )
+          : simpleTable(
+              card(
+                COPY["tools.calls"],
+                COPY["tools.note"],
+                hideControl("callsOpen", calls.length),
+              ),
+              [
+                COPY["table.timestamp"],
+                COPY["table.tool"],
+                COPY["table.source"],
+                COPY["table.status"],
+                COPY["table.tokens"],
+                COPY["table.cost"],
               ],
-            })),
-            [
-              "status-cell",
-              "status-cell",
-              "status-cell",
-              "status-cell",
-              "num",
-              "num",
-            ],
-          );
+              calls.map((row) => ({
+                cells: [
+                  timeCell(row.timestamp),
+                  entityLink("tool", row.name, row.name, "mono"),
+                  orUnavailable(row.source),
+                  badgeCell(
+                    COPY["tools." + row.status],
+                    row.status === "succeeded" ? "" : "warn",
+                  ),
+                  row.usage === null
+                    ? COPY["evidence.unavailable"]
+                    : number(row.usage.totalTokens),
+                  row.usage === null
+                    ? COPY["evidence.unavailable"]
+                    : money(row.usage.cost),
+                ],
+              })),
+              [
+                "status-cell",
+                "status-cell",
+                "status-cell",
+                "status-cell",
+                "num",
+                "num",
+              ],
+            );
     if (filter === null) return [summarySection, tabSection([callsCard])];
     // The filter is route state, so the URL is shareable and Back/Forward restore it.
     const bar = el("div", "toolbar");
@@ -2986,7 +3107,7 @@
               content: entitySpan("error", row.id, row.id),
             },
             row.kind,
-            row.timestamp,
+            timeCell(row.timestamp),
             relatedToolCell(row),
             row.toolStatus === null
               ? COPY["evidence.unavailable"]
@@ -3019,6 +3140,16 @@
     if (rows.length === 0) {
       return [emptyCard(COPY["tab.ledger"], COPY["empty.ledger"])];
     }
+    if (collapsedFor("ledgerOpen", rows.length)) {
+      return [
+        collapsedCard(
+          COPY["tab.ledger"],
+          COPY["ledger.materialized"],
+          "ledgerOpen",
+          rows.length,
+        ),
+      ];
+    }
     return [
       table(
         COPY["tab.ledger"],
@@ -3032,14 +3163,16 @@
         ],
         rows.map((item) => ({
           cells: [
-            item.timestamp,
+            timeCell(item.timestamp),
             { fullId: text(item.id), content: el("span", "mono", item.id) },
             item.kind,
             item.status,
-            badgeCell(COPY["evidence." + item.confidence], "neutral"),
+            confidenceCell(item.confidence),
           ],
         })),
         ["status-cell", "id-cell", "status-cell", "status-cell", "status-cell"],
+        undefined,
+        hideControl("ledgerOpen", rows.length),
       ),
     ];
   };
@@ -4203,6 +4336,9 @@
       applyLiveDelta(message);
       return;
     }
+    // "resync": the revision is too large for one live message; read it over
+    // HTTP, which also reconnects the channel at the new ETag. Any unknown type
+    // recovers the same way.
     recoverLiveSnapshot();
   };
 
@@ -4462,12 +4598,12 @@
     navigator.clipboard.writeText(value).catch(() => {});
   };
 
-  const setSetting = (name, value) => {
+  const setSetting = (name, value, effects = {}) => {
     const key = settingsKey();
     const settings = viewSettings[key] === undefined ? {} : viewSettings[key];
     settings[name] = value;
     viewSettings[key] = settings;
-    render({});
+    render(effects);
   };
 
   const onDocumentClick = (event) => {
@@ -4504,6 +4640,14 @@
             current !== null && current !== data.envTab ? null : undefined,
         }),
       );
+      return;
+    }
+    if (data.disclose !== undefined) {
+      // Expanding a long table is this view's own state, like a filter; focus
+      // follows to the control that replaces the one pressed.
+      setSetting(data.disclose, activeSettings()[data.disclose] !== true, {
+        preserveViewFocus: true,
+      });
       return;
     }
     if (data.filter !== undefined) {

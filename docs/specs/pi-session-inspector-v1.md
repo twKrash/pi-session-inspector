@@ -761,7 +761,10 @@ type SessionCoverage = {
 - A capped discovery has an unknown workspace denominator, so `sessionRatio` is
   `null` and **no percentage or `N / N` fraction may be rendered** — not even for
   an all-available capped set. Counts plus `additional sessions not inspected` is
-  the honest form.
+  the honest form; the capped line states the inspected and unavailable counts.
+- Rendered surfaces (localhost UI and snapshot) name each reason in plain words
+  from the catalog (`coverage.reason.*`, e.g. `no Inspector record`) with its
+  count; `json history|global` keep the bounded reason codes verbatim.
 - An **empty** inspection set is not complete; its usage reads `Unavailable`,
   never `$0.00`, and its session line reads `No tracked sessions`.
 - When the report itself is `availability: "unavailable"`, `coverage` is

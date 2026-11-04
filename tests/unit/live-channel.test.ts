@@ -1636,3 +1636,92 @@ test("unauthenticated socket closes on its five-second deadline", async () => {
   assert.equal(code, 4401);
   await stop(server, channel);
 });
+
+test("a revision larger than the message budget asks for an HTTP resync instead of closing the socket", async () => {
+  const { server, address, origin } = await listen();
+  // Over the 4 MiB budget on its own, with nothing queued: a large project,
+  // not a slow consumer.
+  let payload = "x".repeat(5 * 1024 * 1024);
+  const context = {
+    runtimeId: "r",
+    projectRoot: "/p",
+    initialScope: "active",
+    loadUi: async () =>
+      ({ ...snapshot, history: { payload } }) as unknown as InspectorUiSnapshot,
+  };
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => context,
+    (token) => token === "secret",
+  );
+  const ws = openSocket(address.port, origin);
+  try {
+    await ready(ws);
+    subscribe(ws, "secret", "stale");
+    const initial = JSON.parse(await message(ws));
+    assert.equal(initial.type, "resync");
+    assert.equal(typeof initial.etag, "string");
+    assert.equal(ws.readyState, WebSocket.OPEN);
+
+    // The next oversized delta is a resync too, and the socket stays usable.
+    payload = `y${payload.slice(1)}`;
+    const next = message(ws);
+    invalidate();
+    const update = JSON.parse(await next);
+    assert.equal(update.type, "resync");
+    assert.notEqual(update.etag, initial.etag);
+    assert.equal(ws.readyState, WebSocket.OPEN);
+  } finally {
+    ws.close();
+    await stop(server, channel);
+  }
+});
+
+test("a message of exactly the budget is still sent whole; one byte over becomes a resync", async () => {
+  const BUDGET = 4 * 1024 * 1024;
+  // The first snapshot message for a payload of `length` bytes; the etag has a
+  // fixed width, so message size grows one byte per payload byte.
+  const firstMessage = async (length: number) => {
+    const { server, address, origin } = await listen();
+    const payload = "x".repeat(length);
+    const context = {
+      runtimeId: "r",
+      projectRoot: "/p",
+      initialScope: "active",
+      loadUi: async () =>
+        ({
+          ...snapshot,
+          history: { payload },
+        }) as unknown as InspectorUiSnapshot,
+    };
+    const channel = attachLiveChannel(
+      server,
+      origin,
+      () => context,
+      (token) => token === "secret",
+    );
+    const ws = openSocket(address.port, origin);
+    try {
+      await ready(ws);
+      subscribe(ws, "secret", "stale");
+      // A terminated socket sends nothing: fail on the missing message instead
+      // of waiting forever.
+      const received = await messageWithin(ws, 10_000);
+      assert.notEqual(received, undefined, "no live message arrived");
+      return received as string;
+    } finally {
+      ws.close();
+      await stop(server, channel);
+    }
+  };
+  const probe = await firstMessage(16);
+  const exact = 16 + BUDGET - Buffer.byteLength(probe);
+
+  const atBudget = await firstMessage(exact);
+  assert.equal(Buffer.byteLength(atBudget), BUDGET);
+  assert.equal(JSON.parse(atBudget).type, "snapshot");
+
+  const overBudget = await firstMessage(exact + 1);
+  assert.equal(JSON.parse(overBudget).type, "resync");
+});

@@ -10,7 +10,7 @@ import {
 } from "./agent-tree.ts";
 import type { DailyRow } from "./daily.ts";
 import { OPTIONAL_USAGE_FIELDS } from "./dated-usage.ts";
-import { formatCost } from "./format.ts";
+import { confidenceTone, formatCost, formatLocalTimestamp } from "./format.ts";
 import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
 import { createTranslator } from "./i18n.ts";
 import {
@@ -297,11 +297,48 @@ function emptyCard(title: string, note: string): string {
   );
 }
 
-function elapsedTable(
+/** A cell's visible text, for the folding rule only (never re-rendered). */
+function cellPlainText(cell: Cell): string {
+  return typeof cell === "string" ? cell : cell.html.replace(/<[^>]*>/g, "");
+}
+
+/**
+ * The interactive table's folding rule: with two rows or more, a column whose
+ * every row reads Unavailable becomes one footnote that still says so.
+ */
+function unavailableColumns(
   headers: readonly string[],
   rows: readonly (readonly Cell[])[],
-  classes: readonly string[],
+): number[] {
+  if (rows.length < 2) return [];
+  const unavailable = t("evidence.unavailable");
+  return headers
+    .map((_, index) => index)
+    .filter((index) =>
+      rows.every(
+        (row) =>
+          row.length === headers.length &&
+          cellPlainText(row[index] ?? "").trim() === unavailable,
+      ),
+    );
+}
+
+function elapsedTable(
+  allHeaders: readonly string[],
+  allRows: readonly (readonly Cell[])[],
+  allClasses: readonly string[],
 ): string {
+  const folded = unavailableColumns(allHeaders, allRows);
+  const keep = (_: unknown, index: number): boolean => !folded.includes(index);
+  const headers = allHeaders.filter(keep);
+  const rows = allRows.map((row) => row.filter(keep));
+  const classes = allClasses.filter(keep);
+  const note =
+    folded.length === 0
+      ? ""
+      : t("table.allUnavailable", {
+          columns: folded.map((index) => allHeaders[index]).join(", "),
+        });
   const head = headers
     .map(
       (header, index) => `<th${className(classes[index])}>${text(header)}</th>`,
@@ -320,7 +357,22 @@ function elapsedTable(
     .join("");
   return (
     `<div class="table-wrap"><table><thead><tr>${head}</tr></thead>` +
-    `<tbody>${body}</tbody></table></div>`
+    `<tbody>${body}</tbody></table></div>${footnote(note)}`
+  );
+}
+
+/** Past this many rows a row-per-event table starts collapsed, as in the live UI. */
+const COLLAPSE_ROWS = 100;
+
+/**
+ * A long table inside a native `<details>`: no script, every row still in the
+ * document, and nothing to scroll past until the reader opens it.
+ */
+function collapsible(rowCount: number, table: string): string {
+  if (rowCount <= COLLAPSE_ROWS) return table;
+  return (
+    `<details class="rows"><summary>${text(t("table.showRows", { count: count(rowCount) }))}</summary>` +
+    `${table}</details>`
   );
 }
 
@@ -441,19 +493,6 @@ function usageEconomicsDetails(economics: UsageEconomics | undefined): {
 /** One catalog entry by a value computed at render time (a status, a label key). */
 function catalogEntry(key: string): string {
   return t(key as Parameters<typeof t>[0]);
-}
-
-/** The shared confidence tone rule: known sources read plain, the rest state it. */
-function confidenceTone(confidence: string): "neutral" | "warn" | "" {
-  if (
-    confidence === "native" ||
-    confidence === "live" ||
-    confidence === "cooperative" ||
-    confidence === "supported"
-  ) {
-    return "";
-  }
-  return confidence === "inferred" ? "warn" : "neutral";
 }
 
 function confidenceBadge(confidence: string): string {
@@ -923,7 +962,7 @@ function toolsSections(
               // as complete, and an uncorrelated name is Unavailable.
               toolDurationCell(row.durationLabel, row, true),
               toolDurationCell(row.averageLabel, row, false),
-              row.lastUsed,
+              timestampCell(row.lastUsed),
               orUnavailable(row.source ?? null),
             ]),
             [
@@ -948,43 +987,46 @@ function toolsSections(
       : card(
           catalog["tools.calls"],
           catalog["tools.note"],
-          elapsedTable(
-            [
-              catalog["table.timestamp"],
-              catalog["table.tool"],
-              catalog["table.source"],
-              catalog["table.status"],
-              catalog["table.tokens"],
-              catalog["table.cost"],
-              catalog["table.duration"],
-            ],
-            calls.map((row) => [
-              timestampCell(row.timestamp),
-              sectionLink("tools", row.name),
-              orUnavailable(row.source ?? null),
-              raw(
-                badge(
-                  catalogEntry(`tools.${row.status}`),
-                  row.status === "succeeded" ? "" : "warn",
+          collapsible(
+            calls.length,
+            elapsedTable(
+              [
+                catalog["table.timestamp"],
+                catalog["table.tool"],
+                catalog["table.source"],
+                catalog["table.status"],
+                catalog["table.tokens"],
+                catalog["table.cost"],
+                catalog["table.duration"],
+              ],
+              calls.map((row) => [
+                timestampCell(row.timestamp),
+                sectionLink("tools", row.name),
+                orUnavailable(row.source ?? null),
+                raw(
+                  badge(
+                    catalogEntry(`tools.${row.status}`),
+                    row.status === "succeeded" ? "" : "warn",
+                  ),
                 ),
-              ),
-              row.usage === null
-                ? catalog["evidence.unavailable"]
-                : count(row.usage.totalTokens),
-              row.usage === null
-                ? catalog["evidence.unavailable"]
-                : money(row.usage.cost),
-              durationCell(row, durationEvidence),
-            ]),
-            [
-              "status-cell",
-              "status-cell",
-              "status-cell",
-              "status-cell",
-              "num",
-              "num",
-              "status-cell",
-            ],
+                row.usage === null
+                  ? catalog["evidence.unavailable"]
+                  : count(row.usage.totalTokens),
+                row.usage === null
+                  ? catalog["evidence.unavailable"]
+                  : money(row.usage.cost),
+                durationCell(row, durationEvidence),
+              ]),
+              [
+                "status-cell",
+                "status-cell",
+                "status-cell",
+                "status-cell",
+                "num",
+                "num",
+                "status-cell",
+              ],
+            ),
           ),
         );
   return sectionTarget("tools", summarySection) + tabSection(callsSection);
@@ -1049,8 +1091,11 @@ function durationCell(row: ToolRow, durationEvidence: EvidenceState): string {
     : `${label} · ${t("evidence.live")}`;
 }
 
+/** Local time where the snapshot is made; the persisted instant stays in `datetime`. */
 function timestampCell(timestamp: string): Cell {
-  return raw(`<time datetime="${attr(timestamp)}">${text(timestamp)}</time>`);
+  return raw(
+    `<time datetime="${attr(timestamp)}" title="${attr(timestamp)}">${text(formatLocalTimestamp(timestamp))}</time>`,
+  );
 }
 
 function environmentSections(
@@ -1831,22 +1876,25 @@ function ledgerSection(ledger: readonly LedgerItem[]): string {
   return card(
     catalog["tab.ledger"],
     catalog["ledger.materialized"],
-    elapsedTable(
-      [
-        catalog["table.timestamp"],
-        catalog["table.id"],
-        catalog["table.category"],
-        catalog["table.action"],
-        catalog["table.confidence"],
-      ],
-      ledger.map((item) => [
-        timestampCell(item.timestamp),
-        item.id,
-        item.kind,
-        item.status,
-        raw(confidenceBadge(item.confidence)),
-      ]),
-      ["status-cell", "id-cell", "status-cell", "status-cell", "status-cell"],
+    collapsible(
+      ledger.length,
+      elapsedTable(
+        [
+          catalog["table.timestamp"],
+          catalog["table.id"],
+          catalog["table.category"],
+          catalog["table.action"],
+          catalog["table.confidence"],
+        ],
+        ledger.map((item) => [
+          timestampCell(item.timestamp),
+          item.id,
+          item.kind,
+          item.status,
+          raw(confidenceBadge(item.confidence)),
+        ]),
+        ["status-cell", "id-cell", "status-cell", "status-cell", "status-cell"],
+      ),
     ),
   );
 }
