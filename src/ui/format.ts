@@ -43,13 +43,19 @@ export function confidenceTone(confidence: string): "neutral" | "warn" | "" {
 
 const localParts = new Map<string, Intl.DateTimeFormat>();
 
+/** A full ISO-8601 instant: date, time and an explicit zone (`Z` or `±HH:MM`). */
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
 /**
- * A persisted ISO instant as `YYYY-MM-DD HH:MM:SS` in the runtime's local time
- * zone (or `timeZone` when given): the snapshot formats where it is made, the
- * browser where it is viewed. It converts the explicit value only — it never
- * reads the current time — and returns an unparseable value unchanged.
+ * A persisted ISO instant as `YYYY-MM-DD HH:MM:SS UTC±H` in the runtime's local
+ * time zone (or `timeZone` when given): the snapshot formats where it is made,
+ * the browser where it is viewed, and the offset says which. Only a full ISO
+ * instant is converted — a date-only, zone-less or other value is returned
+ * unchanged, never guessed — and the current time is never read.
  */
 export function formatLocalTimestamp(iso: string, timeZone?: string): string {
+  if (!ISO_INSTANT.test(iso)) return iso;
   const instant = Date.parse(iso);
   if (!Number.isFinite(instant)) return iso;
   const key = timeZone ?? "";
@@ -63,6 +69,7 @@ export function formatLocalTimestamp(iso: string, timeZone?: string): string {
       minute: "2-digit",
       second: "2-digit",
       hourCycle: "h23",
+      timeZoneName: "shortOffset",
       ...(timeZone === undefined ? {} : { timeZone }),
     });
     localParts.set(key, formatter);
@@ -71,5 +78,38 @@ export function formatLocalTimestamp(iso: string, timeZone?: string): string {
   for (const { type, value } of formatter.formatToParts(instant)) {
     part[type] = value;
   }
-  return `${part.year}-${part.month}-${part.day} ${part.hour}:${part.minute}:${part.second}`;
+  // `GMT`, `GMT+0` and `GMT+2` read as `UTC`, `UTC` and `UTC+2`: the range
+  // panel speaks UTC, so the offset uses the same word.
+  const offset = (part.timeZoneName ?? "")
+    .replace(/^GMT(?:[+-]0)?$/, "UTC")
+    .replace(/^GMT/, "UTC");
+  return `${part.year}-${part.month}-${part.day} ${part.hour}:${part.minute}:${part.second} ${offset}`;
+}
+
+/** Past this many rows a row-per-event table (ledger, calls) starts collapsed. */
+export const COLLAPSE_ROWS = 100;
+
+/**
+ * The column-folding rule both surfaces share: with two rows or more, the
+ * indexes of columns whose every row's text is `unavailable`. A row whose cell
+ * count differs from `headerCount` keeps every column.
+ */
+export function unavailableColumns(
+  headerCount: number,
+  rows: readonly (readonly string[])[],
+  unavailable: string,
+): number[] {
+  if (rows.length < 2) return [];
+  const indexes: number[] = [];
+  for (let index = 0; index < headerCount; index += 1) {
+    if (
+      rows.every(
+        (row) =>
+          row.length === headerCount && row[index]?.trim() === unavailable,
+      )
+    ) {
+      indexes.push(index);
+    }
+  }
+  return indexes;
 }

@@ -2174,7 +2174,9 @@ test("a ledger past 100 rows starts collapsed in a native details, every row kep
 
   const long = render(101);
   assert.equal(
-    long.includes(`<details class="rows"><summary>Show all 101 rows</summary>`),
+    long.includes(
+      `<details class="rows"><summary><span class="rows-closed">Show all 101 rows</span><span class="rows-open">Hide rows</span></summary>`,
+    ),
     true,
   );
   assert.equal(long.includes("ledger-row-100"), true);

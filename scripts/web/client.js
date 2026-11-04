@@ -46,7 +46,9 @@
     format === undefined ||
     typeof format.cost !== "function" ||
     typeof format.confidenceTone !== "function" ||
-    typeof format.localTimestamp !== "function"
+    typeof format.localTimestamp !== "function" ||
+    typeof format.unavailableColumns !== "function" ||
+    typeof format.collapseRows !== "number"
   ) {
     throw new Error("browser format module must initialize first");
   }
@@ -827,21 +829,14 @@
    * a column of repeated non-values. `basis` is the full row set, so search and
    * filters never change which columns exist.
    */
-  const unavailableColumns = (headers, basis) => {
-    if (basis.length < 2) return [];
-    const unavailable = COPY["evidence.unavailable"];
-    return headers
-      .map((_, index) => index)
-      .filter((index) =>
-        basis.every((row) => {
-          const cells = row.cells === undefined ? row : row.cells;
-          return (
-            cells.length === headers.length &&
-            cellText(cells[index]).trim() === unavailable
-          );
-        }),
-      );
-  };
+  const unavailableColumns = (headers, basis) =>
+    format.unavailableColumns(
+      headers.length,
+      basis.map((row) =>
+        (row.cells === undefined ? row : row.cells).map(cellText),
+      ),
+      COPY["evidence.unavailable"],
+    );
 
   /**
    * `options.basis` is the full row set the column folding reads (defaults to
@@ -1027,16 +1022,22 @@
     );
   /**
    * Long row-per-event tables (the ledger, the calls timeline) start collapsed:
-   * their rows are built only once the reader asks. A route that focuses an
-   * entity or carries a search opens them, so a deep link never lands on a
-   * hidden row. The choice is this view's own browser state, never a route.
+   * their rows are built only once the reader asks. A focused entity — and, for
+   * a table with its own search box, a search — opens them, so a deep link never
+   * lands on a hidden row; that opening sticks, so clearing the search never
+   * pulls the table (and the box being typed in) away. Hide is offered only
+   * when nothing forces the table open. Browser state of this view, never a
+   * route.
    */
-  const COLLAPSE_ROWS = 100;
-  const collapsedFor = (name, count) =>
-    count > COLLAPSE_ROWS &&
-    activeSettings()[name] !== true &&
-    state.entity === undefined &&
-    activeQuery() === "";
+  const COLLAPSE_ROWS = format.collapseRows;
+  const disclosure = (name, count, followsQuery) => {
+    if (count <= COLLAPSE_ROWS) return { collapsed: false, hideable: false };
+    const forced =
+      state.entity !== undefined || (followsQuery && activeQuery() !== "");
+    if (forced) writeSetting(name, true);
+    const open = forced || activeSettings()[name] === true;
+    return { collapsed: !open, hideable: open && !forced };
+  };
   const discloseControl = (name, expanded, count) => {
     const button = el(
       "button",
@@ -1049,11 +1050,6 @@
     button.setAttribute("aria-expanded", String(expanded));
     return button;
   };
-  /** The Hide control exists only when the reader opened the table themselves. */
-  const hideControl = (name, count) =>
-    count > COLLAPSE_ROWS && activeSettings()[name] === true
-      ? discloseControl(name, true, count)
-      : undefined;
   const collapsedCard = (title, note, name, count) => {
     const section = card(title, note);
     const bar = el("div", "disclose-bar");
@@ -1818,10 +1814,13 @@
     const calls = meta.toolCalls.filter(
       (row) => filter === null || row.name === filter,
     );
+    // The calls timeline has no search box of its own (the tab's search filters
+    // the summary), so only a focused entity opens it.
+    const callsDisclosure = disclosure("callsOpen", calls.length, false);
     const callsCard =
       calls.length === 0
         ? emptyCard(COPY["tools.calls"], COPY["chart.empty"])
-        : collapsedFor("callsOpen", calls.length)
+        : callsDisclosure.collapsed
           ? collapsedCard(
               COPY["tools.calls"],
               COPY["tools.note"],
@@ -1832,7 +1831,9 @@
               card(
                 COPY["tools.calls"],
                 COPY["tools.note"],
-                hideControl("callsOpen", calls.length),
+                callsDisclosure.hideable
+                  ? discloseControl("callsOpen", true, calls.length)
+                  : undefined,
               ),
               [
                 COPY["table.timestamp"],
@@ -3140,7 +3141,9 @@
     if (rows.length === 0) {
       return [emptyCard(COPY["tab.ledger"], COPY["empty.ledger"])];
     }
-    if (collapsedFor("ledgerOpen", rows.length)) {
+    // The ledger's own search box filters it, so its search may open it.
+    const ledgerDisclosure = disclosure("ledgerOpen", rows.length, true);
+    if (ledgerDisclosure.collapsed) {
       return [
         collapsedCard(
           COPY["tab.ledger"],
@@ -3172,7 +3175,9 @@
         })),
         ["status-cell", "id-cell", "status-cell", "status-cell", "status-cell"],
         undefined,
-        hideControl("ledgerOpen", rows.length),
+        ledgerDisclosure.hideable
+          ? discloseControl("ledgerOpen", true, rows.length)
+          : undefined,
       ),
     ];
   };
@@ -4598,11 +4603,14 @@
     navigator.clipboard.writeText(value).catch(() => {});
   };
 
-  const setSetting = (name, value, effects = {}) => {
+  const writeSetting = (name, value) => {
     const key = settingsKey();
     const settings = viewSettings[key] === undefined ? {} : viewSettings[key];
     settings[name] = value;
     viewSettings[key] = settings;
+  };
+  const setSetting = (name, value, effects = {}) => {
+    writeSetting(name, value);
     render(effects);
   };
 

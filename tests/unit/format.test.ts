@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  COLLAPSE_ROWS,
   confidenceTone,
   formatCost,
   formatLocalTimestamp,
+  unavailableColumns,
 } from "../../src/ui/format.ts";
 
 /**
@@ -41,24 +43,81 @@ test("a sign the report should never publish still formats honestly", () => {
   assert.equal(formatCost(-0.00004), "-< $0.0001");
 });
 
-test("a timestamp renders in the given local zone, not as raw ISO", () => {
+test("a timestamp renders in the given local zone with its offset, not as raw ISO", () => {
   assert.equal(
     formatLocalTimestamp("2026-10-30T20:03:35.831Z", "UTC"),
-    "2026-10-30 20:03:35",
+    "2026-10-30 20:03:35 UTC",
   );
   assert.equal(
     formatLocalTimestamp("2026-10-30T23:30:00.000Z", "Europe/Kyiv"),
-    "2026-10-31 01:30:00",
+    "2026-10-31 01:30:00 UTC+2",
+  );
+  // An explicit offset is an instant too.
+  assert.equal(
+    formatLocalTimestamp("2026-10-30T23:30:00+02:00", "UTC"),
+    "2026-10-30 21:30:00 UTC",
   );
   // Midnight is 00, never 24.
   assert.equal(
     formatLocalTimestamp("2026-01-01T00:00:00.000Z", "UTC"),
-    "2026-01-01 00:00:00",
+    "2026-01-01 00:00:00 UTC",
   );
 });
 
-test("an unparseable timestamp is shown as persisted, never guessed", () => {
-  assert.equal(formatLocalTimestamp("not-a-time", "UTC"), "not-a-time");
+test("only a full ISO instant is converted; anything else is shown as persisted", () => {
+  // Date.parse accepts each of these and would invent an instant.
+  for (const value of [
+    "not-a-time",
+    "12",
+    "1",
+    "2026-03-10",
+    "2026-03-10T10:00:00",
+    "March 10, 2026",
+  ]) {
+    assert.equal(formatLocalTimestamp(value, "UTC"), value);
+  }
+});
+
+test("a column folds only when every one of two or more rows is Unavailable", () => {
+  const U = "Unavailable";
+  assert.deepEqual(
+    unavailableColumns(
+      3,
+      [
+        ["a", U, U],
+        ["b", U, " Unavailable "],
+      ],
+      U,
+    ),
+    [1, 2],
+  );
+  assert.deepEqual(unavailableColumns(2, [["a", U]], U), []);
+  assert.deepEqual(
+    unavailableColumns(
+      2,
+      [
+        ["a", U],
+        ["b", "1"],
+      ],
+      U,
+    ),
+    [],
+  );
+  // A row with a different cell count keeps every column.
+  assert.deepEqual(unavailableColumns(2, [["a", U], [U]], U), []);
+  // The first column folds like any other.
+  assert.deepEqual(
+    unavailableColumns(
+      2,
+      [
+        [U, "a"],
+        [U, "b"],
+      ],
+      U,
+    ),
+    [0],
+  );
+  assert.equal(COLLAPSE_ROWS, 100);
 });
 
 test("known sources read plain, inferred warns, the rest are neutral", () => {

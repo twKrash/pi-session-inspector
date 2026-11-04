@@ -444,16 +444,18 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
   // The cost rule is the shared one, not a second implementation.
   const format = namespace.format as Record<string, unknown>;
   assert.deepEqual(Object.keys(format).sort(), [
+    "collapseRows",
     "confidenceTone",
     "cost",
     "localTimestamp",
+    "unavailableColumns",
   ]);
   assert.equal(
     (format.localTimestamp as (iso: string, zone: string) => string)(
       "2026-10-30T20:03:35.831Z",
       "UTC",
     ),
-    "2026-10-30 20:03:35",
+    "2026-10-30 20:03:35 UTC",
   );
   assert.equal(typeof format.cost, "function");
   assert.equal((format.cost as (value: number) => string)(0.0049), "$0.0049");
@@ -6093,4 +6095,66 @@ test("a live resync reads the new revision over HTTP and resubscribes at its ETa
     JSON.parse(harness.socketMessages().at(-1) ?? "null").etag,
     ETAG_2,
   );
+});
+
+test("a ledger opened by its own search stays open when the search is cleared, and Hide works only then", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const item = range.ledger[0];
+  if (item === undefined) throw new Error("fixture must carry a ledger row");
+  range.ledger = Array.from({ length: 101 }, (_, index) => ({
+    ...item,
+    id: `ledger-row-${index}`,
+  }));
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/ledger?scope=tree",
+  });
+  await harness.start();
+  const view = harness.element("view");
+  const control = (): StubElement | undefined =>
+    view
+      .querySelectorAll("button")
+      .find((button) => button.dataset.disclose === "ledgerOpen");
+  harness.click(control() as StubElement);
+
+  // Searching forces the table open, so Hide is not offered.
+  const search = harness.element("search");
+  search.value = "ledger-row-1";
+  harness.input(search);
+  assert.equal(control(), undefined);
+  // Clearing the search keeps the table and its search box.
+  const cleared = harness.element("search");
+  cleared.value = "";
+  harness.input(cleared);
+  assert.notEqual(view.querySelectorAll("input").length, 0);
+  assert.equal(view.querySelectorAll("tr").length, 102);
+  assert.equal(control()?.textContent, CATALOG["table.hideRows"]);
+  harness.click(control() as StubElement);
+  assert.equal(view.querySelectorAll("tbody").length, 0);
+});
+
+test("the Tools search never opens or closes the calls timeline", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const call = range.toolCalls[0];
+  if (call === undefined) throw new Error("fixture must carry a tool call");
+  range.toolCalls = Array.from({ length: 101 }, () => ({ ...call }));
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/tools?scope=tree",
+  });
+  await harness.start();
+  const callsControl = (): StubElement | undefined =>
+    harness
+      .element("view")
+      .querySelectorAll("button")
+      .find((button) => button.dataset.disclose === "callsOpen");
+  assert.equal(callsControl()?.textContent, "Show all 101 rows");
+  const search = harness.element("search");
+  search.value = "zzz";
+  harness.input(search);
+  assert.equal(callsControl()?.textContent, "Show all 101 rows");
 });

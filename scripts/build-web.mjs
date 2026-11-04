@@ -22,9 +22,11 @@ const resolveDir = fileURLToPath(new URL("../", import.meta.url));
 // resolves copy, cost and execution topology through the same modules the
 // TypeScript renderers use, rather than through a second implementation.
 const prelude = `import {
+  COLLAPSE_ROWS,
   confidenceTone,
   formatCost,
   formatLocalTimestamp,
+  unavailableColumns,
 } from "./src/ui/format.ts";
 import { createTranslator } from "./src/ui/i18n.ts";
 import {
@@ -36,9 +38,11 @@ import { applyChartTheme, chartTheme, createDailyChart } from "./scripts/web/cha
 const web = (globalThis.SessionInspectorWeb = globalThis.SessionInspectorWeb || {});
 web.i18n = { t: createTranslator("en") };
 web.format = {
+  collapseRows: COLLAPSE_ROWS,
   confidenceTone,
   cost: formatCost,
   localTimestamp: formatLocalTimestamp,
+  unavailableColumns,
 };
 web.agentTree = {
   build: buildAgentForest,

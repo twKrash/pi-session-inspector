@@ -32,7 +32,7 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.6.3`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.7.0`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
 > semantic integration, native token economics/cache accounting, and subagent
 > AgentRun observability are available: current async runs can use bounded
@@ -44,13 +44,12 @@ session, the session history, or the global aggregate.
 > The localhost UI paints the configured theme before report data arrives and
 > announces loading once. One UI response shares its History and Global scan; repeated in-flight
 > range requests are coalesced, while explicit Refresh remains fresh. Request
-> failures stay in bounded HTTP responses, not Pi stderr. **1.6.3 highlight:**
-> Live WebSocket refresh passes share one range-independent bundle across
-> captured range groups while preserving separate projections and ETags.
-> The UI and snapshots get accessible control borders, distinct warning, error
-> and chart colors, no horizontal overflow from wide tables, and History and
-> Global no longer repeat the fixed-scope note or describe a set of sessions
-> as one session.
+> failures stay in bounded HTTP responses, not Pi stderr. **1.7.0 highlight:**
+> live updates no longer loop on reconnect for large projects; long ledger and
+> tool-call tables start collapsed; timestamps show local time with their
+> offset; coverage reasons read in plain words; all-Unavailable columns fold
+> into one note; and the UI and snapshots get accessible control borders,
+> distinct warning, error and chart colors, and no overflow from wide tables.
 
 ## Install
 
@@ -67,7 +66,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.6.3
+pi install npm:@twkrash/pi-session-inspector@1.7.0
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the

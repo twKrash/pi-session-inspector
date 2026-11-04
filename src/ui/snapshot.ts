@@ -10,7 +10,13 @@ import {
 } from "./agent-tree.ts";
 import type { DailyRow } from "./daily.ts";
 import { OPTIONAL_USAGE_FIELDS } from "./dated-usage.ts";
-import { confidenceTone, formatCost, formatLocalTimestamp } from "./format.ts";
+import {
+  COLLAPSE_ROWS,
+  confidenceTone,
+  formatCost,
+  formatLocalTimestamp,
+  unavailableColumns,
+} from "./format.ts";
 import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
 import { createTranslator } from "./i18n.ts";
 import {
@@ -302,33 +308,16 @@ function cellPlainText(cell: Cell): string {
   return typeof cell === "string" ? cell : cell.html.replace(/<[^>]*>/g, "");
 }
 
-/**
- * The interactive table's folding rule: with two rows or more, a column whose
- * every row reads Unavailable becomes one footnote that still says so.
- */
-function unavailableColumns(
-  headers: readonly string[],
-  rows: readonly (readonly Cell[])[],
-): number[] {
-  if (rows.length < 2) return [];
-  const unavailable = t("evidence.unavailable");
-  return headers
-    .map((_, index) => index)
-    .filter((index) =>
-      rows.every(
-        (row) =>
-          row.length === headers.length &&
-          cellPlainText(row[index] ?? "").trim() === unavailable,
-      ),
-    );
-}
-
 function elapsedTable(
   allHeaders: readonly string[],
   allRows: readonly (readonly Cell[])[],
   allClasses: readonly string[],
 ): string {
-  const folded = unavailableColumns(allHeaders, allRows);
+  const folded = unavailableColumns(
+    allHeaders.length,
+    allRows.map((row) => row.map(cellPlainText)),
+    t("evidence.unavailable"),
+  );
   const keep = (_: unknown, index: number): boolean => !folded.includes(index);
   const headers = allHeaders.filter(keep);
   const rows = allRows.map((row) => row.filter(keep));
@@ -361,9 +350,6 @@ function elapsedTable(
   );
 }
 
-/** Past this many rows a row-per-event table starts collapsed, as in the live UI. */
-const COLLAPSE_ROWS = 100;
-
 /**
  * A long table inside a native `<details>`: no script, every row still in the
  * document, and nothing to scroll past until the reader opens it.
@@ -371,7 +357,8 @@ const COLLAPSE_ROWS = 100;
 function collapsible(rowCount: number, table: string): string {
   if (rowCount <= COLLAPSE_ROWS) return table;
   return (
-    `<details class="rows"><summary>${text(t("table.showRows", { count: count(rowCount) }))}</summary>` +
+    `<details class="rows"><summary><span class="rows-closed">${text(t("table.showRows", { count: count(rowCount) }))}</span>` +
+    `<span class="rows-open">${text(t("table.hideRows"))}</span></summary>` +
     `${table}</details>`
   );
 }
