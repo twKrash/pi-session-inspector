@@ -189,6 +189,121 @@ test("auth before report read; unchanged DTOs and deltas are controlled by canon
   await stop(server, channel);
 });
 
+test("does not negotiate per-message compression", async () => {
+  const { server, address, origin } = await listen();
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => ({
+      runtimeId: "r",
+      projectRoot: "/p",
+      initialScope: "active",
+      loadUi: async () => snapshot,
+    }),
+    () => true,
+  );
+  const ws = new WebSocket(`ws://127.0.0.1:${address.port}/api/v1/ui-live`, {
+    origin,
+    perMessageDeflate: true,
+  });
+  try {
+    await ready(ws);
+    assert.equal(ws.extensions, "");
+  } finally {
+    ws.close();
+    await stop(server, channel);
+  }
+});
+
+test("malformed and unauthorized subscribe messages close before report reads", async () => {
+  const { server, address, origin } = await listen();
+  let loads = 0;
+  const channel = attachLiveChannel(
+    server,
+    origin,
+    () => ({
+      runtimeId: "r",
+      projectRoot: "/p",
+      initialScope: "active",
+      loadUi: async () => {
+        loads++;
+        return snapshot;
+      },
+    }),
+    (token) => token === "secret",
+  );
+  const inputs: Array<{ raw: string; code: number }> = [
+    { raw: "1", code: 4400 },
+    { raw: "null", code: 4400 },
+    {
+      raw: JSON.stringify({
+        type: "subscribe",
+        capability: "wrong",
+        etag: "",
+        range: "",
+      }),
+      code: 4401,
+    },
+    {
+      raw: JSON.stringify({
+        type: "subscribe",
+        capability: 1,
+        etag: "",
+        range: "",
+      }),
+      code: 4401,
+    },
+    {
+      raw: JSON.stringify({
+        type: "subscribe",
+        capability: "secret",
+        etag: 1,
+        range: "",
+      }),
+      code: 4401,
+    },
+    {
+      raw: JSON.stringify({
+        type: "subscribe",
+        capability: "secret",
+        etag: "",
+        range: 1,
+      }),
+      code: 4401,
+    },
+    {
+      raw: JSON.stringify({
+        type: "subscribe",
+        capability: "secret",
+        etag: "",
+        range: "preset=8",
+      }),
+      code: 4400,
+    },
+  ];
+  const peers: WebSocket[] = [];
+  try {
+    for (const input of inputs) {
+      const ws = openSocket(address.port, origin);
+      peers.push(ws);
+      await ready(ws);
+      const closed = new Promise<number | undefined>((resolve) => {
+        const timeout = setTimeout(() => resolve(undefined), 500);
+        ws.once("close", (code) => {
+          clearTimeout(timeout);
+          resolve(code);
+        });
+      });
+      ws.send(input.raw);
+      assert.equal(await closed, input.code, input.raw);
+      assert.equal(loads, 0);
+    }
+  } finally {
+    for (const ws of peers) ws.close();
+    await stop(server, channel);
+  }
+});
+
 test("retires a slow subscriber before its outbound DTO queue exceeds the byte budget", async () => {
   const { server, address, origin } = await listen();
   const originalBufferedAmount = Object.getOwnPropertyDescriptor(
@@ -218,11 +333,37 @@ test("retires a slow subscriber before its outbound DTO queue exceeds the byte b
     assert.equal(initial.type, "snapshot");
     assert.equal(initial.snapshot.history.payload.length, 1_240_000);
 
+    const { serializeUiSnapshot } = await import(
+      "../../src/ui/snapshot-revision.ts"
+    );
+    const nextPayload = `y${payload.slice(1)}`;
+    const nextSnapshot = {
+      ...snapshot,
+      history: { payload: nextPayload },
+    } as unknown as InspectorUiSnapshot;
+    const expectedDelta = {
+      type: "delta",
+      baseEtag: initial.etag,
+      etag: serializeUiSnapshot(nextSnapshot).etag,
+      changes: { history: { payload: nextPayload } },
+    };
+    const exactPayloadBytes = Buffer.byteLength(JSON.stringify(expectedDelta));
+    Object.defineProperty(WebSocket.prototype, "bufferedAmount", {
+      ...originalBufferedAmount,
+      get: () => 4 * 1024 * 1024 - exactPayloadBytes,
+    });
+    const exactBoundaryUpdate = messageWithin(ws);
+    payload = nextPayload;
+    invalidate();
+    const exactBoundaryMessage = await exactBoundaryUpdate;
+    assert.ok(exactBoundaryMessage, "an exact buffer budget remains allowed");
+    assert.equal(JSON.parse(exactBoundaryMessage).type, "delta");
+
     Object.defineProperty(WebSocket.prototype, "bufferedAmount", {
       ...originalBufferedAmount,
       get: () => 3 * 1024 * 1024,
     });
-    payload = `y${payload.slice(1)}`;
+    payload = `z${payload.slice(1)}`;
     invalidate();
     await waitFor(
       () => ws.readyState === WebSocket.CLOSED,
@@ -1136,11 +1277,11 @@ test("socket cap counts authenticated and pending connections together", async (
     }
     const rejectedPeer = openSocket(address.port, origin);
     peers.push(rejectedPeer);
-    const rejected = new Promise<void>((resolve) => {
-      rejectedPeer.once("error", resolve);
-      rejectedPeer.once("close", resolve);
+    const rejected = new Promise<number>((resolve) => {
+      rejectedPeer.once("error", () => resolve(1006));
+      rejectedPeer.once("close", (code) => resolve(code));
     });
-    await rejected;
+    assert.equal(await rejected, 1006);
   } finally {
     for (const ws of peers) ws.close();
     await stop(server, channel);
@@ -1189,6 +1330,32 @@ test("foreign origin, wrong path and oversized frames are rejected before report
   });
   oversized.send("x".repeat(1025));
   await ended;
+  assert.equal(loads, 0);
+  await stop(server, channel);
+});
+
+test("a malformed configured origin rejects upgrades without throwing", async () => {
+  const { server, address } = await listen();
+  let loads = 0;
+  const channel = attachLiveChannel(
+    server,
+    "not-a-url",
+    () => ({
+      runtimeId: "r",
+      projectRoot: "/p",
+      initialScope: "active",
+      loadUi: async () => {
+        loads++;
+        return snapshot;
+      },
+    }),
+    () => true,
+  );
+  const ws = openSocket(address.port, "not-a-url");
+  await new Promise<void>((resolve) => {
+    ws.once("error", resolve);
+    ws.once("close", resolve);
+  });
   assert.equal(loads, 0);
   await stop(server, channel);
 });

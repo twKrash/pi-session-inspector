@@ -2,6 +2,14 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3]
+
+### Changed
+
+- Live WebSocket refresh passes load one range-independent bundle and project it
+  independently for each captured range, avoiding repeated report loads for
+  multi-range subscribers without caching across passes.
+
 ## [1.6.2]
 
 ### Fixed
