@@ -270,6 +270,10 @@ While subscribers exist, invalidations coalesce for 200 ms and the canonical
 report loader builds a new full DTO snapshot. If its revision differs, the
 server sends only changed top-level DTO sections when the client's `baseEtag`
 matches; a stale ETag/range receives a full snapshot for resynchronization.
+A message that alone exceeds the 4 MiB per-socket budget is not sent: the
+server sends `{ type: "resync", etag }` instead, and the client re-reads that
+revision through `GET /api/v1/ui` (which has no frame budget) and resubscribes
+at its ETag, so a large DTO never turns reconnects into a loop (ADR 0027).
 Unchanged snapshots produce no delta. The channel bounds all pending and
 accepted sockets to eight, authentication to five seconds, WebSocket frames to
 1 KiB, and liveness pings to 30 seconds; it clears subscriptions, timers, and

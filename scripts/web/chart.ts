@@ -71,7 +71,7 @@ type LineScales = NonNullable<ChartOptions<"line">["scales"]>;
 
 const THEMES: Record<"dark" | "light", ChartPalette> = {
   dark: {
-    grid: "#40493e",
+    grid: "#434c58",
     line: {
       cacheReadTokens: "#b6d7a8",
       cacheWriteTokens: "#f0c987",
@@ -85,11 +85,11 @@ const THEMES: Record<"dark" | "light", ChartPalette> = {
       tokens: "#9db3e8",
       tools: "#c8a2d8",
     },
-    surface: "#202521",
-    text: "#9ea795",
+    surface: "#1f2631",
+    text: "#a2a8b0",
   },
   light: {
-    grid: "#dddfd6",
+    grid: "#e2dcd1",
     line: {
       cacheReadTokens: "#4f7a3f",
       cacheWriteTokens: "#9a6d16",
@@ -101,8 +101,8 @@ const THEMES: Record<"dark" | "light", ChartPalette> = {
       tokens: "#4a5f9e",
       tools: "#7b4a8f",
     },
-    surface: "#ffffff",
-    text: "#535b4f",
+    surface: "#fffdf9",
+    text: "#5b544a",
   },
 };
 

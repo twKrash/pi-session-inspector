@@ -100,12 +100,16 @@ export type SnapshotDto =
       kind: "current";
       schemaVersion: 1;
       theme: SnapshotTheme;
+      /** IANA zone for local timestamps, chosen by the caller; absent is UTC. */
+      timeZone?: string;
       projection: SnapshotSessionProjection;
     }
   | {
       kind: "session";
       schemaVersion: 1;
       theme: SnapshotTheme;
+      /** IANA zone for local timestamps, chosen by the caller; absent is UTC. */
+      timeZone?: string;
       projection: SnapshotSessionProjection;
     }
   | {
@@ -168,8 +172,27 @@ export function renderSnapshot(dto: SnapshotDto): string {
       ? historyTarget(dto.projection)
       : dto.kind === "global"
         ? globalTarget(dto.projection)
-        : sessionTarget(dto.kind, dto.projection);
+        : sessionTarget(
+            dto.kind,
+            dto.projection,
+            snapshotTimeZone(dto.timeZone),
+          );
   return frame(dto.theme, target);
+}
+
+/**
+ * The zone a snapshot's timestamps are shown in. It is part of the DTO, never
+ * read from the rendering machine, so equal DTOs stay byte-identical (ADR
+ * 0018). Absent means UTC; a name `Intl` does not know is a caller error.
+ */
+function snapshotTimeZone(timeZone: string | undefined): string {
+  const zone = timeZone ?? "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+  } catch {
+    throw new Error(`snapshot timeZone is not an IANA time zone: ${zone}`);
+  }
+  return zone;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +545,7 @@ const DAILY_NOTE = t("chart.note", {
 function sessionTarget(
   kind: "current" | "session",
   view: SnapshotSessionProjection,
+  timeZone: string,
 ): SnapshotTarget {
   const catalog = ENGLISH_CATALOG;
   const report = view.report;
@@ -562,7 +586,7 @@ function sessionTarget(
     content:
       (view.walDetail === "expired" ? walNotice() : "") +
       rangePanel(range, catalog["range.truncated"]) +
-      sessionSections(view, report, range),
+      sessionSections(view, report, range, timeZone),
   };
 }
 
@@ -578,6 +602,7 @@ function sessionSections(
   view: SnapshotSessionProjection,
   report: SessionReportView,
   range: RangeMetadata,
+  timeZone: string,
 ): string {
   const catalog = ENGLISH_CATALOG;
   if (report.usage === undefined) {
@@ -601,12 +626,12 @@ function sessionSections(
     compositionSection(rangeProjection?.composition ?? null),
     dailySection(rangeProjection?.daily ?? []),
     modelsSection(rangeProjection),
-    toolsSections(rangeProjection, report.durationEvidence),
+    toolsSections(rangeProjection, report.durationEvidence, timeZone),
     environmentSections(report, view.inventoryAvailability),
     agentExecutionSection(agentsSections(report, rangeProjection)),
     integrationsSection(report),
-    errorsSection(rangeProjection?.errors),
-    ledgerSection(rangeProjection?.ledger ?? []),
+    errorsSection(rangeProjection?.errors, timeZone),
+    ledgerSection(rangeProjection?.ledger ?? [], timeZone),
     evidenceSection(view.evidence),
   ].join("");
 }
@@ -927,6 +952,7 @@ function modelsSection(range: SnapshotRange | undefined): string {
 function toolsSections(
   range: SnapshotRange | undefined,
   durationEvidence: EvidenceState,
+  timeZone: string,
 ): string {
   const catalog = ENGLISH_CATALOG;
   const summary = range?.toolSummary ?? [];
@@ -967,7 +993,7 @@ function toolsSections(
               // as complete, and an uncorrelated name is Unavailable.
               toolDurationCell(row.durationLabel, row, true),
               toolDurationCell(row.averageLabel, row, false),
-              timestampCell(row.lastUsed),
+              timestampCell(row.lastUsed, timeZone),
               orUnavailable(row.source ?? null),
             ]),
             [
@@ -1005,7 +1031,7 @@ function toolsSections(
                 catalog["table.duration"],
               ],
               calls.map((row) => [
-                timestampCell(row.timestamp),
+                timestampCell(row.timestamp, timeZone),
                 sectionLink("tools", row.name),
                 orUnavailable(row.source ?? null),
                 raw(
@@ -1096,10 +1122,10 @@ function durationCell(row: ToolRow, durationEvidence: EvidenceState): string {
     : `${label} · ${t("evidence.live")}`;
 }
 
-/** Local time where the snapshot is made; the persisted instant stays in `datetime`. */
-function timestampCell(timestamp: string): Cell {
+/** Local time in the DTO's zone; the persisted instant stays in `datetime`. */
+function timestampCell(timestamp: string, timeZone: string): Cell {
   return raw(
-    `<time datetime="${attr(timestamp)}" title="${attr(timestamp)}">${text(formatLocalTimestamp(timestamp))}</time>`,
+    `<time datetime="${attr(timestamp)}" title="${attr(timestamp)}">${text(formatLocalTimestamp(timestamp, timeZone))}</time>`,
   );
 }
 
@@ -1832,7 +1858,10 @@ function integrationTelemetry(row: IntegrationRow): Cell {
 }
 
 /** `undefined` errors means the range is unavailable, not an observed zero. */
-function errorsSection(errors: readonly ErrorRow[] | undefined): string {
+function errorsSection(
+  errors: readonly ErrorRow[] | undefined,
+  timeZone: string,
+): string {
   const catalog = ENGLISH_CATALOG;
   if (errors === undefined || errors.length === 0) {
     return emptyCard(
@@ -1856,7 +1885,7 @@ function errorsSection(errors: readonly ErrorRow[] | undefined): string {
       errors.map((row) => [
         errorHeadlineText(row),
         row.kind,
-        timestampCell(row.timestamp),
+        timestampCell(row.timestamp, timeZone),
         errorMessageText(row),
         row.relatedChildIds.length === 0
           ? catalog["evidence.unavailable"]
@@ -1878,7 +1907,10 @@ function errorMessageText(row: ErrorRow): string {
   return orUnavailable(errorMessage(row));
 }
 
-function ledgerSection(ledger: readonly LedgerItem[]): string {
+function ledgerSection(
+  ledger: readonly LedgerItem[],
+  timeZone: string,
+): string {
   const catalog = ENGLISH_CATALOG;
   if (ledger.length === 0) {
     return emptyCard(catalog["tab.ledger"], catalog["empty.ledger"]);
@@ -1897,7 +1929,7 @@ function ledgerSection(ledger: readonly LedgerItem[]): string {
           catalog["table.confidence"],
         ],
         ledger.map((item) => [
-          timestampCell(item.timestamp),
+          timestampCell(item.timestamp, timeZone),
           item.id,
           item.kind,
           item.status,

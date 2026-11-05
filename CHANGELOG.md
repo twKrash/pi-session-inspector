@@ -26,7 +26,11 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   (the browser's zone in the live UI, the generating machine's in a snapshot),
   with the persisted ISO instant in the `<time>` element and its tooltip;
   headers say "(local)". Only a full ISO instant is converted; any other value
-  is shown as persisted.
+  is shown as persisted. A snapshot's zone is resolved once by the command and
+  carried in its input, so the same input renders the same bytes anywhere.
+- The light theme is warmer and the dark theme is a blue slate instead of
+  green-grey, in the UI, snapshots and the chart; text and control contrast
+  stay at or above WCAG AA.
 - Confidence badges use one casing and tone rule on both surfaces; a known
   source reads plain, as in the snapshot.
 - Tighter table cells, wrapping column headers and bounded message columns;

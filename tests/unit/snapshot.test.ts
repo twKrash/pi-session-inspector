@@ -1027,6 +1027,45 @@ test("the renderer resolves no range and reaches no loader or filesystem", () =>
   }
 });
 
+test("snapshot timestamps follow the DTO's zone, never the rendering machine's", () => {
+  const previous = process.env.TZ;
+  const render = (tz: string, dto: SnapshotDto) => {
+    process.env.TZ = tz;
+    return renderSnapshot(dto);
+  };
+  try {
+    // ADR 0018: equal DTOs are byte-identical wherever they are rendered.
+    const utc = currentDto();
+    assert.equal(
+      render("Pacific/Kiritimati", utc),
+      render("America/Los_Angeles", utc),
+    );
+    assert.match(
+      render("Pacific/Kiritimati", utc),
+      /<time [^>]*>[^<]* UTC<\/time>/,
+    );
+    // The caller's zone travels in the DTO and is the only one shown.
+    const berlin = {
+      ...currentDto(),
+      timeZone: "Europe/Berlin",
+    } as SnapshotDto;
+    const html = render("Pacific/Kiritimati", berlin);
+    assert.equal(html, render("UTC", berlin));
+    assert.match(html, /<time [^>]*>[^<]* UTC\+[12]<\/time>/);
+    assert.throws(
+      () =>
+        renderSnapshot({
+          ...currentDto(),
+          timeZone: "Mars/Olympus",
+        } as SnapshotDto),
+      /not an IANA time zone/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});
+
 test("the brand names the build's version", () => {
   const manifest = JSON.parse(
     readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
