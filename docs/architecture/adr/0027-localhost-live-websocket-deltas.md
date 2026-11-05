@@ -39,7 +39,14 @@ An in-process, payload-free invalidation signal is emitted only after a
 successful Inspector WAL flush. With no authenticated WebSocket subscriber, the
 signal causes no report load or diff. Otherwise, invalidations coalesce for
 200 ms and the canonical `loadInspectorBundle()`/L2 projection path creates the
-next snapshot. `GET /api/v1/ui` and the channel share one canonical serialization
+next snapshot. Each refresh pass may load one complete range-independent
+`InspectorBundle`, then project it independently for each captured range. The
+bundle is owned only by that pass: it is not a cross-refresh cache or a
+baseline. Per-range snapshots, ETags, delta/resynchronization decisions, and
+subscriber lifetimes remain independent. The legacy `loadUi` path remains
+supported when the paired pass loader/projector seams are absent. A failed
+pass load closes its live captured groups, while one range projection failure
+does not prevent other groups from being projected. `GET /api/v1/ui` and the channel share one canonical serialization
 revision: quoted SHA-256 of the serialized DTO encoded as base64url. HTTP GET
 always returns the full DTO with status 200; conditional `If-None-Match`/304 is
 not introduced. When the client's `baseEtag` and canonical range match, send

@@ -22,6 +22,7 @@ import {
 } from "node:http";
 import { redactBoundedText } from "../core/redact.ts";
 import type { SessionReport } from "../core/reports.ts";
+import type { InspectorBundle } from "./bundle.ts";
 import { createUiCapabilities } from "./capabilities.ts";
 import { decodeHistoryCursor } from "./history-page.ts";
 import { attachLiveChannel, isLoopbackPeer } from "./live-channel.ts";
@@ -44,6 +45,11 @@ export type InspectorServerContext = {
   theme: ShellTheme;
   initialScope?: "active" | "tree";
   loadUi(intent?: RangeIntent): Promise<InspectorUiSnapshot>;
+  loadPass?(): Promise<InspectorBundle>;
+  projectPass?(
+    source: InspectorBundle,
+    intent?: RangeIntent,
+  ): InspectorUiSnapshot;
   loadHistoryPage(
     cursor?: string,
     intent?: RangeIntent,

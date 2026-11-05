@@ -1231,7 +1231,7 @@ function createUiServerContext(input: {
     // same value the DTO carries and the snapshot renders.
     theme: input.theme,
     initialScope: input.initialScope,
-    async loadUi(intent) {
+    async loadPass() {
       await flushLiveEvidence();
       // One synchronous observation of the live session, taken as soon as the
       // required evidence flush resolves: the whole request then reads this one
@@ -1250,7 +1250,7 @@ function createUiServerContext(input: {
       });
       // One bundle load serves the whole request: both current views, history
       // and global, each read from the values captured above.
-      const bundle = await loadInspectorBundle({
+      return loadInspectorBundle({
         theme: input.theme,
         initialScope: input.initialScope,
         root,
@@ -1273,7 +1273,17 @@ function createUiServerContext(input: {
         historyEvidence: readHistorySessionEvidence,
         maintenance: productionMaintenance(),
       });
+    },
+    projectPass(bundle, intent) {
       return projectInspectorUi({ bundle, intent, projectName });
+    },
+    async loadUi(intent) {
+      const loadPass = this.loadPass;
+      const projectPass = this.projectPass;
+      if (loadPass === undefined || projectPass === undefined) {
+        throw new Error("UI pass seam unavailable");
+      }
+      return projectPass(await loadPass(), intent);
     },
     async loadHistoryPage(cursor, intent) {
       await flushLiveEvidence();
