@@ -186,6 +186,10 @@ control: the count a collapsed node would state (`n children · m failed`) is
 what each row carries instead.
 
 Identical bounded `SnapshotDto` and theme inputs produce byte-identical HTML.
+Local timestamps are no exception: a current or session `SnapshotDto` carries
+the IANA `timeZone` the command resolved where the snapshot was made (absent
+means UTC), and the renderer never reads the rendering machine's zone. The
+sidebar's build version is package metadata, like the inlined stylesheet.
 The artifact remains self-contained and works through `file://` without a
 server or network.
 

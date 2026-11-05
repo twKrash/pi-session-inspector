@@ -57,7 +57,11 @@ Bound the channel to eight total pending plus authenticated sockets, a five
 second first-message authorization window, a 1 KiB WebSocket frame limit, and
 30-second liveness pings. Each socket's queued bytes plus its next UTF-8
 message may not exceed 4 MiB; terminate a slow consumer that would exceed this
-limit. This permits the observed 1.24 MiB full snapshot with margin while
+limit. A single message that alone exceeds 4 MiB is not a slow consumer — a
+large project's DTO can exceed it on every send, and terminating then turns the
+client's reconnect into a loop (observed: a 16.7 MB DTO). Send
+`{ type: "resync", etag }` instead; the client reads that revision over HTTP,
+which has no frame budget, and resubscribes at the new ETag. This permits the observed 1.24 MiB full snapshot with margin while
 bounding repeated deltas. With at most eight sockets, queued WebSocket payload
 is bounded to 32
 MiB total. The existing retryable abnormal-close path reconnects from the

@@ -71,36 +71,38 @@ type LineScales = NonNullable<ChartOptions<"line">["scales"]>;
 
 const THEMES: Record<"dark" | "light", ChartPalette> = {
   dark: {
-    grid: "#40493e",
+    grid: "#434c58",
     line: {
       cacheReadTokens: "#b6d7a8",
       cacheWriteTokens: "#f0c987",
       cost: "#ffad80",
-      generations: "#9db3e8",
+      // Cost and tokens are the default pair, so tokens takes a hue far from
+      // the cost orange; gold beside orange was indistinguishable.
+      generations: "#d8c07a",
       inputTokens: "#86c5da",
       outputTokens: "#d9a6c2",
       sessions: "#8fb3a2",
-      tokens: "#d8c07a",
+      tokens: "#9db3e8",
       tools: "#c8a2d8",
     },
-    surface: "#202521",
-    text: "#bdc5b8",
+    surface: "#1f2631",
+    text: "#a2a8b0",
   },
   light: {
-    grid: "#dddfd6",
+    grid: "#e2dcd1",
     line: {
       cacheReadTokens: "#4f7a3f",
       cacheWriteTokens: "#9a6d16",
       cost: "#aa3e13",
-      generations: "#4a5f9e",
+      generations: "#8a6d1f",
       inputTokens: "#276b7d",
       outputTokens: "#8a4569",
       sessions: "#34624b",
-      tokens: "#8a6d1f",
+      tokens: "#4a5f9e",
       tools: "#7b4a8f",
     },
-    surface: "#ffffff",
-    text: "#535b4f",
+    surface: "#fffdf9",
+    text: "#5b544a",
   },
 };
 

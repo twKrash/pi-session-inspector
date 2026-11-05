@@ -6,7 +6,10 @@ import {
   type UsageEconomics,
 } from "../core/reports.ts";
 import { roundCost } from "../core/rounding.ts";
-import type { SessionCoverage } from "../core/session-coverage.ts";
+import type {
+  CoverageReason,
+  SessionCoverage,
+} from "../core/session-coverage.ts";
 import type { DateUsageRow, DatedModelRow } from "./dated-usage.ts";
 import type { GlobalReport, HistoryReport } from "./load-history.ts";
 import { createTranslator } from "./i18n.ts";
@@ -211,6 +214,10 @@ const DAY = /^(\d{4}-\d{2}-\d{2})/;
  * (`usageUnavailable`) is independent of coverage availability: an all-
  * unavailable session set still has a known inspection size, while a report
  * without `coverage` has values of unknown completeness.
+ *
+ * `cost` and `tokens` are always card labels, never values: an unavailable
+ * aggregate keeps the plain labels and its renderer states the value as
+ * Unavailable, so a label is never shown in a value's place.
  */
 export type UsageLabels = {
   cost: MessageKey;
@@ -225,8 +232,8 @@ export function aggregateUsageLabels(input: {
 }): UsageLabels {
   if (input.availability !== "available") {
     return {
-      cost: "metric.costUnavailable",
-      tokens: "metric.costUnavailable",
+      cost: "metric.cost",
+      tokens: "metric.tokens",
       usageUnavailable: true,
       sessions: "coverage.unknown",
     };
@@ -242,8 +249,8 @@ export function aggregateUsageLabels(input: {
   }
   if (coverage.inspected === 0) {
     return {
-      cost: "metric.costUnavailable",
-      tokens: "metric.costUnavailable",
+      cost: "metric.cost",
+      tokens: "metric.tokens",
       usageUnavailable: true,
       sessions: "coverage.none",
     };
@@ -256,10 +263,12 @@ export function aggregateUsageLabels(input: {
       sessions: "coverage.complete",
     };
   }
+  const usageUnavailable = coverage.available === 0;
   return {
-    cost: "metric.knownCost",
-    tokens: "metric.knownTokens",
-    usageUnavailable: coverage.available === 0,
+    // "Known" qualifies a figure; with no available session there is none.
+    cost: usageUnavailable ? "metric.cost" : "metric.knownCost",
+    tokens: usageUnavailable ? "metric.tokens" : "metric.knownTokens",
+    usageUnavailable,
     sessions: coverage.discoveryLimited
       ? "coverage.sessionsLimited"
       : "coverage.sessions",
@@ -274,10 +283,19 @@ export type CoverageProjection = {
   sessionRatio: number | null;
   complete: boolean;
   discoveryLimited: boolean;
-  /** Pre-joined bounded reason tokens, `reason: count` in enumeration order. */
+  /** Pre-joined bounded reason labels, `label count` in enumeration order. */
   reasons: string;
   /** Pre-rendered session line; the catalog key comes from the one ladder. */
   line: string;
+};
+
+/** Plain-language label per bounded reason code; the code itself stays in `json`. */
+const COVERAGE_REASON_LABELS: Readonly<Record<CoverageReason, MessageKey>> = {
+  "no-manifest": "coverage.reason.no-manifest",
+  "manifest-unavailable": "coverage.reason.manifest-unavailable",
+  "marker-unavailable": "coverage.reason.marker-unavailable",
+  "session-unreadable": "coverage.reason.session-unreadable",
+  "replay-failed": "coverage.reason.replay-failed",
 };
 
 /**
@@ -295,8 +313,9 @@ export function coverageProjection(
   const key = aggregateUsageLabels({ availability, coverage }).sessions;
   return {
     ...coverage,
-    reasons: Object.entries(coverage.reasons)
-      .map(([reason, count]) => `${reason}: ${count}`)
+    // SAFETY: the record is keyed by CoverageReason; Object.entries widens keys to string.
+    reasons: (Object.entries(coverage.reasons) as [CoverageReason, number][])
+      .map(([reason, count]) => `${t(COVERAGE_REASON_LABELS[reason])} ${count}`)
       .join(" · "),
     line: t(key as MessageKey, {
       available: coverage.available,

@@ -1493,6 +1493,9 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
             const { renderSnapshot } = await import("./ui/snapshot.ts");
             // The snapshot theme is resolved configuration, not a bare default.
             const theme = config.theme;
+            // Timestamps show the generating machine's local time; the zone is
+            // resolved here, once, and travels in the DTO (ADR 0018).
+            const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
             let dto: SnapshotDto;
             if (target === "current") {
               // One scope, loaded exactly for the target being rendered.
@@ -1509,6 +1512,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                 kind: "current",
                 schemaVersion: 1,
                 theme,
+                timeZone,
                 projection: projectCurrentView(
                   view,
                   command.scope,
@@ -1558,6 +1562,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                 kind: "session",
                 schemaVersion: 1,
                 theme,
+                timeZone,
                 projection: projectHistoricalSession(session, command.range),
               };
             }

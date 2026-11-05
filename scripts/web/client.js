@@ -42,7 +42,15 @@
    * rows it was handed. Both are the same code the snapshot renderer runs.
    */
   const format = web.format;
-  if (format === undefined || typeof format.cost !== "function") {
+  if (
+    format === undefined ||
+    typeof format.cost !== "function" ||
+    typeof format.confidenceTone !== "function" ||
+    typeof format.localTimestamp !== "function" ||
+    typeof format.unavailableColumns !== "function" ||
+    typeof format.collapseRows !== "number" ||
+    typeof format.version !== "string"
+  ) {
     throw new Error("browser format module must initialize first");
   }
   const executions = web.agentTree;
@@ -98,8 +106,9 @@
     const point = chartPoint(value);
     return point === null ? COPY["evidence.unavailable"] : render(point);
   };
+  // An explicit "" tone reads plain (a known source), exactly as the snapshot.
   const badge = (label, tone) =>
-    el("span", "badge " + (tone || "neutral"), label);
+    el("span", tone === "" ? "badge" : "badge " + (tone || "neutral"), label);
   const assign = (base, extra) => {
     const result = {};
     Object.keys(base).forEach((key) => {
@@ -753,10 +762,11 @@
   };
 
   /** The one empty/unavailable section: a bounded label, never a fabricated row. */
-  const emptyCard = (title, note) => {
+  /** An empty section; `kicker` says whether it is unavailable or an observed zero. */
+  const emptyCard = (title, note, kicker = COPY["unavailable.title"]) => {
     const section = el("section", "card empty");
     section.append(
-      el("p", "eyebrow", COPY["unavailable.title"]),
+      el("p", "eyebrow", kicker),
       el("h2", "", title),
       el("p", "", note),
     );
@@ -815,7 +825,41 @@
     return button;
   };
 
-  const simpleTable = (section, headers, rows, classes) => {
+  /**
+   * Columns whose every row reads Unavailable (two rows or more). They fold into
+   * one footnote that still says Unavailable, so the statement survives without
+   * a column of repeated non-values. `basis` is the full row set, so search and
+   * filters never change which columns exist.
+   */
+  const unavailableColumns = (headers, basis) =>
+    format.unavailableColumns(
+      headers.length,
+      basis.map((row) =>
+        (row.cells === undefined ? row : row.cells).map(cellText),
+      ),
+      COPY["evidence.unavailable"],
+    );
+
+  /**
+   * `options.basis` is the full row set the column folding reads (defaults to
+   * `rows`); `options.emptyNote` explains a table whose rows are all hidden.
+   */
+  const simpleTable = (section, headers, rows, classes, options = {}) => {
+    const folded = unavailableColumns(headers, options.basis || rows);
+    let foldedNote = null;
+    if (folded.length > 0) {
+      const keep = (_, index) => folded.indexOf(index) < 0;
+      const allHeaders = headers;
+      headers = headers.filter(keep);
+      classes = classes === undefined ? undefined : classes.filter(keep);
+      rows = rows.map((row) => {
+        const cells = (row.cells === undefined ? row : row.cells).filter(keep);
+        return row.cells === undefined ? cells : { ...row, cells };
+      });
+      foldedNote = tr("table.allUnavailable", {
+        columns: folded.map((index) => allHeaders[index]).join(", "),
+      });
+    }
     const wrap = el("div", "table-wrap");
     const table = document.createElement("table");
     const head = document.createElement("thead");
@@ -853,6 +897,10 @@
     table.append(head, body);
     wrap.append(table);
     section.append(wrap);
+    if (rows.length === 0 && options.emptyNote !== undefined) {
+      section.append(el("p", "table-empty", options.emptyNote));
+    }
+    if (foldedNote !== null) section.append(el("div", "footnote", foldedNote));
     return section;
   };
 
@@ -946,13 +994,77 @@
         );
     }
     if (order === "reverse") shown = shown.slice().reverse();
-    return simpleTable(section, headers, shown, classes);
+    let emptyNote;
+    if (shown.length === 0 && rows.length > 0) {
+      // Rows exist but this view hides them all: say why and how to get them back.
+      emptyNote =
+        query.length > 0
+          ? tr("table.noMatch", { query: activeQuery() })
+          : tr("table.filteredAll", {
+              filter: COPY[filter.labelKey],
+              hidden: number(rows.length),
+            });
+    }
+    return simpleTable(section, headers, shown, classes, {
+      basis: rows,
+      emptyNote,
+    });
   };
 
   const badgeCell = (label, tone) => {
     const span = el("span");
     span.append(badge(label, tone));
     return span;
+  };
+  /** One confidence badge: the catalog label and the tone rule the snapshot uses. */
+  const confidenceCell = (confidence) =>
+    badgeCell(
+      COPY["evidence." + confidence],
+      format.confidenceTone(confidence),
+    );
+  /**
+   * Long row-per-event tables (the ledger, the calls timeline) start collapsed:
+   * their rows are built only once the reader asks. A focused entity — and, for
+   * a table with its own search box, a search — opens them, so a deep link never
+   * lands on a hidden row; that opening sticks, so clearing the search never
+   * pulls the table (and the box being typed in) away. Hide is offered only
+   * when nothing forces the table open. Browser state of this view, never a
+   * route.
+   */
+  const COLLAPSE_ROWS = format.collapseRows;
+  const disclosure = (name, count, followsQuery) => {
+    if (count <= COLLAPSE_ROWS) return { collapsed: false, hideable: false };
+    const forced =
+      state.entity !== undefined || (followsQuery && activeQuery() !== "");
+    if (forced) writeSetting(name, true);
+    const open = forced || activeSettings()[name] === true;
+    return { collapsed: !open, hideable: open && !forced };
+  };
+  const discloseControl = (name, expanded, count) => {
+    const button = el(
+      "button",
+      "disclose",
+      expanded
+        ? COPY["table.hideRows"]
+        : tr("table.showRows", { count: number(count) }),
+    );
+    button.dataset.disclose = name;
+    button.setAttribute("aria-expanded", String(expanded));
+    return button;
+  };
+  const collapsedCard = (title, note, name, count) => {
+    const section = card(title, note);
+    const bar = el("div", "disclose-bar");
+    bar.append(discloseControl(name, false, count));
+    section.append(bar);
+    return section;
+  };
+  /** Local time where the page is viewed; the persisted instant stays in `datetime`. */
+  const timeCell = (iso) => {
+    const node = el("time", "", format.localTimestamp(text(iso)));
+    node.setAttribute("datetime", text(iso));
+    node.title = text(iso);
+    return node;
   };
   const agentStatusCell = (run) => {
     const span = el("span");
@@ -1046,11 +1158,7 @@
         COPY["table.confidence"],
       ],
       rows.map((row) => ({
-        cells: [
-          row.source,
-          row.observation,
-          badgeCell(row.confidence, "neutral"),
-        ],
+        cells: [row.source, row.observation, confidenceCell(row.confidence)],
       })),
       ["status-cell", "wrap", "status-cell"],
     );
@@ -1074,7 +1182,7 @@
         tr("metric.usage." + part.key),
         number(part.totalTokens),
         money(part.cost),
-        badgeCell(COPY["evidence.native"], ""),
+        confidenceCell("native"),
       ],
     }));
     if (composition.total !== undefined) {
@@ -1083,7 +1191,7 @@
           COPY["usage.total"],
           number(composition.total.totalTokens),
           money(composition.total.cost),
-          badgeCell(COPY["evidence.native"], ""),
+          confidenceCell("native"),
         ],
       });
     }
@@ -1096,7 +1204,7 @@
           composition.reconciles
             ? COPY["usage.reconciled"]
             : COPY["usage.unreconciled"],
-          composition.reconciles ? "neutral" : "warn",
+          composition.reconciles ? "" : "warn",
         ),
       );
     return simpleTable(
@@ -1520,7 +1628,13 @@
     const meta = target.range;
     const rows = meta === undefined ? [] : meta.models;
     if (rows.length === 0) {
-      return [emptyCard(COPY["panel.models"], COPY["models.none"])];
+      return [
+        emptyCard(
+          COPY["panel.models"],
+          COPY["models.none"],
+          meta === undefined ? undefined : COPY["observed.zero"],
+        ),
+      ];
     }
     const section = table(
       COPY["panel.models"],
@@ -1654,7 +1768,9 @@
     }
     const summary = meta.toolSummary;
     if (summary.length === 0) {
-      return [emptyCard(COPY["tools.summary"], COPY["tools.none"])];
+      return [
+        emptyCard(COPY["tools.summary"], COPY["tools.none"], COPY["observed.zero"]),
+      ];
     }
     const filter =
       state.entity !== undefined && state.entity.kind === "tool"
@@ -1687,7 +1803,7 @@
           toolUsageCell(money(row.cost), "metric.knownCost", row),
           toolDurationCell(row.durationLabel, row),
           toolAverageCell(row.averageLabel, row),
-          row.lastUsed,
+          timeCell(row.lastUsed),
           orUnavailable(row.source),
         ],
       })),
@@ -1708,45 +1824,61 @@
     const calls = meta.toolCalls.filter(
       (row) => filter === null || row.name === filter,
     );
+    // The calls timeline has no search box of its own (the tab's search filters
+    // the summary), so only a focused entity opens it.
+    const callsDisclosure = disclosure("callsOpen", calls.length, false);
     const callsCard =
       calls.length === 0
         ? emptyCard(COPY["tools.calls"], COPY["chart.empty"])
-        : simpleTable(
-            card(COPY["tools.calls"], COPY["tools.note"]),
-            [
-              COPY["table.timestamp"],
-              COPY["table.tool"],
-              COPY["table.source"],
-              COPY["table.status"],
-              COPY["table.tokens"],
-              COPY["table.cost"],
-            ],
-            calls.map((row) => ({
-              cells: [
-                row.timestamp,
-                entityLink("tool", row.name, row.name, "mono"),
-                orUnavailable(row.source),
-                badgeCell(
-                  COPY["tools." + row.status],
-                  row.status === "succeeded" ? "" : "warn",
-                ),
-                row.usage === null
-                  ? COPY["evidence.unavailable"]
-                  : number(row.usage.totalTokens),
-                row.usage === null
-                  ? COPY["evidence.unavailable"]
-                  : money(row.usage.cost),
+        : callsDisclosure.collapsed
+          ? collapsedCard(
+              COPY["tools.calls"],
+              COPY["tools.note"],
+              "callsOpen",
+              calls.length,
+            )
+          : simpleTable(
+              card(
+                COPY["tools.calls"],
+                COPY["tools.note"],
+                callsDisclosure.hideable
+                  ? discloseControl("callsOpen", true, calls.length)
+                  : undefined,
+              ),
+              [
+                COPY["table.timestamp"],
+                COPY["table.tool"],
+                COPY["table.source"],
+                COPY["table.status"],
+                COPY["table.tokens"],
+                COPY["table.cost"],
               ],
-            })),
-            [
-              "status-cell",
-              "status-cell",
-              "status-cell",
-              "status-cell",
-              "num",
-              "num",
-            ],
-          );
+              calls.map((row) => ({
+                cells: [
+                  timeCell(row.timestamp),
+                  entityLink("tool", row.name, row.name, "mono"),
+                  orUnavailable(row.source),
+                  badgeCell(
+                    COPY["tools." + row.status],
+                    row.status === "succeeded" ? "" : "warn",
+                  ),
+                  row.usage === null
+                    ? COPY["evidence.unavailable"]
+                    : number(row.usage.totalTokens),
+                  row.usage === null
+                    ? COPY["evidence.unavailable"]
+                    : money(row.usage.cost),
+                ],
+              })),
+              [
+                "status-cell",
+                "status-cell",
+                "status-cell",
+                "status-cell",
+                "num",
+                "num",
+              ],
+            );
     if (filter === null) return [summarySection, tabSection([callsCard])];
     // The filter is route state, so the URL is shareable and Back/Forward restore it.
     const bar = el("div", "toolbar");
@@ -2963,7 +3095,13 @@
     const meta = target.range;
     const rows = meta === undefined ? [] : meta.errors;
     if (rows.length === 0) {
-      return [emptyCard(COPY["tab.errors"], COPY["errors.none"])];
+      return [
+        emptyCard(
+          COPY["tab.errors"],
+          COPY["errors.none"],
+          meta === undefined ? undefined : COPY["observed.zero"],
+        ),
+      ];
     }
     const runs = runsById(meta.agents);
     return [
@@ -2986,7 +3124,7 @@
               content: entitySpan("error", row.id, row.id),
             },
             row.kind,
-            row.timestamp,
+            timeCell(row.timestamp),
             relatedToolCell(row),
             row.toolStatus === null
               ? COPY["evidence.unavailable"]
@@ -3019,6 +3157,18 @@
     if (rows.length === 0) {
       return [emptyCard(COPY["tab.ledger"], COPY["empty.ledger"])];
     }
+    // The ledger's own search box filters it, so its search may open it.
+    const ledgerDisclosure = disclosure("ledgerOpen", rows.length, true);
+    if (ledgerDisclosure.collapsed) {
+      return [
+        collapsedCard(
+          COPY["tab.ledger"],
+          COPY["ledger.materialized"],
+          "ledgerOpen",
+          rows.length,
+        ),
+      ];
+    }
     return [
       table(
         COPY["tab.ledger"],
@@ -3032,14 +3182,18 @@
         ],
         rows.map((item) => ({
           cells: [
-            item.timestamp,
+            timeCell(item.timestamp),
             { fullId: text(item.id), content: el("span", "mono", item.id) },
             item.kind,
             item.status,
-            badgeCell(COPY["evidence." + item.confidence], "neutral"),
+            confidenceCell(item.confidence),
           ],
         })),
         ["status-cell", "id-cell", "status-cell", "status-cell", "status-cell"],
+        undefined,
+        ledgerDisclosure.hideable
+          ? discloseControl("ledgerOpen", true, rows.length)
+          : undefined,
       ),
     ];
   };
@@ -3048,37 +3202,48 @@
   // History and global aggregates
   // -------------------------------------------------------------------------
 
-  const historyMetrics = () => {
+  /**
+   * The cards History and Global share, in one order: cost, tokens, observed
+   * days. A label is never shown as a value: an unavailable aggregate keeps its
+   * plain label and states Unavailable, and "Known" qualifies only a figure.
+   */
+  const aggregateCards = (labels, totals) => {
     const meta = rangeMeta();
-    const labels = snapshot.history.usageLabels;
     const unavailable = labels.usageUnavailable === true;
-    const partial = meta !== null && meta.truncated === true;
     const datable = meta !== null && meta.resolved !== null;
+    const known = !unavailable && meta !== null && meta.truncated === true;
     const costKey =
-      partial && labels.cost === "metric.cost"
-        ? "metric.knownCost"
-        : labels.cost;
+      known && labels.cost === "metric.cost" ? "metric.knownCost" : labels.cost;
     const tokensKey =
-      partial && labels.tokens === "metric.tokens"
+      known && labels.tokens === "metric.tokens"
         ? "metric.knownTokens"
         : labels.tokens;
-    const costValue = unavailable
-      ? COPY[labels.cost]
-      : datable
-        ? money(meta.totals.cost)
-        : COPY["evidence.unavailable"];
-    const tokensValue = unavailable
-      ? COPY[labels.tokens]
-      : datable
-        ? number(meta.totals.totalTokens)
-        : COPY["evidence.unavailable"];
+    const value = (format, field) =>
+      !unavailable && datable ? format(totals[field]) : COPY["evidence.unavailable"];
+    return [
+      metric(COPY[costKey], value(money, "cost"), COPY["metric.native"], [
+        [COPY["table.date"], rangeText()],
+      ]),
+      metric(
+        COPY[tokensKey],
+        value(number, "totalTokens"),
+        COPY["metric.tokens.note"],
+        [[COPY["table.date"], rangeText()]],
+      ),
+      metric(
+        COPY["metric.days"],
+        datable ? number(totals.days) : COPY["evidence.unavailable"],
+        COPY["metric.days.note"],
+        [[COPY["range.label"], rangeText()]],
+      ),
+    ];
+  };
+
+  const historyMetrics = () => {
+    const meta = rangeMeta();
+    const datable = meta !== null && meta.resolved !== null;
     return metrics([
-      metric(COPY[costKey], costValue, COPY["metric.native"], [
-        [COPY["table.date"], rangeText()],
-      ]),
-      metric(COPY[tokensKey], tokensValue, COPY["metric.tokens.note"], [
-        [COPY["table.date"], rangeText()],
-      ]),
+      ...aggregateCards(snapshot.history.usageLabels, meta?.totals ?? {}),
       metric(
         COPY["metric.generations"],
         datable
@@ -3086,12 +3251,6 @@
           : COPY["evidence.unavailable"],
         COPY["metric.generations.note"],
         [[COPY["table.date"], rangeText()]],
-      ),
-      metric(
-        COPY["metric.days"],
-        datable ? number(meta.totals.days) : COPY["evidence.unavailable"],
-        COPY["metric.days.note"],
-        [[COPY["range.label"], rangeText()]],
       ),
     ]);
   };
@@ -3272,41 +3431,14 @@
   const globalNodes = () => {
     const global = snapshot.global;
     const meta = rangeMeta();
-    const labels = global.usageLabels;
-    const unavailable = labels.usageUnavailable === true;
-    const datable = meta !== null && meta.resolved !== null;
     const cards = [
-      metric(
-        COPY[labels.cost],
-        unavailable
-          ? COPY[labels.cost]
-          : datable
-            ? money(global.totals.cost)
-            : COPY["evidence.unavailable"],
-        COPY["metric.native"],
-        [[COPY["table.date"], rangeText()]],
-      ),
-      metric(
-        COPY[labels.tokens],
-        unavailable
-          ? COPY[labels.tokens]
-          : datable
-            ? number(global.totals.totalTokens)
-            : COPY["evidence.unavailable"],
-        COPY["metric.tokens.note"],
-        [[COPY["table.date"], rangeText()]],
-      ),
-      metric(
-        COPY["metric.days"],
-        datable ? number(global.totals.days) : COPY["evidence.unavailable"],
-        COPY["metric.days.note"],
-        [[COPY["range.label"], rangeText()]],
-      ),
+      ...aggregateCards(global.usageLabels, global.totals),
+      // The same tracked-session card the snapshot draws; coverage has its own card.
       metric(
         COPY["metric.sessions"],
         number(global.trackedSessions),
-        // L2's own session line, or the label key the same projection published.
-        global.coverage === null ? COPY[labels.sessions] : global.coverage.line,
+        COPY["metric.sessions.global.note"],
+        [[COPY["evidence.unavailable"], number(global.unavailableSessions)]],
       ),
     ];
     const inventory = card(COPY["tab.environment"], COPY["env.note"]);
@@ -3331,7 +3463,7 @@
     );
     return [
       metrics(cards),
-      coverageSection(global.coverage, labels),
+      coverageSection(global.coverage, global.usageLabels),
       chartSection(meta === null ? [] : meta.daily, GLOBAL_CHART_METRICS),
       compositionSection(global.composition),
       inventory,
@@ -3403,12 +3535,15 @@
       : resolved.from + " → " + resolved.to;
   };
 
-  /** The control names the theme it would switch to, never the one in effect. */
+  /**
+   * The control names the theme it would switch to, never the one in effect.
+   * It is an action button, not a toggle: a label that changes with the state
+   * must not also carry `aria-pressed`, and the pressed styling read as "on".
+   */
   const syncThemeControl = (dark) => {
     const button = q("theme");
     if (button === null) return;
     button.textContent = dark ? COPY["theme.light"] : COPY["theme.dark"];
-    button.setAttribute("aria-pressed", String(dark));
   };
 
   /** Puts the DTO's own initial theme in effect, once, on the first payload. */
@@ -3503,9 +3638,11 @@
     if (note !== null) {
       // The scope switch is inert when both views carry the same report data, so
       // the DTO's own equality statement is what says so, instead of the switch
-      // appearing to do nothing.
+      // appearing to do nothing. Outside Current, `scope-fixed` alone explains
+      // the fixed scope, so this note stays hidden rather than repeating it.
       const same =
         snapshot !== null && snapshot.current.sameReportProjection === true;
+      note.hidden = view.activeSection !== "current";
       note.textContent =
         view.activeSection === "current"
           ? same
@@ -3515,7 +3652,7 @@
                   ? "scope.active.note"
                   : "scope.tree.note"
               ]
-          : COPY["scope.fixed"];
+          : "";
     }
   };
 
@@ -3605,20 +3742,22 @@
             : target.report.sessionId;
       } else if (entry !== null) {
         label.textContent = entry.sessionId;
-      } else if (section === "global") {
-        label.textContent =
-          snapshot === null
-            ? COPY["evidence.unavailable"]
-            : number(snapshot.global.trackedSessions);
       } else {
+        // History and Global both describe a set of sessions, so both name it by
+        // the same coverage line rather than a bare count beside a session slot.
+        const coverage =
+          snapshot === null
+            ? null
+            : section === "global"
+              ? snapshot.global.coverage
+              : snapshot.history.coverage;
         label.textContent =
-          snapshot.history.coverage === null
-            ? COPY["coverage.title"]
-            : snapshot.history.coverage.line;
+          coverage === null ? COPY["coverage.title"] : coverage.line;
       }
     }
     const scopeNote = q("scope-note");
     if (scopeNote !== null) {
+      // "In this session" only holds when one session is in view.
       scopeNote.textContent =
         section === "current"
           ? COPY[state.scope === "active" ? "scope.active" : "scope.tree"] +
@@ -3626,7 +3765,9 @@
             COPY[
               state.scope === "active" ? "scope.active.note" : "scope.tree.note"
             ]
-          : COPY["scope.tree.note"];
+          : entry !== null
+            ? COPY["scope.tree.note"]
+            : "";
     }
     const expired = q("wal-detail");
     const target = targetView();
@@ -4194,6 +4335,9 @@
       applyLiveDelta(message);
       return;
     }
+    // "resync": the revision is too large for one live message; read it over
+    // HTTP, which also reconnects the channel at the new ETag. Any unknown type
+    // recovers the same way.
     recoverLiveSnapshot();
   };
 
@@ -4453,12 +4597,15 @@
     navigator.clipboard.writeText(value).catch(() => {});
   };
 
-  const setSetting = (name, value) => {
+  const writeSetting = (name, value) => {
     const key = settingsKey();
     const settings = viewSettings[key] === undefined ? {} : viewSettings[key];
     settings[name] = value;
     viewSettings[key] = settings;
-    render({});
+  };
+  const setSetting = (name, value, effects = {}) => {
+    writeSetting(name, value);
+    render(effects);
   };
 
   const onDocumentClick = (event) => {
@@ -4495,6 +4642,14 @@
             current !== null && current !== data.envTab ? null : undefined,
         }),
       );
+      return;
+    }
+    if (data.disclose !== undefined) {
+      // Expanding a long table is this view's own state, like a filter; focus
+      // follows to the control that replaces the one pressed.
+      setSetting(data.disclose, activeSettings()[data.disclose] !== true, {
+        preserveViewFocus: true,
+      });
       return;
     }
     if (data.filter !== undefined) {
@@ -4634,6 +4789,9 @@
     syncThemeControl(document.body.className.includes("theme-dark"));
     const loading = q("loading-title");
     if (loading !== null) loading.textContent = COPY["state.loading"];
+    // The build's own version (package metadata, never report data); "" hides it.
+    const version = q("version");
+    if (version !== null) version.textContent = format.version;
     document.addEventListener("click", onDocumentClick);
     document.addEventListener("input", onDocumentInput);
     document.addEventListener("change", onDocumentChange);
@@ -4643,8 +4801,7 @@
     if (theme !== null) {
       theme.addEventListener("click", () => {
         const dark = document.body.classList.toggle("theme-dark");
-        theme.textContent = dark ? COPY["theme.light"] : COPY["theme.dark"];
-        theme.setAttribute("aria-pressed", String(dark));
+        syncThemeControl(dark);
         // The canvas cannot read the stylesheet's custom properties: recolor the
         // live chart from the palette of the theme now in effect.
         const chartModule = web.chart;

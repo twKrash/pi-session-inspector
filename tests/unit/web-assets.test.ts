@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { InspectorBundle } from "../../src/ui/bundle.ts";
 import { createTranslator } from "../../src/ui/i18n.ts";
+import { ENGLISH_CATALOG as CATALOG } from "../../src/ui/i18n/catalog.ts";
 import { SNAPSHOT_STYLESHEET } from "../../src/ui/snapshot.ts";
 import {
   type InspectorUiSnapshot,
@@ -442,7 +443,26 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
   assert.equal(typeof namespace.start, "function");
   // The cost rule is the shared one, not a second implementation.
   const format = namespace.format as Record<string, unknown>;
-  assert.deepEqual(Object.keys(format).sort(), ["cost"]);
+  assert.deepEqual(Object.keys(format).sort(), [
+    "collapseRows",
+    "confidenceTone",
+    "cost",
+    "localTimestamp",
+    "unavailableColumns",
+    "version",
+  ]);
+  // The build embeds this package's own version, so the page names its build.
+  const manifest = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { version: string };
+  assert.equal(format.version, `v${manifest.version}`);
+  assert.equal(
+    (format.localTimestamp as (iso: string, zone: string) => string)(
+      "2026-10-30T20:03:35.831Z",
+      "UTC",
+    ),
+    "2026-10-30 20:03:35 UTC",
+  );
   assert.equal(typeof format.cost, "function");
   assert.equal((format.cost as (value: number) => string)(0.0049), "$0.0049");
   assert.equal((format.cost as (value: number) => string)(0), "$0.00");
@@ -1933,7 +1953,10 @@ test("the resolved theme is in the first paint, before any payload arrives", asy
   const darkStarted = darkHarness.start();
   assert.equal(darkHarness.body().className.includes("theme-dark"), true);
   assert.equal(darkHarness.element("theme").textContent, "Light theme");
-  assert.equal(darkHarness.element("theme").attributes["aria-pressed"], "true");
+  assert.equal(
+    darkHarness.element("theme").attributes["aria-pressed"],
+    undefined,
+  );
   darkHarness.releaseFetch();
   await darkStarted;
   assert.equal(darkHarness.body().className.includes("theme-dark"), true);
@@ -1950,7 +1973,7 @@ test("the resolved theme is in the first paint, before any payload arrives", asy
   assert.equal(lightHarness.element("theme").textContent, "Dark theme");
   assert.equal(
     lightHarness.element("theme").attributes["aria-pressed"],
-    "false",
+    undefined,
   );
   assert.deepEqual(lightHarness.storageWrites(), []);
   lightHarness.click(lightHarness.element("theme"));
@@ -1958,7 +1981,7 @@ test("the resolved theme is in the first paint, before any payload arrives", asy
   assert.equal(lightHarness.element("theme").textContent, "Light theme");
   assert.equal(
     lightHarness.element("theme").attributes["aria-pressed"],
-    "true",
+    undefined,
   );
   assert.deepEqual(lightHarness.storageWrites(), []);
 });
@@ -2145,6 +2168,87 @@ function metrics(harness: Harness): string[] {
 }
 
 type Harness = ReturnType<typeof createWebClient>;
+
+test("History and Global share card order and never show a label as a value", async () => {
+  const snapshot = uiSnapshot();
+  // Observed on a real project: every inspected session unavailable.
+  const none = {
+    cost: "metric.cost",
+    tokens: "metric.tokens",
+    usageUnavailable: true,
+    sessions: "coverage.sessionsLimited",
+  } as const;
+  snapshot.history.usageLabels = none;
+  snapshot.global.usageLabels = none;
+  const harness = createWebClient({ responses: [snapshot] });
+  await harness.start();
+  const titles = (cards: string[]) => cards.map((card) => card.split(" ")[0]);
+
+  harness.location.hash = "#/history/overview";
+  harness.hashchange();
+  await settle();
+  const history = metrics(harness);
+  harness.location.hash = "#/global/overview";
+  harness.hashchange();
+  await settle();
+  const global = metrics(harness);
+
+  for (const cards of [history, global]) {
+    assert.match(cards[0] ?? "", /^Native cost Unavailable /);
+    assert.match(cards[1] ?? "", /^Total tokens Unavailable /);
+    assert.match(cards[2] ?? "", /^Observed days /);
+    assert.equal(cards.join(" ").includes("Known"), false);
+  }
+  // The scope's own card comes last: Generations for History, sessions for Global.
+  assert.deepEqual(titles(history), [
+    "Native",
+    "Total",
+    "Observed",
+    "Generations",
+  ]);
+  // Global's Environment inventory cards follow in their own section.
+  assert.deepEqual(titles(global).slice(0, 4), [
+    "Native",
+    "Total",
+    "Observed",
+    "Tracked",
+  ]);
+});
+
+test("an empty Errors tab says observed zero, an unavailable range says unavailable", async () => {
+  const observed = uiSnapshot();
+  const range = observed.current.tree.range;
+  assert.ok(range !== undefined);
+  range.errors = [];
+  const zero = createWebClient({
+    responses: [observed],
+    hash: "#/current/errors?scope=tree",
+  });
+  await zero.start();
+  const zeroText = zero.texts(zero.element("view")).join(" ");
+  assert.equal(zeroText.includes(CATALOG["observed.zero"]), true);
+  assert.equal(zeroText.includes(CATALOG["unavailable.title"]), false);
+  assert.equal(zeroText.includes(CATALOG["errors.none"]), true);
+
+  const missing = uiSnapshot();
+  delete (missing.current.tree as { range?: unknown }).range;
+  const none = createWebClient({
+    responses: [missing],
+    hash: "#/current/errors?scope=tree",
+  });
+  await none.start();
+  const noneText = none.texts(none.element("view")).join(" ");
+  assert.equal(noneText.includes(CATALOG["observed.zero"]), false);
+});
+
+test("the brand names the build's version", async () => {
+  const harness = createWebClient({ responses: [uiSnapshot()] });
+  await harness.start();
+  const manifest = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { version: string };
+  assert.equal(harness.element("version").textContent, `v${manifest.version}`);
+});
 
 test("tab navigation supports browser DOM collections", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()] });
@@ -2608,14 +2712,40 @@ test("the theme control toggles the DTO's theme in memory only", async () => {
   const theme = harness.element("theme");
   // The DTO's own theme is the initial one (dark for this fixture).
   assert.equal(harness.body().className.includes("theme-dark"), true);
-  assert.equal(theme.attributes["aria-pressed"], "true");
   assert.equal(theme.textContent, "Light theme");
   harness.click(theme);
   assert.equal(harness.body().className.includes("theme-dark"), false);
-  assert.equal(theme.attributes["aria-pressed"], "false");
   assert.equal(theme.textContent, "Dark theme");
   harness.click(theme);
   assert.equal(harness.body().className.includes("theme-dark"), true);
+  // The label names the action, so the control is a plain button: a pressed
+  // state beside a label that already flips would contradict it.
+  assert.equal(theme.attributes["aria-pressed"], undefined);
+});
+
+test("History and Global state the fixed scope once and describe sessions, not one session", async () => {
+  const snapshot = uiSnapshot();
+  for (const section of ["history", "global"] as const) {
+    const harness = createWebClient({
+      responses: [snapshot],
+      hash: `#/${section}/overview`,
+    });
+    await harness.start();
+    await settle();
+    const fixed = harness.element("scope-fixed");
+    const sub = harness.element("scope-sub");
+    assert.equal(fixed.hidden, false, section);
+    assert.equal(sub.hidden, true, section);
+    assert.equal(sub.textContent, "", section);
+    assert.equal(harness.element("scope-note").textContent, "", section);
+    const coverage = snapshot[section].coverage;
+    assert.notEqual(coverage, null, section);
+    assert.equal(
+      harness.element("session-label").textContent,
+      coverage?.line,
+      section,
+    );
+  }
 });
 
 test("the history table carries an opaque id column with a copy control", async () => {
@@ -5935,4 +6065,183 @@ test("the Tools tab separates its summary from the calls timeline", async () => 
   harness.click(control(harness, "view", "clearFilter", "true"));
   assert.equal(harness.texts(view).join(" ").includes("Filtered by"), false);
   assert.equal(harness.location.hash, "#/current/tools?scope=tree&preset=7");
+});
+
+test("a column Unavailable in every row folds into one footnote, and a hidden table says why", async () => {
+  const snapshot = uiSnapshot();
+  const view = snapshot.current.tree;
+  const range = view.range;
+  const report = view.report;
+  if (range === undefined || report === undefined) {
+    throw new Error("fixture must carry a tree range and report");
+  }
+  const error = range.errors[0];
+  if (error === undefined) throw new Error("fixture must carry an error row");
+  range.errors = [
+    { ...error, id: "tool:call_1", relatedChildIds: [] },
+    { ...error, id: "tool:call_2", relatedChildIds: [] },
+  ];
+  const errors = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/errors?scope=tree",
+  });
+  await errors.start();
+  const headers = errors
+    .element("view")
+    .querySelectorAll("th")
+    .map((th) => th.textContent);
+  assert.equal(headers.includes(CATALOG["errors.relatedChildren"]), false);
+  assert.equal(
+    viewText(errors).includes(
+      `${CATALOG["errors.relatedChildren"]}: Unavailable for every row`,
+    ),
+    true,
+  );
+
+  // Skills nothing invoked: the default filter hides every row, and the table
+  // says so instead of showing bare headers.
+  const skill = report.skills.items[0];
+  if (skill === undefined) throw new Error("fixture must carry a skill row");
+  report.skills = {
+    ...report.skills,
+    items: [
+      { ...skill, name: "alpha", explicitInvocations: 0 },
+      { ...skill, name: "beta", explicitInvocations: 0 },
+    ],
+  };
+  const skills = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/skills?scope=tree",
+  });
+  await skills.start();
+  assert.equal(
+    viewText(skills).includes(
+      `“${CATALOG["filter.invokedOnly"]}” hides all 2 rows. Turn it off to see them.`,
+    ),
+    true,
+  );
+});
+
+test("a ledger past 100 rows builds no rows until opened, and keeps focus on its control", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const item = range.ledger[0];
+  if (item === undefined) throw new Error("fixture must carry a ledger row");
+  range.ledger = Array.from({ length: 101 }, (_, index) => ({
+    ...item,
+    id: `ledger-row-${index}`,
+  }));
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/ledger?scope=tree",
+  });
+  await harness.start();
+  const view = harness.element("view");
+  const control = (): StubElement | undefined =>
+    view
+      .querySelectorAll("button")
+      .find((button) => button.dataset.disclose === "ledgerOpen");
+  assert.equal(view.querySelectorAll("tbody").length, 0);
+  assert.equal(control()?.textContent, "Show all 101 rows");
+  assert.equal(control()?.attributes["aria-expanded"], "false");
+
+  const show = control() as StubElement;
+  show.focus();
+  harness.click(show);
+  // 101 body rows plus the header row.
+  assert.equal(view.querySelectorAll("tr").length, 102);
+  assert.equal(control()?.textContent, CATALOG["table.hideRows"]);
+  assert.equal(control()?.attributes["aria-expanded"], "true");
+  assert.equal(harness.activeElement()?.dataset.disclose, "ledgerOpen");
+
+  harness.click(control() as StubElement);
+  assert.equal(view.querySelectorAll("tbody").length, 0);
+});
+
+test("a live resync reads the new revision over HTTP and resubscribes at its ETag", async () => {
+  const harness = createWebClient({
+    hash: `#token=${TOKEN}`,
+    responses: [uiSnapshot(), uiSnapshot()],
+    etags: [ETAG_1, ETAG_2],
+  });
+  await harness.start();
+  harness.openSocket();
+  harness.receiveSocket({ type: "ready", etag: ETAG_1 });
+  harness.receiveSocket({ type: "resync", etag: ETAG_2 });
+  assert.equal(
+    harness.fetchRequests().filter(({ url }) => url === "/api/v1/ui").length,
+    2,
+  );
+  await settle();
+  // The old channel is retired and a new one subscribes at the fresh ETag,
+  // so a too-large revision never becomes a reconnect loop.
+  assert.equal(harness.socketCount(), 2);
+  harness.openSocket(1);
+  assert.equal(
+    JSON.parse(harness.socketMessages().at(-1) ?? "null").etag,
+    ETAG_2,
+  );
+});
+
+test("a ledger opened by its own search stays open when the search is cleared, and Hide works only then", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const item = range.ledger[0];
+  if (item === undefined) throw new Error("fixture must carry a ledger row");
+  range.ledger = Array.from({ length: 101 }, (_, index) => ({
+    ...item,
+    id: `ledger-row-${index}`,
+  }));
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/ledger?scope=tree",
+  });
+  await harness.start();
+  const view = harness.element("view");
+  const control = (): StubElement | undefined =>
+    view
+      .querySelectorAll("button")
+      .find((button) => button.dataset.disclose === "ledgerOpen");
+  harness.click(control() as StubElement);
+
+  // Searching forces the table open, so Hide is not offered.
+  const search = harness.element("search");
+  search.value = "ledger-row-1";
+  harness.input(search);
+  assert.equal(control(), undefined);
+  // Clearing the search keeps the table and its search box.
+  const cleared = harness.element("search");
+  cleared.value = "";
+  harness.input(cleared);
+  assert.notEqual(view.querySelectorAll("input").length, 0);
+  assert.equal(view.querySelectorAll("tr").length, 102);
+  assert.equal(control()?.textContent, CATALOG["table.hideRows"]);
+  harness.click(control() as StubElement);
+  assert.equal(view.querySelectorAll("tbody").length, 0);
+});
+
+test("the Tools search never opens or closes the calls timeline", async () => {
+  const snapshot = uiSnapshot();
+  const range = snapshot.current.tree.range;
+  if (range === undefined) throw new Error("fixture must carry a tree range");
+  const call = range.toolCalls[0];
+  if (call === undefined) throw new Error("fixture must carry a tool call");
+  range.toolCalls = Array.from({ length: 101 }, () => ({ ...call }));
+  const harness = createWebClient({
+    responses: [snapshot],
+    hash: "#/current/tools?scope=tree",
+  });
+  await harness.start();
+  const callsControl = (): StubElement | undefined =>
+    harness
+      .element("view")
+      .querySelectorAll("button")
+      .find((button) => button.dataset.disclose === "callsOpen");
+  assert.equal(callsControl()?.textContent, "Show all 101 rows");
+  const search = harness.element("search");
+  search.value = "zzz";
+  harness.input(search);
+  assert.equal(callsControl()?.textContent, "Show all 101 rows");
 });

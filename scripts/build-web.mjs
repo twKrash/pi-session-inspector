@@ -21,7 +21,16 @@ const resolveDir = fileURLToPath(new URL("../", import.meta.url));
 // The shared boundaries are installed before the client runs, so the browser
 // resolves copy, cost and execution topology through the same modules the
 // TypeScript renderers use, rather than through a second implementation.
-const prelude = `import { formatCost } from "./src/ui/format.ts";
+const prelude = `import {
+  COLLAPSE_ROWS,
+  confidenceTone,
+  formatCost,
+  formatLocalTimestamp,
+  unavailableColumns,
+  versionLabel,
+} from "./src/ui/format.ts";
+// Only the version field is bundled; a version bump makes the asset stale.
+import { version } from "./package.json";
 import { createTranslator } from "./src/ui/i18n.ts";
 import {
   buildAgentForest,
@@ -31,7 +40,14 @@ import {
 import { applyChartTheme, chartTheme, createDailyChart } from "./scripts/web/chart.ts";
 const web = (globalThis.SessionInspectorWeb = globalThis.SessionInspectorWeb || {});
 web.i18n = { t: createTranslator("en") };
-web.format = { cost: formatCost };
+web.format = {
+  collapseRows: COLLAPSE_ROWS,
+  confidenceTone,
+  cost: formatCost,
+  localTimestamp: formatLocalTimestamp,
+  unavailableColumns,
+  version: versionLabel(version),
+};
 web.agentTree = {
   build: buildAgentForest,
   filter: filterAgentForest,

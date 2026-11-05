@@ -2,6 +2,78 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0]
+
+### Added
+
+- A column that is Unavailable in every row (two or more rows) folds into one
+  footnote that still says so, in the live UI and in snapshots.
+- A table whose filter or search hides every row says why and how to see them,
+  instead of showing bare headers (Skills with "Invoked only").
+- The ledger and the tool-calls timeline start collapsed past 100 rows. The
+  live UI builds their rows only when opened; a focused entity (and, for the
+  ledger, its own search) opens them and keeps them open. Snapshots use a
+  native `<details>`, so every row stays in the file.
+- The sidebar names the running build's version (`v1.7.0`) under the product
+  name, in the live UI and in snapshots.
+
+### Changed
+
+- Coverage reasons read in plain words ("no Inspector record 1 · session file
+  unavailable 146") instead of raw codes; `json` output keeps the codes. A
+  capped History/Global set also states how many sessions were unavailable.
+- Timestamps show local time with its offset, `YYYY-MM-DD HH:MM:SS UTC+2`
+  (the browser's zone in the live UI, the generating machine's in a snapshot),
+  with the persisted ISO instant in the `<time>` element and its tooltip;
+  headers say "(local)". Only a full ISO instant is converted; any other value
+  is shown as persisted. A snapshot's zone is resolved once by the command and
+  carried in its input, so the same input renders the same bytes anywhere.
+- The light theme is warmer and the dark theme is a blue slate instead of
+  green-grey, in the UI, snapshots and the chart; text and control contrast
+  stay at or above WCAG AA.
+- Confidence badges use one casing and tone rule on both surfaces; a known
+  source reads plain, as in the snapshot.
+- Tighter table cells, wrapping column headers and bounded message columns;
+  Copy ID appears on row hover or focus instead of on every row; the page
+  heading no longer shows a focus ring after navigation; the scope and date
+  panel is more compact on phones.
+
+### Fixed
+
+- History and Global cards no longer show a label in place of a value: with no
+  available session they read "Native cost: Unavailable" instead of "Known
+  native cost: Known native cost", in the live UI and in snapshots. Both pages
+  show the shared cards in one order (cost, tokens, observed days), then their
+  own (Generations; Tracked sessions with its unavailable count).
+- An empty Errors, LLM or Tools tab with a known range says "Observed zero."
+  instead of "Unavailable, not zero."; snapshots use the same kickers as the
+  live UI.
+- The History pager has the card's padding, and "Available only" has a gap
+  before its row count.
+- History and Global state "History & Global use full tree." once instead of
+  twice, and their context line shows the session coverage line instead of a
+  bare count beside "All tracked branches in this session".
+- Wide tables no longer stretch the report wider than the window: report
+  sections may shrink, so tables scroll inside their card. Large static
+  snapshots were the most visible case.
+- Input, select and button borders now meet the 3:1 non-text contrast minimum
+  in both themes.
+- Dark-theme secondary text is dimmer, so it reads as secondary next to
+  primary text again.
+- The theme switch is a plain action button: it no longer carries
+  `aria-pressed` beside a label that already names the action, and no longer
+  looks permanently pressed in the dark theme.
+- The accent top border marks only the report's lead metric, not the first
+  card of every metric group (Environment, Agents).
+- Warning badges and the custom-range error use their own warning and danger
+  colors instead of the accent tint. The chart's default Cost and Tokens lines
+  use clearly different hues: Tokens is blue, and Generations takes the gold.
+- Live updates no longer loop on "Reconnecting live updates…" for large
+  projects. A revision bigger than the 4 MiB live-message budget (a 16.7 MB
+  report was observed) used to terminate the socket on every send; the server
+  now sends a small `resync` and the page reads that revision over HTTP, then
+  resubscribes at its ETag (ADR 0027).
+
 ## [1.6.3]
 
 ### Changed

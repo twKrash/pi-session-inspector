@@ -24,3 +24,105 @@ export function formatCost(value: number): string {
   if (magnitude >= 0.0001) return `${sign}$${magnitude.toFixed(4)}`;
   return `${sign}< $0.0001`;
 }
+
+/**
+ * The one confidence-badge tone rule both surfaces share: known sources read
+ * plain (`""`), an inferred value warns, and every other state is neutral.
+ */
+export function confidenceTone(confidence: string): "neutral" | "warn" | "" {
+  if (
+    confidence === "native" ||
+    confidence === "live" ||
+    confidence === "cooperative" ||
+    confidence === "supported"
+  ) {
+    return "";
+  }
+  return confidence === "inferred" ? "warn" : "neutral";
+}
+
+const localParts = new Map<string, Intl.DateTimeFormat>();
+
+/** A full ISO-8601 instant: date, time and an explicit zone (`Z` or `±HH:MM`). */
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * A persisted ISO instant as `YYYY-MM-DD HH:MM:SS UTC±H` in the runtime's local
+ * time zone (or `timeZone` when given): the snapshot formats where it is made,
+ * the browser where it is viewed, and the offset says which. Only a full ISO
+ * instant is converted — a date-only, zone-less or other value is returned
+ * unchanged, never guessed — and the current time is never read.
+ */
+export function formatLocalTimestamp(iso: string, timeZone?: string): string {
+  if (!ISO_INSTANT.test(iso)) return iso;
+  const instant = Date.parse(iso);
+  if (!Number.isFinite(instant)) return iso;
+  const key = timeZone ?? "";
+  let formatter = localParts.get(key);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+      timeZoneName: "shortOffset",
+      ...(timeZone === undefined ? {} : { timeZone }),
+    });
+    localParts.set(key, formatter);
+  }
+  const part: Record<string, string> = {};
+  for (const { type, value } of formatter.formatToParts(instant)) {
+    part[type] = value;
+  }
+  // `GMT`, `GMT+0` and `GMT+2` read as `UTC`, `UTC` and `UTC+2`: the range
+  // panel speaks UTC, so the offset uses the same word.
+  const offset = (part.timeZoneName ?? "")
+    .replace(/^GMT(?:[+-]0)?$/, "UTC")
+    .replace(/^GMT/, "UTC");
+  return `${part.year}-${part.month}-${part.day} ${part.hour}:${part.minute}:${part.second} ${offset}`;
+}
+
+/** Past this many rows a row-per-event table (ledger, calls) starts collapsed. */
+export const COLLAPSE_ROWS = 100;
+
+/**
+ * The column-folding rule both surfaces share: with two rows or more, the
+ * indexes of columns whose every row's text is `unavailable`. A row whose cell
+ * count differs from `headerCount` keeps every column.
+ */
+export function unavailableColumns(
+  headerCount: number,
+  rows: readonly (readonly string[])[],
+  unavailable: string,
+): number[] {
+  if (rows.length < 2) return [];
+  const indexes: number[] = [];
+  for (let index = 0; index < headerCount; index += 1) {
+    if (
+      rows.every(
+        (row) =>
+          row.length === headerCount && row[index]?.trim() === unavailable,
+      )
+    ) {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
+
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/**
+ * The version line under the product name, `v1.7.0`, shared by the live UI and
+ * the snapshot. Anything that is not a plain SemVer string yields `""`, so the
+ * page shows no version rather than a guessed one; the pattern admits no markup.
+ */
+export function versionLabel(version: unknown): string {
+  return typeof version === "string" && SEMVER.test(version)
+    ? `v${version}`
+    : "";
+}

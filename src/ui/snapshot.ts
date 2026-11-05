@@ -10,7 +10,14 @@ import {
 } from "./agent-tree.ts";
 import type { DailyRow } from "./daily.ts";
 import { OPTIONAL_USAGE_FIELDS } from "./dated-usage.ts";
-import { formatCost } from "./format.ts";
+import {
+  COLLAPSE_ROWS,
+  confidenceTone,
+  formatCost,
+  formatLocalTimestamp,
+  unavailableColumns,
+  versionLabel,
+} from "./format.ts";
 import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
 import { createTranslator } from "./i18n.ts";
 import {
@@ -37,6 +44,7 @@ import type {
   UiToolSummaryRow,
 } from "./ui-projection.ts";
 import { WEB_ASSETS } from "./web-assets.ts";
+import { PACKAGE_VERSION } from "./package-version.ts";
 
 const t = createTranslator();
 
@@ -92,12 +100,16 @@ export type SnapshotDto =
       kind: "current";
       schemaVersion: 1;
       theme: SnapshotTheme;
+      /** IANA zone for local timestamps, chosen by the caller; absent is UTC. */
+      timeZone?: string;
       projection: SnapshotSessionProjection;
     }
   | {
       kind: "session";
       schemaVersion: 1;
       theme: SnapshotTheme;
+      /** IANA zone for local timestamps, chosen by the caller; absent is UTC. */
+      timeZone?: string;
       projection: SnapshotSessionProjection;
     }
   | {
@@ -160,8 +172,27 @@ export function renderSnapshot(dto: SnapshotDto): string {
       ? historyTarget(dto.projection)
       : dto.kind === "global"
         ? globalTarget(dto.projection)
-        : sessionTarget(dto.kind, dto.projection);
+        : sessionTarget(
+            dto.kind,
+            dto.projection,
+            snapshotTimeZone(dto.timeZone),
+          );
   return frame(dto.theme, target);
+}
+
+/**
+ * The zone a snapshot's timestamps are shown in. It is part of the DTO, never
+ * read from the rendering machine, so equal DTOs stay byte-identical (ADR
+ * 0018). Absent means UTC; a name `Intl` does not know is a caller error.
+ */
+function snapshotTimeZone(timeZone: string | undefined): string {
+  const zone = timeZone ?? "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+  } catch {
+    throw new Error(`snapshot timeZone is not an IANA time zone: ${zone}`);
+  }
+  return zone;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +265,7 @@ function frame(theme: SnapshotTheme, target: SnapshotTarget): string {
     `<style>${SNAPSHOT_STYLESHEET}</style></head>` +
     `<body${dark ? ' class="theme-dark"' : ""}>` +
     `<a class="skip" href="#main">Skip to report</a>` +
-    `<div class="shell"><aside aria-label="${attr(catalog.workspace)}"><div class="brand"><span class="mark" aria-hidden="true">π</span><span>${text(catalog["report.title"])}<br><small>${text(catalog["brand.tagline"])}</small></span></div>` +
+    `<div class="shell"><aside aria-label="${attr(catalog.workspace)}"><div class="brand"><span class="mark" aria-hidden="true">π</span><span>${text(catalog["report.title"])}<br><small>${text(catalog["brand.tagline"])}</small><small class="version mono">${text(versionLabel(PACKAGE_VERSION))}</small></span></div>` +
     `<p class="eyebrow">${text(catalog.workspace)}</p>` +
     `<div class="rail-foot"><span class="dot"></span>${text(catalog["local.design"])}<p>Offline report. No tracking.<br>No prompts or outputs.</p><p class="mono">${text(catalog.offline)}</p></div></aside>` +
     `<div class="workspace"><header class="topbar"><span class="trail">Inspector / <strong>${text(target.breadcrumb)}</strong></span><span class="preview">${text(catalog["tag.local"])}</span></header>` +
@@ -289,19 +320,47 @@ function footnote(content: string): string {
   return content === "" ? "" : `<div class="footnote">${text(content)}</div>`;
 }
 
-/** The one empty/unavailable section: a bounded label, never a fabricated row. */
-function emptyCard(title: string, note: string): string {
+/**
+ * The one empty section: a bounded label, never a fabricated row. `kicker`
+ * says whether the section is unavailable or an observed zero, in the same
+ * words the live UI uses.
+ */
+function emptyCard(
+  title: string,
+  note: string,
+  kicker: string = t("unavailable.title"),
+): string {
   return (
-    `<section class="card empty"><p class="eyebrow">${text(t("evidence.unavailable"))}</p>` +
+    `<section class="card empty"><p class="eyebrow">${text(kicker)}</p>` +
     `<h2>${text(title)}</h2><p>${text(note)}</p></section>`
   );
 }
 
+/** A cell's visible text, for the folding rule only (never re-rendered). */
+function cellPlainText(cell: Cell): string {
+  return typeof cell === "string" ? cell : cell.html.replace(/<[^>]*>/g, "");
+}
+
 function elapsedTable(
-  headers: readonly string[],
-  rows: readonly (readonly Cell[])[],
-  classes: readonly string[],
+  allHeaders: readonly string[],
+  allRows: readonly (readonly Cell[])[],
+  allClasses: readonly string[],
 ): string {
+  const folded = unavailableColumns(
+    allHeaders.length,
+    allRows.map((row) => row.map(cellPlainText)),
+    t("evidence.unavailable"),
+  );
+  const keep = (_: unknown, index: number): boolean => !folded.includes(index);
+  const headers = allHeaders.filter(keep);
+  const rows = allRows.map((row) => row.filter(keep));
+  const classes = allClasses.filter(keep);
+  const note =
+    folded.length === 0
+      ? ""
+      : t("table.allUnavailable", {
+          columns: folded.map((index) => allHeaders[index]).join(", "),
+        });
   const head = headers
     .map(
       (header, index) => `<th${className(classes[index])}>${text(header)}</th>`,
@@ -320,7 +379,20 @@ function elapsedTable(
     .join("");
   return (
     `<div class="table-wrap"><table><thead><tr>${head}</tr></thead>` +
-    `<tbody>${body}</tbody></table></div>`
+    `<tbody>${body}</tbody></table></div>${footnote(note)}`
+  );
+}
+
+/**
+ * A long table inside a native `<details>`: no script, every row still in the
+ * document, and nothing to scroll past until the reader opens it.
+ */
+function collapsible(rowCount: number, table: string): string {
+  if (rowCount <= COLLAPSE_ROWS) return table;
+  return (
+    `<details class="rows"><summary><span class="rows-closed">${text(t("table.showRows", { count: count(rowCount) }))}</span>` +
+    `<span class="rows-open">${text(t("table.hideRows"))}</span></summary>` +
+    `${table}</details>`
   );
 }
 
@@ -443,19 +515,6 @@ function catalogEntry(key: string): string {
   return t(key as Parameters<typeof t>[0]);
 }
 
-/** The shared confidence tone rule: known sources read plain, the rest state it. */
-function confidenceTone(confidence: string): "neutral" | "warn" | "" {
-  if (
-    confidence === "native" ||
-    confidence === "live" ||
-    confidence === "cooperative" ||
-    confidence === "supported"
-  ) {
-    return "";
-  }
-  return confidence === "inferred" ? "warn" : "neutral";
-}
-
 function confidenceBadge(confidence: string): string {
   return badge(
     catalogEntry(`evidence.${confidence}`),
@@ -486,6 +545,7 @@ const DAILY_NOTE = t("chart.note", {
 function sessionTarget(
   kind: "current" | "session",
   view: SnapshotSessionProjection,
+  timeZone: string,
 ): SnapshotTarget {
   const catalog = ENGLISH_CATALOG;
   const report = view.report;
@@ -526,7 +586,7 @@ function sessionTarget(
     content:
       (view.walDetail === "expired" ? walNotice() : "") +
       rangePanel(range, catalog["range.truncated"]) +
-      sessionSections(view, report, range),
+      sessionSections(view, report, range, timeZone),
   };
 }
 
@@ -542,6 +602,7 @@ function sessionSections(
   view: SnapshotSessionProjection,
   report: SessionReportView,
   range: RangeMetadata,
+  timeZone: string,
 ): string {
   const catalog = ENGLISH_CATALOG;
   if (report.usage === undefined) {
@@ -565,12 +626,12 @@ function sessionSections(
     compositionSection(rangeProjection?.composition ?? null),
     dailySection(rangeProjection?.daily ?? []),
     modelsSection(rangeProjection),
-    toolsSections(rangeProjection, report.durationEvidence),
+    toolsSections(rangeProjection, report.durationEvidence, timeZone),
     environmentSections(report, view.inventoryAvailability),
     agentExecutionSection(agentsSections(report, rangeProjection)),
     integrationsSection(report),
-    errorsSection(rangeProjection?.errors ?? []),
-    ledgerSection(rangeProjection?.ledger ?? []),
+    errorsSection(rangeProjection?.errors, timeZone),
+    ledgerSection(rangeProjection?.ledger ?? [], timeZone),
     evidenceSection(view.evidence),
   ].join("");
 }
@@ -856,7 +917,11 @@ function modelsSection(range: SnapshotRange | undefined): string {
   const catalog = ENGLISH_CATALOG;
   const rows = range?.models ?? [];
   if (rows.length === 0) {
-    return emptyCard(catalog["panel.models"], catalog["models.none"]);
+    return emptyCard(
+      catalog["panel.models"],
+      catalog["models.none"],
+      range === undefined ? undefined : catalog["observed.zero"],
+    );
   }
   return card(
     catalog["panel.models"],
@@ -887,12 +952,17 @@ function modelsSection(range: SnapshotRange | undefined): string {
 function toolsSections(
   range: SnapshotRange | undefined,
   durationEvidence: EvidenceState,
+  timeZone: string,
 ): string {
   const catalog = ENGLISH_CATALOG;
   const summary = range?.toolSummary ?? [];
   const summarySection =
     summary.length === 0
-      ? emptyCard(catalog["tools.summary"], catalog["tools.none"])
+      ? emptyCard(
+          catalog["tools.summary"],
+          catalog["tools.none"],
+          range === undefined ? undefined : catalog["observed.zero"],
+        )
       : card(
           catalog["tools.summary"],
           catalog["tools.note"],
@@ -923,7 +993,7 @@ function toolsSections(
               // as complete, and an uncorrelated name is Unavailable.
               toolDurationCell(row.durationLabel, row, true),
               toolDurationCell(row.averageLabel, row, false),
-              row.lastUsed,
+              timestampCell(row.lastUsed, timeZone),
               orUnavailable(row.source ?? null),
             ]),
             [
@@ -948,43 +1018,46 @@ function toolsSections(
       : card(
           catalog["tools.calls"],
           catalog["tools.note"],
-          elapsedTable(
-            [
-              catalog["table.timestamp"],
-              catalog["table.tool"],
-              catalog["table.source"],
-              catalog["table.status"],
-              catalog["table.tokens"],
-              catalog["table.cost"],
-              catalog["table.duration"],
-            ],
-            calls.map((row) => [
-              timestampCell(row.timestamp),
-              sectionLink("tools", row.name),
-              orUnavailable(row.source ?? null),
-              raw(
-                badge(
-                  catalogEntry(`tools.${row.status}`),
-                  row.status === "succeeded" ? "" : "warn",
+          collapsible(
+            calls.length,
+            elapsedTable(
+              [
+                catalog["table.timestamp"],
+                catalog["table.tool"],
+                catalog["table.source"],
+                catalog["table.status"],
+                catalog["table.tokens"],
+                catalog["table.cost"],
+                catalog["table.duration"],
+              ],
+              calls.map((row) => [
+                timestampCell(row.timestamp, timeZone),
+                sectionLink("tools", row.name),
+                orUnavailable(row.source ?? null),
+                raw(
+                  badge(
+                    catalogEntry(`tools.${row.status}`),
+                    row.status === "succeeded" ? "" : "warn",
+                  ),
                 ),
-              ),
-              row.usage === null
-                ? catalog["evidence.unavailable"]
-                : count(row.usage.totalTokens),
-              row.usage === null
-                ? catalog["evidence.unavailable"]
-                : money(row.usage.cost),
-              durationCell(row, durationEvidence),
-            ]),
-            [
-              "status-cell",
-              "status-cell",
-              "status-cell",
-              "status-cell",
-              "num",
-              "num",
-              "status-cell",
-            ],
+                row.usage === null
+                  ? catalog["evidence.unavailable"]
+                  : count(row.usage.totalTokens),
+                row.usage === null
+                  ? catalog["evidence.unavailable"]
+                  : money(row.usage.cost),
+                durationCell(row, durationEvidence),
+              ]),
+              [
+                "status-cell",
+                "status-cell",
+                "status-cell",
+                "status-cell",
+                "num",
+                "num",
+                "status-cell",
+              ],
+            ),
           ),
         );
   return sectionTarget("tools", summarySection) + tabSection(callsSection);
@@ -1049,8 +1122,11 @@ function durationCell(row: ToolRow, durationEvidence: EvidenceState): string {
     : `${label} · ${t("evidence.live")}`;
 }
 
-function timestampCell(timestamp: string): Cell {
-  return raw(`<time datetime="${attr(timestamp)}">${text(timestamp)}</time>`);
+/** Local time in the DTO's zone; the persisted instant stays in `datetime`. */
+function timestampCell(timestamp: string, timeZone: string): Cell {
+  return raw(
+    `<time datetime="${attr(timestamp)}" title="${attr(timestamp)}">${text(formatLocalTimestamp(timestamp, timeZone))}</time>`,
+  );
 }
 
 function environmentSections(
@@ -1781,10 +1857,18 @@ function integrationTelemetry(row: IntegrationRow): Cell {
   );
 }
 
-function errorsSection(errors: readonly ErrorRow[]): string {
+/** `undefined` errors means the range is unavailable, not an observed zero. */
+function errorsSection(
+  errors: readonly ErrorRow[] | undefined,
+  timeZone: string,
+): string {
   const catalog = ENGLISH_CATALOG;
-  if (errors.length === 0) {
-    return emptyCard(catalog["tab.errors"], catalog["errors.none"]);
+  if (errors === undefined || errors.length === 0) {
+    return emptyCard(
+      catalog["tab.errors"],
+      catalog["errors.none"],
+      errors === undefined ? undefined : catalog["observed.zero"],
+    );
   }
   return card(
     catalog["tab.errors"],
@@ -1801,7 +1885,7 @@ function errorsSection(errors: readonly ErrorRow[]): string {
       errors.map((row) => [
         errorHeadlineText(row),
         row.kind,
-        timestampCell(row.timestamp),
+        timestampCell(row.timestamp, timeZone),
         errorMessageText(row),
         row.relatedChildIds.length === 0
           ? catalog["evidence.unavailable"]
@@ -1823,7 +1907,10 @@ function errorMessageText(row: ErrorRow): string {
   return orUnavailable(errorMessage(row));
 }
 
-function ledgerSection(ledger: readonly LedgerItem[]): string {
+function ledgerSection(
+  ledger: readonly LedgerItem[],
+  timeZone: string,
+): string {
   const catalog = ENGLISH_CATALOG;
   if (ledger.length === 0) {
     return emptyCard(catalog["tab.ledger"], catalog["empty.ledger"]);
@@ -1831,22 +1918,25 @@ function ledgerSection(ledger: readonly LedgerItem[]): string {
   return card(
     catalog["tab.ledger"],
     catalog["ledger.materialized"],
-    elapsedTable(
-      [
-        catalog["table.timestamp"],
-        catalog["table.id"],
-        catalog["table.category"],
-        catalog["table.action"],
-        catalog["table.confidence"],
-      ],
-      ledger.map((item) => [
-        timestampCell(item.timestamp),
-        item.id,
-        item.kind,
-        item.status,
-        raw(confidenceBadge(item.confidence)),
-      ]),
-      ["status-cell", "id-cell", "status-cell", "status-cell", "status-cell"],
+    collapsible(
+      ledger.length,
+      elapsedTable(
+        [
+          catalog["table.timestamp"],
+          catalog["table.id"],
+          catalog["table.category"],
+          catalog["table.action"],
+          catalog["table.confidence"],
+        ],
+        ledger.map((item) => [
+          timestampCell(item.timestamp, timeZone),
+          item.id,
+          item.kind,
+          item.status,
+          raw(confidenceBadge(item.confidence)),
+        ]),
+        ["status-cell", "id-cell", "status-cell", "status-cell", "status-cell"],
+      ),
     ),
   );
 }
@@ -1951,22 +2041,18 @@ function aggregateMetrics(input: {
   const catalog = ENGLISH_CATALOG;
   const { totals, labels, partial, datable } = input;
   const unknown = catalog["evidence.unavailable"];
+  // "Known" qualifies a figure, so an unavailable value keeps the plain label.
+  const known = partial && !labels.usageUnavailable;
   const costLabel =
-    partial && labels.cost === "metric.cost" ? "metric.knownCost" : labels.cost;
+    known && labels.cost === "metric.cost" ? "metric.knownCost" : labels.cost;
   const tokensLabel =
-    partial && labels.tokens === "metric.tokens"
+    known && labels.tokens === "metric.tokens"
       ? "metric.knownTokens"
       : labels.tokens;
-  const costValue = labels.usageUnavailable
-    ? catalog["metric.costUnavailable"]
-    : datable
-      ? money(totals.cost)
-      : unknown;
-  const tokensValue = labels.usageUnavailable
-    ? catalog["metric.costUnavailable"]
-    : datable
-      ? count(totals.totalTokens)
-      : unknown;
+  const costValue =
+    !labels.usageUnavailable && datable ? money(totals.cost) : unknown;
+  const tokensValue =
+    !labels.usageUnavailable && datable ? count(totals.totalTokens) : unknown;
   const economics = datable ? input.usageEconomics : undefined;
   const economicsDetails = usageEconomicsDetails(economics);
   const cachePercent = economics?.cacheReuse.percent;

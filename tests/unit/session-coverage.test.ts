@@ -4,6 +4,7 @@ import {
   COVERAGE_REASON_CODES,
   buildSessionCoverage,
 } from "../../src/core/session-coverage.ts";
+import { coverageProjection } from "../../src/ui/report-projection.ts";
 
 const available = { availability: "available" as const };
 
@@ -91,4 +92,29 @@ test("every reason has a bounded-code mapping", () => {
   for (const codes of Object.values(COVERAGE_REASON_CODES)) {
     assert.ok(codes.length > 0);
   }
+});
+
+test("a capped discovery states its unavailable count and plain reasons, never a fraction", () => {
+  const projection = coverageProjection(
+    "available",
+    buildSessionCoverage({
+      availability: "available",
+      discoveryLimited: true,
+      sessions: [
+        available,
+        { availability: "unavailable", reason: "no-manifest" },
+        { availability: "unavailable", reason: "manifest-unavailable" },
+        { availability: "unavailable", reason: "manifest-unavailable" },
+      ],
+    }),
+  );
+  assert.equal(
+    projection?.line,
+    "4 sessions inspected · 3 unavailable · additional sessions not inspected",
+  );
+  assert.equal(projection?.line.includes("/"), false);
+  assert.equal(
+    projection?.reasons,
+    "no Inspector record 1 · session file unavailable 2",
+  );
 });
