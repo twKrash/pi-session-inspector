@@ -449,7 +449,13 @@ test("the assets own one namespace with route, range, i18n, format, and start", 
     "cost",
     "localTimestamp",
     "unavailableColumns",
+    "version",
   ]);
+  // The build embeds this package's own version, so the page names its build.
+  const manifest = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { version: string };
+  assert.equal(format.version, `v${manifest.version}`);
   assert.equal(
     (format.localTimestamp as (iso: string, zone: string) => string)(
       "2026-10-30T20:03:35.831Z",
@@ -2162,6 +2168,87 @@ function metrics(harness: Harness): string[] {
 }
 
 type Harness = ReturnType<typeof createWebClient>;
+
+test("History and Global share card order and never show a label as a value", async () => {
+  const snapshot = uiSnapshot();
+  // Observed on a real project: every inspected session unavailable.
+  const none = {
+    cost: "metric.cost",
+    tokens: "metric.tokens",
+    usageUnavailable: true,
+    sessions: "coverage.sessionsLimited",
+  } as const;
+  snapshot.history.usageLabels = none;
+  snapshot.global.usageLabels = none;
+  const harness = createWebClient({ responses: [snapshot] });
+  await harness.start();
+  const titles = (cards: string[]) => cards.map((card) => card.split(" ")[0]);
+
+  harness.location.hash = "#/history/overview";
+  harness.hashchange();
+  await settle();
+  const history = metrics(harness);
+  harness.location.hash = "#/global/overview";
+  harness.hashchange();
+  await settle();
+  const global = metrics(harness);
+
+  for (const cards of [history, global]) {
+    assert.match(cards[0] ?? "", /^Native cost Unavailable /);
+    assert.match(cards[1] ?? "", /^Total tokens Unavailable /);
+    assert.match(cards[2] ?? "", /^Observed days /);
+    assert.equal(cards.join(" ").includes("Known"), false);
+  }
+  // The scope's own card comes last: Generations for History, sessions for Global.
+  assert.deepEqual(titles(history), [
+    "Native",
+    "Total",
+    "Observed",
+    "Generations",
+  ]);
+  // Global's Environment inventory cards follow in their own section.
+  assert.deepEqual(titles(global).slice(0, 4), [
+    "Native",
+    "Total",
+    "Observed",
+    "Tracked",
+  ]);
+});
+
+test("an empty Errors tab says observed zero, an unavailable range says unavailable", async () => {
+  const observed = uiSnapshot();
+  const range = observed.current.tree.range;
+  assert.ok(range !== undefined);
+  range.errors = [];
+  const zero = createWebClient({
+    responses: [observed],
+    hash: "#/current/errors?scope=tree",
+  });
+  await zero.start();
+  const zeroText = zero.texts(zero.element("view")).join(" ");
+  assert.equal(zeroText.includes(CATALOG["observed.zero"]), true);
+  assert.equal(zeroText.includes(CATALOG["unavailable.title"]), false);
+  assert.equal(zeroText.includes(CATALOG["errors.none"]), true);
+
+  const missing = uiSnapshot();
+  delete (missing.current.tree as { range?: unknown }).range;
+  const none = createWebClient({
+    responses: [missing],
+    hash: "#/current/errors?scope=tree",
+  });
+  await none.start();
+  const noneText = none.texts(none.element("view")).join(" ");
+  assert.equal(noneText.includes(CATALOG["observed.zero"]), false);
+});
+
+test("the brand names the build's version", async () => {
+  const harness = createWebClient({ responses: [uiSnapshot()] });
+  await harness.start();
+  const manifest = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { version: string };
+  assert.equal(harness.element("version").textContent, `v${manifest.version}`);
+});
 
 test("tab navigation supports browser DOM collections", async () => {
   const harness = createWebClient({ responses: [uiSnapshot()] });

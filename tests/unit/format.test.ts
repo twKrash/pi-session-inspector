@@ -7,6 +7,7 @@ import {
   formatCost,
   formatLocalTimestamp,
   unavailableColumns,
+  versionLabel,
 } from "../../src/ui/format.ts";
 
 /**
@@ -125,4 +126,22 @@ test("known sources read plain, inferred warns, the rest are neutral", () => {
   assert.equal(confidenceTone("live"), "");
   assert.equal(confidenceTone("inferred"), "warn");
   assert.equal(confidenceTone("unavailable"), "neutral");
+});
+
+test("the version line shows only a plain SemVer version", () => {
+  assert.equal(versionLabel("1.7.0"), "v1.7.0");
+  assert.equal(versionLabel("2.0.0-rc.1"), "v2.0.0-rc.1");
+  // Anything else shows nothing, never a guess or markup.
+  for (const value of [
+    undefined,
+    null,
+    1,
+    "",
+    "1.7",
+    "v1.7.0",
+    "1.7.0<b>",
+    " 1.7.0",
+  ]) {
+    assert.equal(versionLabel(value), "", String(value));
+  }
 });

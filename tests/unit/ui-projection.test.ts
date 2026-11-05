@@ -2342,6 +2342,48 @@ test("the label resolver separates value availability from coverage availability
   );
 });
 
+test("an aggregate's cost and token labels are never a value in disguise", () => {
+  const coverage = (available: number) => ({
+    inspected: 206,
+    available,
+    unavailable: 206 - available,
+    sessionRatio: null,
+    complete: false,
+    discoveryLimited: true,
+    reasons: {},
+  });
+  // Observed: 206 inspected, none available. The card says "Native cost:
+  // Unavailable", not "Known native cost: Known native cost".
+  const none = aggregateUsageLabels({
+    availability: "available",
+    coverage: coverage(0),
+  });
+  assert.deepEqual(none, {
+    cost: "metric.cost",
+    tokens: "metric.tokens",
+    usageUnavailable: true,
+    sessions: "coverage.sessionsLimited",
+  });
+  // With a figure, "Known" qualifies it.
+  const some = aggregateUsageLabels({
+    availability: "available",
+    coverage: coverage(5),
+  });
+  assert.deepEqual(
+    [some.cost, some.tokens, some.usageUnavailable],
+    ["metric.knownCost", "metric.knownTokens", false],
+  );
+  // An unavailable report keeps the plain labels as well.
+  const unavailable = aggregateUsageLabels({
+    availability: "unavailable",
+    coverage: undefined,
+  });
+  assert.deepEqual(
+    [unavailable.cost, unavailable.tokens],
+    ["metric.cost", "metric.tokens"],
+  );
+});
+
 test("authenticated UI projection carries the active project name without a root path", async () => {
   const bundle = await bundleWithoutObservedDates();
   const projected = projectInspectorUi({

@@ -14,6 +14,8 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   live UI builds their rows only when opened; a focused entity (and, for the
   ledger, its own search) opens them and keeps them open. Snapshots use a
   native `<details>`, so every row stays in the file.
+- The sidebar names the running build's version (`v1.7.0`) under the product
+  name, in the live UI and in snapshots.
 
 ### Changed
 
@@ -34,6 +36,16 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Fixed
 
+- History and Global cards no longer show a label in place of a value: with no
+  available session they read "Native cost: Unavailable" instead of "Known
+  native cost: Known native cost", in the live UI and in snapshots. Both pages
+  show the shared cards in one order (cost, tokens, observed days), then their
+  own (Generations; Tracked sessions with its unavailable count).
+- An empty Errors, LLM or Tools tab with a known range says "Observed zero."
+  instead of "Unavailable, not zero."; snapshots use the same kickers as the
+  live UI.
+- The History pager has the card's padding, and "Available only" has a gap
+  before its row count.
 - History and Global state "History & Global use full tree." once instead of
   twice, and their context line shows the session coverage line instead of a
   bare count beside "All tracked branches in this session".

@@ -48,7 +48,8 @@
     typeof format.confidenceTone !== "function" ||
     typeof format.localTimestamp !== "function" ||
     typeof format.unavailableColumns !== "function" ||
-    typeof format.collapseRows !== "number"
+    typeof format.collapseRows !== "number" ||
+    typeof format.version !== "string"
   ) {
     throw new Error("browser format module must initialize first");
   }
@@ -761,10 +762,11 @@
   };
 
   /** The one empty/unavailable section: a bounded label, never a fabricated row. */
-  const emptyCard = (title, note) => {
+  /** An empty section; `kicker` says whether it is unavailable or an observed zero. */
+  const emptyCard = (title, note, kicker = COPY["unavailable.title"]) => {
     const section = el("section", "card empty");
     section.append(
-      el("p", "eyebrow", COPY["unavailable.title"]),
+      el("p", "eyebrow", kicker),
       el("h2", "", title),
       el("p", "", note),
     );
@@ -1626,7 +1628,13 @@
     const meta = target.range;
     const rows = meta === undefined ? [] : meta.models;
     if (rows.length === 0) {
-      return [emptyCard(COPY["panel.models"], COPY["models.none"])];
+      return [
+        emptyCard(
+          COPY["panel.models"],
+          COPY["models.none"],
+          meta === undefined ? undefined : COPY["observed.zero"],
+        ),
+      ];
     }
     const section = table(
       COPY["panel.models"],
@@ -1760,7 +1768,9 @@
     }
     const summary = meta.toolSummary;
     if (summary.length === 0) {
-      return [emptyCard(COPY["tools.summary"], COPY["tools.none"])];
+      return [
+        emptyCard(COPY["tools.summary"], COPY["tools.none"], COPY["observed.zero"]),
+      ];
     }
     const filter =
       state.entity !== undefined && state.entity.kind === "tool"
@@ -3085,7 +3095,13 @@
     const meta = target.range;
     const rows = meta === undefined ? [] : meta.errors;
     if (rows.length === 0) {
-      return [emptyCard(COPY["tab.errors"], COPY["errors.none"])];
+      return [
+        emptyCard(
+          COPY["tab.errors"],
+          COPY["errors.none"],
+          meta === undefined ? undefined : COPY["observed.zero"],
+        ),
+      ];
     }
     const runs = runsById(meta.agents);
     return [
@@ -3186,37 +3202,48 @@
   // History and global aggregates
   // -------------------------------------------------------------------------
 
-  const historyMetrics = () => {
+  /**
+   * The cards History and Global share, in one order: cost, tokens, observed
+   * days. A label is never shown as a value: an unavailable aggregate keeps its
+   * plain label and states Unavailable, and "Known" qualifies only a figure.
+   */
+  const aggregateCards = (labels, totals) => {
     const meta = rangeMeta();
-    const labels = snapshot.history.usageLabels;
     const unavailable = labels.usageUnavailable === true;
-    const partial = meta !== null && meta.truncated === true;
     const datable = meta !== null && meta.resolved !== null;
+    const known = !unavailable && meta !== null && meta.truncated === true;
     const costKey =
-      partial && labels.cost === "metric.cost"
-        ? "metric.knownCost"
-        : labels.cost;
+      known && labels.cost === "metric.cost" ? "metric.knownCost" : labels.cost;
     const tokensKey =
-      partial && labels.tokens === "metric.tokens"
+      known && labels.tokens === "metric.tokens"
         ? "metric.knownTokens"
         : labels.tokens;
-    const costValue = unavailable
-      ? COPY[labels.cost]
-      : datable
-        ? money(meta.totals.cost)
-        : COPY["evidence.unavailable"];
-    const tokensValue = unavailable
-      ? COPY[labels.tokens]
-      : datable
-        ? number(meta.totals.totalTokens)
-        : COPY["evidence.unavailable"];
+    const value = (format, field) =>
+      !unavailable && datable ? format(totals[field]) : COPY["evidence.unavailable"];
+    return [
+      metric(COPY[costKey], value(money, "cost"), COPY["metric.native"], [
+        [COPY["table.date"], rangeText()],
+      ]),
+      metric(
+        COPY[tokensKey],
+        value(number, "totalTokens"),
+        COPY["metric.tokens.note"],
+        [[COPY["table.date"], rangeText()]],
+      ),
+      metric(
+        COPY["metric.days"],
+        datable ? number(totals.days) : COPY["evidence.unavailable"],
+        COPY["metric.days.note"],
+        [[COPY["range.label"], rangeText()]],
+      ),
+    ];
+  };
+
+  const historyMetrics = () => {
+    const meta = rangeMeta();
+    const datable = meta !== null && meta.resolved !== null;
     return metrics([
-      metric(COPY[costKey], costValue, COPY["metric.native"], [
-        [COPY["table.date"], rangeText()],
-      ]),
-      metric(COPY[tokensKey], tokensValue, COPY["metric.tokens.note"], [
-        [COPY["table.date"], rangeText()],
-      ]),
+      ...aggregateCards(snapshot.history.usageLabels, meta?.totals ?? {}),
       metric(
         COPY["metric.generations"],
         datable
@@ -3224,12 +3251,6 @@
           : COPY["evidence.unavailable"],
         COPY["metric.generations.note"],
         [[COPY["table.date"], rangeText()]],
-      ),
-      metric(
-        COPY["metric.days"],
-        datable ? number(meta.totals.days) : COPY["evidence.unavailable"],
-        COPY["metric.days.note"],
-        [[COPY["range.label"], rangeText()]],
       ),
     ]);
   };
@@ -3410,41 +3431,14 @@
   const globalNodes = () => {
     const global = snapshot.global;
     const meta = rangeMeta();
-    const labels = global.usageLabels;
-    const unavailable = labels.usageUnavailable === true;
-    const datable = meta !== null && meta.resolved !== null;
     const cards = [
-      metric(
-        COPY[labels.cost],
-        unavailable
-          ? COPY[labels.cost]
-          : datable
-            ? money(global.totals.cost)
-            : COPY["evidence.unavailable"],
-        COPY["metric.native"],
-        [[COPY["table.date"], rangeText()]],
-      ),
-      metric(
-        COPY[labels.tokens],
-        unavailable
-          ? COPY[labels.tokens]
-          : datable
-            ? number(global.totals.totalTokens)
-            : COPY["evidence.unavailable"],
-        COPY["metric.tokens.note"],
-        [[COPY["table.date"], rangeText()]],
-      ),
-      metric(
-        COPY["metric.days"],
-        datable ? number(global.totals.days) : COPY["evidence.unavailable"],
-        COPY["metric.days.note"],
-        [[COPY["range.label"], rangeText()]],
-      ),
+      ...aggregateCards(global.usageLabels, global.totals),
+      // The same tracked-session card the snapshot draws; coverage has its own card.
       metric(
         COPY["metric.sessions"],
         number(global.trackedSessions),
-        // L2's own session line, or the label key the same projection published.
-        global.coverage === null ? COPY[labels.sessions] : global.coverage.line,
+        COPY["metric.sessions.global.note"],
+        [[COPY["evidence.unavailable"], number(global.unavailableSessions)]],
       ),
     ];
     const inventory = card(COPY["tab.environment"], COPY["env.note"]);
@@ -3469,7 +3463,7 @@
     );
     return [
       metrics(cards),
-      coverageSection(global.coverage, labels),
+      coverageSection(global.coverage, global.usageLabels),
       chartSection(meta === null ? [] : meta.daily, GLOBAL_CHART_METRICS),
       compositionSection(global.composition),
       inventory,
@@ -4795,6 +4789,9 @@
     syncThemeControl(document.body.className.includes("theme-dark"));
     const loading = q("loading-title");
     if (loading !== null) loading.textContent = COPY["state.loading"];
+    // The build's own version (package metadata, never report data); "" hides it.
+    const version = q("version");
+    if (version !== null) version.textContent = format.version;
     document.addEventListener("click", onDocumentClick);
     document.addEventListener("input", onDocumentInput);
     document.addEventListener("change", onDocumentChange);

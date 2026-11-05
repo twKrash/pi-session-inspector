@@ -27,7 +27,10 @@ const prelude = `import {
   formatCost,
   formatLocalTimestamp,
   unavailableColumns,
+  versionLabel,
 } from "./src/ui/format.ts";
+// Only the version field is bundled; a version bump makes the asset stale.
+import { version } from "./package.json";
 import { createTranslator } from "./src/ui/i18n.ts";
 import {
   buildAgentForest,
@@ -43,6 +46,7 @@ web.format = {
   cost: formatCost,
   localTimestamp: formatLocalTimestamp,
   unavailableColumns,
+  version: versionLabel(version),
 };
 web.agentTree = {
   build: buildAgentForest,

@@ -214,6 +214,10 @@ const DAY = /^(\d{4}-\d{2}-\d{2})/;
  * (`usageUnavailable`) is independent of coverage availability: an all-
  * unavailable session set still has a known inspection size, while a report
  * without `coverage` has values of unknown completeness.
+ *
+ * `cost` and `tokens` are always card labels, never values: an unavailable
+ * aggregate keeps the plain labels and its renderer states the value as
+ * Unavailable, so a label is never shown in a value's place.
  */
 export type UsageLabels = {
   cost: MessageKey;
@@ -228,8 +232,8 @@ export function aggregateUsageLabels(input: {
 }): UsageLabels {
   if (input.availability !== "available") {
     return {
-      cost: "metric.costUnavailable",
-      tokens: "metric.costUnavailable",
+      cost: "metric.cost",
+      tokens: "metric.tokens",
       usageUnavailable: true,
       sessions: "coverage.unknown",
     };
@@ -245,8 +249,8 @@ export function aggregateUsageLabels(input: {
   }
   if (coverage.inspected === 0) {
     return {
-      cost: "metric.costUnavailable",
-      tokens: "metric.costUnavailable",
+      cost: "metric.cost",
+      tokens: "metric.tokens",
       usageUnavailable: true,
       sessions: "coverage.none",
     };
@@ -259,10 +263,12 @@ export function aggregateUsageLabels(input: {
       sessions: "coverage.complete",
     };
   }
+  const usageUnavailable = coverage.available === 0;
   return {
-    cost: "metric.knownCost",
-    tokens: "metric.knownTokens",
-    usageUnavailable: coverage.available === 0,
+    // "Known" qualifies a figure; with no available session there is none.
+    cost: usageUnavailable ? "metric.cost" : "metric.knownCost",
+    tokens: usageUnavailable ? "metric.tokens" : "metric.knownTokens",
+    usageUnavailable,
     sessions: coverage.discoveryLimited
       ? "coverage.sessionsLimited"
       : "coverage.sessions",

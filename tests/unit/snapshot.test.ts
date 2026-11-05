@@ -1027,6 +1027,77 @@ test("the renderer resolves no range and reaches no loader or filesystem", () =>
   }
 });
 
+test("the brand names the build's version", () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { version: string };
+  const html = renderSnapshot(currentDto());
+  assert.equal(
+    html.includes(`<small class="version mono">v${manifest.version}</small>`),
+    true,
+  );
+});
+
+test("an empty Errors tab says observed zero, in the live UI's words", () => {
+  const base = currentDto();
+  if (base.kind !== "current") throw new Error("the fixture is current");
+  const range = base.projection.range;
+  if (range === undefined) throw new Error("the fixture must carry a range");
+  const html = renderSnapshot({
+    ...base,
+    projection: { ...base.projection, range: { ...range, errors: [] } },
+  });
+  assert.equal(
+    html.includes(
+      `<p class="eyebrow">${CATALOG["observed.zero"]}</p><h2>${CATALOG["tab.errors"]}</h2>`,
+    ),
+    true,
+  );
+  // An unavailable range keeps the unavailable kicker.
+  const unavailable = renderSnapshot({
+    ...base,
+    projection: { ...base.projection, range: undefined },
+  });
+  assert.equal(
+    unavailable.includes(
+      `<p class="eyebrow">${CATALOG["observed.zero"]}</p><h2>${CATALOG["tab.errors"]}</h2>`,
+    ),
+    false,
+  );
+});
+
+test("History cards keep plain labels and state Unavailable when no session is available", () => {
+  const base = historyDto();
+  if (base.kind !== "history") throw new Error("the fixture is history");
+  const html = decodeHtml(
+    renderSnapshot({
+      ...base,
+      projection: {
+        ...base.projection,
+        truncated: true,
+        usageLabels: {
+          cost: "metric.cost",
+          tokens: "metric.tokens",
+          usageUnavailable: true,
+          sessions: "coverage.sessionsLimited",
+        },
+      },
+    }),
+  );
+  // The overview cards only: other sections may name known figures.
+  const start = html.indexOf('<div class="metrics">');
+  const after = html.slice(start);
+  const cards = after.slice(0, after.search(/<section class="card(?! metric)/));
+  assert.equal(cards.includes(CATALOG["metric.knownCost"]), false);
+  assert.equal(cards.includes(CATALOG["metric.knownTokens"]), false);
+  assert.equal(
+    cards.includes(
+      `<div class="muted">${CATALOG["metric.cost"]}</div><div class="value mono">${CATALOG["evidence.unavailable"]}</div>`,
+    ),
+    true,
+  );
+});
+
 test("prints the DTO's child breakdown instead of summing the rendered runs", () => {
   const base = currentDto();
   if (base.kind !== "current") throw new Error("the fixture is current");

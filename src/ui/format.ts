@@ -113,3 +113,16 @@ export function unavailableColumns(
   }
   return indexes;
 }
+
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/**
+ * The version line under the product name, `v1.7.0`, shared by the live UI and
+ * the snapshot. Anything that is not a plain SemVer string yields `""`, so the
+ * page shows no version rather than a guessed one; the pattern admits no markup.
+ */
+export function versionLabel(version: unknown): string {
+  return typeof version === "string" && SEMVER.test(version)
+    ? `v${version}`
+    : "";
+}

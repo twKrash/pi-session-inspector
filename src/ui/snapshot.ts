@@ -16,6 +16,7 @@ import {
   formatCost,
   formatLocalTimestamp,
   unavailableColumns,
+  versionLabel,
 } from "./format.ts";
 import { ENGLISH_CATALOG } from "./i18n/catalog.ts";
 import { createTranslator } from "./i18n.ts";
@@ -43,6 +44,7 @@ import type {
   UiToolSummaryRow,
 } from "./ui-projection.ts";
 import { WEB_ASSETS } from "./web-assets.ts";
+import { PACKAGE_VERSION } from "./package-version.ts";
 
 const t = createTranslator();
 
@@ -240,7 +242,7 @@ function frame(theme: SnapshotTheme, target: SnapshotTarget): string {
     `<style>${SNAPSHOT_STYLESHEET}</style></head>` +
     `<body${dark ? ' class="theme-dark"' : ""}>` +
     `<a class="skip" href="#main">Skip to report</a>` +
-    `<div class="shell"><aside aria-label="${attr(catalog.workspace)}"><div class="brand"><span class="mark" aria-hidden="true">π</span><span>${text(catalog["report.title"])}<br><small>${text(catalog["brand.tagline"])}</small></span></div>` +
+    `<div class="shell"><aside aria-label="${attr(catalog.workspace)}"><div class="brand"><span class="mark" aria-hidden="true">π</span><span>${text(catalog["report.title"])}<br><small>${text(catalog["brand.tagline"])}</small><small class="version mono">${text(versionLabel(PACKAGE_VERSION))}</small></span></div>` +
     `<p class="eyebrow">${text(catalog.workspace)}</p>` +
     `<div class="rail-foot"><span class="dot"></span>${text(catalog["local.design"])}<p>Offline report. No tracking.<br>No prompts or outputs.</p><p class="mono">${text(catalog.offline)}</p></div></aside>` +
     `<div class="workspace"><header class="topbar"><span class="trail">Inspector / <strong>${text(target.breadcrumb)}</strong></span><span class="preview">${text(catalog["tag.local"])}</span></header>` +
@@ -295,10 +297,18 @@ function footnote(content: string): string {
   return content === "" ? "" : `<div class="footnote">${text(content)}</div>`;
 }
 
-/** The one empty/unavailable section: a bounded label, never a fabricated row. */
-function emptyCard(title: string, note: string): string {
+/**
+ * The one empty section: a bounded label, never a fabricated row. `kicker`
+ * says whether the section is unavailable or an observed zero, in the same
+ * words the live UI uses.
+ */
+function emptyCard(
+  title: string,
+  note: string,
+  kicker: string = t("unavailable.title"),
+): string {
   return (
-    `<section class="card empty"><p class="eyebrow">${text(t("evidence.unavailable"))}</p>` +
+    `<section class="card empty"><p class="eyebrow">${text(kicker)}</p>` +
     `<h2>${text(title)}</h2><p>${text(note)}</p></section>`
   );
 }
@@ -595,7 +605,7 @@ function sessionSections(
     environmentSections(report, view.inventoryAvailability),
     agentExecutionSection(agentsSections(report, rangeProjection)),
     integrationsSection(report),
-    errorsSection(rangeProjection?.errors ?? []),
+    errorsSection(rangeProjection?.errors),
     ledgerSection(rangeProjection?.ledger ?? []),
     evidenceSection(view.evidence),
   ].join("");
@@ -882,7 +892,11 @@ function modelsSection(range: SnapshotRange | undefined): string {
   const catalog = ENGLISH_CATALOG;
   const rows = range?.models ?? [];
   if (rows.length === 0) {
-    return emptyCard(catalog["panel.models"], catalog["models.none"]);
+    return emptyCard(
+      catalog["panel.models"],
+      catalog["models.none"],
+      range === undefined ? undefined : catalog["observed.zero"],
+    );
   }
   return card(
     catalog["panel.models"],
@@ -918,7 +932,11 @@ function toolsSections(
   const summary = range?.toolSummary ?? [];
   const summarySection =
     summary.length === 0
-      ? emptyCard(catalog["tools.summary"], catalog["tools.none"])
+      ? emptyCard(
+          catalog["tools.summary"],
+          catalog["tools.none"],
+          range === undefined ? undefined : catalog["observed.zero"],
+        )
       : card(
           catalog["tools.summary"],
           catalog["tools.note"],
@@ -1813,10 +1831,15 @@ function integrationTelemetry(row: IntegrationRow): Cell {
   );
 }
 
-function errorsSection(errors: readonly ErrorRow[]): string {
+/** `undefined` errors means the range is unavailable, not an observed zero. */
+function errorsSection(errors: readonly ErrorRow[] | undefined): string {
   const catalog = ENGLISH_CATALOG;
-  if (errors.length === 0) {
-    return emptyCard(catalog["tab.errors"], catalog["errors.none"]);
+  if (errors === undefined || errors.length === 0) {
+    return emptyCard(
+      catalog["tab.errors"],
+      catalog["errors.none"],
+      errors === undefined ? undefined : catalog["observed.zero"],
+    );
   }
   return card(
     catalog["tab.errors"],
@@ -1986,22 +2009,18 @@ function aggregateMetrics(input: {
   const catalog = ENGLISH_CATALOG;
   const { totals, labels, partial, datable } = input;
   const unknown = catalog["evidence.unavailable"];
+  // "Known" qualifies a figure, so an unavailable value keeps the plain label.
+  const known = partial && !labels.usageUnavailable;
   const costLabel =
-    partial && labels.cost === "metric.cost" ? "metric.knownCost" : labels.cost;
+    known && labels.cost === "metric.cost" ? "metric.knownCost" : labels.cost;
   const tokensLabel =
-    partial && labels.tokens === "metric.tokens"
+    known && labels.tokens === "metric.tokens"
       ? "metric.knownTokens"
       : labels.tokens;
-  const costValue = labels.usageUnavailable
-    ? catalog["metric.costUnavailable"]
-    : datable
-      ? money(totals.cost)
-      : unknown;
-  const tokensValue = labels.usageUnavailable
-    ? catalog["metric.costUnavailable"]
-    : datable
-      ? count(totals.totalTokens)
-      : unknown;
+  const costValue =
+    !labels.usageUnavailable && datable ? money(totals.cost) : unknown;
+  const tokensValue =
+    !labels.usageUnavailable && datable ? count(totals.totalTokens) : unknown;
   const economics = datable ? input.usageEconomics : undefined;
   const economicsDetails = usageEconomicsDetails(economics);
   const cachePercent = economics?.cacheReuse.percent;

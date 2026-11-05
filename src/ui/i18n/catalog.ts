@@ -84,7 +84,6 @@ export const ENGLISH_CATALOG = {
   "tab.ledger": "Ledger",
   "metric.cost": "Native cost",
   "metric.knownCost": "Known native cost",
-  "metric.costUnavailable": "Unavailable",
   "metric.tokens": "Total tokens",
   "metric.knownTokens": "Known tokens",
   "metric.correlated": "Correlated",
@@ -489,6 +488,7 @@ export const ENGLISH_CATALOG = {
   "status.interrupted": "Interrupted calls",
   "status.clean": "No error records",
   "unavailable.title": "Unavailable, not zero.",
+  "observed.zero": "Observed zero.",
   "unavailable.copy":
     "Inspector does not infer activity from prompts, outputs, or missing records.",
   "unavailable.session": "Open a tracked session row to inspect this section.",
