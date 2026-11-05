@@ -14,7 +14,7 @@ no external database, no analytics service, no session uploads.
 [![node: >=22.19.0](https://img.shields.io/node/v/@twkrash/pi-session-inspector)](https://www.npmjs.com/package/@twkrash/pi-session-inspector)
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/twKrash/badge.svg)](https://hub.xerj.org/contributors/twKrash)
 
-<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v1.2.0/overview-global-dark.png" alt="Overview tab of the global report, dark theme">
+<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v1.7.0/overview-global-dark.png" alt="Overview tab of the global report, dark theme">
 
 </div>
 
@@ -77,7 +77,7 @@ equivalent, and `/session-inspector help` prints the grammar in the TUI.
 
 The same global report in the light theme.
 
-<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v1.2.0/overview-global-light.png" alt="Overview tab of the global report, light theme">
+<img src="https://github.com/twKrash/pi-session-inspector/releases/download/v1.7.0/overview-global-light.png" alt="Overview tab of the global report, light theme">
 
 The images are GitHub release assets rather than repository files: no binary
 bytes enter git, and the absolute URLs render on GitHub and npm alike. They are
