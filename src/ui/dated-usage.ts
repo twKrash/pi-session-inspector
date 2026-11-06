@@ -2,6 +2,7 @@ import type {
   CanonicalSession,
   CanonicalUsageLine,
 } from "../core/canonical.ts";
+import { foldCostProvenance } from "../core/cost-provenance.ts";
 import {
   type Usage,
   type UsageCoverageState,
@@ -21,7 +22,7 @@ export type OptionalUsageFields = Pick<
   | "cacheReadCost"
   | "cacheWriteCost"
 >;
-export type SafeUsage = Pick<Usage, "totalTokens" | "cost"> &
+export type SafeUsage = Pick<Usage, "totalTokens" | "cost" | "costProvenance"> &
   OptionalUsageFields;
 export type DateUsageRow = {
   date: string;
@@ -37,6 +38,7 @@ export type DateUsageRow = {
     branchSummaries: SafeUsage;
   };
 } & OptionalUsageFields &
+  Pick<Usage, "costProvenance"> &
   UsageCoverageCarrier;
 export type DatedModelRow = {
   date: string;
@@ -45,7 +47,7 @@ export type DatedModelRow = {
   generations: number;
   totalTokens: number;
   cost: number;
-};
+} & Pick<Usage, "costProvenance">;
 
 export const MAX_DATED_DATES = 366;
 export const MAX_MODELS_PER_DATE = 64;
@@ -188,6 +190,8 @@ export function sessionDatedUsage(session: CanonicalSession): {
     part: keyof DateUsageRow["composition"],
   ): void => {
     const component = row.composition[part];
+    foldCostProvenance(row, usage);
+    foldCostProvenance(component, usage);
     component.totalTokens += usage.totalTokens;
     component.cost = round(component.cost + usage.cost);
     row.totalTokens += usage.totalTokens;
@@ -303,6 +307,7 @@ export function sessionDatedUsage(session: CanonicalSession): {
       cost: 0,
     };
     row.generations += 1;
+    foldCostProvenance(row, generation.usage);
     row.totalTokens += generation.usage.totalTokens;
     row.cost = round(row.cost + generation.usage.cost);
     byModel.set(key, row);
@@ -315,8 +320,9 @@ export function sessionDatedUsage(session: CanonicalSession): {
   const usageUnavailable = nativeLines > 0 && !publishable;
   const retained = capped ? all.slice(all.length - MAX_DATED_DATES) : all;
   const kept = new Set(retained);
+  const dates = retained.map((date) => byDate.get(date) as DateUsageRow);
   return {
-    dates: retained.map((date) => byDate.get(date) as DateUsageRow),
+    dates,
     models: [...byModel.values()]
       .filter((row) => kept.has(row.date))
       .sort(

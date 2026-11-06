@@ -32,7 +32,7 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.7.0`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.7.1`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
 > semantic integration, native token economics/cache accounting, and subagent
 > AgentRun observability are available: current async runs can use bounded
@@ -41,7 +41,14 @@ session, the session history, or the global aggregate.
 > totals. The Agents view states native subagent activity. Pi 1.2.0 and
 > `pi-subagents` 0.78.0 terminal workflow notifications keep child runs visible
 > when summaries omit a complete inventory; source coverage remains partial.
-> The localhost UI paints the configured theme before report data arrives and
+> Compatibility fixtures cover the Pi 1.2.0 baseline and Pi 1.5.0, plus
+> pi-subagents 0.86.0 workflow-reuse and configured wait-result shapes. Custom
+> wait-tool names stay unauthenticated and are not attributed. Persisted
+> `cost.totalFromProvider` provenance is reported when explicit; unmarked
+> historical costs remain unknown. A custom renamed wait result cannot be
+> authenticated from persisted Pi history and does not affect AgentRun status,
+> usage, cost, or activity attribution. The localhost UI paints
+> the configured theme before report data arrives and
 > announces loading once. One UI response shares its History and Global scan; repeated in-flight
 > range requests are coalesced, while explicit Refresh remains fresh. Request
 > failures stay in bounded HTTP responses, not Pi stderr. **1.7.0 highlight:**
@@ -66,7 +73,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.7.0
+pi install npm:@twkrash/pi-session-inspector@1.7.1
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the
