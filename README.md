@@ -41,7 +41,12 @@ session, the session history, or the global aggregate.
 > totals. The Agents view states native subagent activity. Pi 1.2.0 and
 > `pi-subagents` 0.78.0 terminal workflow notifications keep child runs visible
 > when summaries omit a complete inventory; source coverage remains partial.
-> The localhost UI paints the configured theme before report data arrives and
+> Compatibility fixtures cover the Pi 1.2.0 baseline and Pi 1.5.0, plus
+> pi-subagents 0.86.0's configured wait-tool and workflow-reuse result shapes.
+> Persisted `cost.totalFromProvider` provenance is reported when explicit;
+> unmarked historical costs remain unknown. A renamed wait result is reconciled
+> only against an exact persisted async launch identity. The localhost UI paints
+> the configured theme before report data arrives and
 > announces loading once. One UI response shares its History and Global scan; repeated in-flight
 > range requests are coalesced, while explicit Refresh remains fresh. Request
 > failures stay in bounded HTTP responses, not Pi stderr. **1.7.0 highlight:**

@@ -1,4 +1,5 @@
-import { usageFieldCoverage } from "../core/events.ts";
+import { foldCostProvenance } from "../core/cost-provenance.ts";
+import { type Usage, usageFieldCoverage } from "../core/events.ts";
 import {
   attachUsageFieldCoverage,
   MAX_DATED_DATES,
@@ -27,6 +28,7 @@ export type DailyRow = {
     branchSummaries: SafeUsage;
   };
 } & OptionalUsageFields &
+  Pick<Usage, "costProvenance"> &
   UsageCoverageCarrier;
 
 /** One session's contribution: its own dated window and that window's verdict. */
@@ -96,6 +98,7 @@ export function buildDailyRows(contributions: readonly DailyContribution[]): {
     for (const dated of contribution.rows) {
       const { row, sessionIds } = at(dated.date);
       sessionIds.add(contribution.sessionId);
+      foldCostProvenance(row, dated);
       row.totalTokens += dated.totalTokens;
       row.cost = round(row.cost + dated.cost);
       row.generations += dated.generations;
@@ -116,6 +119,7 @@ export function buildDailyRows(contributions: readonly DailyContribution[]): {
       );
       for (const part of COMPOSITION_PARTS) {
         const total = row.composition[part];
+        foldCostProvenance(total, dated.composition[part]);
         total.totalTokens += dated.composition[part].totalTokens;
         total.cost = round(total.cost + dated.composition[part].cost);
         for (const field of OPTIONAL_USAGE_FIELDS) {

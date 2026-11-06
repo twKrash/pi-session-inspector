@@ -1,3 +1,4 @@
+import { combineCostProvenance } from "./cost-provenance.ts";
 import {
   usageFieldCoverage,
   type Compaction,
@@ -243,9 +244,15 @@ export function addUsage(left: Usage, right: Usage): Usage {
   ) {
     return left;
   }
-  return { totalTokens, cost, ...optionalTokens, ...optionalCosts };
+  const costProvenance = combineCostProvenance(left, right);
+  return {
+    totalTokens,
+    cost,
+    ...(costProvenance === undefined ? {} : { costProvenance }),
+    ...optionalTokens,
+    ...optionalCosts,
+  };
 }
-
 /**
  * A missing, malformed, or out-of-range usage record stays absent so unknown
  * never becomes a fabricated zero. Exported so canonical presence checks share
@@ -256,14 +263,23 @@ export function readUsage(value: unknown): Usage | undefined {
   if (!isBoundedTokens(value.totalTokens) || !isBoundedCost(value.cost.total)) {
     return undefined;
   }
+  const costProvenance = readCostProvenance(value.cost.totalFromProvider);
   return {
     totalTokens: value.totalTokens,
     cost: value.cost.total,
+    ...(costProvenance === undefined ? {} : { costProvenance }),
     ...readOptionalTokens(value),
     ...readOptionalCosts(value.cost),
   };
 }
 
+function readCostProvenance(
+  value: unknown,
+): Usage["costProvenance"] | undefined {
+  if (value === true) return "provider";
+  if (value === false) return "catalog-estimate";
+  return undefined;
+}
 function isBoundedUsage(usage: Usage): boolean {
   return (
     isBoundedTokens(usage.totalTokens) &&

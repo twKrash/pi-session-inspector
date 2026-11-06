@@ -882,6 +882,9 @@ function datedUsage(row: DateUsageRow): Usage {
   return {
     totalTokens: row.totalTokens,
     cost: row.cost,
+    ...(row.costProvenance === undefined
+      ? {}
+      : { costProvenance: row.costProvenance }),
     ...(row.inputTokens === undefined ? {} : { inputTokens: row.inputTokens }),
     ...(row.outputTokens === undefined
       ? {}

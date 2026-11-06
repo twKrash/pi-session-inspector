@@ -332,6 +332,9 @@ export function safeUsage(
   return {
     totalTokens: usage.totalTokens,
     cost: usage.cost,
+    ...(usage.costProvenance === undefined
+      ? {}
+      : { costProvenance: usage.costProvenance }),
     ...(usage.inputTokens === undefined
       ? {}
       : { inputTokens: usage.inputTokens }),
