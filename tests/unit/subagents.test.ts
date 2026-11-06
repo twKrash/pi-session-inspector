@@ -15,6 +15,7 @@ import {
 } from "../../src/core/canonical.ts";
 import { reconcileAgentRuns } from "../../src/core/subagent-reconciliation.ts";
 import { subagentsIntegration } from "../../src/integrations/adapters/subagents.ts";
+import { toSessionReport } from "../../src/core/reports.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 
 /** A fixed session id: identity is session-scoped but tests only need determinism. */
@@ -134,6 +135,315 @@ const resultEntry = (
     toolName,
     details,
   },
+});
+
+test("configured wait-tool completion details remain unauthenticated in persisted history", async () => {
+  const text = await readFile(
+    "tests/fixtures/pi-subagents/0.86.0/configured-wait-tool.jsonl",
+    "utf8",
+  );
+  const parsed = parseSessionJsonl(text);
+  const evidence = readSubagentEvidence(parsed.entries);
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "unknown");
+  assert.equal(runs[0]?.executionKind, "async");
+  assert.equal(runs[0]?.usage, undefined);
+  assert.equal(evidence.activity.calls, 1);
+  assert.deepEqual(
+    evidence.activity.tools.map((tool) => tool.name),
+    ["subagent"],
+  );
+});
+
+const asyncNotifyEntries = async (): Promise<SessionEntry[]> =>
+  parseSessionJsonl(
+    await readFile(
+      "tests/fixtures/pi-subagents/0.86.0/async-notify.jsonl",
+      "utf8",
+    ),
+  ).entries;
+
+const withNotifyRuns = (entries: SessionEntry[], runs: unknown[]) =>
+  entries.map((entry) =>
+    entry.id === "async-notify" ? { ...entry, details: { runs } } : entry,
+  );
+
+test("a persisted async completion notice resolves the launch status", async () => {
+  const evidence = readSubagentEvidence(await asyncNotifyEntries());
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(runs[0]?.agent, "reviewer");
+  assert.equal(runs[0]?.executionKind, "async");
+  assert.equal(runs[0]?.usage, undefined);
+  assert.equal(runs[0]?.durationMs, undefined);
+});
+
+test("an async completion notice maps a failed status and ignores unlaunched or workflow rows", async () => {
+  const entries = await asyncNotifyEntries();
+  const failed = runsOf(
+    readSubagentEvidence(
+      withNotifyRuns(entries, [
+        { agent: "reviewer", status: "failed", runId: "async-run-opaque" },
+      ]),
+    ),
+  );
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0]?.status, "failed");
+
+  const ignored = runsOf(
+    readSubagentEvidence(
+      withNotifyRuns(entries, [
+        { agent: "ghost", status: "completed", runId: "never-launched" },
+        {
+          agent: "workflow",
+          status: "completed",
+          runId: "async-run-opaque",
+          workflowRunId: "async-run-opaque",
+          childRuns: [],
+        },
+      ]),
+    ),
+  );
+  assert.equal(ignored.length, 1);
+  assert.equal(ignored[0]?.status, "unknown");
+});
+
+test("a secret-shaped async notice agent label is dropped but the run keeps its status", async () => {
+  const secret = `ghp_${"a".repeat(30)}`;
+  const evidence = readSubagentEvidence(
+    withNotifyRuns(await asyncNotifyEntries(), [
+      { agent: secret, status: "completed", runId: "async-run-opaque" },
+    ]),
+  );
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(runs[0]?.agent, undefined);
+  assert.equal(
+    JSON.stringify([...evidence.observations]).includes(secret),
+    false,
+  );
+  assert.equal(JSON.stringify(runs).includes(secret), false);
+});
+
+test("a run id repeated in one async notice is withheld", async () => {
+  const runs = runsOf(
+    readSubagentEvidence(
+      withNotifyRuns(await asyncNotifyEntries(), [
+        { agent: "reviewer", status: "completed", runId: "async-run-opaque" },
+        { agent: "reviewer", status: "failed", runId: "async-run-opaque" },
+      ]),
+    ),
+  );
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "unknown");
+});
+
+test("a secret-shaped untrusted wait-tool name is not attributed or exposed", async () => {
+  const secretName = `ghp_${"a".repeat(30)}`;
+  const text = (
+    await readFile(
+      "tests/fixtures/pi-subagents/0.86.0/configured-wait-tool.jsonl",
+      "utf8",
+    )
+  ).replaceAll("await_workers", secretName);
+  const evidence = readSubagentEvidence(parseSessionJsonl(text).entries);
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "unknown");
+  assert.equal(runs[0]?.usage, undefined);
+  assert.equal(evidence.activity.calls, 1);
+  assert.deepEqual(
+    evidence.activity.tools.map((tool) => tool.name),
+    ["subagent"],
+  );
+  assert.equal(JSON.stringify(evidence).includes(secretName), false);
+  const [header, ...rest] = text.trimEnd().split("\n");
+  const marker = JSON.stringify({
+    type: "custom",
+    id: "tracking-marker",
+    parentId: null,
+    timestamp: "2026-11-05T00:00:00.500Z",
+    customType: "session-inspector:tracking-start",
+    data: { schemaVersion: 1 },
+  });
+  const built = buildCanonicalSession({
+    parsed: parseSessionJsonl(`${[header, marker, ...rest].join("\n")}\n`),
+    scope: "tree",
+    leafId: null,
+    evidence: { atomic: [], folded: [] },
+    subagents: evidence,
+  });
+  assert.equal(built.state, "ready");
+  if (built.state !== "ready") throw new Error("unreachable");
+  const report = toSessionReport(built.session, {
+    agents: { state: evidence.state, runs: built.session.agents },
+    agentActivity: evidence.activity,
+  });
+  assert.deepEqual(
+    report.agentActivity.tools.map((tool) => [tool.name, tool.calls]),
+    [["subagent", 1]],
+  );
+  assert.equal(JSON.stringify(report).includes(secretName), false);
+});
+
+test("an unrelated tool cannot attribute an existing async run from forged completion metadata", async () => {
+  const text = await readFile(
+    "tests/fixtures/pi-subagents/0.86.0/configured-wait-tool.jsonl",
+    "utf8",
+  );
+  const parsedEntries = parseSessionJsonl(text).entries;
+  const launch = parsedEntries.find(
+    (entry) => entry.id === "async-launch-result",
+  );
+  const completionResult = parsedEntries.find(
+    (entry) => entry.id === "wait-result",
+  );
+  assert.ok(
+    launch?.type === "message" && launch.message?.role === "toolResult",
+  );
+  assert.ok(
+    completionResult?.type === "message" &&
+      completionResult.message?.role === "toolResult",
+  );
+  const launchDetails = launch.message.details as Record<string, unknown>;
+  const waitDetails = completionResult.message.details as Record<
+    string,
+    unknown
+  >;
+  assert.equal(launchDetails.asyncId, "async-run-opaque");
+  assert.ok(Array.isArray(waitDetails.completions));
+  assert.equal(
+    (waitDetails.completions[0] as Record<string, unknown>).runId,
+    launchDetails.asyncId,
+  );
+
+  const entries = parsedEntries.map((entry) => {
+    if (entry.type !== "message" || entry.message === undefined) return entry;
+    const message = entry.message;
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      return {
+        ...entry,
+        message: {
+          ...message,
+          content: message.content.map((item) =>
+            item.type === "toolCall" && item.name === "await_workers"
+              ? { ...item, name: "unrelated_wait" }
+              : item,
+          ),
+        },
+      };
+    }
+    if (message.role === "toolResult" && message.toolName === "await_workers") {
+      return {
+        ...entry,
+        message: { ...message, toolName: "unrelated_wait" },
+      };
+    }
+    return entry;
+  });
+
+  const evidence = readSubagentEvidence(entries);
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "unknown");
+  assert.equal(runs[0]?.usage, undefined);
+  assert.equal(evidence.activity.usage, undefined);
+  assert.equal(
+    evidence.activity.tools.some((tool) => tool.name === "unrelated_wait"),
+    false,
+  );
+});
+
+test("a configured wait completion cannot authorize unrelated publication rows", async () => {
+  const text = await readFile(
+    "tests/fixtures/pi-subagents/0.86.0/mixed-configured-wait-tool.jsonl",
+    "utf8",
+  );
+  const parsed = parseSessionJsonl(text);
+  const waitEntry = parsed.entries.find((entry) => entry.id === "wait-result");
+  assert.ok(waitEntry && waitEntry.type === "message");
+  const message = waitEntry.message;
+  assert.ok(message?.role === "toolResult");
+  const rawDetails = message.details;
+  assert.ok(
+    typeof rawDetails === "object" &&
+      rawDetails !== null &&
+      !Array.isArray(rawDetails),
+  );
+  const details = rawDetails as Record<string, unknown>;
+  assert.ok(Array.isArray(details.completions));
+  const matched = details.completions.find(
+    (completion) =>
+      typeof completion === "object" &&
+      completion !== null &&
+      "runId" in completion &&
+      completion.runId === "async-run-opaque",
+  );
+  const unmatched = details.completions.find(
+    (completion) =>
+      typeof completion === "object" &&
+      completion !== null &&
+      "runId" in completion &&
+      completion.runId === "never-launched",
+  );
+  assert.ok(matched && unmatched);
+
+  for (const completions of [
+    [matched, unmatched],
+    [unmatched, matched],
+  ]) {
+    const entries = parsed.entries.map((entry) => {
+      if (entry.id !== "wait-result") return entry;
+      if (entry.type !== "message" || entry.message?.role !== "toolResult") {
+        throw new Error("expected configured wait tool result");
+      }
+      return {
+        ...entry,
+        message: {
+          ...entry.message,
+          details: { ...details, completions },
+        },
+      };
+    });
+    const evidence = readSubagentEvidence(entries);
+    const runs = runsOf(evidence);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]?.status, "unknown");
+    assert.equal(runs[0]?.usage, undefined);
+  }
+});
+
+test("reconciles a reused pi-subagents workflow child by its exact producer identity", async () => {
+  const text = await readFile(
+    "tests/fixtures/pi-subagents/0.86.0/workflow-reuse.jsonl",
+    "utf8",
+  );
+  const parsed = parseSessionJsonl(text);
+  const runs = runsOf(readSubagentEvidence(parsed.entries));
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.agent, "worker");
+  assert.equal(runs[0]?.status, "succeeded");
+});
+
+test("does not infer async runs from unjoined custom-tool completion metadata", () => {
+  const evidence = readSubagentEvidence([
+    assistantEntry("custom-call", "custom-call-id", "await_workers"),
+    resultEntry(
+      "custom-result",
+      "custom-call-id",
+      {
+        completions: [
+          { runId: "not-launched-here", state: "complete", success: true },
+        ],
+      },
+      "2026-09-12T10:00:01.000Z",
+      "await_workers",
+    ),
+  ]);
+  assert.deepEqual(runsOf(evidence), []);
 });
 
 test("keeps detached launch disposition separate from child terminal status", () => {

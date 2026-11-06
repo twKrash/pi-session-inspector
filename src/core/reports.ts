@@ -49,7 +49,7 @@ import {
   MAX_SKILL_KEYS,
   SKILL_NAME_PATTERN,
 } from "./live-counter-fold.ts";
-import { boundedDescription } from "./redact.ts";
+import { boundedDescription, REDACTED } from "./redact.ts";
 import {
   type AggregateValue,
   type CanonicalRetainedAggregates,
@@ -1002,7 +1002,7 @@ function projectActivityTools(
     if (entry === undefined) continue;
     if (
       typeof entry.name !== "string" ||
-      !ACTIVITY_TOOL_NAME.test(entry.name)
+      !(entry.name === REDACTED || ACTIVITY_TOOL_NAME.test(entry.name))
     ) {
       continue;
     }
@@ -1278,9 +1278,16 @@ function projectUsage(value: unknown): Usage | undefined {
   ) {
     return undefined;
   }
+  const costProvenance =
+    usage.costProvenance === "provider" ||
+    usage.costProvenance === "catalog-estimate" ||
+    usage.costProvenance === "mixed"
+      ? usage.costProvenance
+      : undefined;
   const projected: Usage = {
     totalTokens: usage.totalTokens,
     cost: usage.cost,
+    ...(costProvenance === undefined ? {} : { costProvenance }),
   };
   for (const field of OPTIONAL_USAGE_TOKEN_FIELDS) {
     const candidate = usage[field];

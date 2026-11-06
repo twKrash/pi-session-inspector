@@ -201,9 +201,12 @@ export type UsageFieldCoverage = {
 
 export type UsageFieldCoverageMap = Record<UsageField, UsageFieldCoverage>;
 
+export type CostProvenance = "provider" | "catalog-estimate" | "mixed";
+/** Missing provenance means the persisted producer did not identify its cost source. */
 export type Usage = {
   totalTokens: number;
   cost: number;
+  costProvenance?: CostProvenance;
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;

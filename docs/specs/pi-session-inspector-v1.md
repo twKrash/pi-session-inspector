@@ -571,6 +571,17 @@ not `true` keeps subagent-result source coverage `partial`, even when terminal
 notifications supply visible child rows; observed rows do not prove inventory
 completeness.
 
+The same `subagent-notify` entry may also resolve a plain async run. A
+`details.runs[]` entry with no `workflowRunId` whose bounded `runId` exactly
+equals the `runId` of a validated async launch in the same session publishes
+that run's bounded `agent` label and terminal `status` on the async completion
+surface, so it reconciles with the launch (and with any `bg_wait`/
+`subagent_wait` completion) as one row. A `runId` repeated within one notice is
+withheld, and an entry for a run with no such launch is ignored. Duration,
+`asyncDir`, session labels, paths, and every other field are not consumed; the
+notice never supplies model, tokens, or cost. A missing or unrecognized status
+stays `unknown`. This is persisted evidence and applies to history.
+
 For pi-subagents, `executionKind: "async"` is present only for (a) a
 successful `subagent` tool result (`isError: false`, with result `toolName`
 matching the call) publishing a validated single-run launch (`mode: "single"`,
@@ -987,10 +998,26 @@ and `cacheWrite`. It additionally retains Pi's optional native
 `usage.reasoning` as `reasoningTokens`, and native per-bucket costs as
 `inputCost`, `outputCost`, `cacheReadCost`, and `cacheWriteCost`. Optional
 fields are validated independently: malformed or absent fields stay absent;
-native zero remains zero. Reasoning is a subset of output and is never inferred
-from output or added to `totalTokens`. `cacheWrite` remains the displayed
-cache-write bucket; no separate `cacheWrite1h` metric is exposed in this
-contract.
+native zero remains zero. Pi 1.5.0's `cost.totalFromProvider` is retained as the
+optional report field `costProvenance`: `provider` for explicit `true`, `catalog-estimate` for explicit `false`, and
+absent/invalid for unknown source. Although Pi 1.5.0 treats an absent flag as
+not provider-reported, persisted sessions do not identify which Pi release
+wrote each record; Inspector therefore leaves an absent flag unknown so older
+supported sessions are not retroactively reclassified. Aggregates preserve a
+uniform source and use `mixed` when known, unknown, or different sources are
+combined. Provenance qualifies cost-bearing amounts: a record with zero tokens and no
+cost at retained precision contributes no evidence when combined with a
+cost-bearing record, even if it carries an explicit source marker. A zero-only
+aggregate retains explicit source markers while it remains zero-only; when a
+cost-bearing record joins it, only the cost-bearing sources qualify. The rule is
+derived from amounts and is associative across copies, serialization, and fold
+order for costs normalized to retained precision. Raw sub-precision cost leaves
+are outside this associativity guarantee because their rounded aggregate may
+cross the retained-precision boundary. This labels the total only; it does not
+reclassify per-bucket costs. Reasoning is a subset of output and is never
+inferred from output or added to `totalTokens`. `cacheWrite` remains the
+displayed cache-write bucket; no separate `cacheWrite1h` metric is exposed in
+this contract.
 
 The shared report projection exposes these buckets with independent token and
 cost coverage:

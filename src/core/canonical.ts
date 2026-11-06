@@ -73,6 +73,7 @@ import {
 } from "./subagent-reconciliation.ts";
 import { canonicalOpaqueDigest } from "./opaque-id.ts";
 import { boundedDescription, secretLikeValue } from "./redact.ts";
+import { combineCostProvenance } from "./cost-provenance.ts";
 import { readUsage, reduceEntries } from "./reduce.ts";
 import {
   buildRetainedAggregates,
@@ -1754,6 +1755,8 @@ function safeAdd(left: Usage, right: Usage): Usage | undefined {
   const cost = roundCost(left.cost + right.cost);
   if (!isSafeToken(totalTokens) || !isSafeCost(cost)) return undefined;
   const next: Usage = { totalTokens, cost };
+  const costProvenance = combineCostProvenance(left, right);
+  if (costProvenance !== undefined) next.costProvenance = costProvenance;
   for (const field of OPTIONAL_TOKEN_FIELDS) {
     const leftValue = left[field];
     const rightValue = right[field];

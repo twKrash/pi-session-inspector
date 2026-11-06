@@ -1,0 +1,9 @@
+{
+  "producer": "pi",
+  "version": "1.5.0",
+  "source": "https://github.com/earendil-works/pi/releases/tag/v1.5.0",
+  "surface": "Pi session v3 assistant message usage",
+  "synthetic": true,
+  "fixture": "usage-cost-provenance.jsonl",
+  "notes": "Sanitized representative fixture for totalFromProvider=true, false, absent, responseModel metadata, and an unknown additive field."
+}

@@ -2,6 +2,44 @@
 
 All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.7.1] - 2026-11-06
+
+### Added
+
+- Usage report DTOs retain Pi 1.5.0 cost provenance: provider-reported,
+  catalog-estimated, or mixed; absent provenance means unknown. Provenance
+  survives session totals, usage composition, dated rows, per-model rows, and
+  the cross-session daily and history/global folds. A record with zero tokens
+  and zero cost carries nothing to qualify, so it adds no provenance evidence.
+
+### Fixed
+
+- pi-subagents 0.86.0 configurable `waitTool.name` compatibility is
+  handled conservatively. The documented `bg_wait` and `subagent_wait`
+  tool names remain supported.
+
+  Custom wait-tool names are not authenticated by persisted Pi session
+  records and therefore fail closed: their completion results do not
+  contribute AgentRun status, usage, cost, or agent activity.
+
+  A matching run ID identifies the launch, not the producer of the wait
+  result. This limitation prevents unrelated tools with matching completion
+  metadata from being incorrectly attributed to pi-subagents.
+
+- A persisted `subagent-notify` completion notice for a plain async run now
+  resolves that run's terminal status and agent label when its `runId` exactly
+  matches a validated async launch. Previously such runs stayed `unknown` in
+  history unless a `bg_wait` completion was also persisted. The notice still
+  never supplies model, tokens, or cost.
+
+### Tests
+
+- Add compatibility fixtures for Pi 1.5.0 and pi-subagents 0.86.0, including
+  exact workflow-child reuse identity and non-additive child usage; retain the
+  Pi 1.2.0 baseline replay tests.
+
 ## [1.7.0]
 
 ### Added

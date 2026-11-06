@@ -58,6 +58,56 @@ test("retains Pi 0.85.1 input/output/cacheRead/cacheWrite token breakdown", () =
   });
 });
 
+test("preserves Pi 1.5.0 provider versus catalog cost provenance and leaves unmarked cost unknown", () => {
+  const text = readFileSync(
+    "tests/fixtures/pi/1.5.0/usage-cost-provenance.jsonl",
+    "utf8",
+  );
+  const session = parseSessionJsonl(text);
+  const report = toSessionReport(reduceEntries(session.id, session.entries));
+  assert.deepEqual(
+    report.generations.map((generation) => generation.usage?.costProvenance),
+    [
+      undefined,
+      "provider",
+      "catalog-estimate",
+      undefined,
+      undefined,
+      "provider",
+      "catalog-estimate",
+      undefined,
+    ],
+  );
+  assert.equal(report.usage?.cost, 0.3);
+  assert.equal(report.usage?.costProvenance, "mixed");
+  const json = JSON.parse(renderJson(report)) as {
+    usage?: { costProvenance?: string };
+  };
+  assert.equal(json.usage?.costProvenance, "mixed");
+  assert.equal(
+    session.entries.some(
+      (entry) =>
+        entry.message?.role === "toolResult" &&
+        entry.message.toolName === "fixture_tool",
+    ),
+    true,
+  );
+  assert.equal(
+    report.tools.some((tool) => tool.name === "fixture_tool"),
+    true,
+  );
+});
+
+test("keeps pi-subagents child usage outside native session totals", async () => {
+  const text = readFileSync(
+    "tests/fixtures/pi-subagents/0.86.0/configured-wait-tool.jsonl",
+    "utf8",
+  );
+  const session = parseSessionJsonl(text);
+  const report = toSessionReport(reduceEntries(session.id, session.entries));
+  assert.deepEqual(report.usage, { totalTokens: 2, cost: 0.002 });
+});
+
 test("keeps absent or invalid optional token fields absent instead of zero", () => {
   const report = toSessionReport(
     reduceEntries("tokens", [
@@ -595,4 +645,26 @@ test("keeps invalid optional economics absent and native zero known", () => {
   assert.equal(zero.usage?.reasoningTokens, 0);
   assert.equal(zero.usageEconomics?.reasoning.coverage, "complete");
   assert.equal(zero.usageEconomics?.cacheReuse.percent, undefined);
+});
+
+test("a sub-precision unmarked cost is empty in every grouping", () => {
+  const unmarked = { totalTokens: 0, cost: 1e-13 };
+  const empty = { totalTokens: 0, cost: 0 };
+  const provider = {
+    totalTokens: 1,
+    cost: 0.1,
+    costProvenance: "provider" as const,
+  };
+  assert.equal(
+    addUsage(addUsage(unmarked, empty), provider).costProvenance,
+    "provider",
+  );
+  assert.equal(
+    addUsage(unmarked, addUsage(empty, provider)).costProvenance,
+    "provider",
+  );
+  assert.equal(
+    addUsage(addUsage(provider, empty), unmarked).costProvenance,
+    "provider",
+  );
 });

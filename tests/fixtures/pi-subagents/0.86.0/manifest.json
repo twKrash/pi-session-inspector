@@ -1,0 +1,15 @@
+{
+  "producer": "pi-subagents",
+  "version": "0.86.0",
+  "source": "https://github.com/nicobailon/pi-subagents/releases/tag/v0.86.0",
+  "surface": "configured wait-tool Pi session result",
+  "synthetic": true,
+  "fixture": "configured-wait-tool.jsonl",
+  "notes": "Sanitized synthetic sessions based on the tagged v0.86.0 waitTool.name and workflow reuse publication contracts; values are intentionally synthetic.",
+  "fixtures": [
+    "configured-wait-tool.jsonl",
+    "async-notify.jsonl",
+    "mixed-configured-wait-tool.jsonl",
+    "workflow-reuse.jsonl"
+  ]
+}
