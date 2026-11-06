@@ -137,7 +137,7 @@ const resultEntry = (
   },
 });
 
-test("recognizes a configured wait-tool name only when it reconciles an exact async launch", async () => {
+test("configured wait-tool completion details remain unauthenticated in persisted history", async () => {
   const text = await readFile(
     "tests/fixtures/pi-subagents/0.86.0/configured-wait-tool.jsonl",
     "utf8",
@@ -146,16 +146,13 @@ test("recognizes a configured wait-tool name only when it reconciles an exact as
   const evidence = readSubagentEvidence(parsed.entries);
   const runs = runsOf(evidence);
   assert.equal(runs.length, 1);
-  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal(runs[0]?.status, "unknown");
   assert.equal(runs[0]?.executionKind, "async");
-  assert.deepEqual(runs[0]?.usage, { totalTokens: 9, cost: 0.009 });
-  assert.deepEqual(evidence.activity.usage, { totalTokens: 2, cost: 0.002 });
-  assert.equal(evidence.activity.calls, 2);
-  assert.equal(
-    evidence.activity.tools.some(
-      (tool) => tool.name === "await_workers" && tool.calls === 1,
-    ),
-    true,
+  assert.equal(runs[0]?.usage, undefined);
+  assert.equal(evidence.activity.calls, 1);
+  assert.deepEqual(
+    evidence.activity.tools.map((tool) => tool.name),
+    ["subagent"],
   );
 });
 
@@ -244,7 +241,7 @@ test("a run id repeated in one async notice is withheld", async () => {
   assert.equal(runs[0]?.status, "unknown");
 });
 
-test("a secret-shaped configured wait-tool name is redacted in activity but still reconciles", async () => {
+test("a secret-shaped untrusted wait-tool name is not attributed or exposed", async () => {
   const secretName = `ghp_${"a".repeat(30)}`;
   const text = (
     await readFile(
@@ -253,13 +250,16 @@ test("a secret-shaped configured wait-tool name is redacted in activity but stil
     )
   ).replaceAll("await_workers", secretName);
   const evidence = readSubagentEvidence(parseSessionJsonl(text).entries);
-  assert.equal(runsOf(evidence).length, 1);
-  assert.equal(evidence.activity.calls, 2);
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "unknown");
+  assert.equal(runs[0]?.usage, undefined);
+  assert.equal(evidence.activity.calls, 1);
   assert.deepEqual(
     evidence.activity.tools.map((tool) => tool.name),
-    ["subagent", "[REDACTED]"],
+    ["subagent"],
   );
-  assert.equal(JSON.stringify(evidence.activity).includes(secretName), false);
+  assert.equal(JSON.stringify(evidence).includes(secretName), false);
   const [header, ...rest] = text.trimEnd().split("\n");
   const marker = JSON.stringify({
     type: "custom",
@@ -284,12 +284,77 @@ test("a secret-shaped configured wait-tool name is redacted in activity but stil
   });
   assert.deepEqual(
     report.agentActivity.tools.map((tool) => [tool.name, tool.calls]),
-    [
-      ["subagent", 1],
-      ["[REDACTED]", 1],
-    ],
+    [["subagent", 1]],
   );
   assert.equal(JSON.stringify(report).includes(secretName), false);
+});
+
+test("an unrelated tool cannot attribute an existing async run from forged completion metadata", async () => {
+  const text = await readFile(
+    "tests/fixtures/pi-subagents/0.86.0/configured-wait-tool.jsonl",
+    "utf8",
+  );
+  const parsedEntries = parseSessionJsonl(text).entries;
+  const launch = parsedEntries.find(
+    (entry) => entry.id === "async-launch-result",
+  );
+  const completionResult = parsedEntries.find(
+    (entry) => entry.id === "wait-result",
+  );
+  assert.ok(
+    launch?.type === "message" && launch.message?.role === "toolResult",
+  );
+  assert.ok(
+    completionResult?.type === "message" &&
+      completionResult.message?.role === "toolResult",
+  );
+  const launchDetails = launch.message.details as Record<string, unknown>;
+  const waitDetails = completionResult.message.details as Record<
+    string,
+    unknown
+  >;
+  assert.equal(launchDetails.asyncId, "async-run-opaque");
+  assert.ok(Array.isArray(waitDetails.completions));
+  assert.equal(
+    (waitDetails.completions[0] as Record<string, unknown>).runId,
+    launchDetails.asyncId,
+  );
+
+  const entries = parsedEntries.map((entry) => {
+    if (entry.type !== "message" || entry.message === undefined) return entry;
+    const message = entry.message;
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      return {
+        ...entry,
+        message: {
+          ...message,
+          content: message.content.map((item) =>
+            item.type === "toolCall" && item.name === "await_workers"
+              ? { ...item, name: "unrelated_wait" }
+              : item,
+          ),
+        },
+      };
+    }
+    if (message.role === "toolResult" && message.toolName === "await_workers") {
+      return {
+        ...entry,
+        message: { ...message, toolName: "unrelated_wait" },
+      };
+    }
+    return entry;
+  });
+
+  const evidence = readSubagentEvidence(entries);
+  const runs = runsOf(evidence);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "unknown");
+  assert.equal(runs[0]?.usage, undefined);
+  assert.equal(evidence.activity.usage, undefined);
+  assert.equal(
+    evidence.activity.tools.some((tool) => tool.name === "unrelated_wait"),
+    false,
+  );
 });
 
 test("a configured wait completion cannot authorize unrelated publication rows", async () => {
@@ -346,9 +411,8 @@ test("a configured wait completion cannot authorize unrelated publication rows",
     const evidence = readSubagentEvidence(entries);
     const runs = runsOf(evidence);
     assert.equal(runs.length, 1);
-    assert.equal(runs[0]?.status, "succeeded");
-    assert.deepEqual(runs[0]?.usage, { totalTokens: 9, cost: 0.009 });
-    assert.equal(evidence.activity.usage?.totalTokens, 2);
+    assert.equal(runs[0]?.status, "unknown");
+    assert.equal(runs[0]?.usage, undefined);
   }
 });
 

@@ -23,7 +23,7 @@ import {
 } from "./subagent-foreground-metadata.ts";
 import { readReferencedLifecycleEnrichment } from "./subagent-lifecycle.ts";
 
-/** Persisted pi-subagents tool names, in the report's fixed column order. */
+/** Fixed documented tool names in report order; custom wait names are unauthenticated. */
 const SUBAGENT_TOOL_NAMES = [
   "subagent",
   "subagent_wait",
@@ -35,7 +35,6 @@ const ASYNC_WAIT_TOOL_NAMES: ReadonlySet<string> = new Set([
   "bg_wait",
   "subagent_wait",
 ]);
-const CONFIGURED_TOOL_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 /** Producer run ids are hashed before they leave this adapter. */
 const RAW_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const WORKFLOW_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -746,22 +745,12 @@ function deriveEvidence(
       asyncLaunchRunIds.add(launchRunId);
     }
   }
-  const configuredWaitCalls = collectConfiguredWaitCalls(
-    entries,
-    resultsByCallId,
-    asyncLaunchRunIds,
-  );
-  const configuredWaitCallIds = new Set(
-    configuredWaitCalls.map((call) => call.callId),
-  );
-  const recognizedCalls: {
-    name: string;
-    callId?: string;
-    completionRunIds?: ReadonlySet<string>;
-  }[] = [...calls, ...configuredWaitCalls];
-  const dynamicWaitToolNames = [
-    ...new Set(configuredWaitCalls.map((call) => call.name)),
-  ].sort();
+  // Pi session history preserves tool names and tool-result payloads, but not
+  // which extension registered a tool or the effective waitTool.name setting.
+  // Thus the exact launch runId cannot authenticate `details.completions[]`
+  // under an arbitrary configured name. Only the fixed documented names above
+  // are classified; custom configured names fail closed as ordinary tools.
+  const recognizedCalls = calls;
   const countsByTool = new Map<string, number>();
   const publications: {
     result: Readonly<Record<string, unknown>>;
@@ -771,7 +760,6 @@ function deriveEvidence(
     callId?: string;
     isAsyncWait: boolean;
     successfulMatchingResult: boolean;
-    configuredWaitCompletionRunIds?: ReadonlySet<string>;
   }[] = [];
   let succeeded = 0;
   let failed = 0;
@@ -814,14 +802,9 @@ function deriveEvidence(
       ordinal: joined.ordinal,
       toolName: call.name,
       ...(call.callId === undefined ? {} : { callId: call.callId }),
-      isAsyncWait:
-        ASYNC_WAIT_TOOL_NAMES.has(call.name) ||
-        (call.callId !== undefined && configuredWaitCallIds.has(call.callId)),
+      isAsyncWait: ASYNC_WAIT_TOOL_NAMES.has(call.name),
       successfulMatchingResult:
         result.toolName === call.name && result.isError === false,
-      ...(call.completionRunIds === undefined
-        ? {}
-        : { configuredWaitCompletionRunIds: call.completionRunIds }),
     });
   }
 
@@ -833,10 +816,8 @@ function deriveEvidence(
   for (const {
     result,
     toolName,
-    callId,
     isAsyncWait,
     successfulMatchingResult,
-    configuredWaitCompletionRunIds,
   } of publications) {
     const details = snapshotRecord(result.details);
     if (details === undefined) continue;
@@ -855,36 +836,25 @@ function deriveEvidence(
       }
     }
     if (
-      !successfulMatchingResult ||
-      !(
-        ASYNC_WAIT_TOOL_NAMES.has(toolName) ||
-        (callId !== undefined && configuredWaitCallIds.has(callId))
-      ) ||
-      !Array.isArray(details.completions)
+      successfulMatchingResult &&
+      isAsyncWait &&
+      Array.isArray(details.completions)
     ) {
-      continue;
-    }
-    for (const value of details.completions.slice(0, MAX_RUNS)) {
-      const completion = snapshotRecord(value);
-      if (
-        completion === undefined ||
-        isSuppressedAsyncWaitContainer(isAsyncWait, completion)
-      ) {
-        continue;
-      }
-      const completionRunId = readRawRunId(completion.runId);
-      if (
-        configuredWaitCompletionRunIds !== undefined &&
-        (completionRunId === undefined ||
-          !configuredWaitCompletionRunIds.has(completionRunId))
-      ) {
-        continue;
-      }
-      if (
-        completionRunId !== undefined &&
-        asyncCompletionRunIds.size < MAX_RUNS
-      ) {
-        asyncCompletionRunIds.add(completionRunId);
+      for (const value of details.completions.slice(0, MAX_RUNS)) {
+        const completion = snapshotRecord(value);
+        if (
+          completion === undefined ||
+          isSuppressedAsyncWaitContainer(isAsyncWait, completion)
+        ) {
+          continue;
+        }
+        const completionRunId = readRawRunId(completion.runId);
+        if (
+          completionRunId !== undefined &&
+          asyncCompletionRunIds.size < MAX_RUNS
+        ) {
+          asyncCompletionRunIds.add(completionRunId);
+        }
       }
     }
   }
@@ -949,7 +919,6 @@ function deriveEvidence(
             source.toolName,
             source.successfulMatchingResult,
             source.isAsyncWait,
-            source.configuredWaitCompletionRunIds,
           );
         } else {
           yield* collectWorkflowNotificationRows(
@@ -970,10 +939,8 @@ function deriveEvidence(
   };
   const hasObservations = !observations[Symbol.iterator]().next().done;
 
-  // Configured names are producer-controlled: a secret-shaped one is reported
-  // as [REDACTED] (counts merge) while the raw name stays internal.
   const toolCounts = new Map<string, number>();
-  for (const name of [...SUBAGENT_TOOL_NAMES, ...dynamicWaitToolNames]) {
+  for (const name of SUBAGENT_TOOL_NAMES) {
     const calls = countsByTool.get(name) ?? 0;
     if (calls === 0) continue;
     const shown = secretLikeValue(name) ? REDACTED : name;
@@ -1020,66 +987,6 @@ function readObservedAt(value: unknown): string | undefined {
   return value;
 }
 
-function collectConfiguredWaitCalls(
-  entries: readonly SessionEntry[],
-  resultsByCallId: ReadonlyMap<string, JoinedResult>,
-  asyncLaunchRunIds: ReadonlySet<string>,
-): {
-  name: string;
-  callId: string;
-  completionRunIds: ReadonlySet<string>;
-}[] {
-  const calls: {
-    name: string;
-    callId: string;
-    completionRunIds: ReadonlySet<string>;
-  }[] = [];
-  const seenCallIds = new Set<string>();
-  for (const entry of entries) {
-    const message = snapshotRecord(entry.message);
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) {
-      continue;
-    }
-    for (const value of message.content) {
-      const call = snapshotRecord(value);
-      if (
-        call?.type !== "toolCall" ||
-        typeof call.name !== "string" ||
-        SUBAGENT_TOOLS.has(call.name) ||
-        !CONFIGURED_TOOL_NAME.test(call.name) ||
-        typeof call.id !== "string" ||
-        call.id.length === 0 ||
-        seenCallIds.has(call.id)
-      ) {
-        continue;
-      }
-      const joined = resultsByCallId.get(call.id);
-      if (
-        joined === undefined ||
-        joined.message.toolName !== call.name ||
-        joined.message.isError !== false
-      ) {
-        continue;
-      }
-      const details = snapshotRecord(joined.message.details);
-      if (!Array.isArray(details?.completions)) continue;
-      const completionRunIds = new Set<string>();
-      for (const completionValue of details.completions.slice(0, MAX_RUNS)) {
-        const completion = snapshotRecord(completionValue);
-        if (completion === undefined) continue;
-        const runId = readRawRunId(completion.runId);
-        if (runId !== undefined && asyncLaunchRunIds.has(runId)) {
-          completionRunIds.add(runId);
-        }
-      }
-      if (completionRunIds.size === 0) continue;
-      seenCallIds.add(call.id);
-      calls.push({ name: call.name, callId: call.id, completionRunIds });
-      if (calls.length >= MAX_RUNS) return calls;
-    }
-  }
-  return calls;
-}
 function collectCalls(
   content: unknown,
   calls: { name: string; callId?: string }[],

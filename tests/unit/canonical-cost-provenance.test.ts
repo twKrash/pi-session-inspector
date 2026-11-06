@@ -91,6 +91,26 @@ const provenanceCases = [
     expected: "mixed",
   },
   {
+    name: "provider zero followed by catalog cost",
+    ids: ["provider-zero", "catalog-cost"],
+    expected: "catalog-estimate",
+  },
+  {
+    name: "catalog cost followed by provider zero",
+    ids: ["catalog-cost", "provider-zero"],
+    expected: "catalog-estimate",
+  },
+  {
+    name: "provider zero beside catalog zero",
+    ids: ["provider-zero", "catalog-zero"],
+    expected: "mixed",
+  },
+  {
+    name: "zero-only provider and catalog aggregate, then provider cost",
+    ids: ["provider-zero", "catalog-zero", "provider-cost"],
+    expected: "provider",
+  },
+  {
     // A zero-amount record has nothing to qualify, so it adds no evidence.
     name: "unmarked zero followed by provider",
     ids: ["unknown-zero", "provider-cost"],

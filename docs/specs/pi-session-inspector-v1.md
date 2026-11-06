@@ -1005,11 +1005,15 @@ not provider-reported, persisted sessions do not identify which Pi release
 wrote each record; Inspector therefore leaves an absent flag unknown so older
 supported sessions are not retroactively reclassified. Aggregates preserve a
 uniform source and use `mixed` when known, unknown, or different sources are
-combined. Provenance qualifies cost-bearing amounts: an unmarked record with
-zero tokens and no cost at retained precision contributes no evidence, so it
-neither turns a provider total `mixed` nor a total unknown, while an explicitly
-marked record always contributes its source. The rule is derived from the
-amounts, so it holds across copies, serialization, and any fold order. This labels the total only; it does not
+combined. Provenance qualifies cost-bearing amounts: a record with zero tokens and no
+cost at retained precision contributes no evidence when combined with a
+cost-bearing record, even if it carries an explicit source marker. A zero-only
+aggregate retains explicit source markers while it remains zero-only; when a
+cost-bearing record joins it, only the cost-bearing sources qualify. The rule is
+derived from amounts and is associative across copies, serialization, and fold
+order for costs normalized to retained precision. Raw sub-precision cost leaves
+are outside this associativity guarantee because their rounded aggregate may
+cross the retained-precision boundary. This labels the total only; it does not
 reclassify per-bucket costs. Reasoning is a subset of output and is never
 inferred from output or added to `totalTokens`. `cacheWrite` remains the
 displayed cache-write bucket; no separate `cacheWrite1h` metric is exposed in
