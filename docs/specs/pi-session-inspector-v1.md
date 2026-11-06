@@ -325,7 +325,7 @@ Native Pi IDs are never relabeled as derived IDs. Derived turn/agent IDs derive 
 
 Report data flows through exactly three layers (ADR 0016):
 
-- **L0 safe evidence.** Source adapters are the only code that reads Inspector-owned raw sources (Inspector WAL, checkpoint, inventory snapshot, pi-subagents results/archives, producer telemetry, current environment). The Pi session file is read only to hand its bytes to the L0 parser — by the Pi adapter, its composition-root/maintenance callers, and the L2 loaders — while Inspector-owned sources (WAL, checkpoint, inventory, archives) remain off-limits to L2 except the ruled manifest-discovery import in `src/ui/load-history.ts`. An adapter validates structure, bounds, redaction, enums, timestamps, and provenance, drops prohibited fields, and emits exactly two disjoint classes: `AtomicEvidence` (one validated observation per fact) and `FoldedAggregateEvidence` (already-folded checkpoint counters plus their exact cursor/seal boundary). L0 never merges, selects scope, combines atomic and folded values, computes totals, or infers relationships.
+- **L0 safe evidence.** Source adapters are the only code that reads Inspector-owned raw sources (Inspector WAL, checkpoint, inventory snapshot, pi-subagents results/archives, producer telemetry, current environment). Parent Pi session files are read only to hand their bytes to the L0 parser — by the Pi adapter, its composition-root/maintenance callers, and the L2 loaders. An eligible, explicitly referenced child Pi session file is also read only by its bounded L0 adapter under ADR 0028; L2 never opens either file directly. Inspector-owned sources (WAL, checkpoint, inventory, archives) remain off-limits to L2 except the ruled manifest-discovery import in `src/ui/load-history.ts`. An adapter validates structure, bounds, redaction, enums, timestamps, and provenance, drops prohibited fields, and emits exactly two disjoint classes: `AtomicEvidence` (one validated observation per fact) and `FoldedAggregateEvidence` (already-folded checkpoint counters plus their exact cursor/seal boundary). L0 never merges, selects scope, combines atomic and folded values, computes totals, or infers relationships.
 - **L1 canonical session.** `buildCanonicalSession` is the single semantic boundary. It validates identity/marker, owns the full entry graph, reconciles exact call/result and live-timing identities, reconciles repeated cooperative child observations, exposes retained explicit skill-invocation detail, reconciles retained atomic telemetry against the checkpoint boundary, builds native/child usage ledgers, classifies timestamps, and emits evidence health. L1 is rebuilt in memory and never written as a file.
 - **L2 report/navigation projections.** L2 consumes the L1 model and emits the bounded DTOs consumed by TUI/JSON, the localhost UI API, and the immutable HTML snapshot renderer. L2 projects scope and date ranges and maps provenance to confidence/health. L2 never reads WAL, checkpoint, inventory, or producer archives directly, and never folds counters, subtracts cursor overlap, recomputes joins, or re-derives scope. Only the L0 source coordinator in the composition root may read storage for semantic evidence; history/global receive it through an injected `SessionEvidenceProvider`, where a throw or absent result degrades exactly that session to `unavailable` (never a fabricated zero). Maintenance/retention may read storage for storage ownership only. Browser assets and snapshot HTML never become a second L2 owner.
 
@@ -541,7 +541,7 @@ Benchmark corpus is fixed seed/versioned. Early CI smoke fails only timeout, cor
 | Integration | v1 handling | Non-claim |
 | --- | --- | --- |
 | Pi core | mandatory replay + live observer | exact provider retry spans |
-| pi-subagents | automatic discovery from persisted tool results and exact `subagent-notify` workflow completion entries: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation; a `mode: "single"` completion's lone id-less child contributes its validated usage group to that run; current-session-only lifecycle enrichment is limited to an exact referenced v3 `status.json` | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; child Pi session files not replayed; lifecycle artifacts never authority for history |
+| pi-subagents | automatic discovery from persisted tool results and exact `subagent-notify` workflow completion entries: native tool activity plus rich runs from `details.completions[]`/`details.results[]`; validated single-run launches and `bg_wait`/`subagent_wait` terminal completions remain visible from persisted rows, with launch/completion aliases only on exact validated run-ID equality; archive references are followed only from `details.completions[]` after strict validation; a `mode: "single"` completion's lone id-less child contributes its validated usage group to that run; durable child-session replay is permitted only through an audited, exact `subagent-notify` session-file locator; current-session-only lifecycle enrichment remains limited to an exact referenced v3 `status.json` | timestamp-guessed or inferred async parentage; no manual `--subagents-artifact` input; no workflow-child path inference; lifecycle artifacts never authority for history |
 | Permission System | public bus counters (`permissions:ready\|ui_prompt\|decision`) folded into durable aggregates; additive hashed `attribution.request` metadata only | internal parser import; no raw producer payload fields; raw request ID never read |
 | RTK | persisted `rtkCompaction` details | rewrite decision/savings not persisted |
 | Context Mode | `ctx_*` use | exact Context Mode savings |
@@ -577,10 +577,11 @@ equals the `runId` of a validated async launch in the same session publishes
 that run's bounded `agent` label and terminal `status` on the async completion
 surface, so it reconciles with the launch (and with any `bg_wait`/
 `subagent_wait` completion) as one row. A `runId` repeated within one notice is
-withheld, and an entry for a run with no such launch is ignored. Duration,
-`asyncDir`, session labels, paths, and every other field are not consumed; the
-notice never supplies model, tokens, or cost. A missing or unrecognized status
-stays `unknown`. This is persisted evidence and applies to history.
+withheld, and an entry for a run with no such launch is ignored. Duration and `asyncDir` are not consumed by this status-only rule. The notice
+never supplies model, tokens, or cost through `content`; `details.runs[]` may
+also publish a documented session-file locator, which is governed separately
+below. A missing or unrecognized status stays `unknown`. This is persisted
+evidence and applies to history.
 
 For pi-subagents, `executionKind: "async"` is present only for (a) a
 successful `subagent` tool result (`isError: false`, with result `toolName`
@@ -622,6 +623,22 @@ launch calls and 512 persisted run observations; exceeding either cap skips all
 lifecycle reads and preserves persisted C1 evidence. Status files are read
 serially, one at a time. History never reads lifecycle artifacts; native totals
 and child-usage accounting remain unchanged.
+
+ADR 0028 defines a separate, proposed durable-source exception for a child Pi
+session file explicitly published by a supported plain-async
+`subagent-notify` `details.runs[]` entry. It may enrich only an already-proven
+single async `AgentRun`, after exact run-ID matching, a version-scoped producer
+contract establishing one dedicated execution per child file, safe bounded
+file validation, and a child header whose `parentSession` exactly matches the
+parent session file. The file must be a normalized local `.jsonl` in the same
+session directory; URLs, share errors, inferred/scanned paths, duplicate or
+conflicting run/file claims, and unverified reused/forked sessions are
+unavailable. The header proves parentage, not run identity. This path is read by
+the shared L0 evidence provider for current and history reports; it does not
+read temporary lifecycle artifacts from history, create rows, persist a copy,
+or change native totals. It is not enabled until the producer's fresh-session
+and resume/reuse boundary is verified. Child fields preserve native missingness
+and child usage remains non-additive. Only native child usage/model facts with unambiguous per-run meaning may be projected; transcript timestamps, file existence, and nested child totals never establish duration, outcome, or additive usage.
 
 For a current-session report only, an already-proven detached foreground child
 may be optionally settled from the documented per-child `_meta.json` that its own
