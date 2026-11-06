@@ -16,13 +16,17 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ### Fixed
 
-- Persisted async completion results from a configured pi-subagents wait-tool
-  name are reconciled to an exact successful async launch identity, one
-  completion row at a time: an unlaunched completion, or the same result's
-  top-level `results` and `workflowChildren`, never publish runs. Configured
-  waits count in agent activity totals. The legacy `bg_wait` and
-  `subagent_wait` names remain supported. A secret-shaped configured name is
-  reported as `[REDACTED]` in activity.
+- pi-subagents 0.86.0 configurable `waitTool.name` compatibility is
+  handled conservatively. The documented `bg_wait` and `subagent_wait`
+  tool names remain supported.
+
+  Custom wait-tool names are not authenticated by persisted Pi session
+  records and therefore fail closed: their completion results do not
+  contribute AgentRun status, usage, cost, or agent activity.
+
+  A matching run ID identifies the launch, not the producer of the wait
+  result. This limitation prevents unrelated tools with matching completion
+  metadata from being incorrectly attributed to pi-subagents.
 
 - A persisted `subagent-notify` completion notice for a plain async run now
   resolves that run's terminal status and agent label when its `runId` exactly
