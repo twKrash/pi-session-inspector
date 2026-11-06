@@ -4,6 +4,8 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-11-06
+
 ### Added
 
 - Usage report DTOs retain Pi 1.5.0 cost provenance: provider-reported,
