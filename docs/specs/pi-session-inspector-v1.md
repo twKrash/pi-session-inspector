@@ -624,21 +624,27 @@ lifecycle reads and preserves persisted C1 evidence. Status files are read
 serially, one at a time. History never reads lifecycle artifacts; native totals
 and child-usage accounting remain unchanged.
 
-ADR 0028 defines a separate, proposed durable-source exception for a child Pi
-session file explicitly published by a supported plain-async
-`subagent-notify` `details.runs[]` entry. It may enrich only an already-proven
-single async `AgentRun`, after exact run-ID matching, a version-scoped producer
-contract establishing one dedicated execution per child file, safe bounded
-file validation, and a child header whose `parentSession` exactly matches the
-parent session file. The file must be a normalized local `.jsonl` in the same
-session directory; URLs, share errors, inferred/scanned paths, duplicate or
-conflicting run/file claims, and unverified reused/forked sessions are
-unavailable. The header proves parentage, not run identity. This path is read by
-the shared L0 evidence provider for current and history reports; it does not
-read temporary lifecycle artifacts from history, create rows, persist a copy,
-or change native totals. It is not enabled until the producer's fresh-session
-and resume/reuse boundary is verified. Child fields preserve native missingness
-and child usage remains non-additive. Only native child usage/model facts with unambiguous per-run meaning may be projected; transcript timestamps, file existence, and nested child totals never establish duration, outcome, or additive usage.
+ADR 0028 defines a separate durable-source exception for a child Pi session
+file explicitly published by a plain-async `subagent-notify` `details.runs[]`
+entry (`sessionLabel` exactly `Session file`; share URLs and share errors are
+not paths). It may enrich only an already-proven single async `AgentRun`, after
+exact run-ID matching and the checks below; any failure leaves the row
+unchanged. The path must be a bounded, normalized, absolute `.jsonl` in the
+same session directory as the parent, read without following symlinks under
+file, entry, and per-load byte budgets. The file must be a format-3 Pi session
+whose header `parentSession` equals the parent session file, and it must prove
+one dedicated execution: exactly one user message (resume and follow-ups
+append more), no entry id shared with the parent (a `context: "fork"` child
+copies parent history), a linear tree without compaction or branch summary, and
+a path claimed by exactly one run in the parent session. The header proves
+parentage, not run identity. The same shared L0 evidence path serves current and
+history reports; history still never reads temporary lifecycle artifacts. No
+row is created, no copy is persisted, and native totals do not change. Child
+usage stays a non-additive breakdown: tokens and cost sum only valid native
+assistant usage (missing usage is `partial`, never zero); a singular model is
+shown only when every assistant message reports the same one; the tool count is
+distinct native tool-call ids; duration, generations, thinking, and outcome are
+never derived from the file.
 
 For a current-session report only, an already-proven detached foreground child
 may be optionally settled from the documented per-child `_meta.json` that its own

@@ -2,12 +2,12 @@
 
 ## Status
 
-Proposed. The producer contract for dedicated child-session ownership and
-resume/reuse behavior must be verified before runtime implementation. This ADR
-supersedes ADR 0022 only for the historical prohibition on reading explicitly
-referenced child Pi session files. All other ADR 0022 decisions remain in force:
-exact identity and reconciliation, fail-closed validation, referenced-locator-only
-reads, persisted Pi authority, and non-additive child usage.
+Accepted (design approved by the maintainer 2026-11-07), with the producer
+audit recorded below. This ADR supersedes ADR 0022 only for the historical
+prohibition on reading explicitly referenced child Pi session files. All other
+ADR 0022 decisions remain in force: exact identity and reconciliation,
+fail-closed validation, referenced-locator-only reads, persisted Pi authority,
+and non-additive child usage.
 
 ## Context
 
@@ -26,10 +26,30 @@ may instead be a share URL or a share error; those are not file references.
 
 The locator is useful but is not, by itself, proof that all usage in the file
 belongs to exactly one run. A Pi session header proves its parent session, not
-the child run ID or an immutable execution boundary. The producer's fresh-file,
-resume, and reuse behavior therefore needs a version-scoped audit before any
-child usage is accepted. Existing measurements from one repository are
-investigative evidence, not a general coverage guarantee.
+the child run ID or an immutable execution boundary.
+
+### Producer audit (pi-subagents 0.86.0)
+
+Audited in source and against 141 distinct locators in one repository's
+sessions (aggregate counts only):
+
+- A fresh async child gets a new directory-backed Pi session file, unique per
+  run, so the common case is dedicated.
+- **Resume appends to the same file.** `resume` reopens the recorded
+  `sessionFile` and publishes a new run ID with the same path. 14 of 141 paths
+  were claimed by more than one run ID. A child can also take follow-up user
+  messages: 35 of 141 files hold more than one user message, 21 of them under a
+  single run ID.
+- **`context: "fork"` copies parent history** into a new child file whose header
+  still names the parent. The one such file in the sample shared 60 of its 78
+  entry ids with its parent.
+- The path is absolute in practice but the producer does not guarantee it lies
+  under the parent's directory.
+
+Verdict: file ownership is **not guaranteed but is detectable from persisted
+data**. Under the rule below, 107 of 141 sampled files qualify; the rest are
+withheld, not guessed. Measurements from one repository are investigative
+evidence, not a general coverage guarantee.
 
 ## Decision
 
@@ -45,16 +65,22 @@ investigative evidence, not a general coverage guarantee.
   documented session-file label and a bounded absolute local path. URLs, share
   errors, free text, inferred paths, filename conventions, scans, and
   `workflowRunId`/workflow-child locators are rejected. Repeated run IDs,
-  conflicting locators, a child file claimed by more than one run, and known
-  reused/forked sessions without a verified execution boundary are withheld.
+  conflicting locators, and a child file claimed by more than one run in the
+  parent session are withheld.
 - **Validate the referenced file before parsing.** Require a normalized `.jsonl`
   path in the same session directory as the parent, not the parent file itself;
   reject symlinked path components and non-regular files; open without following
   links; enforce bounded file size, entry count, and aggregate history-read
   budgets; and swallow every I/O/parse failure. Require a supported Pi session
   header whose `parentSession` exactly equals the parent session-file path. This
-  proves parentage only; the run-to-file binding still depends on the audited
-  producer contract and exact persisted notification.
+  proves parentage only; the run-to-file binding comes from the exact persisted
+  notification.
+- **Dedicated-execution rule (from the audit).** A file is attributed to a run
+  only when it holds exactly one user message (resume and follow-ups append
+  more), shares no entry id with the parent session (fork inheritance), is a
+  linear tree with no compaction or branch summary, and is claimed by exactly
+  one run in the parent session. Anything else is `unavailable`; no per-run
+  cutoff is invented.
 - **Reuse native Pi semantics without changing accounting.** Parse only bounded
   native metadata and usage. Preserve missingness; never infer cost from model
   prices, execution duration from transcript timestamps, outcome from file
@@ -99,10 +125,10 @@ investigative evidence, not a general coverage guarantee.
   directory is gone. Existing sessions without a structured notice, workflow
   child runs without an explicit child-session locator, unsafe files, and
   unverified reused execution files remain unavailable.
-- The version-scoped producer audit must establish locator stability and
-  dedicated execution ownership across fresh runs, resume, and fork/reuse before
-  implementation accepts totals. If it cannot, the reader must fail closed;
-  this ADR does not permit estimating a per-run cutoff from notification time.
+- The dedicated-execution rule is checked on every read, so a file that is later
+  resumed stops qualifying instead of being counted with the wrong run. The rule
+  is re-verified per supported producer version; an unaudited version fails
+  closed.
 - History reads require deterministic, request-scoped deduplication and bounded
   concurrency/bytes. No recursive child-of-child replay is allowed.
 - Sanitized fixtures must cover valid parent linkage, wrong/missing parent,
@@ -112,10 +138,9 @@ investigative evidence, not a general coverage guarantee.
 
 ## Open questions
 
-1. Does each supported plain-async `sessionFile` identify a fresh, dedicated
-   child execution, and how do resume/fork/reuse affect that file? Audit the
-   pinned producer contract and implementation; do not infer the answer from
-   path shape or a session header.
+1. Can the follow-up-message exclusion be relaxed (a steered child that is
+   still one run) without admitting resumed files? Needs a producer-published
+   run boundary; until then those runs stay `unavailable`.
 2. What bounded file, line, concurrency, and per-history budgets fit existing
    parser and loader limits?
 3. Which native child fields can be projected without treating missing usage
