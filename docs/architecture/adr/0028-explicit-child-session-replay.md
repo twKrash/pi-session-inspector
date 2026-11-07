@@ -68,7 +68,9 @@ evidence, not a general coverage guarantee.
   conflicting locators, and a child file claimed by more than one run in the
   parent session are withheld.
 - **Validate the referenced file before parsing.** Require a normalized `.jsonl`
-  path in the same session directory as the parent, not the parent file itself;
+  path beneath the directory the producer names after the parent session file
+  (the parent path without `.jsonl`; all 166 sampled locators qualify), never the
+  parent file itself;
   reject symlinked path components and non-regular files; open without following
   links; enforce bounded file size, entry count, and aggregate history-read
   budgets; and swallow every I/O/parse failure. Require a supported Pi session
