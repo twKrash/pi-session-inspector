@@ -10,6 +10,8 @@ export type ParsedSession = {
   hasSessionHeader: boolean;
   formatVersion?: number;
   createdAt?: string;
+  /** Bounded parent-session path a child Pi session header declares, if any. */
+  parentSession?: string;
   entries: SessionEntry[];
   graphNodes: PiGraphNode[];
   unknownEntryCount: number;
@@ -17,6 +19,7 @@ export type ParsedSession = {
 };
 
 const MAX_CREATED_AT_BYTES = 64;
+const MAX_PARENT_SESSION_BYTES = 4096;
 const encoder = new TextEncoder();
 
 export function parseSessionJsonl(source: string): ParsedSession {
@@ -24,6 +27,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
   let hasSessionHeader = false;
   let formatVersion: number | undefined;
   let createdAt: string | undefined;
+  let parentSession: string | undefined;
   let unknownEntryCount = 0;
   let hasMalformedJson = false;
   const entries: SessionEntry[] = [];
@@ -48,6 +52,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
       hasSessionHeader = true;
       formatVersion = formatVersionOf(value.version);
       createdAt = boundedTimestamp(value.timestamp);
+      parentSession = boundedParentSession(value.parentSession);
       continue;
     }
     entryRecords.push(value);
@@ -63,6 +68,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
     hasSessionHeader,
     formatVersion,
     createdAt,
+    ...(parentSession === undefined ? {} : { parentSession }),
     entries,
     graphNodes: buildGraphNodes(entryRecords),
     unknownEntryCount,
@@ -90,6 +96,14 @@ function boundedTimestamp(value: unknown): string | undefined {
   return typeof value === "string" &&
     value.length > 0 &&
     encoder.encode(value).byteLength <= MAX_CREATED_AT_BYTES
+    ? value
+    : undefined;
+}
+
+function boundedParentSession(value: unknown): string | undefined {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    encoder.encode(value).byteLength <= MAX_PARENT_SESSION_BYTES
     ? value
     : undefined;
 }
