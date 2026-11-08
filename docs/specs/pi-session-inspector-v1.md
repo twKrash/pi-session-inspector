@@ -640,7 +640,8 @@ one dedicated execution: exactly one user message (resume and follow-ups
 append more), no entry id shared with the parent (a `context: "fork"` child
 copies parent history), one connected chain over every well-formed record
 (unique ids, one root, no branching, no compaction or branch summary; a record
-the parser must drop rejects the file), and
+the parser must drop, or an entry whose id or parent id the graph cannot
+represent, rejects the file), and
 a path claimed by exactly one run in the parent session. The header proves
 parentage, not run identity. The same shared L0 evidence path serves current and
 history reports; history still never reads temporary lifecycle artifacts. No
@@ -649,7 +650,12 @@ usage stays a non-additive breakdown: tokens and cost sum only valid native
 assistant usage (missing usage is `partial`, never zero); a singular model is
 shown only when every assistant message reports the same one; the tool count is
 distinct native tool-call ids; duration, generations, thinking, and outcome are
-never derived from the file.
+never derived from the file. Precedence is per field: the latest persisted
+observation that defines a field decides it, the child file fills only fields no
+persisted observation defines, and the current view's lifecycle artifact then
+fills only what remains absent, keeping the fields the child file supplied.
+Every observation of an enriched run carries the same merged usage, because
+reconciliation keeps one usage object per run from its latest observation.
 
 For a current-session report only, an already-proven detached foreground child
 may be optionally settled from the documented per-child `_meta.json` that its own

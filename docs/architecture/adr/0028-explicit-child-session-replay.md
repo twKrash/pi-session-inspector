@@ -98,15 +98,24 @@ evidence, not a general coverage guarantee.
   type (for example `context_edit`) takes part in the chain and in the
   inherited-id check; any other record the parser must drop (a non-object
   line, a non-string id, a missing field) rejects the file, because it could
-  hide a root, a prompt, or a compaction. Anything else is `unavailable`; no
+  hide a root, a prompt, or a compaction. So does an entry the parser keeps
+  but the graph cannot represent (an empty id, or an id or parent id longer
+  than 128 bytes): its usage would count while no chain rule ever saw it. Anything else is `unavailable`; no
   per-run cutoff is invented.
 - **Reuse native Pi semantics without changing accounting.** Parse only bounded
   native metadata and usage. Preserve missingness; never infer cost from model
   prices, execution duration from transcript timestamps, outcome from file
   existence, or generations from usage turns. A singular model is exposed only
-  when unambiguous. Persisted producer facts retain their existing per-field
-  precedence. Child usage remains a non-additive breakdown and never changes
-  native parent/session/model/history/global totals.
+  when unambiguous. Precedence is per field: the latest persisted observation
+  that defines a field decides it, the child file fills only fields no
+  persisted observation defines, and in the current view the temporary
+  lifecycle artifact then fills only what is still absent while keeping the
+  fields the child file supplied. Reconciliation keeps one usage object per
+  run, taken from its latest observation, so every observation of an enriched
+  run carries the same merged usage; otherwise a later publication with fewer
+  fields would erase the fill. Runs without a child file reconcile as before.
+  Child usage remains a non-additive breakdown and never changes native
+  parent/session/model/history/global totals.
 - **Keep current and historical projections consistent.** The durable reader
   belongs to the shared evidence path used by current and history reports. It
   must not be enabled by calling a wrapper that also reads current-only
