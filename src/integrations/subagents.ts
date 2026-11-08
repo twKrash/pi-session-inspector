@@ -18,6 +18,10 @@ import { REDACTED, secretLikeValue } from "../core/redact.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
 import {
+  type ChildSessionLocator,
+  selectChildSessionLocators,
+} from "./subagent-child-sessions.ts";
+import {
   type ForegroundTerminalFields,
   readForegroundTerminalFields,
 } from "./subagent-foreground-metadata.ts";
@@ -1381,6 +1385,26 @@ function readAsyncNotificationRuns(
   return [...rows]
     .filter(([runId]) => !repeated.has(runId))
     .map(([runId, record]) => ({ runId, record }));
+}
+
+/**
+ * ADR 0028: child-session locators published by plain async notices for runs
+ * whose launch this session proves. Selection withholds ambiguous claims.
+ */
+export function readChildSessionLocators(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+): ChildSessionLocator[] {
+  try {
+    const launches = collectAsyncLifecycleReferences(entries, sessionId);
+    if (launches === undefined) return [];
+    const runIds = new Set([...launches.values()].map(({ runId }) => runId));
+    return selectChildSessionLocators(
+      entries.flatMap((entry) => readAsyncNotificationRuns(entry, runIds)),
+    );
+  } catch {
+    return [];
+  }
 }
 
 function* collectAsyncNotificationRows(
