@@ -11,21 +11,45 @@ import {
 } from "../helpers/child-session.ts";
 
 // A fresh child holds exactly one user message (its task prompt); `users`
-// varies that count to model resumed or follow-up files.
+// varies that count to model resumed or follow-up files. Prompts form a chain
+// and the first root-level body entry hangs off the last prompt, as in a real
+// child file (one connected chain from a single root).
 const project = (
   lines: string[],
   parent = PARENT,
   parentEntryIds: string[] = [],
   users = 1,
 ) => {
-  const prompts = Array.from({ length: users }, (_, i) => user(`u${i}`, null));
+  const prompts = Array.from({ length: users }, (_, i) =>
+    user(`u${i}`, i === 0 ? null : `u${i - 1}`),
+  );
+  const tail = users === 0 ? null : `u${users - 1}`;
   const at = lines[0]?.includes('"type":"session"') ? 1 : 0;
-  const all = [...lines.slice(0, at), ...prompts, ...lines.slice(at)];
+  const body = lines.slice(at).map((line) => attach(line, tail));
+  const all = [...lines.slice(0, at), ...prompts, ...body];
   return projectChildSession(parseSessionJsonl(all.join("\n")), {
     sessionFile: parent,
     entryIds: new Set(parentEntryIds),
   });
 };
+
+/** Re-parents a root-level entry; leaves unparseable lines for the parser to reject. */
+const attach = (line: string, tail: string | null): string => {
+  try {
+    const entry = JSON.parse(line);
+    return tail !== null && entry.parentId === null
+      ? JSON.stringify({ ...entry, parentId: tail })
+      : line;
+  } catch {
+    return line;
+  }
+};
+
+const projectRaw = (lines: string[]) =>
+  projectChildSession(parseSessionJsonl(lines.join("\n")), {
+    sessionFile: PARENT,
+    entryIds: new Set(),
+  });
 
 test("a linked child sums native usage, one model, and distinct tool calls", () => {
   const projection = project([
@@ -105,6 +129,78 @@ test("a resumed, reused, or forked file is not one dedicated run", () => {
     "a fork inherits parent entry ids",
   );
   assert.equal(project(body, PARENT, ["unrelated"])?.usageCoverage, "complete");
+});
+
+test("only one connected chain of unique entries qualifies", () => {
+  const hit = usage(1, 0);
+  const chain = [
+    header(),
+    user("u0", null),
+    assistant("a1", "u0", { usage: hit }),
+    assistant("a2", "a1", { usage: hit }),
+  ];
+  assert.equal(projectRaw(chain)?.usage?.totalTokens, 2);
+
+  const rejected: Record<string, string[]> = {
+    "a second root": [
+      header(),
+      user("u0", null),
+      assistant("a1", null, { usage: hit }),
+    ],
+    "an orphan parent": [
+      header(),
+      user("u0", null),
+      assistant("a1", "missing", { usage: hit }),
+    ],
+    "a duplicate id": [
+      header(),
+      user("u0", null),
+      assistant("a1", "u0", { usage: hit }),
+      assistant("a1", "u0", { usage: hit }),
+    ],
+    "a branch": [
+      header(),
+      user("u0", null),
+      assistant("a1", "u0", { usage: hit }),
+      assistant("a2", "u0", { usage: hit }),
+    ],
+    "a detached cycle": [
+      header(),
+      user("u0", null),
+      assistant("a1", "u0", { usage: hit }),
+      assistant("c1", "c2", { usage: hit }),
+      assistant("c2", "c1", { usage: hit }),
+    ],
+    "no root at all": [
+      header(),
+      assistant("a1", "a2", { usage: hit }),
+      user("u0", "a1"),
+    ],
+  };
+  for (const [label, lines] of Object.entries(rejected)) {
+    assert.equal(projectRaw(lines), undefined, label);
+  }
+});
+
+test("compaction and branch-summary entries have no per-run meaning", () => {
+  for (const type of ["compaction", "branch_summary"]) {
+    const summary = JSON.stringify({
+      type,
+      id: "s1",
+      parentId: "a1",
+      timestamp: "2026-11-02T00:00:02.000Z",
+    });
+    assert.equal(
+      projectRaw([
+        header(),
+        user("u0", null),
+        assistant("a1", "u0", { usage: usage(1, 0) }),
+        summary,
+      ]),
+      undefined,
+      type,
+    );
+  }
 });
 
 test("mixed or unusable models never become a singular model", () => {
