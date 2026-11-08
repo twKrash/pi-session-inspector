@@ -76,18 +76,30 @@ evidence, not a general coverage guarantee.
   path beneath the directory the producer names after the parent session file
   (the parent path without `.jsonl`; all 166 sampled locators qualify), never the
   parent file itself;
-  reject symlinked path components and non-regular files; open without following
-  links; enforce bounded file size, entry count, and aggregate history-read
-  budgets; and swallow every I/O/parse failure. Require a supported Pi session
+  reject a symlinked root and non-regular files; open without following the
+  final link; then verify against the opened descriptor, because only the last
+  path component is guarded at open time and a directory swapped in earlier
+  could redirect it: the path must resolve inside the root's real directory
+  and name the very inode that was opened; enforce bounded file size, entry
+  count, and aggregate history-read budgets, where every byte actually read is
+  spent even if the file is then rejected; and swallow every I/O/parse failure.
+  A hard link to a file under the directory is indistinguishable from the
+  file and is accepted; the header and chain rules below still apply. Require a supported Pi session
   header whose `parentSession` exactly equals the parent session-file path. This
   proves parentage only; the run-to-file binding comes from the exact persisted
   notification.
 - **Dedicated-execution rule (from the audit).** A file is attributed to a run
   only when it holds exactly one user message (resume and follow-ups append
-  more), shares no entry id with the parent session (fork inheritance), is a
-  linear tree with no compaction or branch summary, and is claimed by exactly
-  one run in the parent session. Anything else is `unavailable`; no per-run
-  cutoff is invented.
+  more), shares no entry id with the parent session (fork inheritance), forms
+  one connected chain with no compaction or branch summary, and is claimed by
+  exactly one run in the parent session. The chain has unique entry ids, one
+  root, no branching, and reaches every record, so an orphan, a cycle, or a
+  second tree rejects the file. A well-formed record of an extension-defined
+  type (for example `context_edit`) takes part in the chain and in the
+  inherited-id check; any other record the parser must drop (a non-object
+  line, a non-string id, a missing field) rejects the file, because it could
+  hide a root, a prompt, or a compaction. Anything else is `unavailable`; no
+  per-run cutoff is invented.
 - **Reuse native Pi semantics without changing accounting.** Parse only bounded
   native metadata and usage. Preserve missingness; never infer cost from model
   prices, execution duration from transcript timestamps, outcome from file
