@@ -43,7 +43,7 @@ function isDedicatedExecution(
     parsed.formatVersion === SUPPORTED_FORMAT_VERSION &&
     !parsed.hasMalformedJson &&
     parsed.parentSession === parent.sessionFile &&
-    onlyUnknownTypesDropped(parsed) &&
+    everyRecordIsGraphed(parsed) &&
     isSingleChain(parsed.graphNodes) &&
     !parsed.graphNodes.some((node) => parent.entryIds.has(node.entryId)) &&
     countUserMessages(parsed.entries) === 1
@@ -146,17 +146,24 @@ const SUMMARY_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The parser drops records it cannot use as entries. A well-formed record of an
- * extension-defined type is harmless and still takes part in the structural
- * checks through the graph; any other dropped record (a non-object line, a
- * non-string id, a missing field) could hide a root, a prompt, or a compaction,
- * so the file is not trusted.
+ * Every record must be visible to the structural checks. The parser drops
+ * records it cannot use as entries; a well-formed record of an extension-defined
+ * type is harmless and still takes part in the checks through the graph. Any
+ * other dropped record (a non-object line, a non-string id, a missing field)
+ * could hide a root, a prompt, or a compaction. A retained entry whose id or
+ * parent id the graph rejects (empty or oversize) is just as hidden: its usage
+ * would count while the chain check never saw it. Either way the file is not
+ * trusted.
  */
-function onlyUnknownTypesDropped(parsed: ParsedSession): boolean {
+function everyRecordIsGraphed(parsed: ParsedSession): boolean {
   const unknownTypes = parsed.graphNodes.filter(
     (node) => node.semanticType.state === "unknown",
   ).length;
-  return parsed.unknownEntryCount === unknownTypes;
+  const knownTypes = parsed.graphNodes.length - unknownTypes;
+  return (
+    parsed.unknownEntryCount === unknownTypes &&
+    knownTypes === parsed.entries.length
+  );
 }
 
 /**
