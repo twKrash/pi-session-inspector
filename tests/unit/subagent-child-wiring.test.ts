@@ -88,7 +88,7 @@ const freshChild = (extra: string[] = []) =>
   writeChild([
     header({ parentSession: parentFile }),
     user("u0", null),
-    assistant("a1", null, { usage: usage(40, 0.5), toolCalls: ["t1", "t2"] }),
+    assistant("a1", "u0", { usage: usage(40, 0.5), toolCalls: ["t1", "t2"] }),
     assistant("a2", "a1", { usage: usage(60, 0.25) }),
     ...extra,
   ]);
@@ -214,20 +214,20 @@ test("a resumed, forked, foreign, or missing child file changes nothing", async 
   await writeChild([
     header({ parentSession: parentFile }),
     user("u0", null),
-    assistant("a1", null, { usage: usage(40, 0.5) }),
+    assistant("a1", "u0", { usage: usage(40, 0.5) }),
     user("u1", "a1"),
   ]);
   await unchanged("resumed: a second prompt");
   await writeChild([
     header({ parentSession: parentFile }),
     user("u0", null),
-    assistant("launch-call", null, { usage: usage(40, 0.5) }),
+    assistant("launch-call", "u0", { usage: usage(40, 0.5) }),
   ]);
   await unchanged("forked: inherits the parent's launch entry");
   await writeChild([
     header({ parentSession: join(root, "someone-else.jsonl") }),
     user("u0", null),
-    assistant("a1", null, { usage: usage(40, 0.5) }),
+    assistant("a1", "u0", { usage: usage(40, 0.5) }),
   ]);
   await unchanged("foreign parent");
   await rm(childPath);
