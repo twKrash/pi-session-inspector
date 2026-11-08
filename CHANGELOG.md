@@ -25,8 +25,11 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
     copies the parent's history;
   - every well-formed record forms one connected chain: unique ids, one root,
     no branching, no compaction or branch summary. A well-formed record of an
-    extension-defined type takes part in the chain, and any other record the
-    parser must drop rejects the file, because it could hide a violation;
+    extension-defined type takes part in the chain. Any other record the
+    parser must drop rejects the file, because it could hide a violation, and
+    so does an entry whose id or parent id the graph cannot represent (empty,
+    or longer than 128 bytes), because its usage would count while no chain
+    rule saw it;
   - no other run in the session claimed the same path, and the run did not
     publish a second one.
 
