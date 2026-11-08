@@ -4,7 +4,7 @@ import {
   childSessionRoot,
   isConfinedChildPath,
   MAX_CHILD_PATH_BYTES,
-} from "../../src/integrations/subagent-child-path.ts";
+} from "../../src/pi/child-session-path.ts";
 
 test("the child directory is the parent's absolute .jsonl path without its suffix", () => {
   assert.equal(childSessionRoot("/s/parent.jsonl"), "/s/parent");

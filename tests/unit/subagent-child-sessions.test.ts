@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { readChildSessionLocators } from "../../src/integrations/subagents.ts";
+import { selectChildSessionLocators } from "../../src/integrations/subagent-child-locators.ts";
+import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
   CHILD_SESSION_LIMITS,
   readChildSessionProjections,
-  selectChildSessionLocators,
-} from "../../src/integrations/subagent-child-sessions.ts";
-import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+} from "../../src/pi/child-sessions.ts";
 import { assistant, header, usage, user } from "../helpers/child-session.ts";
 
 const notice = (runId: string, record: Record<string, unknown> = {}) => ({
@@ -31,7 +31,7 @@ test("a run keeps the one path only it published, in notice order", () => {
   );
 });
 
-test("only the exact Session file label with a bounded path is a locator", () => {
+test("only the exact Session file label with a string path is a locator", () => {
   const withLabel = (
     sessionLabel: unknown,
     sessionValue: unknown = "/p/x.jsonl",
@@ -49,8 +49,6 @@ test("only the exact Session file label with a bounded path is a locator", () =>
   assert.deepEqual(withLabel("Session file", ""), []);
   assert.equal(withLabel("Session file", "x").length, 1);
   assert.deepEqual(withLabel("Session file", 7), []);
-  assert.deepEqual(withLabel("Session file", "x".repeat(4097)), []);
-  assert.equal(withLabel("Session file", "x".repeat(4096)).length, 1);
 });
 
 test("resume shares one path across run ids, so neither run is attributed", () => {

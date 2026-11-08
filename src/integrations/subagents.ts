@@ -7,6 +7,7 @@ import type {
   AgentRunSourceObservation,
   AgentRunUsage,
   AgentToolActivity,
+  ChildSessionLocator,
   SessionEntry,
   SubagentSourceEvidence,
   Usage,
@@ -17,10 +18,7 @@ import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { REDACTED, secretLikeValue } from "../core/redact.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
-import {
-  type ChildSessionLocator,
-  selectChildSessionLocators,
-} from "./subagent-child-sessions.ts";
+import { selectChildSessionLocators } from "./subagent-child-locators.ts";
 import {
   type ForegroundTerminalFields,
   readForegroundTerminalFields,
