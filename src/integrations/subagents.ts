@@ -17,8 +17,10 @@ import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { REDACTED, secretLikeValue } from "../core/redact.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
+import { applyChildSessionProjections } from "./subagent-child-enrichment.ts";
 import {
   type ChildSessionLocator,
+  readChildSessionProjections,
   selectChildSessionLocators,
 } from "./subagent-child-sessions.ts";
 import {
@@ -220,17 +222,73 @@ export async function readSubagentEvidenceWithArchives(
     : enrichCurrentSession(entries, sessionId, sessionFile, archivedEvidence);
 }
 
+/**
+ * Archive-aware evidence enriched from durable child Pi session files (ADR
+ * 0028) but never from temporary lifecycle artifacts, so a history read and a
+ * current read agree on every durable fact.
+ */
+export async function readDurableSubagentEvidence(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+  sessionFile: string,
+): Promise<SubagentSourceEvidence> {
+  const evidence = await readSubagentEvidenceWithArchives(entries, sessionId);
+  return evidence.state === "supported"
+    ? enrichFromChildSessions(entries, sessionId, sessionFile, evidence)
+    : evidence;
+}
+
+/**
+ * A forked child inherits the parent path up to its launch entry, and a run
+ * only qualifies when that launch is among `entries`, so the scoped entry ids
+ * are enough to detect inherited history.
+ */
+async function enrichFromChildSessions(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+  sessionFile: string,
+  evidence: SubagentSourceEvidence,
+): Promise<SubagentSourceEvidence> {
+  try {
+    const locators = readChildSessionLocators(entries, sessionId);
+    if (locators.length === 0) return evidence;
+    const projections = await readChildSessionProjections(locators, {
+      sessionFile,
+      entryIds: new Set(entries.map((entry) => entry.id)),
+    });
+    return applyChildSessionProjections(
+      evidence,
+      new Map(
+        [...projections].map(([runId, projection]) => [
+          opaqueSubagentSourceIdentity(sessionId, runId, "async"),
+          projection,
+        ]),
+      ),
+    );
+  } catch {
+    return evidence;
+  }
+}
+
 async function enrichCurrentSession(
   entries: readonly SessionEntry[],
   sessionId: string,
   sessionFile: string,
   evidence: SubagentSourceEvidence,
 ): Promise<SubagentSourceEvidence> {
-  const lifecycle = await enrichCurrentLifecycle(
+  // Durable child files first: a filled field then counts as persisted, so the
+  // temporary lifecycle artifact only fills what is still absent.
+  const durable = await enrichFromChildSessions(
     entries,
     sessionId,
     sessionFile,
     evidence,
+  );
+  const lifecycle = await enrichCurrentLifecycle(
+    entries,
+    sessionId,
+    sessionFile,
+    durable,
   );
   return enrichCurrentForegroundMetadata(entries, sessionId, lifecycle);
 }

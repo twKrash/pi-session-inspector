@@ -977,6 +977,7 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
   sessionId,
   directory,
   entries,
+  sessionFile,
 }) => {
   try {
     const checkpoint = await readCheckpoint({ directory });
@@ -1010,7 +1011,11 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
         folded: foldedCheckpointEvidence(sessionId, checkpoint),
       },
       walRecords: recovered.records,
-      subagents: await readSubagentContribution(entries, sessionId),
+      subagents: await readSubagentContribution(
+        entries,
+        sessionId,
+        sessionFile,
+      ),
       observation: {
         presence: readPresence({
           // Only `source === "extension"` rows may signal extension presence; a
@@ -1047,11 +1052,13 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
 async function readSubagentContribution(
   entries: readonly SessionEntry[],
   sessionId: string,
+  sessionFile: string | undefined,
 ): Promise<SubagentSourceEvidence> {
   try {
     const { contributions } = await readCanonicalContributions({
       entries,
       sessionId,
+      sessionFile,
     });
     const contribution = contributions.subagents;
     if (contribution?.activity !== undefined) {

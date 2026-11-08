@@ -124,6 +124,8 @@ export type AppliedTelemetryFold = IntegrationTelemetryFold & {
 export type CanonicalIntegrationContext = {
   entries: readonly SessionEntry[];
   sessionId: string;
+  /** Absolute parent Pi session file; lets an integration follow durable child files. */
+  sessionFile?: string | undefined;
 };
 
 /**

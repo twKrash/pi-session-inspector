@@ -4,6 +4,28 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-08
+
+### Added
+
+- Completed async subagent runs recover their model, tokens, cost, and tool
+  count in the current and history views even after pi-subagents has deleted
+  its temporary run directory. The source is the child Pi session file that the
+  run's own `subagent-notify` entry explicitly references (ADR 0028); no path is
+  inferred or scanned.
+
+  A file is used only when it proves one dedicated execution: its header names
+  this session as its parent, it holds exactly one user message, it shares no
+  entry with this session (a forked child copies parent history), it is a
+  linear tree, and no other run claimed the same path. A resumed, steered,
+  forked, workflow, or unreferenced child stays unavailable instead of being
+  guessed. Reads are confined beneath the parent's own directory, refuse
+  symlinks, and are bounded (64 files, 4 MiB each, 32 MiB per session).
+
+  Persisted evidence still wins field by field, the temporary lifecycle
+  artifact only fills what is still absent, and child usage remains a
+  non-additive breakdown that never changes native totals.
+
 ## [1.7.1] - 2026-11-06
 
 ### Added

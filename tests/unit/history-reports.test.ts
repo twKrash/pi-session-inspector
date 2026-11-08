@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -302,6 +302,25 @@ test("history session report comes from the canonical builder", async () => {
     );
     assert.equal("resourceCounts" in (session.report.skills ?? {}), false);
     assert.equal(session.report.commands.count, 9);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("the evidence provider receives the resolved parent session file", async () => {
+  const { root, sessionDirectory } = await createHistoryRoot();
+  try {
+    const received: (string | undefined)[] = [];
+    await loadHistoryReports({
+      ...historyOptions(root, sessionDirectory),
+      sessionEvidence: async ({ sessionFile }) => {
+        received.push(sessionFile);
+        return { evidence: { atomic: [], folded: [] } };
+      },
+    });
+    assert.deepEqual(received, [
+      join(await realpath(sessionDirectory), "history-session.jsonl"),
+    ]);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
