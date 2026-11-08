@@ -28,7 +28,7 @@ The locator is useful but is not, by itself, proof that all usage in the file
 belongs to exactly one run. A Pi session header proves its parent session, not
 the child run ID or an immutable execution boundary.
 
-### Producer audit (pi-subagents 0.86.0)
+### Producer audit (pi-subagents 0.86.0, spot-checked on 0.87.0)
 
 Audited in source and against 141 distinct locators in one repository's
 sessions (aggregate counts only):
@@ -45,6 +45,11 @@ sessions (aggregate counts only):
   entry ids with its parent.
 - The path is absolute in practice but the producer does not guarantee it lies
   under the parent's directory.
+
+An independent review re-read the installed 0.87.0 source and confirmed the
+three notice labels, that resume reopens the recorded file under a new run id,
+and that a forked child keeps the parent's entry ids; it did not re-run the
+measurements.
 
 Verdict: file ownership is **not guaranteed but is detectable from persisted
 data**. Under the rule below, 107 of 141 sampled files qualify; the rest are
@@ -133,9 +138,14 @@ evidence, not a general coverage guarantee.
   child runs without an explicit child-session locator, unsafe files, and
   unverified reused execution files remain unavailable.
 - The dedicated-execution rule is checked on every read, so a file that is later
-  resumed stops qualifying instead of being counted with the wrong run. The rule
-  is re-verified per supported producer version; an unaudited version fails
-  closed.
+  resumed stops qualifying instead of being counted with the wrong run. That
+  structural rule is the whole gate: no producer version is persisted in the
+  notice or the launch result (the only version in a child file is Pi's own
+  session format), so the Inspector cannot tell which pi-subagents release
+  wrote a locator. If a release changed resume or fork semantics while keeping
+  the same file shape, attribution could be wrong; the rule is built to fail
+  closed on the shapes known to be unsafe, and the audit below must be repeated
+  when a new release is adopted.
 - History reads require deterministic, request-scoped deduplication and bounded
   concurrency/bytes. No recursive child-of-child replay is allowed.
 - Sanitized fixtures must cover valid parent linkage, wrong/missing parent,
