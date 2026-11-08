@@ -173,13 +173,19 @@ after(() => rm(root, { recursive: true, force: true }));
 const writeChild = async (name: string, users = 1) => {
   const path = join(root, "parent", name, "run-0", "session.jsonl");
   await mkdir(join(root, "parent", name, "run-0"), { recursive: true });
-  const prompts = Array.from({ length: users }, (_, i) => user(`u${i}`, null));
+  // Prompts and the reply form one connected chain, as in a real child file.
+  const prompts = Array.from({ length: users }, (_, i) =>
+    user(`u${i}`, i === 0 ? null : `u${i - 1}`),
+  );
   await writeFile(
     path,
     [
       header({ parentSession: parentFile }),
       ...prompts,
-      assistant("a1", null, { usage: usage(7, 0.5), toolCalls: ["t1"] }),
+      assistant("a1", `u${users - 1}`, {
+        usage: usage(7, 0.5),
+        toolCalls: ["t1"],
+      }),
     ].join("\n"),
   );
   return { runId: name, path };
