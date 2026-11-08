@@ -42,7 +42,7 @@ function isDedicatedExecution(
     parsed.formatVersion === SUPPORTED_FORMAT_VERSION &&
     !parsed.hasMalformedJson &&
     parsed.parentSession === parent.sessionFile &&
-    isLinear(parsed.entries) &&
+    isSingleChain(parsed.entries) &&
     !parsed.entries.some((entry) => parent.entryIds.has(entry.id)) &&
     countUserMessages(parsed.entries) === 1
   );
@@ -136,17 +136,49 @@ function countUserMessages(entries: readonly SessionEntry[]): number {
   return count;
 }
 
-function isLinear(entries: readonly SessionEntry[]): boolean {
-  const parents = new Set<string>();
+type Links = { root?: string; childOf: ReadonlyMap<string, string> };
+
+/**
+ * One connected chain: unique entry ids, exactly one root, no branching, and a
+ * walk from the root that reaches every entry (so no orphan, cycle, or second
+ * tree). Compaction and branch-summary entries carry usage with no per-run
+ * meaning and are rejected.
+ */
+function isSingleChain(entries: readonly SessionEntry[]): boolean {
+  const links = linkEntries(entries);
+  return links !== undefined && chainLength(links) === entries.length;
+}
+
+function linkEntries(entries: readonly SessionEntry[]): Links | undefined {
+  const ids = new Set<string>();
+  const childOf = new Map<string, string>();
+  let root: string | undefined;
   for (const entry of entries) {
-    if (entry.type === "compaction" || entry.type === "branch_summary") {
-      return false;
+    if (
+      entry.type === "compaction" ||
+      entry.type === "branch_summary" ||
+      ids.has(entry.id)
+    ) {
+      return undefined;
     }
-    if (entry.parentId === null) continue;
-    if (parents.has(entry.parentId)) return false;
-    parents.add(entry.parentId);
+    ids.add(entry.id);
+    if (entry.parentId === null) {
+      if (root !== undefined) return undefined;
+      root = entry.id;
+    } else if (childOf.has(entry.parentId)) {
+      return undefined;
+    } else {
+      childOf.set(entry.parentId, entry.id);
+    }
   }
-  return true;
+  return { root, childOf };
+}
+
+/** Entries reachable from the root; the root has no parent, so this terminates. */
+function chainLength({ root, childOf }: Links): number {
+  let length = 0;
+  for (let id = root; id !== undefined; id = childOf.get(id)) length++;
+  return length;
 }
 
 function modelLabel(value: unknown): string | undefined {
