@@ -1350,11 +1350,34 @@ function readAsyncNotificationRuns(
   entry: SessionEntry,
   asyncLaunchRunIds: ReadonlySet<string>,
 ): { runId: string; record: Readonly<Record<string, unknown>> }[] {
+  const rows = new Map<string, Readonly<Record<string, unknown>>>();
+  const repeated = new Set<string>();
+  for (const { runId, record } of readAsyncNotificationRows(
+    entry,
+    asyncLaunchRunIds,
+  )) {
+    if (rows.has(runId)) repeated.add(runId);
+    rows.set(runId, record);
+  }
+  return [...rows]
+    .filter(([runId]) => !repeated.has(runId))
+    .map(([runId, record]) => ({ runId, record }));
+}
+
+/**
+ * Every plain-async row a notice publishes for a launch-proven run, repeats
+ * included, so a consumer that must treat a repeated claim as ambiguity can
+ * still see it.
+ */
+function* readAsyncNotificationRows(
+  entry: SessionEntry,
+  asyncLaunchRunIds: ReadonlySet<string>,
+): Generator<{ runId: string; record: Readonly<Record<string, unknown>> }> {
   if (
     entry.type !== "custom_message" ||
     entry.customType !== "subagent-notify"
   ) {
-    return [];
+    return;
   }
   const details = snapshotRecord(entry.details);
   if (
@@ -1362,27 +1385,29 @@ function readAsyncNotificationRuns(
     !Array.isArray(details.runs) ||
     details.runs.length > MAX_RUNS
   ) {
-    return [];
+    return;
   }
-  const rows = new Map<string, Readonly<Record<string, unknown>>>();
-  const repeated = new Set<string>();
   for (const value of details.runs) {
     const run = snapshotRecord(value);
     const runId = readRawRunId(run?.runId);
     if (
-      run === undefined ||
-      runId === undefined ||
-      Object.hasOwn(run, "workflowRunId") ||
-      !asyncLaunchRunIds.has(runId)
+      run !== undefined &&
+      runId !== undefined &&
+      !Object.hasOwn(run, "workflowRunId") &&
+      asyncLaunchRunIds.has(runId)
     ) {
-      continue;
+      yield { runId, record: run };
     }
-    if (rows.has(runId)) repeated.add(runId);
-    rows.set(runId, run);
   }
-  return [...rows]
-    .filter(([runId]) => !repeated.has(runId))
-    .map(([runId, record]) => ({ runId, record }));
+}
+
+function* notifiedRows(
+  entries: readonly SessionEntry[],
+  asyncLaunchRunIds: ReadonlySet<string>,
+) {
+  for (const entry of entries) {
+    yield* readAsyncNotificationRows(entry, asyncLaunchRunIds);
+  }
 }
 
 /**
@@ -1397,9 +1422,7 @@ export function readChildSessionLocators(
     const launches = collectAsyncLifecycleReferences(entries, sessionId);
     if (launches === undefined) return [];
     const runIds = new Set([...launches.values()].map(({ runId }) => runId));
-    return selectChildSessionLocators(
-      entries.flatMap((entry) => readAsyncNotificationRuns(entry, runIds)),
-    );
+    return selectChildSessionLocators(notifiedRows(entries, runIds));
   } catch {
     return [];
   }

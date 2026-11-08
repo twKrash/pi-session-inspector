@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -9,6 +18,7 @@ import {
   readExactly,
   type StatReadHandle,
 } from "../../src/pi/child-session-file.ts";
+import { patchOpen } from "../helpers/patch-open.ts";
 
 let root: string;
 let parent: string;
@@ -25,8 +35,10 @@ before(async () => {
 });
 after(() => rm(root, { recursive: true, force: true }));
 
-const read = (path: unknown, maxBytes = 1024, parentFile = parent) =>
+const readFull = (path: unknown, maxBytes = 1024, parentFile = parent) =>
   readChildSessionFile(path, parentFile, maxBytes);
+const read = async (path: unknown, maxBytes = 1024, parentFile = parent) =>
+  (await readFull(path, maxBytes, parentFile)).text;
 
 test("a confined regular file is read as text", async () => {
   assert.equal(await read(child), "child text\n");
@@ -131,4 +143,109 @@ test("a file that is not regular, or changes size before, during, or after the r
     undefined,
     "grew while reading",
   );
+});
+
+test("only the bytes actually read are reported as spent", async () => {
+  assert.deepEqual(await readFull(child), { bytes: 11, text: "child text\n" });
+  assert.deepEqual(
+    await readFull(child, 10),
+    { bytes: 0 },
+    "too large: never read",
+  );
+  assert.deepEqual(await readFull(join(base, "missing.jsonl")), { bytes: 0 });
+  assert.deepEqual(await readFull(undefined), { bytes: 0 });
+});
+
+test("a legitimate child is read through a symlinked ancestor of the root", async () => {
+  await symlink(root, join(root, "alias"));
+  const viaAlias = join(root, "alias", "parent.jsonl");
+  const text = await read(
+    join(root, "alias", "parent", "run-1", "run-0", "session.jsonl"),
+    1024,
+    viaAlias,
+  );
+  assert.equal(text, "child text\n");
+});
+
+/** Two same-sized files, one inside the parent's directory and one outside it. */
+async function raceFixture(name: string) {
+  const dir = join(base, name);
+  const moved = join(base, `${name}-moved`);
+  const outside = join(root, `${name}-outside`);
+  await mkdir(dir, { recursive: true });
+  await mkdir(outside);
+  await writeFile(join(dir, "session.jsonl"), "inside!");
+  await writeFile(join(outside, "session.jsonl"), "outside");
+  const swapIn = async () => {
+    await rename(dir, moved);
+    await symlink(outside, dir);
+  };
+  const swapBack = async () => {
+    await unlink(dir);
+    await rename(moved, dir);
+  };
+  return { path: join(dir, "session.jsonl"), swapIn, swapBack };
+}
+
+test("a directory swapped for a symlink before the open never yields outside bytes", async () => {
+  const { path, swapIn } = await raceFixture("race-before-open");
+  let swapped = false;
+  const restore = patchOpen((real) => async (target, ...args) => {
+    if (target === path && !swapped) {
+      swapped = true;
+      await swapIn();
+    }
+    return real(target, ...args);
+  });
+  try {
+    assert.deepEqual(await readFull(path), { bytes: 0 });
+    assert.equal(swapped, true, "the race was staged");
+  } finally {
+    restore();
+  }
+});
+
+test("an open that landed outside is caught even when the path is restored afterwards", async () => {
+  const { path, swapIn, swapBack } = await raceFixture("race-restored");
+  let swapped = false;
+  const restore = patchOpen((real) => async (target, ...args) => {
+    if (target !== path || swapped) return real(target, ...args);
+    swapped = true;
+    await swapIn();
+    const handle = await real(target, ...args);
+    await swapBack();
+    return handle;
+  });
+  try {
+    // The path now names the inside file, so only the inode check can tell.
+    assert.deepEqual(await readFull(path), { bytes: 0 });
+    assert.equal(swapped, true, "the race was staged");
+  } finally {
+    restore();
+  }
+});
+
+test("a file that grows while it is read is rejected but its bytes stay spent", async () => {
+  const path = join(base, "grows.jsonl");
+  await writeFile(path, "123456");
+  const restore = patchOpen((real) => async (target, ...args) => {
+    const handle = await real(target, ...args);
+    if (target !== path) return handle;
+    const read = handle.read.bind(handle) as (
+      ...a: unknown[]
+    ) => Promise<unknown>;
+    handle.read = (async (...a: unknown[]) => {
+      const result = await read(...a);
+      await appendFile(path, "x");
+      return result;
+    }) as typeof handle.read;
+    return handle;
+  });
+  try {
+    const result = await readFull(path);
+    assert.equal(result.text, undefined);
+    assert.equal(result.bytes, 6);
+  } finally {
+    restore();
+  }
 });

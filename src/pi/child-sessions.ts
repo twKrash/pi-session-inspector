@@ -26,7 +26,8 @@ export const CHILD_SESSION_LIMITS: ChildSessionLimits = {
 
 /**
  * Reads locators serially in order until a file or byte budget is exhausted;
- * what is not reached stays unavailable. A rejected file still spends its bytes.
+ * what is not reached stays unavailable. Every byte actually read is spent,
+ * including those of a file that is then rejected.
  */
 export async function readChildSessionProjections(
   locators: readonly ChildSessionLocator[],
@@ -36,13 +37,13 @@ export async function readChildSessionProjections(
   const projections = new Map<string, ChildSessionProjection>();
   let remaining = limits.maxTotalBytes;
   for (const { runId, path } of locators.slice(0, limits.maxFiles)) {
-    const text = await readChildSessionFile(
+    const { bytes, text } = await readChildSessionFile(
       path,
       parent.sessionFile,
       Math.min(limits.maxFileBytes, remaining),
     );
+    remaining -= bytes;
     if (text === undefined) continue;
-    remaining -= Buffer.byteLength(text);
     const projection = projectChildSession(parseSessionJsonl(text), parent);
     if (projection !== undefined) projections.set(runId, projection);
   }

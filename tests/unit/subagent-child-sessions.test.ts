@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -11,6 +11,7 @@ import {
   readChildSessionProjections,
 } from "../../src/pi/child-sessions.ts";
 import { assistant, header, usage, user } from "../helpers/child-session.ts";
+import { patchOpen } from "../helpers/patch-open.ts";
 
 const notice = (runId: string, record: Record<string, unknown> = {}) => ({
   runId,
@@ -69,6 +70,23 @@ test("a run that published two different paths is withheld", () => {
       notice("a"),
       notice("a", { sessionValue: "/p/other.jsonl" }),
     ]),
+    [],
+  );
+});
+
+test("one run publishing many distinct paths trips the claim bound too", () => {
+  const manyPaths = (count: number) =>
+    Array.from({ length: count }, (_, i) =>
+      notice("greedy", { sessionValue: `/p/greedy-${i}.jsonl` }),
+    );
+  // 511 + the other run's path = 512 distinct paths: still within the bound.
+  assert.deepEqual(
+    selectChildSessionLocators([...manyPaths(511), notice("other")]),
+    [{ runId: "other", path: "/p/other.jsonl" }],
+  );
+  // One more distinct path and the whole selection fails closed.
+  assert.deepEqual(
+    selectChildSessionLocators([...manyPaths(512), notice("other")]),
     [],
   );
 });
@@ -162,6 +180,32 @@ test("locators come only from plain async notices for launch-proven runs", () =>
   );
 });
 
+test("a conflicting claim hidden inside one notice still withholds the run", () => {
+  const launches = [...launchLines("run-1"), ...launchLines("run-2")];
+  const first = noticeLine([run("run-1", { sessionValue: "/p/a.jsonl" })]);
+  const repeated = noticeLine([
+    run("run-1", { sessionValue: "/p/a.jsonl" }),
+    run("run-1", { sessionValue: "/p/b.jsonl" }),
+  ]);
+  assert.deepEqual(
+    locatorsOf([...launches, first, repeated]),
+    [],
+    "valid then repeated",
+  );
+  assert.deepEqual(
+    locatorsOf([...launches, repeated, first]),
+    [],
+    "repeated then valid",
+  );
+  // The repeated notice also claims /p/a.jsonl, so another run cannot take it.
+  const other = noticeLine([run("run-2", { sessionValue: "/p/a.jsonl" })]);
+  assert.deepEqual(
+    locatorsOf([...launches, repeated, other]),
+    [],
+    "path taken by another run",
+  );
+});
+
 let root: string;
 let parentFile: string;
 before(async () => {
@@ -241,4 +285,43 @@ test("the file and byte budgets stop reading in locator order", async () => {
     (await readChildSessionProjections([a], parent(), small)).size,
     0,
   );
+});
+
+test("bytes read from a file that is then rejected still spend the total budget", async () => {
+  const files = await Promise.all(
+    ["spend-a", "spend-b", "spend-c"].map(async (name) => {
+      const path = join(root, "parent", name, "run-0", "session.jsonl");
+      await mkdir(join(root, "parent", name, "run-0"), { recursive: true });
+      await writeFile(path, "{}\n".repeat(40));
+      return { runId: name, path };
+    }),
+  );
+  let reads = 0;
+  const restore = patchOpen((real) => async (target, ...args) => {
+    const handle = await real(target, ...args);
+    if (!files.some((file) => file.path === target)) return handle;
+    const read = handle.read.bind(handle) as (
+      ...a: unknown[]
+    ) => Promise<unknown>;
+    handle.read = (async (...a: unknown[]) => {
+      const result = await read(...a);
+      reads++;
+      await appendFile(target, "x"); // the file grows, so its read is rejected
+      return result;
+    }) as typeof handle.read;
+    return handle;
+  });
+  try {
+    const limits = { maxFiles: 3, maxFileBytes: 120, maxTotalBytes: 120 };
+    const projections = await readChildSessionProjections(
+      files,
+      parent(),
+      limits,
+    );
+    assert.equal(projections.size, 0);
+    // The first read spends all 120 bytes; the others never touch the disk.
+    assert.equal(reads, 1);
+  } finally {
+    restore();
+  }
 });

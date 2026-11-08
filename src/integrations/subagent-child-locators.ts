@@ -4,7 +4,7 @@ import type { ChildSessionLocator } from "../core/events.ts";
 // identity comes only from the exact persisted notice; reading the file is the
 // Pi layer's job (`src/pi/child-sessions.ts`), injected by the composition root.
 const SESSION_FILE_LABEL = "Session file";
-/** Above this many published runs the whole selection fails closed. */
+/** Above this many distinct runs or distinct paths the whole selection fails closed. */
 const MAX_CLAIMS = 512;
 
 type Notice = { runId: string; record: Readonly<Record<string, unknown>> };
@@ -39,7 +39,13 @@ function collectClaims(notices: Iterable<Notice>): Claims | undefined {
     if (path === undefined) continue;
     settle(claims.pathOfRun, runId, path);
     settle(claims.ownerOfPath, path, runId);
-    if (claims.pathOfRun.size > MAX_CLAIMS) return undefined;
+    // Distinct paths are bounded too: one run can claim many.
+    if (
+      claims.pathOfRun.size > MAX_CLAIMS ||
+      claims.ownerOfPath.size > MAX_CLAIMS
+    ) {
+      return undefined;
+    }
   }
   return claims;
 }
