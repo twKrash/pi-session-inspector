@@ -49,6 +49,7 @@ import {
   readSubagentEvidenceWithArchives,
   type SubagentSourceEvidence,
 } from "./integrations/subagents.ts";
+import { readChildSessionProjections } from "./pi/child-sessions.ts";
 import type { LiveObserverApi } from "./pi/live.ts";
 import {
   type LiveWalRegistration,
@@ -1044,6 +1045,23 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
 };
 
 /**
+ * The current view's subagent evidence: archives, durable child session files,
+ * and the temporary lifecycle artifact. The Pi-layer reader is injected here
+ * because integrations must not read Pi session sources themselves.
+ */
+const readCurrentSubagentEvidence = (
+  entries: readonly SessionEntry[],
+  sessionId: string,
+  sessionFile?: string,
+) =>
+  readSubagentEvidenceWithArchives(
+    entries,
+    sessionId,
+    sessionFile,
+    readChildSessionProjections,
+  );
+
+/**
  * The rich canonical contributions the declared integrations contribute
  * (subagent runs and activity today), reassembled into the shape L1 consumes.
  * A failed contribution falls back to the direct reader so a history row
@@ -1059,6 +1077,7 @@ async function readSubagentContribution(
       entries,
       sessionId,
       sessionFile,
+      childSessions: readChildSessionProjections,
     });
     const contribution = contributions.subagents;
     if (contribution?.activity !== undefined) {
@@ -1266,7 +1285,7 @@ function createUiServerContext(input: {
           sessionFile,
           leafId,
         },
-        subagentEvidence: readSubagentEvidenceWithArchives,
+        subagentEvidence: readCurrentSubagentEvidence,
         ...(evidence === undefined
           ? {}
           : {
@@ -1451,7 +1470,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
               {
                 leafId,
                 ...currentSession,
-                subagentEvidence: readSubagentEvidenceWithArchives,
+                subagentEvidence: readCurrentSubagentEvidence,
               },
             );
             if (!model) return notifyCurrentUnavailable(ctx);
@@ -1462,7 +1481,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                   loadCurrentSessionReport(sessionFile, scope, {
                     leafId,
                     ...currentSession,
-                    subagentEvidence: readSubagentEvidenceWithArchives,
+                    subagentEvidence: readCurrentSubagentEvidence,
                   }),
                 theme,
                 requestRender: () => tui.requestRender(),
@@ -1511,7 +1530,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
                   loadCurrentSessionReport(sessionFile, scope, {
                     leafId,
                     ...currentSession,
-                    subagentEvidence: readSubagentEvidenceWithArchives,
+                    subagentEvidence: readCurrentSubagentEvidence,
                   }),
                 command.scope,
               );
@@ -1648,7 +1667,7 @@ export default function registerSessionInspector(pi: ExtensionAPI): void {
               {
                 leafId,
                 ...currentSession,
-                subagentEvidence: readSubagentEvidenceWithArchives,
+                subagentEvidence: readCurrentSubagentEvidence,
               },
             );
             if (!model) return notifyCurrentUnavailable(ctx);

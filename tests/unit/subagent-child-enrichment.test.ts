@@ -3,10 +3,10 @@ import { test } from "node:test";
 import type {
   AgentRun,
   AgentRunSourceObservation,
+  ChildSessionProjection,
   SubagentSourceEvidence,
 } from "../../src/core/events.ts";
 import { applyChildSessionProjections } from "../../src/integrations/subagent-child-enrichment.ts";
-import type { ChildSessionProjection } from "../../src/integrations/subagent-child-session.ts";
 
 const LAUNCH = "source-launch";
 const NOTICE = "source-notice";

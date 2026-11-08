@@ -1,9 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import {
-  childSessionRoot,
-  isConfinedChildPath,
-} from "./subagent-child-path.ts";
+import { childSessionRoot, isConfinedChildPath } from "./child-session-path.ts";
 
 // ADR 0028: one producer-published child Pi session file, read as text. This
 // module owns filesystem safety only; path policy, parsing, and attribution

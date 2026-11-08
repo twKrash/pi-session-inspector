@@ -1,7 +1,12 @@
-import type { SessionEntry, Usage } from "../core/events.ts";
+import type {
+  ChildSessionParent,
+  ChildSessionProjection,
+  SessionEntry,
+  Usage,
+} from "../core/events.ts";
 import { secretLikeValue } from "../core/redact.ts";
 import { addUsage, readUsage } from "../core/reduce.ts";
-import type { ParsedSession } from "../pi/adapter.ts";
+import type { ParsedSession } from "./adapter.ts";
 
 // ADR 0028: a child Pi session file explicitly referenced by a persisted
 // pi-subagents notice. This module only projects an already-parsed file; the
@@ -9,24 +14,6 @@ import type { ParsedSession } from "../pi/adapter.ts";
 const SUPPORTED_FORMAT_VERSION = 3;
 const MAX_MODEL_LABEL_BYTES = 128;
 const encoder = new TextEncoder();
-
-export type ChildSessionProjection = {
-  /** Sum of valid native assistant usage; absent when none is usable. */
-  usage?: Usage;
-  /** `complete` only when every assistant message supplied summable usage. */
-  usageCoverage: "complete" | "partial" | "unavailable";
-  /** Present only when every assistant message reports the same bounded model. */
-  model?: string;
-  /** Distinct native tool-call ids; absent when there is no assistant message. */
-  toolCalls?: number;
-};
-
-export type ChildSessionParent = {
-  /** Exact parent Pi session-file path the child header must name. */
-  sessionFile: string;
-  /** Entry ids of the parent session, to detect inherited (forked) history. */
-  entryIds: ReadonlySet<string>;
-};
 
 /**
  * Returns `undefined` (unsupported) unless the file is a well-formed, linear

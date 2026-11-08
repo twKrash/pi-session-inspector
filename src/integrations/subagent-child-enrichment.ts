@@ -3,9 +3,9 @@ import type {
   AgentRunCoverage,
   AgentRunSourceObservation,
   AgentRunUsage,
+  ChildSessionProjection,
   SubagentSourceEvidence,
 } from "../core/events.ts";
-import type { ChildSessionProjection } from "./subagent-child-session.ts";
 
 // ADR 0028: a projected child session only fills fields no persisted
 // observation of the same run already carries; persisted Pi evidence wins.

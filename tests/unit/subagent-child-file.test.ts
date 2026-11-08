@@ -8,7 +8,7 @@ import {
   readChildSessionFile,
   readExactly,
   type StatReadHandle,
-} from "../../src/integrations/subagent-child-file.ts";
+} from "../../src/pi/child-session-file.ts";
 
 let root: string;
 let parent: string;

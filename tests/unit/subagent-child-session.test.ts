@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { projectChildSession } from "../../src/integrations/subagent-child-session.ts";
+import { projectChildSession } from "../../src/pi/child-session.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
   assistant,

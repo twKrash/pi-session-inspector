@@ -57,11 +57,17 @@ export const subagentsIntegration = defineIntegration({
       entries,
       sessionId,
       sessionFile,
+      childSessions,
     }: CanonicalIntegrationContext) => {
       const evidence: SubagentSourceEvidence =
         sessionFile === undefined
           ? await readSubagentEvidenceWithArchives(entries, sessionId)
-          : await readDurableSubagentEvidence(entries, sessionId, sessionFile);
+          : await readDurableSubagentEvidence(
+              entries,
+              sessionId,
+              sessionFile,
+              childSessions,
+            );
       return {
         state: evidence.state,
         ...(evidence.coverage === "partial" ? { coverage: "partial" } : {}),

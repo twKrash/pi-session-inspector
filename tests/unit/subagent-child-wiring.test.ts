@@ -10,6 +10,7 @@ import {
   readDurableSubagentEvidence,
   readSubagentEvidenceWithArchives,
 } from "../../src/integrations/subagents.ts";
+import { readChildSessionProjections } from "../../src/pi/child-sessions.ts";
 import { assistant, header, usage, user } from "../helpers/child-session.ts";
 
 const SESSION_ID = "inspector-session-uuid";
@@ -99,11 +100,17 @@ const runOf = (
 test("a deleted run directory still yields durable model, tokens, cost, and tools", async () => {
   await freshChild();
   for (const evidence of [
-    await readDurableSubagentEvidence(entriesFor(), SESSION_ID, parentFile),
+    await readDurableSubagentEvidence(
+      entriesFor(),
+      SESSION_ID,
+      parentFile,
+      readChildSessionProjections,
+    ),
     await readSubagentEvidenceWithArchives(
       entriesFor(),
       SESSION_ID,
       parentFile,
+      readChildSessionProjections,
     ),
   ]) {
     const run = runOf(evidence);
@@ -127,6 +134,7 @@ test("enrichment adds no row, no native activity, and no path to the evidence", 
     entriesFor(),
     SESSION_ID,
     parentFile,
+    readChildSessionProjections,
   );
   assert.equal(
     reconcileAgentRuns(durable.observations, durable.aliases).runs.length,
@@ -164,7 +172,12 @@ test("history never reads the temporary lifecycle artifact but the current view 
   );
   try {
     const history = runOf(
-      await readDurableSubagentEvidence(entriesFor(), SESSION_ID, parentFile),
+      await readDurableSubagentEvidence(
+        entriesFor(),
+        SESSION_ID,
+        parentFile,
+        readChildSessionProjections,
+      ),
     );
     assert.equal(history?.durationMs, undefined);
     const current = runOf(
@@ -172,6 +185,7 @@ test("history never reads the temporary lifecycle artifact but the current view 
         entriesFor(),
         SESSION_ID,
         parentFile,
+        readChildSessionProjections,
       ),
     );
     assert.equal(current?.durationMs, 1234, "lifecycle still fills the gap");
@@ -188,7 +202,12 @@ test("a resumed, forked, foreign, or missing child file changes nothing", async 
   );
   const unchanged = async (label: string) => {
     const run = runOf(
-      await readDurableSubagentEvidence(entriesFor(), SESSION_ID, parentFile),
+      await readDurableSubagentEvidence(
+        entriesFor(),
+        SESSION_ID,
+        parentFile,
+        readChildSessionProjections,
+      ),
     );
     assert.deepEqual(run, baseline, label);
   };
@@ -215,9 +234,15 @@ test("a resumed, forked, foreign, or missing child file changes nothing", async 
   await unchanged("missing file");
 });
 
-test("the canonical contribution follows the durable file only when given the session file", async () => {
+test("the canonical contribution follows the durable file only with the session file and an injected reader", async () => {
   await freshChild();
   const withFile = await readCanonicalContributions({
+    entries: entriesFor(),
+    sessionId: SESSION_ID,
+    sessionFile: parentFile,
+    childSessions: readChildSessionProjections,
+  });
+  const withoutReader = await readCanonicalContributions({
     entries: entriesFor(),
     sessionId: SESSION_ID,
     sessionFile: parentFile,
@@ -233,4 +258,9 @@ test("the canonical contribution follows the durable file only when given the se
     ).runs[0]?.model;
   assert.equal(modelOf(withFile), "fixture-model");
   assert.equal(modelOf(withoutFile), undefined);
+  assert.equal(
+    modelOf(withoutReader),
+    undefined,
+    "no injected reader, no read",
+  );
 });

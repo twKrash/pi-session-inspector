@@ -168,6 +168,37 @@ export type SubagentEvidence = {
   diagnostics: readonly SubagentEvidenceDiagnostic[];
 };
 
+/**
+ * The bounded facts a dedicated child Pi session file proves for one async run
+ * (ADR 0028). Child usage is a non-additive breakdown, never a parent total.
+ */
+export type ChildSessionProjection = {
+  /** Sum of valid native assistant usage; absent when none is usable. */
+  usage?: Usage;
+  /** `complete` only when every assistant message supplied summable usage. */
+  usageCoverage: "complete" | "partial" | "unavailable";
+  /** Present only when every assistant message reports the same bounded model. */
+  model?: string;
+  /** Distinct native tool-call ids; absent when there is no assistant message. */
+  toolCalls?: number;
+};
+
+/** One run id and the producer-published path of its child session file. */
+export type ChildSessionLocator = { runId: string; path: string };
+
+/** Reads child session files for a parent; the Pi layer implements it. */
+export type ChildSessionReader = (
+  locators: readonly ChildSessionLocator[],
+  parent: ChildSessionParent,
+) => Promise<ReadonlyMap<string, ChildSessionProjection>>;
+
+export type ChildSessionParent = {
+  /** Exact parent Pi session-file path the child header must name. */
+  sessionFile: string;
+  /** Entry ids of the parent session, to detect inherited (forked) history. */
+  entryIds: ReadonlySet<string>;
+};
+
 /** L0-only input. Private source identities stop at the canonical boundary. */
 export type SubagentSourceEvidence = {
   activity: AgentToolActivity;

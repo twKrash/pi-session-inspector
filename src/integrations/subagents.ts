@@ -7,6 +7,8 @@ import type {
   AgentRunSourceObservation,
   AgentRunUsage,
   AgentToolActivity,
+  ChildSessionLocator,
+  ChildSessionReader,
   SessionEntry,
   SubagentSourceEvidence,
   Usage,
@@ -18,11 +20,7 @@ import { REDACTED, secretLikeValue } from "../core/redact.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
 import { applyChildSessionProjections } from "./subagent-child-enrichment.ts";
-import {
-  type ChildSessionLocator,
-  readChildSessionProjections,
-  selectChildSessionLocators,
-} from "./subagent-child-sessions.ts";
+import { selectChildSessionLocators } from "./subagent-child-locators.ts";
 import {
   type ForegroundTerminalFields,
   readForegroundTerminalFields,
@@ -171,6 +169,7 @@ export async function readSubagentEvidenceWithArchives(
   entries: readonly SessionEntry[],
   sessionId: string,
   sessionFile?: string,
+  childSessions?: ChildSessionReader,
 ): Promise<SubagentSourceEvidence> {
   const evidence = readSubagentEvidence(entries, sessionId);
   if (evidence.state !== "supported") return evidence;
@@ -183,7 +182,13 @@ export async function readSubagentEvidenceWithArchives(
   if (references.size === 0) {
     return sessionFile === undefined
       ? evidence
-      : enrichCurrentSession(entries, sessionId, sessionFile, evidence);
+      : enrichCurrentSession(
+          entries,
+          sessionId,
+          sessionFile,
+          evidence,
+          childSessions,
+        );
   }
 
   const artifactsBySource = new Map<string, "available" | "missing">();
@@ -219,7 +224,13 @@ export async function readSubagentEvidenceWithArchives(
   };
   return sessionFile === undefined
     ? archivedEvidence
-    : enrichCurrentSession(entries, sessionId, sessionFile, archivedEvidence);
+    : enrichCurrentSession(
+        entries,
+        sessionId,
+        sessionFile,
+        archivedEvidence,
+        childSessions,
+      );
 }
 
 /**
@@ -231,28 +242,38 @@ export async function readDurableSubagentEvidence(
   entries: readonly SessionEntry[],
   sessionId: string,
   sessionFile: string,
+  childSessions: ChildSessionReader | undefined,
 ): Promise<SubagentSourceEvidence> {
   const evidence = await readSubagentEvidenceWithArchives(entries, sessionId);
   return evidence.state === "supported"
-    ? enrichFromChildSessions(entries, sessionId, sessionFile, evidence)
+    ? enrichFromChildSessions(
+        entries,
+        sessionId,
+        sessionFile,
+        evidence,
+        childSessions,
+      )
     : evidence;
 }
 
 /**
  * A forked child inherits the parent path up to its launch entry, and a run
  * only qualifies when that launch is among `entries`, so the scoped entry ids
- * are enough to detect inherited history.
+ * are enough to detect inherited history. The Pi-layer reader is injected by the
+ * composition root, since integrations must not read Pi session sources.
  */
 async function enrichFromChildSessions(
   entries: readonly SessionEntry[],
   sessionId: string,
   sessionFile: string,
   evidence: SubagentSourceEvidence,
+  childSessions: ChildSessionReader | undefined,
 ): Promise<SubagentSourceEvidence> {
   try {
+    if (childSessions === undefined) return evidence;
     const locators = readChildSessionLocators(entries, sessionId);
     if (locators.length === 0) return evidence;
-    const projections = await readChildSessionProjections(locators, {
+    const projections = await childSessions(locators, {
       sessionFile,
       entryIds: new Set(entries.map((entry) => entry.id)),
     });
@@ -275,6 +296,7 @@ async function enrichCurrentSession(
   sessionId: string,
   sessionFile: string,
   evidence: SubagentSourceEvidence,
+  childSessions: ChildSessionReader | undefined,
 ): Promise<SubagentSourceEvidence> {
   // Durable child files first: a filled field then counts as persisted, so the
   // temporary lifecycle artifact only fills what is still absent.
@@ -283,6 +305,7 @@ async function enrichCurrentSession(
     sessionId,
     sessionFile,
     evidence,
+    childSessions,
   );
   const lifecycle = await enrichCurrentLifecycle(
     entries,
