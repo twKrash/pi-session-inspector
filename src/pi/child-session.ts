@@ -7,6 +7,7 @@ import type {
 import { secretLikeValue } from "../core/redact.ts";
 import { addUsage, readUsage } from "../core/reduce.ts";
 import type { ParsedSession } from "./adapter.ts";
+import type { PiGraphNode } from "./graph.ts";
 
 // ADR 0028: a child Pi session file explicitly referenced by a persisted
 // pi-subagents notice. This module only projects an already-parsed file; the
@@ -42,8 +43,9 @@ function isDedicatedExecution(
     parsed.formatVersion === SUPPORTED_FORMAT_VERSION &&
     !parsed.hasMalformedJson &&
     parsed.parentSession === parent.sessionFile &&
-    isSingleChain(parsed.entries) &&
-    !parsed.entries.some((entry) => parent.entryIds.has(entry.id)) &&
+    onlyUnknownTypesDropped(parsed) &&
+    isSingleChain(parsed.graphNodes) &&
+    !parsed.graphNodes.some((node) => parent.entryIds.has(node.entryId)) &&
     countUserMessages(parsed.entries) === 1
   );
 }
@@ -138,47 +140,68 @@ function countUserMessages(entries: readonly SessionEntry[]): number {
 
 type Links = { root?: string; childOf: ReadonlyMap<string, string> };
 
+const SUMMARY_TYPES: ReadonlySet<string> = new Set([
+  "compaction",
+  "branch_summary",
+]);
+
 /**
- * One connected chain: unique entry ids, exactly one root, no branching, and a
- * walk from the root that reaches every entry (so no orphan, cycle, or second
- * tree). Compaction and branch-summary entries carry usage with no per-run
- * meaning and are rejected.
+ * The parser drops records it cannot use as entries. A well-formed record of an
+ * extension-defined type is harmless and still takes part in the structural
+ * checks through the graph; any other dropped record (a non-object line, a
+ * non-string id, a missing field) could hide a root, a prompt, or a compaction,
+ * so the file is not trusted.
  */
-function isSingleChain(entries: readonly SessionEntry[]): boolean {
-  const links = linkEntries(entries);
-  return links !== undefined && chainLength(links) === entries.length;
+function onlyUnknownTypesDropped(parsed: ParsedSession): boolean {
+  const unknownTypes = parsed.graphNodes.filter(
+    (node) => node.semanticType.state === "unknown",
+  ).length;
+  return parsed.unknownEntryCount === unknownTypes;
 }
 
-function linkEntries(entries: readonly SessionEntry[]): Links | undefined {
-  const ids = new Set<string>();
+/**
+ * One connected chain over every well-formed record: exactly one root, no
+ * branching, and a walk from the root that reaches each node once (so no
+ * duplicate id, orphan, cycle, or second tree). Compaction and branch-summary
+ * entries carry usage with no per-run meaning and are rejected.
+ */
+function isSingleChain(nodes: readonly PiGraphNode[]): boolean {
+  const links = linkNodes(nodes);
+  return links !== undefined && chainLength(links) === nodes.length;
+}
+
+function linkNodes(nodes: readonly PiGraphNode[]): Links | undefined {
   const childOf = new Map<string, string>();
   let root: string | undefined;
-  for (const entry of entries) {
-    if (
-      entry.type === "compaction" ||
-      entry.type === "branch_summary" ||
-      ids.has(entry.id)
-    ) {
-      return undefined;
-    }
-    ids.add(entry.id);
-    if (entry.parentId === null) {
+  for (const node of nodes) {
+    if (isSummary(node)) return undefined;
+    if (node.parentId === null) {
       if (root !== undefined) return undefined;
-      root = entry.id;
-    } else if (childOf.has(entry.parentId)) {
+      root = node.entryId;
+    } else if (childOf.has(node.parentId)) {
       return undefined;
     } else {
-      childOf.set(entry.parentId, entry.id);
+      childOf.set(node.parentId, node.entryId);
     }
   }
   return { root, childOf };
 }
 
-/** Entries reachable from the root; the root has no parent, so this terminates. */
+function isSummary({ semanticType }: PiGraphNode): boolean {
+  return semanticType.state === "known" && SUMMARY_TYPES.has(semanticType.type);
+}
+
+/**
+ * Distinct ids on the walk from the root. The walk stops at a revisit, which
+ * only a duplicate id can cause, and a duplicate always leaves this below the
+ * node count.
+ */
 function chainLength({ root, childOf }: Links): number {
-  let length = 0;
-  for (let id = root; id !== undefined; id = childOf.get(id)) length++;
-  return length;
+  const seen = new Set<string>();
+  for (let id = root; id !== undefined && !seen.has(id); id = childOf.get(id)) {
+    seen.add(id);
+  }
+  return seen.size;
 }
 
 function modelLabel(value: unknown): string | undefined {

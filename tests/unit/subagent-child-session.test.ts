@@ -95,10 +95,10 @@ const attach = (line: string, tail: string | null): string => {
   }
 };
 
-const projectRaw = (lines: string[]) =>
+const projectRaw = (lines: string[], parentEntryIds: string[] = []) =>
   projectChildSession(parseSessionJsonl(lines.join("\n")), {
     sessionFile: PARENT,
-    entryIds: new Set(),
+    entryIds: new Set(parentEntryIds),
   });
 
 test("a linked child sums native usage, one model, and distinct tool calls", () => {
@@ -230,6 +230,103 @@ test("only one connected chain of unique entries qualifies", () => {
   for (const [label, lines] of Object.entries(rejected)) {
     assert.equal(projectRaw(lines), undefined, label);
   }
+});
+
+const record = (fields: Record<string, unknown>) =>
+  JSON.stringify({ timestamp: "2026-11-02T00:00:03.000Z", ...fields });
+
+test("an extension-defined entry type takes part in the chain instead of being skipped", () => {
+  const hit = usage(1, 0);
+  const valid = [
+    header(),
+    user("u0", null),
+    record({ type: "context_edit", id: "x1", parentId: "u0" }),
+    assistant("a1", "x1", { usage: hit }),
+  ];
+  assert.equal(projectRaw(valid)?.usage?.totalTokens, 1, "connected: accepted");
+
+  const base = [
+    header(),
+    user("u0", null),
+    assistant("a1", "u0", { usage: hit }),
+  ];
+  const hidden: Record<string, string[]> = {
+    "a second root": [
+      ...base,
+      record({ type: "context_edit", id: "x1", parentId: null }),
+    ],
+    "a branch": [
+      ...base,
+      record({ type: "context_edit", id: "x1", parentId: "u0" }),
+    ],
+    "an orphan": [
+      ...base,
+      record({ type: "context_edit", id: "x1", parentId: "missing" }),
+    ],
+    "a duplicate id": [
+      ...base,
+      record({ type: "context_edit", id: "a1", parentId: "a1" }),
+    ],
+  };
+  for (const [label, lines] of Object.entries(hidden)) {
+    assert.equal(projectRaw(lines), undefined, label);
+  }
+  assert.equal(
+    projectRaw(
+      [...base, record({ type: "context_edit", id: "x1", parentId: "a1" })],
+      ["x1"],
+    ),
+    undefined,
+    "an unknown-type entry inherited from the parent",
+  );
+});
+
+test("a record the parser drops cannot hide a violation", () => {
+  const hit = usage(1, 0);
+  const base = [
+    header(),
+    user("u0", null),
+    assistant("a1", "u0", { usage: hit }),
+  ];
+  assert.equal(projectRaw(base)?.usageCoverage, "complete");
+  const dropped: Record<string, string> = {
+    "a second prompt with a non-string id": record({
+      type: "message",
+      id: 7,
+      parentId: "a1",
+      message: { role: "user", content: [] },
+    }),
+    "a compaction without a timestamp": JSON.stringify({
+      type: "compaction",
+      id: "c1",
+      parentId: "a1",
+    }),
+    "an entry without a parentId": record({ type: "message", id: "m1" }),
+    "a non-object line": "123",
+    "a known type with a non-string id": record({
+      type: "label",
+      id: 5,
+      parentId: "a1",
+    }),
+  };
+  for (const [label, line] of Object.entries(dropped)) {
+    assert.equal(projectRaw([...base, line]), undefined, label);
+  }
+});
+
+test("a duplicate id is rejected without walking forever", () => {
+  const hit = usage(1, 0);
+  // The second a1 hangs off the first, so there is no branch and no orphan:
+  // only the revisit during the walk exposes the duplicate.
+  assert.equal(
+    projectRaw([
+      header(),
+      user("u0", null),
+      assistant("a1", "u0", { usage: hit }),
+      assistant("a1", "a1", { usage: hit }),
+    ]),
+    undefined,
+  );
 });
 
 test("compaction and branch-summary entries have no per-run meaning", () => {
