@@ -28,12 +28,24 @@ const USAGE_FIELDS = [...TOKEN_FIELDS, ...COST_FIELDS] as const;
 // Same bound as the lifecycle reader.
 const MAX_OBSERVATIONS = 512;
 
-type Fill = { model?: string; toolCalls?: number; usage: AgentRunUsage };
+type Fill = {
+  model?: string;
+  toolCalls?: number;
+  /** Only the usage fields taken from the child file. */
+  filled: AgentRunUsage;
+  /** Persisted usage (latest value per field) plus `filled`. */
+  merged: AgentRunUsage;
+};
 
 /**
  * `projectionsBySource` is keyed by the private source identity of the run's
- * launch observation. Rows are never created and no field is overwritten; a
- * filled field is `partial` coverage because the child file is a mutable source.
+ * launch observation. Rows are never created and no persisted field is
+ * overwritten; a filled field is `partial` coverage because the child file is a
+ * mutable source.
+ *
+ * Reconciliation keeps one whole `usage` object per run, taken from its latest
+ * observation. A fill written only onto the launch would vanish behind a later
+ * completion, so every observation of the run carries the same merged usage.
  */
 export function applyChildSessionProjections(
   evidence: SubagentSourceEvidence,
@@ -50,17 +62,13 @@ export function applyChildSessionProjections(
     const publicId = publicIdBySource.get(observation.sourceIdentity);
     return publicId === undefined ? observation.run.id : publicId;
   };
-  const present = presentByRun(observations, logicalId);
+  const fills = planFills(observations, logicalId, projectionsBySource);
   return {
     ...evidence,
     observations: observations.map((observation) => {
-      const projection = projectionsBySource.get(observation.sourceIdentity);
-      if (projection === undefined) return observation;
-      const run = fillRun(
-        observation.run,
-        projection,
-        fieldsFor(present, logicalId(observation)),
-      );
+      const fill = fills.get(logicalId(observation));
+      if (fill === undefined) return observation;
+      const run = fillRun(observation.run, fill);
       return run === observation.run ? observation : { ...observation, run };
     }),
   };
@@ -77,56 +85,79 @@ function boundedObservations(
   return bounded;
 }
 
-/** The fields any persisted observation of each logical run already carries. */
-function presentByRun(
+function planFills(
   observations: readonly AgentRunSourceObservation[],
   logicalId: (observation: AgentRunSourceObservation) => string,
-): Map<string, Set<string>> {
-  const present = new Map<string, Set<string>>();
+  projectionsBySource: ReadonlyMap<string, ChildSessionProjection>,
+): Map<string, Fill> {
+  const members = new Map<string, AgentRunSourceObservation[]>();
   for (const observation of observations) {
-    const fields = fieldsFor(present, logicalId(observation));
-    for (const field of presentFields(observation.run)) fields.add(field);
+    const id = logicalId(observation);
+    const group = members.get(id);
+    if (group === undefined) members.set(id, [observation]);
+    else group.push(observation);
   }
-  return present;
+  const fills = new Map<string, Fill>();
+  for (const [id, group] of members) {
+    const projection = projectionOf(group, projectionsBySource);
+    if (projection !== undefined) fills.set(id, planFill(group, projection));
+  }
+  return fills;
 }
 
-function fieldsFor(present: Map<string, Set<string>>, id: string): Set<string> {
-  const known = present.get(id);
-  if (known !== undefined) return known;
-  const created = new Set<string>();
-  present.set(id, created);
-  return created;
-}
-
-function presentFields(run: AgentRun): string[] {
-  return [
-    ...(run.model === undefined ? [] : ["model"]),
-    ...(run.toolCalls === undefined ? [] : ["toolCalls"]),
-    ...USAGE_FIELDS.filter((field) => run.usage?.[field] !== undefined),
-  ];
+function projectionOf(
+  group: readonly AgentRunSourceObservation[],
+  projectionsBySource: ReadonlyMap<string, ChildSessionProjection>,
+): ChildSessionProjection | undefined {
+  for (const { sourceIdentity } of group) {
+    const projection = projectionsBySource.get(sourceIdentity);
+    if (projection !== undefined) return projection;
+  }
+  return undefined;
 }
 
 function planFill(
+  group: readonly AgentRunSourceObservation[],
   projection: ChildSessionProjection,
-  present: ReadonlySet<string>,
 ): Fill {
+  const persisted = persistedUsage(group);
+  const filled: AgentRunUsage = {};
+  for (const field of USAGE_FIELDS) {
+    const value = projection.usage?.[field];
+    if (value !== undefined && persisted[field] === undefined) {
+      filled[field] = value;
+    }
+  }
   const { model, toolCalls } = projection;
   return {
-    ...(model === undefined || present.has("model") ? {} : { model }),
-    ...(toolCalls === undefined || present.has("toolCalls")
+    ...(model === undefined || group.some(({ run }) => run.model !== undefined)
+      ? {}
+      : { model }),
+    ...(toolCalls === undefined ||
+    group.some(({ run }) => run.toolCalls !== undefined)
       ? {}
       : { toolCalls }),
-    usage: fillableUsage(projection, present),
+    filled,
+    merged: { ...persisted, ...filled },
   };
 }
 
-function fillRun(
-  run: AgentRun,
-  projection: ChildSessionProjection,
-  present: ReadonlySet<string>,
-): AgentRun {
-  const fill = planFill(projection, present);
-  const usageFilled = hasAny(fill.usage, USAGE_FIELDS);
+/** The latest observation that defines a usage field decides it, field by field. */
+function persistedUsage(
+  group: readonly AgentRunSourceObservation[],
+): AgentRunUsage {
+  const merged: AgentRunUsage = {};
+  for (const { run } of [...group].sort((a, b) => a.order - b.order)) {
+    for (const field of USAGE_FIELDS) {
+      const value = run.usage?.[field];
+      if (value !== undefined) merged[field] = value;
+    }
+  }
+  return merged;
+}
+
+function fillRun(run: AgentRun, fill: Fill): AgentRun {
+  const usageFilled = hasAny(fill.filled, USAGE_FIELDS);
   if (
     fill.model === undefined &&
     fill.toolCalls === undefined &&
@@ -138,7 +169,7 @@ function fillRun(
     ...run,
     ...(fill.model === undefined ? {} : { model: fill.model }),
     ...(fill.toolCalls === undefined ? {} : { toolCalls: fill.toolCalls }),
-    ...(usageFilled ? { usage: { ...run.usage, ...fill.usage } } : {}),
+    ...(usageFilled ? { usage: { ...fill.merged } } : {}),
     effortCoverage: raisedCoverage(run.effortCoverage, fill),
   };
 }
@@ -149,10 +180,10 @@ function raisedCoverage(
 ): AgentRun["effortCoverage"] {
   return {
     ...coverage,
-    ...(hasAny(fill.usage, TOKEN_FIELDS)
+    ...(hasAny(fill.filled, TOKEN_FIELDS)
       ? { usage: raise(coverage.usage) }
       : {}),
-    ...(hasAny(fill.usage, COST_FIELDS) ? { cost: raise(coverage.cost) } : {}),
+    ...(hasAny(fill.filled, COST_FIELDS) ? { cost: raise(coverage.cost) } : {}),
     ...(fill.toolCalls === undefined ? {} : { tools: raise(coverage.tools) }),
   };
 }
@@ -162,18 +193,6 @@ function hasAny(
   fields: readonly (keyof AgentRunUsage)[],
 ): boolean {
   return fields.some((field) => usage[field] !== undefined);
-}
-
-function fillableUsage(
-  projection: ChildSessionProjection,
-  present: ReadonlySet<string>,
-): AgentRunUsage {
-  const usage: AgentRunUsage = {};
-  for (const field of USAGE_FIELDS) {
-    const value = projection.usage?.[field];
-    if (value !== undefined && !present.has(field)) usage[field] = value;
-  }
-  return usage;
 }
 
 function raise(current: AgentRunCoverage): AgentRunCoverage {

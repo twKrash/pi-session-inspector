@@ -626,6 +626,8 @@ async function enrichCurrentLifecycle(
           totalTokens === undefined && cost === undefined
             ? undefined
             : {
+                // Keep component fields a durable source already filled.
+                ...observation.run.usage,
                 ...(totalTokens === undefined ? {} : { totalTokens }),
                 ...(cost === undefined ? {} : { cost }),
               };

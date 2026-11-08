@@ -191,9 +191,127 @@ test("history never reads the temporary lifecycle artifact but the current view 
     assert.equal(current?.durationMs, 1234, "lifecycle still fills the gap");
     assert.equal(current?.model, "fixture-model", "the durable file wins");
     assert.equal(current?.toolCalls, 2, "the durable file wins");
+    assert.equal(
+      current?.usage?.inputTokens,
+      100,
+      "component tokens survive the lifecycle fill",
+    );
+    assert.equal(current?.usage?.outputTokens, 0);
+    assert.equal(current?.usage?.cost, 0.75);
   } finally {
     await rm(asyncDir, { recursive: true, force: true });
   }
+});
+
+/** Later `bg_wait` completions of the same run, in order, each publishing the given usage. */
+const withCompletions = (...published: Record<string, unknown>[]) =>
+  [
+    ...entriesFor(),
+    ...published.flatMap((publishedUsage, index) => [
+      {
+        id: `wait-call-${index}`,
+        parentId: index === 0 ? "notice" : `wait-result-${index - 1}`,
+        timestamp: `2026-11-05T00:0${index + 1}:00.000Z`,
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: `wait-${index}`, name: "bg_wait" }],
+        },
+      },
+      {
+        id: `wait-result-${index}`,
+        parentId: `wait-call-${index}`,
+        timestamp: `2026-11-05T00:0${index + 1}:01.000Z`,
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: `wait-${index}`,
+          toolName: "bg_wait",
+          isError: false,
+          details: {
+            completions: [
+              {
+                runId: RUN_ID,
+                mode: "single",
+                agent: "reviewer",
+                state: "complete",
+                success: true,
+                usage: publishedUsage,
+                results: [],
+              },
+            ],
+          },
+        },
+      },
+    ]),
+  ] as unknown as SessionEntry[];
+
+test("a later cost-only completion keeps its cost and the child's tokens in the reconciled run", async () => {
+  await freshChild();
+  const run = runOf(
+    await readDurableSubagentEvidence(
+      withCompletions({ cost: 0.5 }),
+      SESSION_ID,
+      parentFile,
+      readChildSessionProjections,
+    ),
+  );
+  assert.equal(
+    run?.usage?.cost,
+    0.5,
+    "the persisted cost wins over the child's 0.75",
+  );
+  assert.equal(
+    run?.usage?.totalTokens,
+    100,
+    "tokens the completion lacks come from the child",
+  );
+  assert.equal(run?.usage?.inputTokens, 100);
+  assert.equal(run?.effortCoverage.usage, "partial");
+  assert.equal(run?.effortCoverage.cost, "partial");
+});
+
+test("a later token-only completion keeps its tokens and gains the child's cost", async () => {
+  await freshChild();
+  const run = runOf(
+    await readDurableSubagentEvidence(
+      withCompletions({ input: 40, output: 2, cacheRead: 0, cacheWrite: 0 }),
+      SESSION_ID,
+      parentFile,
+      readChildSessionProjections,
+    ),
+  );
+  assert.equal(
+    run?.usage?.totalTokens,
+    42,
+    "the persisted tokens win over the child's 100",
+  );
+  assert.equal(
+    run?.usage?.cost,
+    0.75,
+    "the cost the completion lacks comes from the child",
+  );
+});
+
+test("a field an earlier completion published survives a later one that lacks it", async () => {
+  await freshChild();
+  const run = runOf(
+    await readDurableSubagentEvidence(
+      withCompletions(
+        { input: 7, output: 0, cacheRead: 0, cacheWrite: 0 },
+        { cost: 0.5 },
+      ),
+      SESSION_ID,
+      parentFile,
+      readChildSessionProjections,
+    ),
+  );
+  assert.equal(
+    run?.usage?.totalTokens,
+    7,
+    "the earlier persisted tokens win over the child's 100",
+  );
+  assert.equal(run?.usage?.cost, 0.5);
 });
 
 test("a resumed, forked, foreign, or missing child file changes nothing", async () => {

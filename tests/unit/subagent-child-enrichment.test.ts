@@ -135,6 +135,94 @@ test("a field persisted on a sibling observation of the same run blocks the fill
   assert.equal(notice?.run.model, "persisted-model");
 });
 
+const GROUP = [
+  { sourceIdentity: LAUNCH, canonicalIdentity: "c", publicId: "run-1" },
+  { sourceIdentity: NOTICE, canonicalIdentity: "c", publicId: "run-1" },
+];
+
+test("every observation of the run carries the same merged usage", () => {
+  const [launch, later] = apply(
+    [
+      observation(LAUNCH, { id: "launch-id" }, 0),
+      observation(NOTICE, { id: "later-id", usage: { cost: 9 } }, 1),
+    ],
+    [[LAUNCH, projection()]],
+    GROUP,
+  );
+  const expected = {
+    totalTokens: 100,
+    cost: 9,
+    inputTokens: 60,
+    outputTokens: 40,
+    inputCost: 0.2,
+    outputCost: 0.3,
+  };
+  assert.deepEqual(
+    launch?.run.usage,
+    expected,
+    "the launch holds the fill and the persisted cost",
+  );
+  assert.deepEqual(
+    later?.run.usage,
+    expected,
+    "the later publication keeps the fill",
+  );
+  assert.notEqual(
+    later?.run.usage,
+    launch?.run.usage,
+    "each holds its own copy",
+  );
+});
+
+test("the latest observation decides each persisted usage field, an earlier one fills the gaps", () => {
+  const [first, second] = apply(
+    [
+      observation(LAUNCH, { id: "a", usage: { totalTokens: 7, cost: 1 } }, 0),
+      observation(NOTICE, { id: "b", usage: { cost: 2 } }, 1),
+    ],
+    [
+      [
+        LAUNCH,
+        projection({ usage: { totalTokens: 100, cost: 3, inputTokens: 5 } }),
+      ],
+    ],
+    GROUP,
+  );
+  for (const row of [first, second]) {
+    assert.deepEqual(row?.run.usage, {
+      totalTokens: 7,
+      cost: 2,
+      inputTokens: 5,
+    });
+  }
+});
+
+test("observation order, not iteration order, decides which persisted value is latest", () => {
+  const rows = [
+    observation(NOTICE, { id: "b", usage: { cost: 2 } }, 1),
+    observation(LAUNCH, { id: "a", usage: { cost: 1 } }, 0),
+  ];
+  const [later] = apply(
+    rows,
+    [[LAUNCH, projection({ usage: { totalTokens: 1, cost: 3 } })]],
+    GROUP,
+  );
+  assert.equal(later?.run.usage?.cost, 2);
+});
+
+test("a run with nothing to fill leaves every observation untouched", () => {
+  const rows = [
+    observation(
+      LAUNCH,
+      { id: "a", model: "m", toolCalls: 1, usage: { totalTokens: 1, cost: 1 } },
+      0,
+    ),
+    observation(NOTICE, { id: "b", usage: { totalTokens: 1, cost: 1 } }, 1),
+  ];
+  const nothingNew = projection({ usage: { totalTokens: 9, cost: 9 } });
+  assert.deepEqual(apply(rows, [[LAUNCH, nothingNew]], GROUP), rows);
+});
+
 test("only the observation a projection is keyed to changes", () => {
   const rows = [observation(LAUNCH), observation(NOTICE, { id: "other" })];
   const [launch, other] = apply(rows);
