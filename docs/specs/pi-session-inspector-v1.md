@@ -631,8 +631,8 @@ not paths). It may enrich only an already-proven single async `AgentRun`, after
 exact run-ID matching and the checks below; any failure leaves the row
 unchanged. The path must be a bounded, normalized, absolute `.jsonl` beneath
 the directory named after the parent session file (the parent path without
-`.jsonl`), read without following symlinks under
-file, entry, and per-load byte budgets. The file must be a format-3 Pi session
+`.jsonl`), read without following symlinks, serially, under
+per-session budgets of 64 files, 4 MiB per file, and 32 MiB in total. The file must be a format-3 Pi session
 whose header `parentSession` equals the parent session file, and it must prove
 one dedicated execution: exactly one user message (resume and follow-ups
 append more), no entry id shared with the parent (a `context: "fork"` child

@@ -96,6 +96,11 @@ evidence, not a general coverage guarantee.
   lifecycle or foreground artifacts. The existing validated v3 `status.json`
   reader remains current-session-only; workflow children and runs without an
   eligible explicit child-session file remain `unavailable`.
+- **Layering.** Dependency rules keep integrations away from Pi session sources
+  and from the canonical reducer. The bounded reader (path policy, safe file
+  read, parse, and the dedicated-execution projection) therefore lives in the
+  Pi layer (`src/pi`); the integration only selects locators from the persisted
+  notices and merges results, and the composition root injects the reader.
 - **No Inspector persistence in this design.** The child file is already a Pi
   source. This ADR adds no WAL envelope, checkpoint table, retained aggregate,
   lifecycle capture, retention exception, or Pi session write. Paths and child
@@ -138,12 +143,25 @@ evidence, not a general coverage guarantee.
   conflicting run/file references, reused files, unsafe paths/symlinks,
   oversized input, privacy, and unchanged native totals.
 
+## Resolved during implementation
+
+- **Read budgets.** A session reads at most 64 child files serially, 4 MiB per
+  file, 32 MiB in total, in persisted notice order; what is not reached stays
+  unavailable. One repository's child files were at most 2.4 MiB (p99 1.7 MiB).
+- **Measured cost.** Across 145 sessions of that repository, 125 locators were
+  selected and 104 runs projected from 42.2 MiB of child files. Reading,
+  parsing, and projecting all of it took 460 ms, against 1410 ms to parse the
+  parent sessions; per session p50 11.5 ms, p90 65.6 ms, max 94.6 ms. No cache
+  was added. The budgets are a deliberate shortcut and should be revisited if
+  History load cost becomes a problem on larger histories.
+- **Projected fields.** Tokens and costs sum valid native assistant usage (a
+  missing value is partial coverage, never zero); a model is shown only when
+  every assistant message reports it; the tool count is distinct native
+  tool-call ids. Duration, generations, thinking, and outcome are never derived
+  from the file.
+
 ## Open questions
 
 1. Can the follow-up-message exclusion be relaxed (a steered child that is
    still one run) without admitting resumed files? Needs a producer-published
    run boundary; until then those runs stay `unavailable`.
-2. What bounded file, line, concurrency, and per-history budgets fit existing
-   parser and loader limits?
-3. Which native child fields can be projected without treating missing usage
-   as zero or conflating nested child accounting?
