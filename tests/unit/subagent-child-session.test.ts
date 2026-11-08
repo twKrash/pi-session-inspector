@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { projectChildSession } from "../../src/pi/child-session.ts";
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
+import { MAX_ID_BYTES } from "../../src/pi/graph.ts";
 
 const PARENT = "/sessions/parent.jsonl";
 
@@ -312,6 +313,49 @@ test("a record the parser drops cannot hide a violation", () => {
   for (const [label, line] of Object.entries(dropped)) {
     assert.equal(projectRaw([...base, line]), undefined, label);
   }
+});
+
+test("an entry the graph cannot see cannot smuggle usage past the chain check", () => {
+  const hit = usage(1, 0);
+  const base = [
+    header(),
+    user("u0", null),
+    assistant("a1", "u0", { usage: hit }),
+  ];
+  assert.equal(projectRaw(base)?.usage?.totalTokens, 1);
+
+  // A message the parser keeps as an entry but the graph skips because its id
+  // is empty or too long; it would add usage while escaping every chain rule.
+  const unseen: Record<string, string[]> = {
+    "an empty id, as a second root": [
+      ...base,
+      assistant("", null, { usage: hit }),
+    ],
+    "an empty id, hanging off the chain": [
+      ...base,
+      assistant("", "a1", { usage: hit }),
+    ],
+    "an oversize id, as a second root": [
+      ...base,
+      assistant("x".repeat(MAX_ID_BYTES + 1), null, { usage: hit }),
+    ],
+    "an oversize parent id": [
+      ...base,
+      assistant("a2", "p".repeat(MAX_ID_BYTES + 1), { usage: hit }),
+    ],
+  };
+  for (const [label, lines] of Object.entries(unseen)) {
+    assert.equal(projectRaw(lines), undefined, label);
+  }
+  // An id of exactly the bound is still a normal, graphed entry.
+  assert.equal(
+    projectRaw([
+      header(),
+      user("u0", null),
+      assistant("x".repeat(MAX_ID_BYTES), "u0", { usage: hit }),
+    ])?.usage?.totalTokens,
+    1,
+  );
 });
 
 test("a duplicate id is rejected without walking forever", () => {
