@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, readlink, realpath } from "node:fs/promises";
+import { open, readlink, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { childSessionRoot, isConfinedChildPath } from "./child-session-path.ts";
 
@@ -33,6 +33,7 @@ export async function readChildSessionFile(
   path: unknown,
   parentSessionFile: string,
   maxBytes: number,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<ChildFileRead> {
   try {
     const root = childSessionRoot(parentSessionFile);
@@ -46,9 +47,12 @@ export async function readChildSessionFile(
       constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
     );
     try {
-      if (!(await sitsAt(handle.fd, rootReal + path.slice(root.length)))) {
-        return NOTHING_READ;
-      }
+      const expected = rootReal + path.slice(root.length);
+      const placed =
+        platform === "linux"
+          ? await sitsAt(handle.fd, expected)
+          : await sitsAtByLookup(handle, path, expected);
+      if (!placed) return NOTHING_READ;
       const opened = await handle.stat();
       if (!opened.isFile() || opened.size > maxBytes) return NOTHING_READ;
       return await readExactly(handle, opened.size);
@@ -79,11 +83,27 @@ async function canonicalRoot(root: string): Promise<string | undefined> {
  * separate lookup that the same swap can answer differently. The kernel's own
  * record of where the open file lives (`/proc/self/fd`) involves no second
  * lookup: it must equal the expected canonical path, with no symlinked
- * component and no "(deleted)" suffix. Where procfs is missing the read fails
- * closed, because no portable equivalent exists in Node.
+ * component and no "(deleted)" suffix. A Linux without procfs fails closed.
  */
 async function sitsAt(fd: number, expected: string): Promise<boolean> {
   return (await readlink(`/proc/self/fd/${fd}`)) === expected;
+}
+
+/**
+ * Other platforms have no kernel path for a descriptor in Node, so the path is
+ * looked up again and must be the expected one and name the opened inode.
+ * shortcut: a directory swapped back and forth around these lookups can still
+ * redirect the open (accepted residual: the header and chain rules are the
+ * attribution proof), upgrade when Node exposes F_GETPATH or an equivalent.
+ */
+async function sitsAtByLookup(
+  handle: { stat(): Promise<{ dev: number; ino: number }> },
+  path: string,
+  expected: string,
+): Promise<boolean> {
+  if ((await realpath(path)) !== expected) return false;
+  const [opened, found] = await Promise.all([handle.stat(), stat(path)]);
+  return opened.dev === found.dev && opened.ino === found.ino;
 }
 
 /** Reads `size` bytes only when the open file still is a file of that size. */
