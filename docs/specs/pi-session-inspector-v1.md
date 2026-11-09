@@ -631,11 +631,18 @@ not paths). It may enrich only an already-proven single async `AgentRun`, after
 exact run-ID matching and the checks below; any failure leaves the row
 unchanged. The path must be a bounded, normalized, absolute `.jsonl` beneath
 the directory named after the parent session file (the parent path without
-`.jsonl`), opened without following links and verified against the opened
-descriptor (resolving inside that directory, naming the opened inode), read
-serially under
-per-session budgets of 64 files, 4 MiB per file, and 32 MiB in total. The file must be a format-3 Pi session
-whose header `parentSession` equals the parent session file, and it must prove
+`.jsonl`), opened without following links and verified through the kernel's own
+record of where the open descriptor lives (`/proc/self/fd`: exactly the expected
+path inside that directory, no symlinked component, no `(deleted)` suffix; where
+procfs is missing nothing is read), read serially under per-session budgets of
+64 files, 4 MiB and 10,000 lines per file (the line count is checked before
+parsing), and 32 MiB in total, spending the bytes the read returned even for a
+rejected file; at most four child files are read at once across concurrently
+replayed sessions. A run repeated inside one notice is withheld, as is any
+conflicting claim; more than 512 distinct runs or paths withholds every locator
+and more than 512 observations withholds every fill. The file must be a
+format-3 Pi session with exactly one session header, whose `parentSession`
+equals the parent session file, and it must prove
 one dedicated execution: exactly one user message (resume and follow-ups
 append more), no entry id shared with the parent (a `context: "fork"` child
 copies parent history), one connected chain over every well-formed record

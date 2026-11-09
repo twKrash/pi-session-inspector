@@ -71,21 +71,34 @@ evidence, not a general coverage guarantee.
   errors, free text, inferred paths, filename conventions, scans, and
   `workflowRunId`/workflow-child locators are rejected. Repeated run IDs,
   conflicting locators, and a child file claimed by more than one run in the
-  parent session are withheld.
+  parent session are withheld. A run id repeated inside one notice is
+  withheld even when its rows agree (as the status rule does), and its path
+  stays claimed so no other run can take it. Selection fails closed past 512
+  distinct runs or 512 distinct paths and then withholds every locator, and
+  enrichment fails closed past 512 observations and then applies no child
+  fill.
 - **Validate the referenced file before parsing.** Require a normalized `.jsonl`
   path beneath the directory the producer names after the parent session file
   (the parent path without `.jsonl`; all 166 sampled locators qualify), never the
   parent file itself;
   reject a symlinked root and non-regular files; open without following the
-  final link; then verify against the opened descriptor, because only the last
-  path component is guarded at open time and a directory swapped in earlier
-  could redirect it: the path must resolve inside the root's real directory
-  and name the very inode that was opened; enforce bounded file size, entry
-  count, and aggregate history-read budgets, where every byte actually read is
-  spent even if the file is then rejected; and swallow every I/O/parse failure.
+  final link; then verify against the opened descriptor through the kernel's
+  own record of where it lives (`/proc/self/fd`). Only the last path component
+  is guarded at open time, so a directory swapped in around the open can
+  redirect it, and a second pathname lookup (`realpath`, `lstat`) can be
+  answered differently by the same swap, even one swapped back and forth. The
+  recorded path must equal the expected canonical path inside the root's real
+  directory, so it has no symlinked component and no `(deleted)` suffix. Where
+  procfs is missing the read fails closed. Enforce a bounded file size, a line
+  bound counted before the text is parsed, and aggregate history-read budgets,
+  where the bytes the read call returned are spent even if the file is then
+  rejected and a file refused before its read costs nothing; and swallow every
+  I/O/parse failure.
   A hard link to a file under the directory is indistinguishable from the
-  file and is accepted; the header and chain rules below still apply. Require a supported Pi session
-  header whose `parentSession` exactly equals the parent session-file path. This
+  file and is accepted; the header and chain rules below still apply. Require exactly one session
+  header (native Pi trusts only the first, so a second rejects the file) of a
+  supported version whose `parentSession` exactly equals the parent
+  session-file path. This
   proves parentage only; the run-to-file binding comes from the exact persisted
   notification.
 - **Dedicated-execution rule (from the audit).** A file is attributed to a run
@@ -167,8 +180,15 @@ evidence, not a general coverage guarantee.
   the same file shape, attribution could be wrong; the rule is built to fail
   closed on the shapes known to be unsafe, and the audit below must be repeated
   when a new release is adopted.
-- History reads require deterministic, request-scoped deduplication and bounded
-  concurrency/bytes. No recursive child-of-child replay is allowed.
+- The kernel-path check needs Linux procfs. On macOS and Windows no child file
+  is read and the affected runs stay `unavailable`, exactly as without a
+  locator. A portable way to bind an open descriptor to its path is an open
+  question, and the reader must keep failing closed until one exists.
+- History replays up to 206 sessions at once and each keeps its own budgets.
+  At most four child files are read at the same time across all of them, which
+  bounds simultaneous buffers; there is no request-wide byte total, so the
+  worst case is 206 sessions of 32 MiB each, throttled rather than refused. No
+  recursive child-of-child replay is allowed.
 - Sanitized fixtures must cover valid parent linkage, wrong/missing parent,
   malformed or unsupported Pi sessions, share URL/error labels, duplicate and
   conflicting run/file references, reused files, unsafe paths/symlinks,
@@ -176,9 +196,11 @@ evidence, not a general coverage guarantee.
 
 ## Resolved during implementation
 
-- **Read budgets.** A session reads at most 64 child files serially, 4 MiB per
-  file, 32 MiB in total, in persisted notice order; what is not reached stays
-  unavailable. One repository's child files were at most 2.4 MiB (p99 1.7 MiB).
+- **Read budgets.** A session reads at most 64 child files serially, 4 MiB and
+  10,000 lines per file, 32 MiB in total, in persisted notice order; what is
+  not reached stays unavailable. One repository's child files were at most
+  2.4 MiB and 478 lines (p99 1.7 MiB and 423 lines). Without the line bound a
+  4 MiB file of tiny records took 1.4 s and about 700 MiB to parse.
 - **Measured cost.** Across 145 sessions of that repository, 125 locators were
   selected and 104 runs projected from 42.2 MiB of child files. Reading,
   parsing, and projecting all of it took 460 ms, against 1410 ms to parse the
@@ -193,6 +215,11 @@ evidence, not a general coverage guarantee.
 
 ## Open questions
 
-1. Can the follow-up-message exclusion be relaxed (a steered child that is
+1. How can an open descriptor be bound to its path on platforms without
+   procfs? Until a portable mechanism is chosen, those platforms read nothing.
+2. Should History share a request-wide byte budget across the sessions it
+   replays, beyond the four-read concurrency limit? It needs the budget plumbed
+   through the history loader.
+3. Can the follow-up-message exclusion be relaxed (a steered child that is
    still one run) without admitting resumed files? Needs a producer-published
    run boundary; until then those runs stay `unavailable`.
