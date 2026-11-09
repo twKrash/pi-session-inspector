@@ -315,6 +315,50 @@ test("a record the parser drops cannot hide a violation", () => {
   }
 });
 
+test("exactly one session header is trusted, as in native Pi", () => {
+  const hit = usage(1, 0);
+  const body = [user("u0", null), assistant("a1", "u0", { usage: hit })];
+  assert.equal(projectRaw([header(), ...body])?.usage?.totalTokens, 1);
+
+  const rejected: Record<string, string[]> = {
+    "a later header naming the parent after a wrong one": [
+      header({ parentSession: "/sessions/OTHER.jsonl" }),
+      ...body,
+      header(),
+    ],
+    "a later header naming a wrong parent after the right one": [
+      header(),
+      ...body,
+      header({ parentSession: "/sessions/OTHER.jsonl" }),
+    ],
+    "an identical duplicate header": [header(), header(), ...body],
+    "an unsupported first header before a supported one": [
+      header({ version: 2 }),
+      ...body,
+      header(),
+    ],
+  };
+  for (const [label, lines] of Object.entries(rejected)) {
+    assert.equal(projectRaw(lines), undefined, label);
+  }
+});
+
+test("the parser counts every session header and keeps the legacy fields", () => {
+  const count = (lines: string[]) =>
+    parseSessionJsonl(lines.join("\n")).sessionHeaderCount;
+  assert.equal(count([]), 0);
+  assert.equal(count([user("u0", null)]), 0);
+  assert.equal(count([header()]), 1);
+  assert.equal(count([header(), user("u0", null), header()]), 2);
+  // The legacy fields still come from the last header, so existing consumers
+  // of the parsed session see no change.
+  const parsed = parseSessionJsonl(
+    [header({ id: "first" }), header({ id: "second" })].join("\n"),
+  );
+  assert.equal(parsed.id, "second");
+  assert.equal(parsed.hasSessionHeader, true);
+});
+
 test("an entry the graph cannot see cannot smuggle usage past the chain check", () => {
   const hit = usage(1, 0);
   const base = [
