@@ -19,7 +19,6 @@ import {
   type StatReadHandle,
 } from "../../src/pi/child-session-file.ts";
 import { patchOpen, patchReadlink } from "../helpers/patch-open.ts";
-import { needsProcfs } from "../helpers/procfs.ts";
 
 let root: string;
 let parent: string;
@@ -41,11 +40,11 @@ const readFull = (path: unknown, maxBytes = 1024, parentFile = parent) =>
 const read = async (path: unknown, maxBytes = 1024, parentFile = parent) =>
   (await readFull(path, maxBytes, parentFile)).text;
 
-test("a confined regular file is read as text", needsProcfs, async () => {
+test("a confined regular file is read as text", async () => {
   assert.equal(await read(child), "child text\n");
 });
 
-test("a size cap is inclusive", needsProcfs, async () => {
+test("a size cap is inclusive", async () => {
   assert.equal(await read(child, 11), "child text\n");
   assert.equal(await read(child, 10), undefined);
 });
@@ -145,38 +144,30 @@ test("a read that is refused or unstable still reports exactly what it consumed"
   }
 });
 
-test(
-  "only the bytes actually read are reported as spent",
-  needsProcfs,
-  async () => {
-    assert.deepEqual(await readFull(child), {
-      bytes: 11,
-      text: "child text\n",
-    });
-    assert.deepEqual(
-      await readFull(child, 10),
-      { bytes: 0 },
-      "too large: never read",
-    );
-    assert.deepEqual(await readFull(join(base, "missing.jsonl")), { bytes: 0 });
-    assert.deepEqual(await readFull(undefined), { bytes: 0 });
-  },
-);
+test("only the bytes actually read are reported as spent", async () => {
+  assert.deepEqual(await readFull(child), {
+    bytes: 11,
+    text: "child text\n",
+  });
+  assert.deepEqual(
+    await readFull(child, 10),
+    { bytes: 0 },
+    "too large: never read",
+  );
+  assert.deepEqual(await readFull(join(base, "missing.jsonl")), { bytes: 0 });
+  assert.deepEqual(await readFull(undefined), { bytes: 0 });
+});
 
-test(
-  "a legitimate child is read through a symlinked ancestor of the root",
-  needsProcfs,
-  async () => {
-    await symlink(root, join(root, "alias"));
-    const viaAlias = join(root, "alias", "parent.jsonl");
-    const text = await read(
-      join(root, "alias", "parent", "run-1", "run-0", "session.jsonl"),
-      1024,
-      viaAlias,
-    );
-    assert.equal(text, "child text\n");
-  },
-);
+test("a legitimate child is read through a symlinked ancestor of the root", async () => {
+  await symlink(root, join(root, "alias"));
+  const viaAlias = join(root, "alias", "parent.jsonl");
+  const text = await read(
+    join(root, "alias", "parent", "run-1", "run-0", "session.jsonl"),
+    1024,
+    viaAlias,
+  );
+  assert.equal(text, "child text\n");
+});
 
 /** Two same-sized files, one inside the parent's directory and one outside it. */
 async function raceFixture(name: string) {
@@ -236,91 +227,81 @@ test("an open that landed outside is caught even when the path is restored after
   }
 });
 
-test(
-  "a file that grows while it is read is rejected but its bytes stay spent",
-  needsProcfs,
-  async () => {
-    const path = join(base, "grows.jsonl");
-    await writeFile(path, "123456");
-    const restore = patchOpen((real) => async (target, ...args) => {
-      const handle = await real(target, ...args);
-      if (target !== path) return handle;
-      const read = handle.read.bind(handle) as (
-        ...a: unknown[]
-      ) => Promise<unknown>;
-      handle.read = (async (...a: unknown[]) => {
-        const result = await read(...a);
-        await appendFile(path, "x");
-        return result;
-      }) as typeof handle.read;
-      return handle;
-    });
-    try {
-      const result = await readFull(path);
-      assert.equal(result.text, undefined);
-      assert.equal(result.bytes, 6);
-    } finally {
-      restore();
-    }
-  },
-);
+test("a file that grows while it is read is rejected but its bytes stay spent", async () => {
+  const path = join(base, "grows.jsonl");
+  await writeFile(path, "123456");
+  const restore = patchOpen((real) => async (target, ...args) => {
+    const handle = await real(target, ...args);
+    if (target !== path) return handle;
+    const read = handle.read.bind(handle) as (
+      ...a: unknown[]
+    ) => Promise<unknown>;
+    handle.read = (async (...a: unknown[]) => {
+      const result = await read(...a);
+      await appendFile(path, "x");
+      return result;
+    }) as typeof handle.read;
+    return handle;
+  });
+  try {
+    const result = await readFull(path);
+    assert.equal(result.text, undefined);
+    assert.equal(result.bytes, 6);
+  } finally {
+    restore();
+  }
+});
 
-test(
-  "a swap after the descriptor is checked cannot redirect the read",
-  needsProcfs,
-  async () => {
-    const { path, swapIn } = await raceFixture("race-after-check");
-    let swapped = false;
-    const restore = patchOpen((real) => async (target, ...args) => {
-      const handle = await real(target, ...args);
-      if (target !== path) return handle;
-      const read = handle.read.bind(handle) as (
-        ...a: unknown[]
-      ) => Promise<unknown>;
-      handle.read = (async (...a: unknown[]) => {
-        if (!swapped) {
-          swapped = true;
-          await swapIn(); // after the kernel placed the open file inside the root
-        }
-        return read(...a);
-      }) as typeof handle.read;
-      return handle;
-    });
-    try {
-      // The read is bound to the descriptor: the swapped-in outside file is never seen.
-      assert.deepEqual(await readFull(path), { bytes: 7, text: "inside!" });
-      assert.equal(swapped, true, "the race was staged");
-    } finally {
-      restore();
-    }
-  },
-);
+test("a swap after the descriptor is checked cannot redirect the read", async () => {
+  const { path, swapIn } = await raceFixture("race-after-check");
+  let swapped = false;
+  const restore = patchOpen((real) => async (target, ...args) => {
+    const handle = await real(target, ...args);
+    if (target !== path) return handle;
+    const read = handle.read.bind(handle) as (
+      ...a: unknown[]
+    ) => Promise<unknown>;
+    handle.read = (async (...a: unknown[]) => {
+      if (!swapped) {
+        swapped = true;
+        await swapIn(); // after the kernel placed the open file inside the root
+      }
+      return read(...a);
+    }) as typeof handle.read;
+    return handle;
+  });
+  try {
+    // The read is bound to the descriptor: the swapped-in outside file is never seen.
+    assert.deepEqual(await readFull(path), { bytes: 7, text: "inside!" });
+    assert.equal(swapped, true, "the race was staged");
+  } finally {
+    restore();
+  }
+});
 
-test(
-  "a file removed after it was opened is not read",
-  needsProcfs,
-  async () => {
-    const path = join(base, "removed.jsonl");
-    await writeFile(path, "gone");
-    const restore = patchOpen((real) => async (target, ...args) => {
-      const handle = await real(target, ...args);
-      if (target === path) await unlink(path); // the kernel now reports "(deleted)"
-      return handle;
-    });
-    try {
-      assert.deepEqual(await readFull(path), { bytes: 0 });
-    } finally {
-      restore();
-    }
-  },
-);
+test("a file removed after it was opened is not read", async () => {
+  const path = join(base, "removed.jsonl");
+  await writeFile(path, "gone");
+  const restore = patchOpen((real) => async (target, ...args) => {
+    const handle = await real(target, ...args);
+    if (target === path) await unlink(path); // the kernel now reports "(deleted)"
+    return handle;
+  });
+  try {
+    assert.deepEqual(await readFull(path), { bytes: 0 });
+  } finally {
+    restore();
+  }
+});
 
-test("without a kernel path for the descriptor nothing is read", async () => {
+test("on Linux without a kernel path for the descriptor nothing is read", async () => {
   const restore = patchReadlink(async () => {
     throw Object.assign(new Error("no procfs"), { code: "ENOENT" });
   });
   try {
-    assert.deepEqual(await readFull(child), { bytes: 0 });
+    assert.deepEqual(await readChildSessionFile(child, parent, 1024, "linux"), {
+      bytes: 0,
+    });
   } finally {
     restore();
   }
@@ -329,7 +310,50 @@ test("without a kernel path for the descriptor nothing is read", async () => {
 test("a kernel path that differs from the expected one is refused", async () => {
   const restore = patchReadlink(async () => "/elsewhere/session.jsonl");
   try {
-    assert.deepEqual(await readFull(child), { bytes: 0 });
+    assert.deepEqual(await readChildSessionFile(child, parent, 1024, "linux"), {
+      bytes: 0,
+    });
+  } finally {
+    restore();
+  }
+});
+
+// Platforms without procfs verify by looking the path up again (ADR 0028).
+const readOther = async (path: string) =>
+  (await readChildSessionFile(path, parent, 1024, "darwin")).text;
+
+test("without procfs a file at its expected path is read", async () => {
+  const restore = patchReadlink(async () => {
+    throw new Error("procfs must not be consulted off Linux");
+  });
+  try {
+    assert.equal(await readOther(child), "child text\n");
+  } finally {
+    restore();
+  }
+});
+
+test("without procfs a symlinked directory component is refused", async () => {
+  const real = join(root, "elsewhere");
+  await mkdir(real, { recursive: true });
+  await writeFile(join(real, "s.jsonl"), "outside");
+  await symlink(real, join(base, "linked"));
+  assert.equal(await readOther(join(base, "linked", "s.jsonl")), undefined);
+});
+
+test("without procfs a file swapped in after the open is refused", async () => {
+  const path = join(base, "swapped.jsonl");
+  await writeFile(path, "first");
+  const restore = patchOpen((real) => async (target, ...args) => {
+    const handle = await real(target, ...args);
+    if (target === path) {
+      await rename(path, `${path}.moved`);
+      await writeFile(path, "other"); // a new inode at the expected path
+    }
+    return handle;
+  });
+  try {
+    assert.equal(await readOther(path), undefined);
   } finally {
     restore();
   }
