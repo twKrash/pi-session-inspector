@@ -631,7 +631,7 @@ not paths). It may enrich only an already-proven single async `AgentRun`, after
 exact run-ID matching and the checks below; any failure leaves the row
 unchanged. The path must be a bounded, normalized, absolute `.jsonl` beneath
 the directory named after the parent session file (the parent path without
-`.jsonl`), opened without following links and verified on Linux through the
+`.jsonl`), opened without following the final link and verified on Linux through the
 kernel's own record of where the open descriptor lives (`/proc/self/fd`: exactly
 the expected path inside that directory, no symlinked component, no `(deleted)`
 suffix; a Linux without procfs reads nothing) and elsewhere by looking the path
@@ -646,7 +646,7 @@ and more than 512 observations withholds every fill. The file must be a
 format-3 Pi session with exactly one session header, whose `parentSession`
 equals the parent session file, and it must prove
 one dedicated execution: exactly one user message (resume and follow-ups
-append more), no entry id shared with the parent (a `context: "fork"` child
+append more), no entry id shared with the parent entries in the replayed scope (a `context: "fork"` child
 copies parent history), one connected chain over every well-formed record
 (unique ids, one root, no branching, no compaction or branch summary; a record
 the parser must drop, or an entry whose id or parent id the graph cannot

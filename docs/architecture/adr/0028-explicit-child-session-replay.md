@@ -58,8 +58,8 @@ evidence, not a general coverage guarantee.
 
 ## Decision
 
-- **Use explicit Pi session files as a durable source, conditionally.** A future
-  bounded L0 reader may replay a child Pi session file only when a supported
+- **Use explicit Pi session files as a durable source, conditionally.** A bounded
+  L0 reader replays a child Pi session file only when a supported
   producer contract establishes that the published locator belongs to one
   dedicated child execution. It must not require the temporary `asyncDir` to
   exist. The parent session remains the source of the `AgentRun`; child-file
@@ -69,9 +69,10 @@ evidence, not a general coverage guarantee.
   `subagent-notify` entry from the same parent session. It accepts only the
   documented session-file label and a bounded absolute local path. URLs, share
   errors, free text, inferred paths, filename conventions, scans, and
-  `workflowRunId`/workflow-child locators are rejected. Repeated run IDs,
-  conflicting locators, and a child file claimed by more than one run in the
-  parent session are withheld. A run id repeated inside one notice is
+  `workflowRunId`/workflow-child locators are rejected. A run publishing
+  different locators, and a child file claimed by more than one run in the
+  parent session, are withheld; a run repeated in a later notice with the same
+  path is accepted. A run id repeated inside one notice is
   withheld even when its rows agree (as the status rule does), and its path
   stays claimed so no other run can take it. Selection fails closed past 512
   distinct runs or 512 distinct paths and then withholds every locator, and
@@ -79,10 +80,11 @@ evidence, not a general coverage guarantee.
   fill.
 - **Validate the referenced file before parsing.** Require a normalized `.jsonl`
   path beneath the directory the producer names after the parent session file
-  (the parent path without `.jsonl`; all 166 sampled locators qualify), never the
+  (the parent path without `.jsonl`; every sampled locator qualifies), never the
   parent file itself;
   reject a symlinked root and non-regular files; open without following the
-  final link; then verify the opened descriptor. Only the last path component
+  final link where the platform provides `O_NOFOLLOW` (not Windows, where the
+  lookup below rejects a linked file); then verify the opened descriptor. Only the last path component
   is guarded at open time, so a directory swapped in around the open can
   redirect it, and a second pathname lookup (`realpath`, `lstat`) can be
   answered differently by the same swap, even one swapped back and forth. On
@@ -108,7 +110,8 @@ evidence, not a general coverage guarantee.
   notification.
 - **Dedicated-execution rule (from the audit).** A file is attributed to a run
   only when it holds exactly one user message (resume and follow-ups append
-  more), shares no entry id with the parent session (fork inheritance), forms
+  more), shares no entry id with the parent entries in the replayed scope, that is all
+  entries after the tracking marker (fork inheritance), forms
   one connected chain with no compaction or branch summary, and is claimed by
   exactly one run in the parent session. The chain has unique entry ids, one
   root, no branching, and reaches every record, so an orphan, a cycle, or a
@@ -183,7 +186,7 @@ evidence, not a general coverage guarantee.
   session format), so the Inspector cannot tell which pi-subagents release
   wrote a locator. If a release changed resume or fork semantics while keeping
   the same file shape, attribution could be wrong; the rule is built to fail
-  closed on the shapes known to be unsafe, and the audit below must be repeated
+  closed on the shapes known to be unsafe, and the producer audit above must be repeated
   when a new release is adopted.
 - Descriptor verification is strong only on Linux (procfs). On macOS and
   Windows it is a second path lookup plus an inode comparison, which a
