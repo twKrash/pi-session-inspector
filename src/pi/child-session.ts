@@ -40,6 +40,7 @@ function isDedicatedExecution(
 ): boolean {
   return (
     parsed.sessionHeaderCount === 1 &&
+    parsed.headerIsFirstRecord &&
     parsed.formatVersion === SUPPORTED_FORMAT_VERSION &&
     !parsed.hasMalformedJson &&
     parsed.parentSession === parent.sessionFile &&

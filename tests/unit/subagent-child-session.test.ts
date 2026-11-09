@@ -337,6 +337,13 @@ test("exactly one session header is trusted, as in native Pi", () => {
       ...body,
       header(),
     ],
+    // Native Pi treats a file whose first record is not the header as empty.
+    "a header after the records": [...body, header()],
+    "a header between the records": [
+      body[0] as string,
+      header(),
+      body[1] as string,
+    ],
   };
   for (const [label, lines] of Object.entries(rejected)) {
     assert.equal(projectRaw(lines), undefined, label);
@@ -350,6 +357,12 @@ test("the parser counts every session header and keeps the legacy fields", () =>
   assert.equal(count([user("u0", null)]), 0);
   assert.equal(count([header()]), 1);
   assert.equal(count([header(), user("u0", null), header()]), 2);
+  const first = (lines: string[]) =>
+    parseSessionJsonl(lines.join("\n")).headerIsFirstRecord;
+  assert.equal(first([header()]), true);
+  assert.equal(first(["", header()]), true, "blank lines are not records");
+  assert.equal(first([user("u0", null), header()]), false);
+  assert.equal(first([]), false);
   // The legacy fields still come from the last header, so existing consumers
   // of the parsed session see no change.
   const parsed = parseSessionJsonl(
@@ -517,7 +530,7 @@ test("a sum past the bounded range is partial, not silently capped", () => {
   assert.equal(projection?.usage?.totalTokens, max);
 });
 
-test("the parsed header exposes a bounded parentSession and nothing else new", () => {
+test("the parsed header exposes a bounded parentSession and the header counts", () => {
   assert.equal(parseSessionJsonl(header()).parentSession, PARENT);
   const oversized = parseSessionJsonl(
     header({ parentSession: "x".repeat(5000) }),
