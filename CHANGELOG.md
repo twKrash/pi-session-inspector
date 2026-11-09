@@ -37,10 +37,6 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   A resumed, steered, forked, or workflow child, and a run whose notice carries
   no locator, stays unavailable instead of being guessed.
 
-  The confinement check asks the kernel where the open file lives
-  (`/proc/self/fd`), so it needs Linux procfs. Where that is missing (macOS,
-  Windows) no child file is read and those runs stay unavailable, the same as
-  without a locator; nothing else changes there.
 
   Tokens and cost sum only valid native assistant usage, and a missing value is
   partial coverage, never zero. A model is shown only when every assistant
@@ -85,12 +81,16 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   normalized `.jsonl` beneath the directory named after the parent session file.
   A symlinked root is rejected (a symlinked ancestor is fine), FIFOs and other
   non-regular files are refused, and the file is opened without following the
-  last link and then verified through the kernel's own record of where the
-  open descriptor lives: that must be exactly the expected path inside the
-  root, with no symlinked component and no "(deleted)" suffix. The path is not
-  looked up a second time, so a directory swapped in around the open, even one
-  swapped back and forth, cannot redirect the read, and a platform without
-  procfs reads nothing. The file's size is checked before and after the read.
+  last link and then verified. On Linux the check uses the kernel's own record
+  of where the open descriptor lives (`/proc/self/fd`): exactly the expected
+  path inside the root, no symlinked component, no "(deleted)" suffix. The
+  path is not looked up a second time, so a directory swapped in around the
+  open, even one swapped back and forth, cannot redirect the read; a Linux
+  without procfs reads nothing. Node has no such record on macOS or Windows,
+  so there the path is looked up again and must equal the expected path and
+  name the opened inode. A directory swapped back and forth around that lookup
+  can defeat it (accepted residual: the header and chain rules are the
+  attribution proof). The file's size is checked before and after the read.
 - A session reads at most 64 child files serially, 4 MiB and 10,000 lines each
   and 32 MiB in total. A file over the line bound is refused before it is
   parsed, so millions of tiny records cannot be turned into millions of
