@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { open, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { childSessionRoot, isConfinedChildPath } from "./child-session-path.ts";
 
@@ -18,45 +18,46 @@ export type StatReadHandle = {
   ): Promise<{ bytesRead: number }>;
 };
 
-/** `bytes` is what was actually read, even when the file is then rejected. */
+/** `bytes` is what the read call returned, even when the file is then rejected. */
 export type ChildFileRead = { bytes: number; text?: string };
+
+const NOTHING_READ: ChildFileRead = { bytes: 0 };
 
 /**
  * `path` is producer-controlled untrusted input. It must pass the path policy
- * and, once opened, still name the opened regular file of at most `maxBytes`
- * inside the parent's own directory. Every failure leaves `text` undefined;
- * this never throws and never reads the parent file.
+ * and, once opened, be a regular file of at most `maxBytes` that the kernel
+ * itself places at that path inside the parent's own directory. Every failure
+ * leaves `text` undefined; this never throws and never reads the parent file.
  */
 export async function readChildSessionFile(
   path: unknown,
   parentSessionFile: string,
   maxBytes: number,
 ): Promise<ChildFileRead> {
-  let bytes = 0;
   try {
     const root = childSessionRoot(parentSessionFile);
-    if (root === undefined || !isConfinedChildPath(path, root))
-      return { bytes };
+    if (root === undefined || !isConfinedChildPath(path, root)) {
+      return NOTHING_READ;
+    }
     const rootReal = await canonicalRoot(root);
-    if (rootReal === undefined) return { bytes };
+    if (rootReal === undefined) return NOTHING_READ;
     const handle = await open(
       path,
       constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
     );
     try {
-      const opened = await handle.stat();
-      if (!opened.isFile() || opened.size > maxBytes) return { bytes };
-      if (!(await namesOpenedFile(path, root, rootReal, opened))) {
-        return { bytes };
+      if (!(await sitsAt(handle.fd, rootReal + path.slice(root.length)))) {
+        return NOTHING_READ;
       }
-      bytes = opened.size;
-      return { bytes, text: await readExactly(handle, opened.size) };
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.size > maxBytes) return NOTHING_READ;
+      return await readExactly(handle, opened.size);
     } finally {
       await handle.close();
     }
   } catch {
     // Observer-only: an I/O error is absence, never a report failure.
-    return { bytes };
+    return NOTHING_READ;
   }
 }
 
@@ -72,36 +73,32 @@ async function canonicalRoot(root: string): Promise<string | undefined> {
 }
 
 /**
- * Opening follows every directory component, and only the last one is guarded
- * by O_NOFOLLOW, so a directory swapped in after earlier checks could make the
- * open land outside the root. Verifying after the open binds the check to the
- * descriptor: the path must now resolve inside the root and name the very
- * inode that was opened.
+ * Opening follows every directory component and only the last is guarded by
+ * O_NOFOLLOW, so a directory swapped in meanwhile can make the open land
+ * elsewhere. Resolving the path again (realpath, lstat) would be a second,
+ * separate lookup that the same swap can answer differently. The kernel's own
+ * record of where the open file lives (`/proc/self/fd`) involves no second
+ * lookup: it must equal the expected canonical path, with no symlinked
+ * component and no "(deleted)" suffix. Where procfs is missing the read fails
+ * closed, because no portable equivalent exists in Node.
  */
-async function namesOpenedFile(
-  path: string,
-  root: string,
-  rootReal: string,
-  opened: { dev: number; ino: number },
-): Promise<boolean> {
-  const canonical = await realpath(path);
-  if (canonical !== rootReal + path.slice(root.length)) return false;
-  const named = await lstat(canonical);
-  return named.isFile() && named.dev === opened.dev && named.ino === opened.ino;
+async function sitsAt(fd: number, expected: string): Promise<boolean> {
+  return (await readlink(`/proc/self/fd/${fd}`)) === expected;
 }
 
 /** Reads `size` bytes only when the open file still is a file of that size. */
 export async function readExactly(
   handle: StatReadHandle,
   size: number,
-): Promise<string | undefined> {
+): Promise<ChildFileRead> {
   const opened = await handle.stat();
-  if (!opened.isFile() || opened.size !== size) return undefined;
+  if (!opened.isFile() || opened.size !== size) return NOTHING_READ;
   const buffer = Buffer.alloc(size);
   const { bytesRead } = await handle.read(buffer, 0, size, 0);
-  // A file that grows or shrinks while being read is not one stable run.
+  // A file that grows or shrinks while being read is not one stable run, but
+  // what the read already returned stays spent.
   if (bytesRead !== size || (await handle.stat()).size !== size) {
-    return undefined;
+    return { bytes: bytesRead };
   }
-  return buffer.toString("utf8");
+  return { bytes: bytesRead, text: buffer.toString("utf8") };
 }

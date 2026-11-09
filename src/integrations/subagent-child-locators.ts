@@ -7,7 +7,12 @@ const SESSION_FILE_LABEL = "Session file";
 /** Above this many distinct runs or distinct paths the whole selection fails closed. */
 const MAX_CLAIMS = 512;
 
-type Notice = { runId: string; record: Readonly<Record<string, unknown>> };
+type Notice = {
+  runId: string;
+  record: Readonly<Record<string, unknown>>;
+  /** The same notice publishes this run id more than once. */
+  repeated?: boolean;
+};
 
 /**
  * A run keeps its locator only when it published exactly one path and no other
@@ -34,11 +39,13 @@ type Claims = {
 
 function collectClaims(notices: Iterable<Notice>): Claims | undefined {
   const claims: Claims = { pathOfRun: new Map(), ownerOfPath: new Map() };
-  for (const { runId, record } of notices) {
+  for (const { runId, record, repeated } of notices) {
     const path = publishedPath(record);
-    if (path === undefined) continue;
-    settle(claims.pathOfRun, runId, path);
-    settle(claims.ownerOfPath, path, runId);
+    // A run published twice in one notice is withheld, like the status rule,
+    // yet its path stays claimed so no other run can take it.
+    if (repeated === true) claims.pathOfRun.set(runId, null);
+    else if (path !== undefined) settle(claims.pathOfRun, runId, path);
+    if (path !== undefined) settle(claims.ownerOfPath, path, runId);
     // Distinct paths are bounded too: one run can claim many.
     if (
       claims.pathOfRun.size > MAX_CLAIMS ||

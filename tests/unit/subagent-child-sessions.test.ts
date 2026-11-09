@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  stat,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -8,10 +16,12 @@ import { selectChildSessionLocators } from "../../src/integrations/subagent-chil
 import { parseSessionJsonl } from "../../src/pi/adapter.ts";
 import {
   CHILD_SESSION_LIMITS,
+  exceedsRecords,
   readChildSessionProjections,
 } from "../../src/pi/child-sessions.ts";
 import { assistant, header, usage, user } from "../helpers/child-session.ts";
 import { patchOpen } from "../helpers/patch-open.ts";
+import { needsProcfs } from "../helpers/procfs.ts";
 
 const notice = (runId: string, record: Record<string, unknown> = {}) => ({
   runId,
@@ -180,6 +190,39 @@ test("locators come only from plain async notices for launch-proven runs", () =>
   );
 });
 
+test("a run published twice in one notice is withheld even when both rows agree", () => {
+  const launches = [...launchLines("run-1"), ...launchLines("run-2")];
+  const twice = noticeLine([run("run-1"), run("run-1")]);
+  assert.deepEqual(locatorsOf([...launches, twice]), [], "identical repeat");
+  // Its path stays claimed, so another run cannot take it.
+  const taker = noticeLine([run("run-2", { sessionValue: "/p/run-1.jsonl" })]);
+  assert.deepEqual(
+    locatorsOf([...launches, twice, taker]),
+    [],
+    "path kept claimed",
+  );
+  assert.deepEqual(
+    locatorsOf([...launches, taker, twice]),
+    [],
+    "same, reversed",
+  );
+  // A repeat in a LATER notice does not poison a run whose rows were single.
+  const once = noticeLine([run("run-1")]);
+  assert.deepEqual(locatorsOf([...launches, once, once]), [
+    { runId: "run-1", path: "/p/run-1.jsonl" },
+  ]);
+});
+
+test("the repeat flag withholds a run even when no row carries a path", () => {
+  assert.deepEqual(
+    selectChildSessionLocators([
+      { ...notice("a", { sessionLabel: "Session" }), repeated: true },
+      notice("a"),
+    ]),
+    [],
+  );
+});
+
 test("a conflicting claim hidden inside one notice still withholds the run", () => {
   const launches = [...launchLines("run-1"), ...launchLines("run-2")];
   const first = noticeLine([run("run-1", { sessionValue: "/p/a.jsonl" })]);
@@ -236,17 +279,21 @@ const writeChild = async (name: string, users = 1) => {
 };
 const parent = () => ({ sessionFile: parentFile, entryIds: new Set<string>() });
 
-test("a dedicated child is projected and a resumed one is not", async () => {
-  const fresh = await writeChild("fresh");
-  const resumed = await writeChild("resumed", 2);
-  const projections = await readChildSessionProjections(
-    [fresh, resumed],
-    parent(),
-  );
-  assert.deepEqual([...projections.keys()], ["fresh"]);
-  assert.equal(projections.get("fresh")?.usage?.totalTokens, 7);
-  assert.equal(projections.get("fresh")?.toolCalls, 1);
-});
+test(
+  "a dedicated child is projected and a resumed one is not",
+  needsProcfs,
+  async () => {
+    const fresh = await writeChild("fresh");
+    const resumed = await writeChild("resumed", 2);
+    const projections = await readChildSessionProjections(
+      [fresh, resumed],
+      parent(),
+    );
+    assert.deepEqual([...projections.keys()], ["fresh"]);
+    assert.equal(projections.get("fresh")?.usage?.totalTokens, 7);
+    assert.equal(projections.get("fresh")?.toolCalls, 1);
+  },
+);
 
 test("a file that is not at the published path stays unavailable", async () => {
   const projections = await readChildSessionProjections(
@@ -261,67 +308,207 @@ test("a file that is not at the published path stays unavailable", async () => {
   assert.equal(projections.size, 0);
 });
 
-test("the file and byte budgets stop reading in locator order", async () => {
-  const a = await writeChild("budget-a");
-  const b = await writeChild("budget-b");
-  const c = await writeChild("budget-c");
-  const limits = { ...CHILD_SESSION_LIMITS, maxFiles: 2 };
-  assert.deepEqual(
-    [
-      ...(
-        await readChildSessionProjections([a, b, c], parent(), limits)
-      ).keys(),
-    ],
-    ["budget-a", "budget-b"],
-  );
-  const size = (await (await import("node:fs/promises")).stat(a.path)).size;
-  const tight = { ...CHILD_SESSION_LIMITS, maxTotalBytes: size + size - 1 };
-  assert.deepEqual(
-    [...(await readChildSessionProjections([a, b, c], parent(), tight)).keys()],
-    ["budget-a"],
-  );
-  const small = { ...CHILD_SESSION_LIMITS, maxFileBytes: size - 1 };
+test(
+  "the file and byte budgets stop reading in locator order",
+  needsProcfs,
+  async () => {
+    const a = await writeChild("budget-a");
+    const b = await writeChild("budget-b");
+    const c = await writeChild("budget-c");
+    const limits = { ...CHILD_SESSION_LIMITS, maxFiles: 2 };
+    assert.deepEqual(
+      [
+        ...(
+          await readChildSessionProjections([a, b, c], parent(), limits)
+        ).keys(),
+      ],
+      ["budget-a", "budget-b"],
+    );
+    const size = (await stat(a.path)).size;
+    const tight = { ...CHILD_SESSION_LIMITS, maxTotalBytes: size + size - 1 };
+    assert.deepEqual(
+      [
+        ...(
+          await readChildSessionProjections([a, b, c], parent(), tight)
+        ).keys(),
+      ],
+      ["budget-a"],
+    );
+    const small = { ...CHILD_SESSION_LIMITS, maxFileBytes: size - 1 };
+    assert.equal(
+      (await readChildSessionProjections([a], parent(), small)).size,
+      0,
+    );
+  },
+);
+
+test(
+  "bytes read from a file that is then rejected still spend the total budget",
+  needsProcfs,
+  async () => {
+    const files = await Promise.all(
+      ["spend-a", "spend-b", "spend-c"].map(async (name) => {
+        const path = join(root, "parent", name, "run-0", "session.jsonl");
+        await mkdir(join(root, "parent", name, "run-0"), { recursive: true });
+        await writeFile(path, "{}\n".repeat(40));
+        return { runId: name, path };
+      }),
+    );
+    let reads = 0;
+    const restore = patchOpen((real) => async (target, ...args) => {
+      const handle = await real(target, ...args);
+      if (!files.some((file) => file.path === target)) return handle;
+      const read = handle.read.bind(handle) as (
+        ...a: unknown[]
+      ) => Promise<unknown>;
+      handle.read = (async (...a: unknown[]) => {
+        const result = await read(...a);
+        reads++;
+        await appendFile(target, "x"); // the file grows, so its read is rejected
+        return result;
+      }) as typeof handle.read;
+      return handle;
+    });
+    try {
+      const limits = {
+        ...CHILD_SESSION_LIMITS,
+        maxFiles: 3,
+        maxFileBytes: 120,
+        maxTotalBytes: 120,
+      };
+      const projections = await readChildSessionProjections(
+        files,
+        parent(),
+        limits,
+      );
+      assert.equal(projections.size, 0);
+      // The first read spends all 120 bytes; the others never touch the disk.
+      assert.equal(reads, 1);
+    } finally {
+      restore();
+    }
+  },
+);
+
+test(
+  "a file that shrinks before its read costs nothing, so a later child still fits",
+  needsProcfs,
+  async () => {
+    const first = await writeChild("shrink-a");
+    const second = await writeChild("shrink-b");
+    const size = (await stat(first.path)).size;
+    let stats = 0;
+    const restore = patchOpen((real) => async (target, ...args) => {
+      const handle = await real(target, ...args);
+      if (target !== first.path) return handle;
+      const realStat = handle.stat.bind(handle) as (
+        ...a: unknown[]
+      ) => Promise<unknown>;
+      handle.stat = (async (...a: unknown[]) => {
+        // The reader stats once, the stability check stats again before reading.
+        if (++stats === 2) await truncate(first.path, 0);
+        return realStat(...a);
+      }) as typeof handle.stat;
+      return handle;
+    });
+    try {
+      // The budget fits exactly one child: charging the first one's advertised
+      // size would leave nothing for the second.
+      const limits = { ...CHILD_SESSION_LIMITS, maxTotalBytes: size };
+      const projections = await readChildSessionProjections(
+        [first, second],
+        parent(),
+        limits,
+      );
+      assert.deepEqual([...projections.keys()], ["shrink-b"]);
+      assert.equal(stats >= 2, true, "the race was staged");
+    } finally {
+      restore();
+    }
+  },
+);
+
+test(
+  "a file past the record bound is refused, counting lines exactly",
+  needsProcfs,
+  async () => {
+    const child = await writeChild("records"); // three lines, no trailing newline
+    const readWith = async (maxRecords: number) =>
+      (
+        await readChildSessionProjections([child], parent(), {
+          ...CHILD_SESSION_LIMITS,
+          maxRecords,
+        })
+      ).size;
+    assert.equal(await readWith(3), 1, "at the bound");
+    assert.equal(await readWith(2), 0, "one past the bound");
+
+    await appendFile(child.path, "\n");
+    assert.equal(
+      await readWith(3),
+      1,
+      "a trailing newline is not another record",
+    );
+    assert.equal(await readWith(2), 0);
+
+    // Blank lines count. The parser would skip them and accept this file, so only
+    // the bound can be what refuses it.
+    await appendFile(child.path, "\n".repeat(7));
+    assert.equal(await readWith(10), 1, "ten lines at a bound of ten");
+    assert.equal(await readWith(9), 0, "ten lines past a bound of nine");
+  },
+);
+
+test("lines are counted without splitting, and a bound of zero admits only an empty text", () => {
+  assert.equal(exceedsRecords("", 0), false, "no text, no records");
+  assert.equal(exceedsRecords("x", 0), true, "one unterminated line");
+  assert.equal(exceedsRecords("\n", 0), true, "one empty line");
+  assert.equal(exceedsRecords("a\nb", 2), false);
+  assert.equal(exceedsRecords("a\nb", 1), true);
   assert.equal(
-    (await readChildSessionProjections([a], parent(), small)).size,
-    0,
+    exceedsRecords("a\nb\n", 2),
+    false,
+    "a final newline ends a line",
   );
+  assert.equal(exceedsRecords("a\nb\n", 1), true);
+  assert.equal(exceedsRecords("\n".repeat(1_000_000), 10), true);
 });
 
-test("bytes read from a file that is then rejected still spend the total budget", async () => {
-  const files = await Promise.all(
-    ["spend-a", "spend-b", "spend-c"].map(async (name) => {
-      const path = join(root, "parent", name, "run-0", "session.jsonl");
-      await mkdir(join(root, "parent", name, "run-0"), { recursive: true });
-      await writeFile(path, "{}\n".repeat(40));
-      return { runId: name, path };
-    }),
-  );
-  let reads = 0;
-  const restore = patchOpen((real) => async (target, ...args) => {
-    const handle = await real(target, ...args);
-    if (!files.some((file) => file.path === target)) return handle;
-    const read = handle.read.bind(handle) as (
-      ...a: unknown[]
-    ) => Promise<unknown>;
-    handle.read = (async (...a: unknown[]) => {
-      const result = await read(...a);
-      reads++;
-      await appendFile(target, "x"); // the file grows, so its read is rejected
-      return result;
-    }) as typeof handle.read;
-    return handle;
-  });
-  try {
-    const limits = { maxFiles: 3, maxFileBytes: 120, maxTotalBytes: 120 };
-    const projections = await readChildSessionProjections(
-      files,
-      parent(),
-      limits,
+test(
+  "concurrent sessions share a small limit on simultaneous child reads",
+  needsProcfs,
+  async () => {
+    const sessions = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => writeChild(`gated-${i}`)),
     );
-    assert.equal(projections.size, 0);
-    // The first read spends all 120 bytes; the others never touch the disk.
-    assert.equal(reads, 1);
-  } finally {
-    restore();
-  }
-});
+    const paths = new Set(sessions.map((child) => child.path));
+    let open = 0;
+    let peak = 0;
+    const restore = patchOpen((real) => async (target, ...args) => {
+      const handle = await real(target, ...args);
+      if (!paths.has(String(target))) return handle;
+      peak = Math.max(peak, ++open);
+      await new Promise<void>((resolve) => setTimeout(resolve, 5)); // hold the slot
+      const close = handle.close.bind(handle);
+      handle.close = (async () => {
+        open--;
+        return close();
+      }) as typeof handle.close;
+      return handle;
+    });
+    try {
+      // Twelve History sessions replayed at once, each with its own child.
+      const results = await Promise.all(
+        sessions.map((child) => readChildSessionProjections([child], parent())),
+      );
+      assert.equal(
+        results.every((projections) => projections.size === 1),
+        true,
+        "the gate delays reads, it never drops them",
+      );
+      assert.equal(peak, 4);
+    } finally {
+      restore();
+    }
+  },
+);
