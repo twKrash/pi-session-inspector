@@ -1435,29 +1435,27 @@ function readAsyncNotificationRuns(
   entry: SessionEntry,
   asyncLaunchRunIds: ReadonlySet<string>,
 ): { runId: string; record: Readonly<Record<string, unknown>> }[] {
-  const rows = new Map<string, Readonly<Record<string, unknown>>>();
-  const repeated = new Set<string>();
-  for (const { runId, record } of readAsyncNotificationRows(
-    entry,
-    asyncLaunchRunIds,
-  )) {
-    if (rows.has(runId)) repeated.add(runId);
-    rows.set(runId, record);
-  }
-  return [...rows]
-    .filter(([runId]) => !repeated.has(runId))
-    .map(([runId, record]) => ({ runId, record }));
+  return [...readAsyncNotificationRows(entry, asyncLaunchRunIds)]
+    .filter((row) => !row.repeated)
+    .map(({ runId, record }) => ({ runId, record }));
 }
+
+type NotificationRow = {
+  runId: string;
+  record: Readonly<Record<string, unknown>>;
+  /** The notice publishes this run id more than once. */
+  repeated: boolean;
+};
 
 /**
  * Every plain-async row a notice publishes for a launch-proven run, repeats
- * included, so a consumer that must treat a repeated claim as ambiguity can
- * still see it.
+ * included and flagged, so a consumer that must treat a repeated claim as
+ * ambiguity can still see it.
  */
 function* readAsyncNotificationRows(
   entry: SessionEntry,
   asyncLaunchRunIds: ReadonlySet<string>,
-): Generator<{ runId: string; record: Readonly<Record<string, unknown>> }> {
+): Generator<NotificationRow> {
   if (
     entry.type !== "custom_message" ||
     entry.customType !== "subagent-notify"
@@ -1472,6 +1470,8 @@ function* readAsyncNotificationRows(
   ) {
     return;
   }
+  const rows: { runId: string; record: Readonly<Record<string, unknown>> }[] =
+    [];
   for (const value of details.runs) {
     const run = snapshotRecord(value);
     const runId = readRawRunId(run?.runId);
@@ -1481,8 +1481,13 @@ function* readAsyncNotificationRows(
       !Object.hasOwn(run, "workflowRunId") &&
       asyncLaunchRunIds.has(runId)
     ) {
-      yield { runId, record: run };
+      rows.push({ runId, record: run });
     }
+  }
+  const counts = new Map<string, number>();
+  for (const { runId } of rows) counts.set(runId, (counts.get(runId) ?? 0) + 1);
+  for (const row of rows) {
+    yield { ...row, repeated: (counts.get(row.runId) ?? 0) > 1 };
   }
 }
 

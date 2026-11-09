@@ -39,7 +39,7 @@ function isDedicatedExecution(
   parent: ChildSessionParent,
 ): boolean {
   return (
-    parsed.hasSessionHeader &&
+    parsed.sessionHeaderCount === 1 &&
     parsed.formatVersion === SUPPORTED_FORMAT_VERSION &&
     !parsed.hasMalformedJson &&
     parsed.parentSession === parent.sessionFile &&

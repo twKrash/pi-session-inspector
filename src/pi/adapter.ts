@@ -8,6 +8,8 @@ import {
 export type ParsedSession = {
   id: string;
   hasSessionHeader: boolean;
+  /** Every `session` record seen; native Pi trusts the first, so more than one is suspect. */
+  sessionHeaderCount: number;
   formatVersion?: number;
   createdAt?: string;
   /** Bounded parent-session path a child Pi session header declares, if any. */
@@ -25,6 +27,7 @@ const encoder = new TextEncoder();
 export function parseSessionJsonl(source: string): ParsedSession {
   let id = "unknown-session";
   let hasSessionHeader = false;
+  let sessionHeaderCount = 0;
   let formatVersion: number | undefined;
   let createdAt: string | undefined;
   let parentSession: string | undefined;
@@ -50,6 +53,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
     if (isSessionHeader(value)) {
       id = value.id;
       hasSessionHeader = true;
+      sessionHeaderCount++;
       formatVersion = formatVersionOf(value.version);
       createdAt = boundedTimestamp(value.timestamp);
       parentSession = boundedParentSession(value.parentSession);
@@ -66,6 +70,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
   return {
     id,
     hasSessionHeader,
+    sessionHeaderCount,
     formatVersion,
     createdAt,
     ...(parentSession === undefined ? {} : { parentSession }),
