@@ -157,11 +157,14 @@ function persistedUsage(
 }
 
 function fillRun(run: AgentRun, fill: Fill): AgentRun {
-  const usageFilled = hasAny(fill.filled, USAGE_FIELDS);
+  // Every observation of an enriched run carries the merged usage, whether or
+  // not the child supplied a usage field: reconciliation keeps one whole usage
+  // object per run, so any observation left with less would hide the rest.
+  const usage = sameUsage(run.usage, fill.merged) ? undefined : fill.merged;
   if (
     fill.model === undefined &&
     fill.toolCalls === undefined &&
-    !usageFilled
+    usage === undefined
   ) {
     return run;
   }
@@ -169,9 +172,16 @@ function fillRun(run: AgentRun, fill: Fill): AgentRun {
     ...run,
     ...(fill.model === undefined ? {} : { model: fill.model }),
     ...(fill.toolCalls === undefined ? {} : { toolCalls: fill.toolCalls }),
-    ...(usageFilled ? { usage: { ...fill.merged } } : {}),
+    ...(usage === undefined ? {} : { usage: { ...usage } }),
     effortCoverage: raisedCoverage(run.effortCoverage, fill),
   };
+}
+
+function sameUsage(
+  current: AgentRunUsage | undefined,
+  merged: AgentRunUsage,
+): boolean {
+  return USAGE_FIELDS.every((field) => current?.[field] === merged[field]);
 }
 
 function raisedCoverage(

@@ -210,6 +210,64 @@ test("observation order, not iteration order, decides which persisted value is l
   assert.equal(later?.run.usage?.cost, 2);
 });
 
+test("the merged usage reaches every observation even when the child adds no usage field", () => {
+  const onlyModel = projection({
+    usage: { totalTokens: 100, cost: 0.75 }, // both fields are already persisted
+    toolCalls: 1,
+  });
+  const forward = apply(
+    [
+      observation(
+        LAUNCH,
+        { id: "a", toolCalls: 1, usage: { totalTokens: 7 } },
+        0,
+      ),
+      observation(NOTICE, { id: "b", toolCalls: 1, usage: { cost: 2 } }, 1),
+    ],
+    [[LAUNCH, onlyModel]],
+    GROUP,
+  );
+  const reverse = apply(
+    [
+      observation(LAUNCH, { id: "a", toolCalls: 1, usage: { cost: 2 } }, 0),
+      observation(
+        NOTICE,
+        { id: "b", toolCalls: 1, usage: { totalTokens: 7 } },
+        1,
+      ),
+    ],
+    [[LAUNCH, onlyModel]],
+    GROUP,
+  );
+  for (const row of [...forward, ...reverse]) {
+    assert.deepEqual(row.run.usage, { totalTokens: 7, cost: 2 });
+    assert.equal(row.run.model, "child-model", "the model is what enriched it");
+  }
+  // Nothing was filled from the child's usage, so its coverage is not raised.
+  assert.equal(forward[0]?.run.effortCoverage.usage, "unavailable");
+  assert.equal(forward[0]?.run.effortCoverage.cost, "unavailable");
+});
+
+test("a run the child adds nothing to still merges what separate observations persisted", () => {
+  const nothingNew = projection({ usage: { totalTokens: 100, cost: 0.75 } });
+  const rows = apply(
+    [
+      observation(
+        LAUNCH,
+        { id: "a", model: "m", toolCalls: 1, usage: { totalTokens: 7 } },
+        0,
+      ),
+      observation(NOTICE, { id: "b", usage: { cost: 2 } }, 1),
+    ],
+    [[LAUNCH, nothingNew]],
+    GROUP,
+  );
+  for (const row of rows) {
+    assert.deepEqual(row.run.usage, { totalTokens: 7, cost: 2 });
+  }
+  assert.equal(rows[0]?.run.model, "m", "a persisted model is untouched");
+});
+
 test("a run with nothing to fill leaves every observation untouched", () => {
   const rows = [
     observation(

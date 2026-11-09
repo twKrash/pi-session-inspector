@@ -18,7 +18,8 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   A child file is attributed to a run only when it proves one dedicated
   execution:
 
-  - its header names this session file as its parent;
+  - its one session header names this session file as its parent; a second
+    header rejects the file, because native Pi trusts only the first;
   - it holds exactly one user message, because a resume or follow-up appends
     more;
   - it shares no entry id with this session, because a `context: "fork"` child
@@ -30,11 +31,16 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
     so does an entry whose id or parent id the graph cannot represent (empty,
     or longer than 128 bytes), because its usage would count while no chain
     rule saw it;
-  - no other run in the session claimed the same path, and the run did not
-    publish a second one.
+  - no other run in the session claimed the same path, and the run neither
+    published a second path nor appeared twice in one notice.
 
   A resumed, steered, forked, or workflow child, and a run whose notice carries
   no locator, stays unavailable instead of being guessed.
+
+  The confinement check asks the kernel where the open file lives
+  (`/proc/self/fd`), so it needs Linux procfs. Where that is missing (macOS,
+  Windows) no child file is read and those runs stay unavailable, the same as
+  without a locator; nothing else changes there.
 
   Tokens and cost sum only valid native assistant usage, and a missing value is
   partial coverage, never zero. A model is shown only when every assistant
@@ -60,11 +66,12 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   lifecycle artifact fills only what is still absent and keeps the component
   token and cost fields the child file supplied. History still never reads the
   lifecycle artifact.
-- An async run enriched from a child file reconciles its usage field by field:
+- An async run with an accepted child file reconciles its usage field by field:
   the latest persisted value of each field wins and the child file fills the
-  rest. Every observation of the run carries the same merged usage, so a later
-  completion that publishes less no longer erases an earlier field or the
-  child's fill. Runs without a child file reconcile exactly as before.
+  rest. Every observation of the run carries the same merged usage, even when
+  the child supplied only a model or a tool count, so a later completion that
+  publishes less no longer erases an earlier field or the child's fill. Runs
+  without an accepted child file reconcile exactly as before.
 - Embedders: `parseSessionJsonl` exposes a bounded `parentSession` header field;
   the History evidence request carries the manifest-resolved parent session
   file; the canonical integration context accepts `sessionFile` and an injected
@@ -78,15 +85,25 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   normalized `.jsonl` beneath the directory named after the parent session file.
   A symlinked root is rejected (a symlinked ancestor is fine), FIFOs and other
   non-regular files are refused, and the file is opened without following the
-  last link and then verified against the opened descriptor: the path must
-  resolve inside the root and name the very inode that was opened, which closes
-  the window where a directory swapped in after validation could redirect the
-  open. The file's size is checked before and after the read.
-- A session reads at most 64 child files serially, 4 MiB each and 32 MiB in
-  total, and every byte actually read is spent, including a file rejected after
-  its read. A conflicting claim (one path claimed by several runs, several paths
-  for one run, or a repeated row inside one notice) withholds those runs, and
-  more than 512 distinct runs or paths withholds every locator.
+  last link and then verified through the kernel's own record of where the
+  open descriptor lives: that must be exactly the expected path inside the
+  root, with no symlinked component and no "(deleted)" suffix. The path is not
+  looked up a second time, so a directory swapped in around the open, even one
+  swapped back and forth, cannot redirect the read, and a platform without
+  procfs reads nothing. The file's size is checked before and after the read.
+- A session reads at most 64 child files serially, 4 MiB and 10,000 lines each
+  and 32 MiB in total. A file over the line bound is refused before it is
+  parsed, so millions of tiny records cannot be turned into millions of
+  objects. Every byte the read returned is spent, including those of a file
+  rejected after its read; a file that shrinks before its read costs nothing.
+  The History view replays sessions concurrently, so at most four child files
+  are read at once across all of them; each session keeps its own budget, and
+  there is no request-wide byte total.
+- A conflicting claim (one path claimed by several runs, several paths for one
+  run, or a run repeated inside one notice, even with identical rows) withholds
+  those runs, and a repeated run's path stays claimed. More than 512 distinct
+  runs or paths withholds every locator, and more than 512 observations in one
+  session withholds every child fill.
 - Every read failure is swallowed and leaves the run unchanged. Paths, raw run
   ids, and file contents never reach reports, JSON, diagnostics, or the WAL.
 - Accepted residual: a hard link to a file under the directory is

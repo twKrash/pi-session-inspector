@@ -54,3 +54,9 @@ export const user = (id: string, parentId: string | null) =>
     timestamp: "2026-11-02T00:00:00.500Z",
     message: { role: "user", content: [] },
   });
+
+/** Native usage with only a total and a cost, no component breakdown. */
+export const bareUsage = (totalTokens: number, cost: number) => ({
+  totalTokens,
+  cost: { total: cost },
+});
