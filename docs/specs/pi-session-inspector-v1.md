@@ -631,10 +631,12 @@ not paths). It may enrich only an already-proven single async `AgentRun`, after
 exact run-ID matching and the checks below; any failure leaves the row
 unchanged. The path must be a bounded, normalized, absolute `.jsonl` beneath
 the directory named after the parent session file (the parent path without
-`.jsonl`), opened without following links and verified through the kernel's own
-record of where the open descriptor lives (`/proc/self/fd`: exactly the expected
-path inside that directory, no symlinked component, no `(deleted)` suffix; where
-procfs is missing nothing is read), read serially under per-session budgets of
+`.jsonl`), opened without following links and verified on Linux through the
+kernel's own record of where the open descriptor lives (`/proc/self/fd`: exactly
+the expected path inside that directory, no symlinked component, no `(deleted)`
+suffix; a Linux without procfs reads nothing) and elsewhere by looking the path
+up again (the expected canonical path naming the opened inode; a swap back and
+forth can defeat this, an accepted residual), read serially under per-session budgets of
 64 files, 4 MiB and 10,000 lines per file (the line count is checked before
 parsing), and 32 MiB in total, spending the bytes the read returned even for a
 rejected file; at most four child files are read at once across concurrently

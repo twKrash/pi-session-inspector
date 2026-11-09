@@ -82,14 +82,19 @@ evidence, not a general coverage guarantee.
   (the parent path without `.jsonl`; all 166 sampled locators qualify), never the
   parent file itself;
   reject a symlinked root and non-regular files; open without following the
-  final link; then verify against the opened descriptor through the kernel's
-  own record of where it lives (`/proc/self/fd`). Only the last path component
+  final link; then verify the opened descriptor. Only the last path component
   is guarded at open time, so a directory swapped in around the open can
   redirect it, and a second pathname lookup (`realpath`, `lstat`) can be
-  answered differently by the same swap, even one swapped back and forth. The
-  recorded path must equal the expected canonical path inside the root's real
-  directory, so it has no symlinked component and no `(deleted)` suffix. Where
-  procfs is missing the read fails closed. Enforce a bounded file size, a line
+  answered differently by the same swap, even one swapped back and forth. On
+  Linux the check therefore uses the kernel's own record of where the
+  descriptor lives (`/proc/self/fd`), which must equal the expected canonical
+  path inside the root's real directory, so it has no symlinked component and
+  no `(deleted)` suffix; a Linux without procfs fails closed. Node exposes no
+  such record elsewhere (macOS, Windows), so there the path is looked up again
+  and must equal the expected canonical path and name the opened inode. That
+  fallback leaves a back-and-forth swap able to redirect the open, an accepted
+  residual: the header, one-user-message, chain, and claim rules are the
+  attribution proof and the path check is defense in depth. Enforce a bounded file size, a line
   bound counted before the text is parsed, and aggregate history-read budgets,
   where the bytes the read call returned are spent even if the file is then
   rejected and a file refused before its read costs nothing; and swallow every
@@ -180,10 +185,12 @@ evidence, not a general coverage guarantee.
   the same file shape, attribution could be wrong; the rule is built to fail
   closed on the shapes known to be unsafe, and the audit below must be repeated
   when a new release is adopted.
-- The kernel-path check needs Linux procfs. On macOS and Windows no child file
-  is read and the affected runs stay `unavailable`, exactly as without a
-  locator. A portable way to bind an open descriptor to its path is an open
-  question, and the reader must keep failing closed until one exists.
+- Descriptor verification is strong only on Linux (procfs). On macOS and
+  Windows it is a second path lookup plus an inode comparison, which a
+  directory swapped back and forth around the open can defeat; a swapped-in
+  file still has to carry a header naming this parent and pass every chain
+  rule. This was chosen over failing closed there, which would have left those
+  platforms with no child-file evidence at all.
 - History replays up to 206 sessions at once and each keeps its own budgets.
   At most four child files are read at the same time across all of them, which
   bounds simultaneous buffers; there is no request-wide byte total, so the
@@ -215,8 +222,9 @@ evidence, not a general coverage guarantee.
 
 ## Open questions
 
-1. How can an open descriptor be bound to its path on platforms without
-   procfs? Until a portable mechanism is chosen, those platforms read nothing.
+1. Can an open descriptor be bound to its path on platforms without procfs
+   (`F_GETPATH` on macOS, `GetFinalPathNameByHandle` on Windows)? Node exposes
+   neither, so the fallback lookup stays until it does.
 2. Should History share a request-wide byte budget across the sessions it
    replays, beyond the four-read concurrency limit? It needs the budget plumbed
    through the history loader.
