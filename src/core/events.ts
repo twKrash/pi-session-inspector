@@ -183,6 +183,9 @@ export type ChildSessionProjection = {
   toolCalls?: number;
 };
 
+/** One run id and the producer-published path of its child session file. */
+export type ChildSessionLocator = { runId: string; path: string };
+
 export type ChildSessionParent = {
   /** Exact parent Pi session-file path the child header must name. */
   sessionFile: string;

@@ -7,6 +7,7 @@ import type {
   AgentRunSourceObservation,
   AgentRunUsage,
   AgentToolActivity,
+  ChildSessionLocator,
   SessionEntry,
   SubagentSourceEvidence,
   Usage,
@@ -17,6 +18,7 @@ import { canonicalOpaqueDigest } from "../core/opaque-id.ts";
 import { REDACTED, secretLikeValue } from "../core/redact.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
+import { selectChildSessionLocators } from "./subagent-child-locators.ts";
 import {
   type ForegroundTerminalFields,
   readForegroundTerminalFields,
@@ -1348,11 +1350,35 @@ function readAsyncNotificationRuns(
   entry: SessionEntry,
   asyncLaunchRunIds: ReadonlySet<string>,
 ): { runId: string; record: Readonly<Record<string, unknown>> }[] {
+  return [...readAsyncNotificationRows(entry, asyncLaunchRunIds)]
+    .filter((row) => !row.claimOnly && !row.repeated)
+    .map(({ runId, record }) => ({ runId, record }));
+}
+
+type NotificationRow = {
+  runId: string;
+  record: Readonly<Record<string, unknown>>;
+  /** The notice publishes this run id more than once. */
+  repeated: boolean;
+  /** A workflow row or a run this session does not prove: it may only claim a path. */
+  claimOnly: boolean;
+};
+
+/**
+ * Every row a notice publishes, repeats included and flagged, so a consumer
+ * that must treat a repeated claim as ambiguity can still see it. A plain
+ * async row of a launch-proven run is a full row; any other row with a usable
+ * run id is `claimOnly`, which status consumers skip.
+ */
+function* readAsyncNotificationRows(
+  entry: SessionEntry,
+  asyncLaunchRunIds: ReadonlySet<string>,
+): Generator<NotificationRow> {
   if (
     entry.type !== "custom_message" ||
     entry.customType !== "subagent-notify"
   ) {
-    return [];
+    return;
   }
   const details = snapshotRecord(entry.details);
   if (
@@ -1360,27 +1386,55 @@ function readAsyncNotificationRuns(
     !Array.isArray(details.runs) ||
     details.runs.length > MAX_RUNS
   ) {
-    return [];
+    return;
   }
-  const rows = new Map<string, Readonly<Record<string, unknown>>>();
-  const repeated = new Set<string>();
+  const rows: {
+    runId: string;
+    record: Readonly<Record<string, unknown>>;
+    claimOnly: boolean;
+  }[] = [];
   for (const value of details.runs) {
     const run = snapshotRecord(value);
     const runId = readRawRunId(run?.runId);
-    if (
-      run === undefined ||
-      runId === undefined ||
-      Object.hasOwn(run, "workflowRunId") ||
-      !asyncLaunchRunIds.has(runId)
-    ) {
-      continue;
-    }
-    if (rows.has(runId)) repeated.add(runId);
-    rows.set(runId, run);
+    if (run === undefined || runId === undefined) continue;
+    const claimOnly =
+      Object.hasOwn(run, "workflowRunId") || !asyncLaunchRunIds.has(runId);
+    rows.push({ runId, record: run, claimOnly });
   }
-  return [...rows]
-    .filter(([runId]) => !repeated.has(runId))
-    .map(([runId, record]) => ({ runId, record }));
+  const counts = new Map<string, number>();
+  for (const { runId, claimOnly } of rows) {
+    if (!claimOnly) counts.set(runId, (counts.get(runId) ?? 0) + 1);
+  }
+  for (const row of rows) {
+    yield { ...row, repeated: (counts.get(row.runId) ?? 0) > 1 };
+  }
+}
+
+function* notifiedRows(
+  entries: readonly SessionEntry[],
+  asyncLaunchRunIds: ReadonlySet<string>,
+) {
+  for (const entry of entries) {
+    yield* readAsyncNotificationRows(entry, asyncLaunchRunIds);
+  }
+}
+
+/**
+ * ADR 0028: child-session locators published by plain async notices for runs
+ * whose launch this session proves. Selection withholds ambiguous claims.
+ */
+export function readChildSessionLocators(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+): ChildSessionLocator[] {
+  try {
+    const launches = collectAsyncLifecycleReferences(entries, sessionId);
+    if (launches === undefined) return [];
+    const runIds = new Set([...launches.values()].map(({ runId }) => runId));
+    return selectChildSessionLocators(notifiedRows(entries, runIds));
+  } catch {
+    return [];
+  }
 }
 
 function* collectAsyncNotificationRows(
