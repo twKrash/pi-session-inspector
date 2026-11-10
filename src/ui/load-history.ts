@@ -76,7 +76,7 @@ export type SessionEvidenceRequest = {
   directory: string;
   /** Parsed Pi entries in L1 tree scope, after the tracking marker. */
   entries: readonly SessionEntry[];
-  /** Resolved parent Pi session file; absent when it cannot be resolved. */
+  /** Parent Pi session file as Pi names it; absent when the source cannot be verified. */
   sessionFile?: string;
 };
 
@@ -471,8 +471,8 @@ async function scanDiscoveredSession(
   // validated moments earlier, never a cross-load cache, and the next load
   // re-reads the source. Without it the full check below runs unchanged.
   let parsed: ParsedSession;
-  // The resolved parent file, kept so the evidence provider can follow durable
-  // child session files; a prevalidated parse resolves it lazily at replay.
+  // The verified parent file, kept so the evidence provider can follow durable
+  // child session files; a prevalidated parse verifies it lazily at replay.
   let resolvedSource: string | undefined;
   try {
     // Replay accepts a reused parse only when it passed the same identity and

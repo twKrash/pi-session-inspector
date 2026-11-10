@@ -71,7 +71,7 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   publishes less no longer erases an earlier field or the child's fill. Runs
   without an accepted child file reconcile exactly as before.
 - Embedders: `parseSessionJsonl` exposes a bounded `parentSession` header field;
-  the History evidence request carries the manifest-resolved parent session
+  the History evidence request carries the manifest-verified parent session
   file; the canonical integration context accepts `sessionFile` and an injected
   `childSessions` reader. The reader lives in the Pi layer and the composition
   root injects it, because integrations may not read Pi session sources. No
