@@ -4,7 +4,7 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
-## [1.7.2] - 2026-11-08
+## [1.7.2] - 2026-11-10
 
 ### Added
 
@@ -18,8 +18,10 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   A child file is attributed to a run only when it proves one dedicated
   execution:
 
-  - its one session header names this session file as its parent; a second
-    header rejects the file, because native Pi trusts only the first;
+  - its one session header, which must be the first record, names this
+    session file as its parent; a second header or a header after other
+    records rejects the file, because native Pi trusts only a first-record
+    header;
   - it holds exactly one user message, because a resume or follow-up appends
     more;
   - it shares no entry id with this session, because a `context: "fork"` child

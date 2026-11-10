@@ -553,9 +553,16 @@ async function scanDiscoveredSession(
                     root: options.root,
                     directory,
                     entries: selectScope(parsed.entries, null, "tree"),
+                    // Pi writes this unresolved path into a child's header; the
+                    // resolved one only guards the read above.
                     ...(resolvedSource === undefined
                       ? {}
-                      : { sessionFile: resolvedSource }),
+                      : {
+                          sessionFile: join(
+                            options.sessionDirectory(),
+                            sourceFile,
+                          ),
+                        }),
                   }),
               );
         if (sessionEvidence !== undefined && supplied === undefined) {

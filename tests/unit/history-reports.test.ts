@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -307,20 +307,24 @@ test("history session report comes from the canonical builder", async () => {
   }
 });
 
-test("the evidence provider receives the resolved parent session file", async () => {
+test("the evidence provider receives the parent session file as Pi names it, even behind a symlinked directory", async () => {
   const { root, sessionDirectory } = await createHistoryRoot();
   try {
-    const received: (string | undefined)[] = [];
-    await loadHistoryReports({
-      ...historyOptions(root, sessionDirectory),
-      sessionEvidence: async ({ sessionFile }) => {
-        received.push(sessionFile);
-        return { evidence: { atomic: [], folded: [] } };
-      },
-    });
-    assert.deepEqual(received, [
-      join(await realpath(sessionDirectory), "history-session.jsonl"),
-    ]);
+    // A child's header names the parent exactly as Pi built the path, so a
+    // symlinked ancestor must not be resolved away.
+    const linked = join(root, "linked-sessions");
+    await symlink(sessionDirectory, linked);
+    for (const directory of [sessionDirectory, linked]) {
+      const received: (string | undefined)[] = [];
+      await loadHistoryReports({
+        ...historyOptions(root, directory),
+        sessionEvidence: async ({ sessionFile }) => {
+          received.push(sessionFile);
+          return { evidence: { atomic: [], folded: [] } };
+        },
+      });
+      assert.deepEqual(received, [join(directory, "history-session.jsonl")]);
+    }
   } finally {
     await rm(root, { force: true, recursive: true });
   }

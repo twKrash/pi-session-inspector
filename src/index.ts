@@ -974,7 +974,7 @@ function foldedCheckpointEvidence(
  * which degrades exactly that session to `unavailable`, never a fabricated
  * zero.
  */
-const readHistorySessionEvidence: SessionEvidenceProvider = async ({
+export const readHistorySessionEvidence: SessionEvidenceProvider = async ({
   sessionId,
   directory,
   entries,
@@ -1049,7 +1049,7 @@ const readHistorySessionEvidence: SessionEvidenceProvider = async ({
  * and the temporary lifecycle artifact. The Pi-layer reader is injected here
  * because integrations must not read Pi session sources themselves.
  */
-const readCurrentSubagentEvidence = (
+export const readCurrentSubagentEvidence = (
   entries: readonly SessionEntry[],
   sessionId: string,
   sessionFile?: string,

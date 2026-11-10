@@ -10,6 +10,10 @@ import {
   readDurableSubagentEvidence,
   readSubagentEvidenceWithArchives,
 } from "../../src/integrations/subagents.ts";
+import {
+  readCurrentSubagentEvidence,
+  readHistorySessionEvidence,
+} from "../../src/index.ts";
 import { readChildSessionProjections } from "../../src/pi/child-sessions.ts";
 import {
   assistant,
@@ -150,6 +154,9 @@ test("enrichment adds no row, no native activity, and no path to the evidence", 
   const serialized = JSON.stringify({
     observations: [...durable.observations],
     aliases: durable.aliases,
+    activity: durable.activity,
+    diagnostics: durable.diagnostics,
+    state: durable.state,
   });
   assert.equal(serialized.includes(root), false, "no path leaks");
   assert.equal(serialized.includes(RUN_ID), false, "no raw run id leaks");
@@ -418,4 +425,90 @@ test("the canonical contribution follows the durable file only with the session 
     undefined,
     "no injected reader, no read",
   );
+});
+
+test("the composition root's current and History providers follow the durable child file", async () => {
+  await freshChild();
+  const directory = join(root, "history-directory");
+  await mkdir(directory, { recursive: true });
+  const request = { sessionId: SESSION_ID, root, directory };
+  const history = await readHistorySessionEvidence({
+    ...request,
+    entries: entriesFor(),
+    sessionFile: parentFile,
+  });
+  const historyWithoutFile = await readHistorySessionEvidence({
+    ...request,
+    entries: entriesFor(),
+  });
+  const current = await readCurrentSubagentEvidence(
+    entriesFor(),
+    SESSION_ID,
+    parentFile,
+  );
+  const evidences = [
+    ["current", current],
+    ["history", history?.subagents],
+  ] as const;
+  for (const [label, evidence] of evidences) {
+    assert.ok(evidence, label);
+    const run = runOf(evidence);
+    assert.equal(run?.model, "fixture-model", label);
+    assert.equal(run?.toolCalls, 2, label);
+    assert.equal(run?.usage?.totalTokens, 100, label);
+  }
+  assert.ok(historyWithoutFile?.subagents, "History still answers");
+  assert.equal(
+    runOf(historyWithoutFile.subagents)?.model,
+    undefined,
+    "without the parent session file nothing is read",
+  );
+});
+
+test("a throwing, rejecting, or hostile reader leaves the evidence untouched", async () => {
+  await freshChild();
+  const readers = [
+    () => {
+      throw new Error("sync throw");
+    },
+    async () => {
+      throw new Error("rejection");
+    },
+    () => null,
+    async () => ({ size: Number.NaN }),
+  ];
+  // Observations are a lazy iterator, so compare what they reconcile to.
+  const summary = (
+    evidence: Awaited<ReturnType<typeof readDurableSubagentEvidence>>,
+  ) => ({
+    run: runOf(evidence),
+    state: evidence.state,
+    activity: evidence.activity,
+    aliases: evidence.aliases,
+    diagnostics: evidence.diagnostics,
+  });
+  const noFiles = async () => new Map();
+  for (const read of [
+    readSubagentEvidenceWithArchives,
+    readDurableSubagentEvidence,
+  ]) {
+    const baseline = summary(
+      await read(entriesFor(), SESSION_ID, parentFile, noFiles),
+    );
+    assert.equal(baseline.run?.model, undefined, "the baseline reads no child");
+    for (const reader of readers) {
+      const evidence = await read(
+        entriesFor(),
+        SESSION_ID,
+        parentFile,
+        // Hostile readers deliberately violate the ChildSessionReader type.
+        reader as never,
+      );
+      assert.deepEqual(
+        summary(evidence),
+        baseline,
+        `${read.name} with ${reader}`,
+      );
+    }
+  }
 });
