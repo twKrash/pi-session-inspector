@@ -1351,7 +1351,7 @@ function readAsyncNotificationRuns(
   asyncLaunchRunIds: ReadonlySet<string>,
 ): { runId: string; record: Readonly<Record<string, unknown>> }[] {
   return [...readAsyncNotificationRows(entry, asyncLaunchRunIds)]
-    .filter((row) => !row.repeated)
+    .filter((row) => !row.claimOnly && !row.repeated)
     .map(({ runId, record }) => ({ runId, record }));
 }
 
@@ -1360,12 +1360,15 @@ type NotificationRow = {
   record: Readonly<Record<string, unknown>>;
   /** The notice publishes this run id more than once. */
   repeated: boolean;
+  /** A workflow row or a run this session does not prove: it may only claim a path. */
+  claimOnly: boolean;
 };
 
 /**
- * Every plain-async row a notice publishes for a launch-proven run, repeats
- * included and flagged, so a consumer that must treat a repeated claim as
- * ambiguity can still see it.
+ * Every row a notice publishes, repeats included and flagged, so a consumer
+ * that must treat a repeated claim as ambiguity can still see it. A plain
+ * async row of a launch-proven run is a full row; any other row with a usable
+ * run id is `claimOnly`, which status consumers skip.
  */
 function* readAsyncNotificationRows(
   entry: SessionEntry,
@@ -1385,22 +1388,23 @@ function* readAsyncNotificationRows(
   ) {
     return;
   }
-  const rows: { runId: string; record: Readonly<Record<string, unknown>> }[] =
-    [];
+  const rows: {
+    runId: string;
+    record: Readonly<Record<string, unknown>>;
+    claimOnly: boolean;
+  }[] = [];
   for (const value of details.runs) {
     const run = snapshotRecord(value);
     const runId = readRawRunId(run?.runId);
-    if (
-      run !== undefined &&
-      runId !== undefined &&
-      !Object.hasOwn(run, "workflowRunId") &&
-      asyncLaunchRunIds.has(runId)
-    ) {
-      rows.push({ runId, record: run });
-    }
+    if (run === undefined || runId === undefined) continue;
+    const claimOnly =
+      Object.hasOwn(run, "workflowRunId") || !asyncLaunchRunIds.has(runId);
+    rows.push({ runId, record: run, claimOnly });
   }
   const counts = new Map<string, number>();
-  for (const { runId } of rows) counts.set(runId, (counts.get(runId) ?? 0) + 1);
+  for (const { runId, claimOnly } of rows) {
+    if (!claimOnly) counts.set(runId, (counts.get(runId) ?? 0) + 1);
+  }
   for (const row of rows) {
     yield { ...row, repeated: (counts.get(row.runId) ?? 0) > 1 };
   }

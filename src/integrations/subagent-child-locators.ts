@@ -12,13 +12,15 @@ type Notice = {
   record: Readonly<Record<string, unknown>>;
   /** The same notice publishes this run id more than once. */
   repeated?: boolean;
+  /** Not a run this session proves (a workflow row, an unmatched launch): it takes no locator but still claims its path. */
+  claimOnly?: boolean;
 };
 
 /**
  * A run keeps its locator only when it published exactly one path and no other
- * run claimed that path: resume reuses a child file under a new run id, so a
- * shared path cannot be attributed to either run. Kept in persisted notice
- * order, which is deterministic for a given session.
+ * run claimed that path, proven or not: resume reuses a child file under a new
+ * run id, so a shared path cannot be attributed to either run. Kept in
+ * persisted notice order, which is deterministic for a given session.
  */
 export function selectChildSessionLocators(
   notices: Iterable<Notice>,
@@ -39,12 +41,15 @@ type Claims = {
 
 function collectClaims(notices: Iterable<Notice>): Claims | undefined {
   const claims: Claims = { pathOfRun: new Map(), ownerOfPath: new Map() };
-  for (const { runId, record, repeated } of notices) {
+  for (const { runId, record, repeated, claimOnly } of notices) {
     const path = publishedPath(record);
     // A run published twice in one notice is withheld, like the status rule,
-    // yet its path stays claimed so no other run can take it.
-    if (repeated === true) claims.pathOfRun.set(runId, null);
-    else if (path !== undefined) settle(claims.pathOfRun, runId, path);
+    // yet its path stays claimed so no other run can take it. A claim-only row
+    // never earns a locator, it only keeps its path from every other run.
+    if (claimOnly !== true) {
+      if (repeated === true) claims.pathOfRun.set(runId, null);
+      else if (path !== undefined) settle(claims.pathOfRun, runId, path);
+    }
     if (path !== undefined) settle(claims.ownerOfPath, path, runId);
     // Distinct paths are bounded too: one run can claim many.
     if (

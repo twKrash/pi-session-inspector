@@ -69,10 +69,12 @@ evidence, not a general coverage guarantee.
   `subagent-notify` entry from the same parent session. It accepts only the
   documented session-file label and a bounded absolute local path. URLs, share
   errors, free text, inferred paths, filename conventions, scans, and
-  `workflowRunId`/workflow-child locators are rejected. A run publishing
-  different locators, and a child file claimed by more than one run in the
-  parent session, are withheld; a run repeated in a later notice with the same
-  path is accepted. A run id repeated inside one notice is
+  `workflowRunId`/workflow-child locators are rejected, yet a workflow row or
+  a run whose launch this session does not prove still claims the path it
+  publishes, so it keeps every other run from taking that file. A run
+  publishing different locators, and a child file claimed by more than one run
+  in the parent session, are withheld; a run repeated in a later notice with
+  the same path is accepted. A run id repeated inside one notice is
   withheld even when its rows agree (as the status rule does), and its path
   stays claimed so no other run can take it. Selection fails closed past 512
   distinct runs or 512 distinct paths and then withholds every locator, and
