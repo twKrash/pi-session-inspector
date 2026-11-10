@@ -10,6 +10,8 @@ export type ParsedSession = {
   hasSessionHeader: boolean;
   /** Every `session` record seen; native Pi trusts the first, so more than one is suspect. */
   sessionHeaderCount: number;
+  /** Native Pi loads a file only when its first record is the header. */
+  headerIsFirstRecord: boolean;
   formatVersion?: number;
   createdAt?: string;
   /** Bounded parent-session path a child Pi session header declares, if any. */
@@ -28,6 +30,8 @@ export function parseSessionJsonl(source: string): ParsedSession {
   let id = "unknown-session";
   let hasSessionHeader = false;
   let sessionHeaderCount = 0;
+  let headerIsFirstRecord = false;
+  let seenRecord = false;
   let formatVersion: number | undefined;
   let createdAt: string | undefined;
   let parentSession: string | undefined;
@@ -38,6 +42,8 @@ export function parseSessionJsonl(source: string): ParsedSession {
 
   for (const line of source.split("\n")) {
     if (!line.trim()) continue;
+    const firstRecord = !seenRecord;
+    seenRecord = true;
     let value: unknown;
     try {
       value = JSON.parse(line);
@@ -54,6 +60,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
       id = value.id;
       hasSessionHeader = true;
       sessionHeaderCount++;
+      headerIsFirstRecord ||= firstRecord;
       formatVersion = formatVersionOf(value.version);
       createdAt = boundedTimestamp(value.timestamp);
       parentSession = boundedParentSession(value.parentSession);
@@ -71,6 +78,7 @@ export function parseSessionJsonl(source: string): ParsedSession {
     id,
     hasSessionHeader,
     sessionHeaderCount,
+    headerIsFirstRecord,
     formatVersion,
     createdAt,
     ...(parentSession === undefined ? {} : { parentSession }),

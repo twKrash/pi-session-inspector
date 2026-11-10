@@ -106,6 +106,33 @@ test("selection fails closed past the claim bound", () => {
   assert.equal(selectChildSessionLocators(many.slice(0, 512)).length, 512);
 });
 
+test("a row that only claims a path keeps it from every proven run", () => {
+  const claimOnly = (runId: string, path: string) => ({
+    ...notice(runId, { sessionValue: path }),
+    claimOnly: true,
+  });
+  assert.deepEqual(
+    selectChildSessionLocators([notice("a"), claimOnly("x", "/p/a.jsonl")]),
+    [],
+    "claimed after",
+  );
+  assert.deepEqual(
+    selectChildSessionLocators([claimOnly("x", "/p/a.jsonl"), notice("a")]),
+    [],
+    "claimed before",
+  );
+  assert.deepEqual(
+    selectChildSessionLocators([notice("a"), claimOnly("x", "/p/other.jsonl")]),
+    [{ runId: "a", path: "/p/a.jsonl" }],
+    "a different path leaves the proven run alone",
+  );
+  assert.deepEqual(
+    selectChildSessionLocators([claimOnly("x", "/p/x.jsonl")]),
+    [],
+    "a claim-only row never earns a locator",
+  );
+});
+
 const launchLines = (runId: string) => [
   JSON.stringify({
     type: "message",
@@ -482,4 +509,36 @@ test("concurrent sessions share a small limit on simultaneous child reads", asyn
   } finally {
     restore();
   }
+});
+
+test("a workflow row or an unproven run claiming the same path withholds the proven run", () => {
+  const shared = "/p/shared.jsonl";
+  const proven = [
+    ...launchLines("run-1"),
+    noticeLine([run("run-1", { sessionValue: shared })]),
+  ];
+  assert.deepEqual(locatorsOf(proven), [{ runId: "run-1", path: shared }]);
+  const withClaimant = (claimant: Record<string, unknown>) => [
+    ...launchLines("run-1"),
+    noticeLine([run("run-1", { sessionValue: shared }), claimant]),
+  ];
+  assert.deepEqual(
+    locatorsOf(
+      withClaimant(run("run-2", { sessionValue: shared, workflowRunId: "w" })),
+    ),
+    [],
+    "workflow row",
+  );
+  assert.deepEqual(
+    locatorsOf(withClaimant(run("run-3", { sessionValue: shared }))),
+    [],
+    "run with no launch in this session",
+  );
+  assert.deepEqual(
+    locatorsOf(
+      withClaimant(run("run-3", { sessionValue: "/p/elsewhere.jsonl" })),
+    ),
+    [{ runId: "run-1", path: shared }],
+    "a claimant with its own path changes nothing",
+  );
 });

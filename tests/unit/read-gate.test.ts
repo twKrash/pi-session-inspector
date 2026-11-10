@@ -49,3 +49,31 @@ test("a limit of one runs tasks strictly one after another", async () => {
   const { peak } = await run(1, 5, () => 1);
   assert.equal(peak, 1);
 });
+
+test("a caller arriving right after a slot is released cannot exceed the limit", async () => {
+  // History sessions call the gate again as soon as their previous file is
+  // done, so a new caller can arrive between the release and the woken
+  // waiter's continuation. Probe every small microtask delay.
+  for (let delay = 0; delay <= 5; delay++) {
+    const gate = createGate(1);
+    let active = 0;
+    let peak = 0;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const task = (wait: Promise<void>) => async () => {
+      peak = Math.max(peak, ++active);
+      await wait;
+      active--;
+    };
+    const first = gate(task(held));
+    const second = gate(task(Promise.resolve()));
+    await Promise.resolve();
+    release();
+    for (let n = 0; n < delay; n++) await Promise.resolve();
+    const third = gate(task(tick()));
+    await Promise.all([first, second, third]);
+    assert.equal(peak, 1, `delay ${delay}`);
+  }
+});
