@@ -605,19 +605,6 @@ test("workflow children recover model, tokens, cost, and tools from the director
     "wf-foreign",
     freshWorkflowChild(7, 0.1, [], join(root, "someone-else.jsonl")),
   );
-  const runsOf = async (
-    read: typeof readDurableSubagentEvidence,
-    childSessions?: typeof readChildSessionProjections,
-  ) => {
-    const evidence = await read(entries, SESSION_ID, parentFile, childSessions);
-    return new Map(
-      reconcileAgentRuns(evidence.observations, evidence.aliases).runs.map(
-        (run) => [run.agent, run],
-      ),
-    );
-  };
-  const baseline = await runsOf(readDurableSubagentEvidence);
-  assert.equal(baseline.size, 2, "agent labels collapse the five rows to two");
   for (const read of [
     readDurableSubagentEvidence,
     readSubagentEvidenceWithArchives,

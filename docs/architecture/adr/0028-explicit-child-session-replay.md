@@ -56,14 +56,15 @@ sessions (aggregate counts only):
   workflow, a notice row with `childRuns[]` carrying only `runId`,
   `workflowKey`, `agent`, and `status`: no model, usage, duration, or path. The
   producer keys each child's session directory by that child's run id
-  (`sessionRoot = <parent dir>/<runId>`, one `run-<index>` per step, index 0
+  (`sessionRoot = <parent path without .jsonl>/<runId>`, one `run-<index>` per step, index 0
   for a single agent; the source comment: nested resume accepts a session file
   only inside a directory named by that run's id). This was read in the
   installed 0.87.0 source; 0.86.0 was not re-read. Across one machine's 24
   sessions with workflow notices, 117 distinct child run ids had 88 files at
-  `<parent dir>/<runId>/run-0/session.jsonl`; 83 of those passed the
+  `<parent path without .jsonl>/<runId>/run-0/session.jsonl`; 83 of those passed the
   dedicated-execution rule and 5 were refused for 2 to 4 user messages (a
-  follow-up). The other 29 had no file (pruned, or a custom `sessionDir`).
+  follow-up). The other 29 had no file (pruned, or moved by the producer's `sessionDir` or
+  `defaultSessionDir` setting).
 
 An independent review re-read the installed 0.87.0 source and confirmed the
 three notice labels, that resume reopens the recorded file under a new run id,
@@ -88,33 +89,38 @@ evidence, not a general coverage guarantee.
   workflow whose successful launch result this session persists, is followed at
   `<parent session path without .jsonl>/<childRunId>/run-0/session.jsonl`. The
   child run id must pass the same raw run-id grammar as any run id, so it
-  cannot carry a separator or `..`. The derived path goes through the same
+  cannot carry a path separator or be `..` as a segment. The derived path goes through the same
   confinement, verification, budgets, and claim rules as a published one: a
   child repeated inside one notice is withheld, and a plain run that publishes
   the same path as a workflow child withholds both. Only the path is derived.
   The file must still prove one dedicated execution (header naming this
   parent, one user message, no entry id shared with the parent, one connected
   chain), and the projection fills only fields no persisted observation of the
-  child defines. A custom producer `sessionDir`, a pruned file, a follow-up,
+  child defines. A custom producer `sessionDir` or `defaultSessionDir`, a
+  pruned file, a follow-up,
   or a forked child falls out of those rules and stays `unavailable`.
-  **Why this does not reopen ADR 0022's rejection.** ADR 0022 barred
-  constructing paths from run ids to read temporary `_meta.json` artifacts
-  and to scan. This reads one durable Pi session file, named by a directory
+  **Why this does not reopen ADR 0022's rejection.** ADR 0022
+  (referenced-locator-only reads) and ADR 0023 ("no filename is inferred" for
+  the temporary `_meta.json`) barred inferred paths for temporary artifacts and
+  scanning. This reads one durable Pi session file, named by a directory
   the producer documents as keyed by the run, inside the parent's own
   directory, and the file proves its own parentage and singleness. **Residual:**
   attribution of a workflow child rests on that directory keying instead of a
   path the producer reported for the run, so a producer that changed the keying
   could attribute a file to the wrong child while the header and chain rules
-  still passed. The producer audit must be repeated when a release is adopted.
+  still passed. A run id that were both a plain async run and a workflow child
+  would fill both rows from one file; the producer mints distinct ids, so none
+  exists. The producer audit must be repeated when a release is adopted.
   Only `run-0` is read, which is complete for a single-agent child; a child
   that itself ran several steps would be under-reported, and none has been
   seen. Duration is still never derived from the file.
-- **Require exact persisted identity and a closed locator contract.** The reader
-  requires a proven single async launch and an exact `runId` match in a
-  `subagent-notify` entry from the same parent session. It accepts only the
-  documented session-file label and a bounded absolute local path. URLs, share
-  errors, free text, inferred paths, filename conventions, scans, and
-  `workflowRunId` rows as plain async runs are rejected, yet a workflow row or
+- **Require exact persisted identity and a closed locator contract.** For a
+  plain async run the reader requires a proven single async launch and an exact
+  `runId` match in a `subagent-notify` entry from the same parent session. It
+  accepts only the documented session-file label and a bounded absolute local
+  path. URLs, share errors, free text, inferred paths, filename conventions,
+  scans, and `workflowRunId` rows as plain async runs are rejected (a workflow
+  child follows the amendment above, and only it), yet a workflow row or
   a run whose launch this session does not prove still claims the path it
   publishes, so it keeps every other run from taking that file. A run
   publishing different locators, and a child file claimed by more than one run

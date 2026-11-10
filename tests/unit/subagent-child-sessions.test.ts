@@ -645,6 +645,11 @@ test("a workflow child needs a successful workflow launch and a usable parent fi
   );
   assert.deepEqual(locatorsOf([notice]), [], "no launch");
   assert.deepEqual(
+    locatorsOf([...launchLines("wf-1"), notice]),
+    [],
+    "a plain async launch with the workflow's run id",
+  );
+  assert.deepEqual(
     locatorsOf([...workflowLaunchLines("wf-1", true), notice]),
     [],
     "a failed launch result",
@@ -739,5 +744,27 @@ test("an unanswered call or another tool's result is not a launch and disturbs n
       noticeLine([run("run-1"), run("run-2")]),
     ]),
     [{ runId: "run-1", path: "/p/run-1.jsonl" }],
+  );
+});
+
+test("only a subagent-notify entry names workflow children or plain paths", () => {
+  const retyped = (customType: string, type = "custom_message") =>
+    noticeLine([
+      {
+        agent: "workflow",
+        status: "completed",
+        runId: "wf-1",
+        workflowRunId: "wf-1",
+        childRuns: [child("c-1")],
+      },
+    ])
+      .replace('"customType":"subagent-notify"', `"customType":"${customType}"`)
+      .replace('"type":"custom_message"', `"type":"${type}"`);
+  const launch = workflowLaunchLines("wf-1");
+  assert.equal(locatorsOf([...launch, retyped("subagent-notify")]).length, 1);
+  assert.deepEqual(locatorsOf([...launch, retyped("other-extension")]), []);
+  assert.deepEqual(
+    locatorsOf([...launch, retyped("subagent-notify", "custom")]),
+    [],
   );
 });

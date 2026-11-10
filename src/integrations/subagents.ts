@@ -1040,7 +1040,7 @@ function deriveEvidence(
       kind: "tool" as const,
     })),
     ...entries.flatMap((entry, ordinal) =>
-      entry.type === "custom_message" && entry.customType === "subagent-notify"
+      isSubagentNotification(entry)
         ? [{ kind: "notification" as const, ordinal, entry }]
         : [],
     ),
@@ -1511,12 +1511,7 @@ function* readAsyncNotificationRows(
   entry: SessionEntry,
   asyncLaunchRunIds: ReadonlySet<string>,
 ): Generator<NotificationRow> {
-  if (
-    entry.type !== "custom_message" ||
-    entry.customType !== "subagent-notify"
-  ) {
-    return;
-  }
+  if (!isSubagentNotification(entry)) return;
   const details = snapshotRecord(entry.details);
   if (
     details === undefined ||
@@ -1613,6 +1608,13 @@ export function readChildSessionLocators(
   }
 }
 
+/** The only entry kind whose `details.runs[]` this adapter reads. */
+function isSubagentNotification(entry: SessionEntry): boolean {
+  return (
+    entry.type === "custom_message" && entry.customType === "subagent-notify"
+  );
+}
+
 function* collectAsyncNotificationRows(
   entry: SessionEntry,
   asyncLaunchRunIds: ReadonlySet<string>,
@@ -1665,6 +1667,7 @@ function* readWorkflowNoticeChildren(
   entry: SessionEntry,
   workflowLaunchRunIds: ReadonlySet<string>,
 ): Generator<WorkflowNoticeChild> {
+  if (!isSubagentNotification(entry)) return;
   const details = snapshotRecord(entry.details);
   if (
     details === undefined ||
