@@ -49,3 +49,24 @@ test("a limit of one runs tasks strictly one after another", async () => {
   const { peak } = await run(1, 5, () => 1);
   assert.equal(peak, 1);
 });
+
+test("the limit holds when new tasks keep arriving while others wait", async () => {
+  // History sessions call the gate again after each of their files, so
+  // arrivals are spread over time rather than enqueued in one tick.
+  const gate = createGate(2);
+  let active = 0;
+  let peak = 0;
+  const running: Promise<void>[] = [];
+  for (let i = 0; i < 10; i++) {
+    running.push(
+      gate(async () => {
+        peak = Math.max(peak, ++active);
+        for (let n = 0; n < 4; n++) await tick();
+        active--;
+      }),
+    );
+    await tick();
+  }
+  await Promise.all(running);
+  assert.equal(peak, 2);
+});
