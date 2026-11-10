@@ -1,4 +1,5 @@
 import { isAbsolute, normalize, sep } from "node:path";
+import { withoutSessionSuffix } from "../core/child-session-path.ts";
 
 // ADR 0028: which producer-published paths may be followed as a child Pi
 // session. Pure policy only; the filesystem is touched elsewhere.
@@ -12,9 +13,8 @@ const SESSION_SUFFIX = ".jsonl";
 export function childSessionRoot(
   parentSessionFile: string,
 ): string | undefined {
-  return isAbsolute(parentSessionFile) &&
-    parentSessionFile.endsWith(SESSION_SUFFIX)
-    ? parentSessionFile.slice(0, -SESSION_SUFFIX.length)
+  return isAbsolute(parentSessionFile)
+    ? withoutSessionSuffix(parentSessionFile)
     : undefined;
 }
 

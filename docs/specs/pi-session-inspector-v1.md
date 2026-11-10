@@ -627,9 +627,15 @@ and child-usage accounting remain unchanged.
 ADR 0028 defines a separate durable-source exception for a child Pi session
 file explicitly published by a plain-async `subagent-notify` `details.runs[]`
 entry (`sessionLabel` exactly `Session file`; share URLs and share errors are
-not paths). It may enrich only an already-proven single async `AgentRun`, after
-exact run-ID matching and the checks below; any failure leaves the row
-unchanged. The path must be a bounded, normalized, absolute `.jsonl` beneath
+not paths). It may enrich only an already-proven single async or workflow-child
+`AgentRun`, after exact run-ID matching and the checks below; any failure leaves
+the row unchanged. A workflow child publishes no path, so a child listed in
+`childRuns[]` of a workflow-run `subagent-notify` row (`workflowRunId` equal to
+`runId`, for a workflow whose successful launch this session persists) is
+followed at `<parent path without .jsonl>/<childRunId>/run-0/session.jsonl`, the
+directory the producer keys by the child run id; every other rule below,
+including the claim rule, applies unchanged, and attribution there rests on
+that keying (the header proves parentage, the chain rules singleness). The path must be a bounded, normalized, absolute `.jsonl` beneath
 the directory named after the parent session file (the parent path without
 `.jsonl`), opened without following the final link and verified on Linux through the
 kernel's own record of where the open descriptor lives (`/proc/self/fd`: exactly

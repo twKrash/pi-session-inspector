@@ -178,8 +178,13 @@ const noticeLine = (runs: Record<string, unknown>[]) =>
     details: { runs },
   });
 
-const locatorsOf = (lines: string[]) =>
-  readChildSessionLocators(parseSessionJsonl(lines.join("\n")).entries, "s");
+const PARENT_FILE = "/s/parent.jsonl";
+const locatorsOf = (lines: string[], parentFile: string = PARENT_FILE) =>
+  readChildSessionLocators(
+    parseSessionJsonl(lines.join("\n")).entries,
+    "s",
+    parentFile,
+  );
 
 const run = (runId: string, extra: Record<string, unknown> = {}) => ({
   agent: "reviewer",
@@ -540,5 +545,199 @@ test("a workflow row or an unproven run claiming the same path withholds the pro
     ),
     [{ runId: "run-1", path: shared }],
     "a claimant with its own path changes nothing",
+  );
+});
+
+/** A successful workflow launch: the call, then its result naming the run. */
+const workflowLaunchLines = (workflowRunId: string, isError = false) => [
+  JSON.stringify({
+    type: "message",
+    id: `wl-${workflowRunId}`,
+    parentId: null,
+    timestamp: "2026-11-05T00:00:01.000Z",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: `wc-${workflowRunId}`, name: "subagent" },
+      ],
+    },
+  }),
+  JSON.stringify({
+    type: "message",
+    id: `wr-${workflowRunId}`,
+    parentId: `wl-${workflowRunId}`,
+    timestamp: "2026-11-05T00:00:02.000Z",
+    message: {
+      role: "toolResult",
+      toolCallId: `wc-${workflowRunId}`,
+      toolName: "subagent",
+      isError,
+      content: [],
+      details: {
+        mode: "workflow",
+        runId: workflowRunId,
+        results: [],
+        workflowChildren: { inventoryComplete: false, children: [] },
+      },
+    },
+  }),
+];
+
+const workflowNoticeLine = (
+  workflowRunId: string,
+  childRuns: unknown[],
+  extra: Record<string, unknown> = {},
+) =>
+  noticeLine([
+    {
+      agent: "workflow",
+      status: "completed",
+      runId: workflowRunId,
+      workflowRunId,
+      childRuns,
+      ...extra,
+    },
+  ]);
+
+const child = (runId: string, agent = "oracle") => ({
+  runId,
+  workflowKey: `task-${runId}`,
+  agent,
+  status: "completed",
+});
+
+const childFile = (runId: string) => `/s/parent/${runId}/run-0/session.jsonl`;
+
+test("workflow children follow the directory the producer keys by their run id", () => {
+  assert.deepEqual(
+    locatorsOf([
+      ...workflowLaunchLines("wf-1"),
+      workflowNoticeLine("wf-1", [child("c-1"), child("c-2", "scout")]),
+    ]),
+    [
+      { runId: "c-1", path: childFile("c-1") },
+      { runId: "c-2", path: childFile("c-2") },
+    ],
+  );
+});
+
+test("plain and workflow locators keep the persisted notice order", () => {
+  assert.deepEqual(
+    locatorsOf([
+      ...launchLines("run-1"),
+      ...workflowLaunchLines("wf-1"),
+      workflowNoticeLine("wf-1", [child("c-1")]),
+      noticeLine([run("run-1")]),
+    ]),
+    [
+      { runId: "c-1", path: childFile("c-1") },
+      { runId: "run-1", path: "/p/run-1.jsonl" },
+    ],
+  );
+});
+
+test("a workflow child needs a successful workflow launch and a usable parent file", () => {
+  const notice = workflowNoticeLine("wf-1", [child("c-1")]);
+  assert.equal(
+    locatorsOf([...workflowLaunchLines("wf-1"), notice]).length,
+    1,
+    "control",
+  );
+  assert.deepEqual(locatorsOf([notice]), [], "no launch");
+  assert.deepEqual(
+    locatorsOf([...workflowLaunchLines("wf-1", true), notice]),
+    [],
+    "a failed launch result",
+  );
+  assert.deepEqual(
+    locatorsOf([...workflowLaunchLines("wf-other"), notice]),
+    [],
+    "another workflow's launch",
+  );
+  for (const parentFile of ["parent.jsonl", "/s/parent", "/s/parent.json"]) {
+    assert.deepEqual(
+      locatorsOf([...workflowLaunchLines("wf-1"), notice], parentFile),
+      [],
+      parentFile,
+    );
+  }
+});
+
+test("only a well-formed, unrepeated child run id earns a locator", () => {
+  assert.deepEqual(
+    locatorsOf([
+      ...workflowLaunchLines("wf-1"),
+      workflowNoticeLine("wf-1", [
+        child("c-1"),
+        child("c-dup"),
+        child("c-dup"),
+        child("../escape"),
+        child("a/b"),
+        child("unavailable"),
+        { agent: "oracle", status: "completed" },
+        "not a record",
+        null,
+      ]),
+    ]),
+    [{ runId: "c-1", path: childFile("c-1") }],
+  );
+});
+
+test("a workflow notice must be its own workflow's row", () => {
+  const rows = (extra: Record<string, unknown>) => [
+    ...workflowLaunchLines("wf-1"),
+    workflowNoticeLine("wf-1", [child("c-1")], extra),
+  ];
+  assert.equal(locatorsOf(rows({})).length, 1);
+  assert.deepEqual(locatorsOf(rows({ workflowRunId: "wf-other" })), []);
+  assert.deepEqual(locatorsOf(rows({ childRuns: "nope" })), []);
+});
+
+test("a child claimed by a workflow and by a plain run is withheld from both", () => {
+  const shared = childFile("c-1");
+  assert.deepEqual(
+    locatorsOf([
+      ...launchLines("run-1"),
+      ...workflowLaunchLines("wf-1"),
+      workflowNoticeLine("wf-1", [child("c-1")]),
+      noticeLine([run("run-1", { sessionValue: shared })]),
+    ]),
+    [],
+  );
+});
+
+test("the same child reported by a later notice for the same workflow is kept", () => {
+  assert.deepEqual(
+    locatorsOf([
+      ...workflowLaunchLines("wf-1"),
+      workflowNoticeLine("wf-1", [child("c-1")]),
+      workflowNoticeLine("wf-1", [child("c-1")], { durationMs: 1 }),
+    ]),
+    [{ runId: "c-1", path: childFile("c-1") }],
+  );
+});
+
+test("an unanswered call or another tool's result is not a launch and disturbs no other run", () => {
+  const unanswered = JSON.stringify({
+    type: "message",
+    id: "call-only",
+    parentId: null,
+    timestamp: "2026-11-05T00:00:00.500Z",
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "c-lost", name: "subagent" }],
+    },
+  });
+  const otherTool = launchLines("run-2").map((line) =>
+    line.replace('"toolName":"subagent"', '"toolName":"bash"'),
+  );
+  assert.deepEqual(
+    locatorsOf([
+      unanswered,
+      ...launchLines("run-1"),
+      ...otherTool,
+      noticeLine([run("run-1"), run("run-2")]),
+    ]),
+    [{ runId: "run-1", path: "/p/run-1.jsonl" }],
   );
 });

@@ -20,7 +20,10 @@ import { REDACTED, secretLikeValue } from "../core/redact.ts";
 import { roundCost } from "../core/rounding.ts";
 import { readPublishedArchiveState } from "./subagent-archive.ts";
 import { applyChildSessionProjections } from "./subagent-child-enrichment.ts";
-import { selectChildSessionLocators } from "./subagent-child-locators.ts";
+import {
+  selectChildSessionLocators,
+  workflowChildSessionFile,
+} from "./subagent-child-locators.ts";
 import {
   type ForegroundTerminalFields,
   readForegroundTerminalFields,
@@ -271,7 +274,7 @@ async function enrichFromChildSessions(
 ): Promise<SubagentSourceEvidence> {
   try {
     if (childSessions === undefined) return evidence;
-    const locators = readChildSessionLocators(entries, sessionId);
+    const locators = readChildSessionLocators(entries, sessionId, sessionFile);
     if (locators.length === 0) return evidence;
     const projections = await childSessions(locators, {
       sessionFile,
@@ -280,10 +283,17 @@ async function enrichFromChildSessions(
     return applyChildSessionProjections(
       evidence,
       new Map(
-        [...projections].map(([runId, projection]) => [
-          opaqueSubagentSourceIdentity(sessionId, runId, "async"),
-          projection,
-        ]),
+        [...projections].flatMap(([runId, projection]) =>
+          // A locator names a run id; whether it is a plain async run or a
+          // workflow child, only the row that exists takes the projection.
+          (["async", "workflow"] as const).map(
+            (kind) =>
+              [
+                opaqueSubagentSourceIdentity(sessionId, runId, kind),
+                projection,
+              ] as const,
+          ),
+        ),
       ),
     );
   } catch {
@@ -686,10 +696,44 @@ async function enrichCurrentLifecycle(
   }
 }
 
-function collectAsyncLifecycleReferences(
+/** A successful `subagent` tool result and its record of details. */
+type SubagentLaunch = {
+  result: Readonly<Record<string, unknown>>;
+  details: Readonly<Record<string, unknown>>;
+};
+
+/**
+ * The successful `subagent` tool results of a session, each joined to its
+ * persisted call by call id. `undefined` once more than `MAX_RUNS` calls exist.
+ */
+function readSubagentLaunchResults(
   entries: readonly SessionEntry[],
-  sessionId: string,
-): Map<string, { asyncDir: unknown; runId: string }> | undefined {
+): SubagentLaunch[] | undefined {
+  const callIds = collectSubagentCallIds(entries);
+  if (callIds === undefined) return undefined;
+  const results = new Map<string, JoinedResult>();
+  for (const [ordinal, entry] of entries.entries()) {
+    const message = snapshotRecord(entry.message);
+    if (
+      message?.role === "toolResult" &&
+      typeof message.toolCallId === "string" &&
+      callIds.has(message.toolCallId)
+    ) {
+      collectResult(message, entry.timestamp, ordinal, results);
+    }
+  }
+  const launches: SubagentLaunch[] = [];
+  for (const callId of callIds) {
+    const launch = readSuccessfulLaunch(results.get(callId)?.message);
+    if (launch !== undefined) launches.push(launch);
+  }
+  return launches;
+}
+
+/** The distinct, non-empty call ids of `subagent` calls; `undefined` past `MAX_RUNS`. */
+function collectSubagentCallIds(
+  entries: readonly SessionEntry[],
+): Set<string> | undefined {
   const callIds = new Set<string>();
   for (const entry of entries) {
     const message = snapshotRecord(entry.message);
@@ -710,31 +754,39 @@ function collectAsyncLifecycleReferences(
       callIds.add(call.id);
     }
   }
+  return callIds;
+}
 
-  const results = new Map<string, JoinedResult>();
-  for (const [ordinal, entry] of entries.entries()) {
-    const message = snapshotRecord(entry.message);
-    if (
-      message?.role === "toolResult" &&
-      typeof message.toolCallId === "string" &&
-      callIds.has(message.toolCallId)
-    ) {
-      collectResult(message, entry.timestamp, ordinal, results);
-    }
+function readSuccessfulLaunch(
+  result: Readonly<Record<string, unknown>> | undefined,
+): SubagentLaunch | undefined {
+  if (
+    result === undefined ||
+    result.toolName !== "subagent" ||
+    result.isError !== false
+  ) {
+    return undefined;
   }
+  const details = snapshotRecord(result.details);
+  return details === undefined ? undefined : { result, details };
+}
 
+function collectAsyncLifecycleReferences(
+  entries: readonly SessionEntry[],
+  sessionId: string,
+): Map<string, { asyncDir: unknown; runId: string }> | undefined {
+  const launches = readSubagentLaunchResults(entries);
+  return launches === undefined
+    ? undefined
+    : asyncLifecycleReferences(launches, sessionId);
+}
+
+function asyncLifecycleReferences(
+  launches: readonly SubagentLaunch[],
+  sessionId: string,
+): Map<string, { asyncDir: unknown; runId: string }> | undefined {
   const byRunId = new Map<string, { asyncDir: unknown; conflicted: boolean }>();
-  for (const callId of callIds) {
-    const result = results.get(callId)?.message;
-    if (
-      result === undefined ||
-      result.toolName !== "subagent" ||
-      result.isError !== false
-    ) {
-      continue;
-    }
-    const details = snapshotRecord(result.details);
-    if (details === undefined) continue;
+  for (const { result, details } of launches) {
     const runId = readAsyncLaunchRunId("subagent", result, details);
     if (runId === undefined) continue;
     const previous = byRunId.get(runId);
@@ -1495,28 +1547,67 @@ function* readAsyncNotificationRows(
   }
 }
 
-function* notifiedRows(
+/**
+ * ADR 0028: the run ids of the workflows this session launched successfully, or
+ * `undefined` past the call bound. Only their notices may name child runs.
+ */
+function collectWorkflowLaunchRunIds(
+  launches: readonly SubagentLaunch[],
+): Set<string> {
+  const runIds = new Set<string>();
+  for (const { details } of launches) {
+    const runId =
+      details.mode === "workflow" ? readRawRunId(details.runId) : undefined;
+    // At most `MAX_RUNS` launches exist (`readSubagentLaunchResults`), so the set is bounded.
+    if (runId !== undefined) runIds.add(runId);
+  }
+  return runIds;
+}
+
+/**
+ * Plain async rows (each publishes its own path) and workflow children (the
+ * producer's directory keyed by the child run id), in persisted notice order.
+ */
+function* locatorNotices(
   entries: readonly SessionEntry[],
-  asyncLaunchRunIds: ReadonlySet<string>,
+  asyncRunIds: ReadonlySet<string>,
+  workflowRunIds: ReadonlySet<string>,
+  parentSessionFile: string,
 ) {
   for (const entry of entries) {
-    yield* readAsyncNotificationRows(entry, asyncLaunchRunIds);
+    yield* readAsyncNotificationRows(entry, asyncRunIds);
+    for (const { runId, repeated } of readWorkflowNoticeChildren(
+      entry,
+      workflowRunIds,
+    )) {
+      const path = workflowChildSessionFile(parentSessionFile, runId);
+      if (path !== undefined) yield { runId, record: {}, path, repeated };
+    }
   }
 }
 
 /**
- * ADR 0028: child-session locators published by plain async notices for runs
- * whose launch this session proves. Selection withholds ambiguous claims.
+ * ADR 0028: child-session locators for runs whose launch this session proves:
+ * the path a plain async notice publishes, or the producer's directory for a
+ * workflow child. Selection withholds ambiguous claims.
  */
 export function readChildSessionLocators(
   entries: readonly SessionEntry[],
   sessionId: string,
+  parentSessionFile: string,
 ): ChildSessionLocator[] {
   try {
-    const launches = collectAsyncLifecycleReferences(entries, sessionId);
+    const results = readSubagentLaunchResults(entries);
+    if (results === undefined) return [];
+    const launches = asyncLifecycleReferences(results, sessionId);
     if (launches === undefined) return [];
-    const runIds = new Set([...launches.values()].map(({ runId }) => runId));
-    return selectChildSessionLocators(notifiedRows(entries, runIds));
+    const workflowRunIds = collectWorkflowLaunchRunIds(results);
+    const asyncRunIds = new Set(
+      [...launches.values()].map(({ runId }) => runId),
+    );
+    return selectChildSessionLocators(
+      locatorNotices(entries, asyncRunIds, workflowRunIds, parentSessionFile),
+    );
   } catch {
     return [];
   }
@@ -1557,12 +1648,23 @@ function* collectAsyncNotificationRows(
   }
 }
 
-function* collectWorkflowNotificationRows(
+type WorkflowNoticeChild = {
+  workflowRunId: string;
+  record: Readonly<Record<string, unknown>>;
+  runId: string;
+  /** The same workflow publishes this child run id more than once. */
+  repeated: boolean;
+};
+
+/**
+ * Every well-formed child a notice publishes for a workflow whose launch this
+ * session proves, repeats included and flagged. The notice row must be the
+ * workflow's own (`workflowRunId` equal to `runId`).
+ */
+function* readWorkflowNoticeChildren(
   entry: SessionEntry,
   workflowLaunchRunIds: ReadonlySet<string>,
-  sessionId: string,
-  cursor: ObservationCursor,
-): Generator<AgentRunSourceObservation> {
+): Generator<WorkflowNoticeChild> {
   const details = snapshotRecord(entry.details);
   if (
     details === undefined ||
@@ -1571,9 +1673,6 @@ function* collectWorkflowNotificationRows(
   ) {
     return;
   }
-  const observedAt = readObservedAt(entry.timestamp);
-  const publication: RunPublication =
-    observedAt === undefined ? {} : { observedAt };
   for (const value of details.runs) {
     const run = snapshotRecord(value);
     const runId = readRawRunId(run?.runId);
@@ -1606,30 +1705,54 @@ function* collectWorkflowNotificationRows(
       children.push({ record: child, runId: childRunId });
       counts.set(childRunId, (counts.get(childRunId) ?? 0) + 1);
     }
+    for (const { record, runId: childRunId } of children) {
+      yield {
+        workflowRunId,
+        record,
+        runId: childRunId,
+        repeated: counts.get(childRunId) !== 1,
+      };
+    }
+  }
+}
+
+function* collectWorkflowNotificationRows(
+  entry: SessionEntry,
+  workflowLaunchRunIds: ReadonlySet<string>,
+  sessionId: string,
+  cursor: ObservationCursor,
+): Generator<AgentRunSourceObservation> {
+  const observedAt = readObservedAt(entry.timestamp);
+  const publication: RunPublication =
+    observedAt === undefined ? {} : { observedAt };
+  for (const {
+    workflowRunId,
+    record,
+    runId: childRunId,
+    repeated,
+  } of readWorkflowNoticeChildren(entry, workflowLaunchRunIds)) {
+    if (repeated) continue;
     const parentId = opaqueSubagentId(
       sessionId,
       workflowRunId,
       "workflow-parent",
     );
-    for (const { record, runId: childRunId } of children) {
-      if (counts.get(childRunId) !== 1) continue;
-      const status = record.status;
-      const runRecord = {
-        ...(isAgentLabel(record.agent) ? { agent: record.agent } : {}),
-        ...(typeof status === "string" && status.length <= 32
-          ? { state: status }
-          : {}),
-      };
-      yield* pushRun(
-        runRecord,
-        publication,
-        opaqueSubagentId(sessionId, childRunId, "workflow"),
-        opaqueSubagentSourceIdentity(sessionId, childRunId, "workflow"),
-        parentId,
-        "disabled",
-        cursor,
-      );
-    }
+    const status = record.status;
+    const runRecord = {
+      ...(isAgentLabel(record.agent) ? { agent: record.agent } : {}),
+      ...(typeof status === "string" && status.length <= 32
+        ? { state: status }
+        : {}),
+    };
+    yield* pushRun(
+      runRecord,
+      publication,
+      opaqueSubagentId(sessionId, childRunId, "workflow"),
+      opaqueSubagentSourceIdentity(sessionId, childRunId, "workflow"),
+      parentId,
+      "disabled",
+      cursor,
+    );
   }
 }
 

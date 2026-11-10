@@ -512,3 +512,157 @@ test("a throwing, rejecting, or hostile reader leaves the evidence untouched", a
     }
   }
 });
+
+/** A successful workflow launch and the notice that completes it. */
+const workflowEntries = (children: Record<string, string>) =>
+  [
+    {
+      id: "wf-call",
+      parentId: null,
+      timestamp: "2026-11-05T00:00:01.000Z",
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "wf-call-1", name: "subagent" }],
+      },
+    },
+    {
+      id: "wf-result",
+      parentId: "wf-call",
+      timestamp: "2026-11-05T00:00:02.000Z",
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId: "wf-call-1",
+        toolName: "subagent",
+        isError: false,
+        details: {
+          mode: "workflow",
+          runId: "wf-run",
+          results: [],
+          workflowChildren: { inventoryComplete: false, children: [] },
+        },
+      },
+    },
+    {
+      id: "wf-notice",
+      parentId: "wf-result",
+      timestamp: "2026-11-05T00:00:30.000Z",
+      type: "custom_message",
+      customType: "subagent-notify",
+      content: "sanitized",
+      details: {
+        runs: [
+          {
+            agent: "workflow",
+            status: "completed",
+            runId: "wf-run",
+            workflowRunId: "wf-run",
+            childRuns: Object.entries(children).map(([runId, agent]) => ({
+              runId,
+              workflowKey: `task-${runId}`,
+              agent,
+              status: "completed",
+            })),
+          },
+        ],
+      },
+    },
+  ] as unknown as SessionEntry[];
+
+const writeWorkflowChild = async (runId: string, lines: string[]) => {
+  const directory = join(root, "parent", runId, "run-0");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "session.jsonl"), `${lines.join("\n")}\n`);
+};
+
+const freshWorkflowChild = (
+  tokens: number,
+  cost: number,
+  toolCalls: string[],
+  parentSession: string = parentFile,
+) => [
+  header({ parentSession }),
+  user("u0", null),
+  assistant("a1", "u0", { usage: usage(tokens, cost), toolCalls }),
+];
+
+test("workflow children recover model, tokens, cost, and tools from the directory keyed by their run id", async () => {
+  const entries = workflowEntries({
+    "wf-oracle": "oracle",
+    "wf-scout": "scout",
+    "wf-resumed": "oracle",
+    "wf-foreign": "oracle",
+    "wf-absent": "oracle",
+  });
+  await writeWorkflowChild("wf-oracle", freshWorkflowChild(1000, 0.5, ["t1"]));
+  await writeWorkflowChild("wf-scout", freshWorkflowChild(40, 0.01, []));
+  await writeWorkflowChild("wf-resumed", [
+    ...freshWorkflowChild(5, 0.1, []),
+    user("u1", "a1"),
+  ]);
+  await writeWorkflowChild(
+    "wf-foreign",
+    freshWorkflowChild(7, 0.1, [], join(root, "someone-else.jsonl")),
+  );
+  const runsOf = async (
+    read: typeof readDurableSubagentEvidence,
+    childSessions?: typeof readChildSessionProjections,
+  ) => {
+    const evidence = await read(entries, SESSION_ID, parentFile, childSessions);
+    return new Map(
+      reconcileAgentRuns(evidence.observations, evidence.aliases).runs.map(
+        (run) => [run.agent, run],
+      ),
+    );
+  };
+  const baseline = await runsOf(readDurableSubagentEvidence);
+  assert.equal(baseline.size, 2, "agent labels collapse the five rows to two");
+  for (const read of [
+    readDurableSubagentEvidence,
+    readSubagentEvidenceWithArchives,
+  ]) {
+    const evidence = await read(
+      entries,
+      SESSION_ID,
+      parentFile,
+      readChildSessionProjections,
+    );
+    const runs = reconcileAgentRuns(
+      evidence.observations,
+      evidence.aliases,
+    ).runs;
+    assert.equal(runs.length, 5, "enrichment creates no row");
+    const byId = (agent: string, tokens: number | undefined) =>
+      runs.find(
+        (run) => run.agent === agent && run.usage?.totalTokens === tokens,
+      );
+    const oracle = byId("oracle", 1000);
+    assert.equal(oracle?.model, "fixture-model");
+    assert.equal(oracle?.toolCalls, 1);
+    assert.equal(oracle?.usage?.cost, 0.5);
+    assert.equal(oracle?.effortCoverage.usage, "partial");
+    assert.equal(oracle?.status, "succeeded", "outcome stays the notice's");
+    assert.equal(oracle?.durationMs, undefined, "duration is never derived");
+    assert.equal(byId("scout", 40)?.usage?.cost, 0.01);
+    // A resumed child, a foreign parent and a missing file change nothing.
+    const untouched = runs.filter((run) => run.usage === undefined);
+    assert.equal(untouched.length, 3, "resumed, foreign, and absent stay bare");
+    assert.ok(untouched.every((run) => run.model === undefined));
+  }
+});
+
+test("no injected reader, no workflow child read", async () => {
+  await writeWorkflowChild("wf-lone", freshWorkflowChild(9, 0.2, []));
+  const evidence = await readDurableSubagentEvidence(
+    workflowEntries({ "wf-lone": "oracle" }),
+    SESSION_ID,
+    parentFile,
+    undefined,
+  );
+  const [run] = reconcileAgentRuns(
+    evidence.observations,
+    evidence.aliases,
+  ).runs;
+  assert.equal(run?.usage, undefined);
+});

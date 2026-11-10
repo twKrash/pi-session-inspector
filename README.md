@@ -38,8 +38,9 @@ session, the session history, or the global aggregate.
 > AgentRun observability are available: current async runs can use bounded
 > outcome, usage/cost, and effort from their exact referenced lifecycle artifact;
 > current and history views also recover model, tokens, cost, and tool count
-> from the child Pi session file a completed async run explicitly references,
-> when that file proves one dedicated execution. Child usage never affects
+> from the child Pi session file a completed async run explicitly references
+> (or, for a workflow child, the one the producer keys by its run id), when that
+> file proves one dedicated execution. Child usage never affects
 > native totals. The Agents view states native subagent activity. Pi 1.2.0 and
 > `pi-subagents` 0.78.0 terminal workflow notifications keep child runs visible
 > when summaries omit a complete inventory; source coverage remains partial.

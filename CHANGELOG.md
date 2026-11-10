@@ -13,7 +13,15 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   its temporary run directory. The source is the child Pi session file that the
   run's own `subagent-notify` entry explicitly references (`sessionLabel`
   exactly `Session file`; a share URL or a share error is never read as a
-  path). No path is inferred or scanned (ADR 0028).
+  path). Nothing is scanned (ADR 0028).
+
+  Children of a workflow run (for example `oracle` and `scout`) publish no
+  path, so each is read from the directory pi-subagents keys by its own run id,
+  `<session>/<childRunId>/run-0/session.jsonl`, inside the parent session's
+  own directory. Only that one derived path is read, only for a child listed in
+  the notice of a workflow this session launched, and the file must pass every
+  check below. Attribution there rests on the producer's directory keying, not
+  on a path the producer reported (ADR 0028, "Workflow children").
 
   A child file is attributed to a run only when it proves one dedicated
   execution:
@@ -36,8 +44,10 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   - no other run in the session claimed the same path, and the run neither
     published a second path nor appeared twice in one notice.
 
-  A resumed, steered, forked, or workflow child, and a run whose notice carries
-  no locator, stays unavailable instead of being guessed.
+  A resumed, steered, or forked child, and a plain run whose notice carries no
+  locator, stays unavailable instead of being guessed. So does a workflow child
+  whose file is missing, followed up, or forked. Duration is never derived, so
+  it stays unavailable for these runs too.
 
 
   Tokens and cost sum only valid native assistant usage, and a missing value is
