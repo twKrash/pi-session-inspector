@@ -1,3 +1,5 @@
+import { isAbsolute, join } from "node:path";
+import { withoutSessionSuffix } from "../core/child-session-path.ts";
 import type { ChildSessionLocator } from "../core/events.ts";
 
 // ADR 0028: which child-session locators a parent session may follow. Run
@@ -10,6 +12,8 @@ const MAX_CLAIMS = 512;
 type Notice = {
   runId: string;
   record: Readonly<Record<string, unknown>>;
+  /** A path the caller derived (a workflow child publishes none); it replaces the record's. */
+  path?: string;
   /** The same notice publishes this run id more than once. */
   repeated?: boolean;
   /** Not a run this session proves (a workflow row, an unmatched launch): it takes no locator but still claims its path. */
@@ -41,8 +45,8 @@ type Claims = {
 
 function collectClaims(notices: Iterable<Notice>): Claims | undefined {
   const claims: Claims = { pathOfRun: new Map(), ownerOfPath: new Map() };
-  for (const { runId, record, repeated, claimOnly } of notices) {
-    const path = publishedPath(record);
+  for (const { runId, record, path: derived, repeated, claimOnly } of notices) {
+    const path = derived === undefined ? publishedPath(record) : derived;
     // A run published twice in one notice is withheld, like the status rule,
     // yet its path stays claimed so no other run can take it. A claim-only row
     // never earns a locator, it only keeps its path from every other run.
@@ -83,4 +87,24 @@ function publishedPath(
     value.length > 0
     ? value
     : undefined;
+}
+
+/**
+ * Where the producer keeps a workflow child's session: the directory it keys
+ * by the child's own run id, inside the parent's directory (pi-subagents
+ * `subagent-executor`: one `run-<index>` per step, index 0 for a single agent).
+ * `undefined` when the parent is not an absolute `.jsonl` file. The Pi-layer
+ * reader still confines the path and the file must prove one dedicated
+ * execution, so the convention only names the file, it never vouches for it.
+ */
+export function workflowChildSessionFile(
+  parentSessionFile: string,
+  childRunId: string,
+): string | undefined {
+  const root = isAbsolute(parentSessionFile)
+    ? withoutSessionSuffix(parentSessionFile)
+    : undefined;
+  return root === undefined
+    ? undefined
+    : join(root, childRunId, "run-0", "session.jsonl");
 }

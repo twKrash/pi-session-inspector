@@ -2,6 +2,7 @@ import type {
   AgentRunIdentityAlias,
   AgentRunSourceObservation,
   AgentToolActivity,
+  ChildSessionReader,
   EvidenceState,
   IntegrationPresence,
   SessionEntry,
@@ -124,6 +125,10 @@ export type AppliedTelemetryFold = IntegrationTelemetryFold & {
 export type CanonicalIntegrationContext = {
   entries: readonly SessionEntry[];
   sessionId: string;
+  /** Absolute parent Pi session file; lets an integration follow durable child files. */
+  sessionFile?: string | undefined;
+  /** Injected by the composition root; integrations never read Pi sessions. */
+  childSessions?: ChildSessionReader | undefined;
 };
 
 /**

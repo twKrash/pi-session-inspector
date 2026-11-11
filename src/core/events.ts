@@ -186,6 +186,12 @@ export type ChildSessionProjection = {
 /** One run id and the producer-published path of its child session file. */
 export type ChildSessionLocator = { runId: string; path: string };
 
+/** Reads child session files for a parent; the Pi layer implements it. */
+export type ChildSessionReader = (
+  locators: readonly ChildSessionLocator[],
+  parent: ChildSessionParent,
+) => Promise<ReadonlyMap<string, ChildSessionProjection>>;
+
 export type ChildSessionParent = {
   /** Exact parent Pi session-file path the child header must name. */
   sessionFile: string;

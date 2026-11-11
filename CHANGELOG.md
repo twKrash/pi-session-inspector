@@ -4,6 +4,123 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-11-10
+
+### Added
+
+- Completed async subagent runs recover their model, tokens, cost, and tool
+  count in the current and history views even after pi-subagents has deleted
+  its temporary run directory. The source is the child Pi session file that the
+  run's own `subagent-notify` entry explicitly references (`sessionLabel`
+  exactly `Session file`; a share URL or a share error is never read as a
+  path). Nothing is scanned (ADR 0028).
+
+  Children of a workflow run (for example `oracle` and `scout`) publish no
+  path, so each is read from the directory pi-subagents keys by its own run id,
+  `<session>/<childRunId>/run-0/session.jsonl`, inside the parent session's
+  own directory. Only that one derived path is read, only for a child listed in
+  the notice of a workflow this session launched, and the file must pass every
+  check below. Attribution there rests on the producer's directory keying, not
+  on a path the producer reported (ADR 0028, "Workflow children").
+
+  A child file is attributed to a run only when it proves one dedicated
+  execution:
+
+  - its one session header, which must be the first record, names this
+    session file as its parent; a second header or a header after other
+    records rejects the file, because native Pi trusts only a first-record
+    header;
+  - it holds exactly one user message, because a resume or follow-up appends
+    more;
+  - it shares no entry id with this session, because a `context: "fork"` child
+    copies the parent's history;
+  - every well-formed record forms one connected chain: unique ids, one root,
+    no branching, no compaction or branch summary. A well-formed record of an
+    extension-defined type takes part in the chain. Any other record the
+    parser must drop rejects the file, because it could hide a violation, and
+    so does an entry whose id or parent id the graph cannot represent (empty,
+    or longer than 128 bytes), because its usage would count while no chain
+    rule saw it;
+  - no other run in the session claimed the same path, and the run neither
+    published a second path nor appeared twice in one notice.
+
+  A resumed, steered, or forked child, and a plain run whose notice carries no
+  locator, stays unavailable instead of being guessed. So does a workflow child
+  whose file is missing, followed up, or forked. Duration is never derived, so
+  it stays unavailable for these runs too.
+
+  Tokens and cost sum only valid native assistant usage, and a missing value is
+  partial coverage, never zero. A model is shown only when every assistant
+  message reports the same one, and the tool count is the number of distinct
+  native tool-call ids. Duration, thinking level, generations, and outcome are
+  never derived from the file. Every field filled this way is reported as
+  partial coverage, because the child file is a mutable source.
+
+  Native session, model, history, and global totals are unchanged: child usage
+  remains a non-additive breakdown. Nothing is written to the WAL, checkpoint,
+  or Pi session, and no retention rule changes.
+
+- ADR 0028 (explicit child-session replay) and its v1 specification section
+  record the contract, the producer audit of pi-subagents 0.86.0 (spot-checked
+  against 0.87.0), the read budgets, and the measured History cost. The audit
+  must be repeated when a new pi-subagents release is adopted, because no
+  producer version is persisted that the Inspector could check.
+
+### Changed
+
+- The current view applies sources in a fixed order: persisted evidence, then
+  the child session file, then the temporary lifecycle `status.json`. The
+  lifecycle artifact fills only what is still absent and keeps the component
+  token and cost fields the child file supplied. History still never reads the
+  lifecycle artifact.
+- An async run with an accepted child file reconciles its usage field by field:
+  the latest persisted value of each field wins and the child file fills the
+  rest. Every observation of the run carries the same merged usage, even when
+  the child supplied only a model or a tool count, so a later completion that
+  publishes less no longer erases an earlier field or the child's fill. Runs
+  without an accepted child file reconcile exactly as before.
+- Embedders: `parseSessionJsonl` exposes a bounded `parentSession` header field;
+  the History evidence request carries the manifest-verified parent session
+  file; the canonical integration context accepts `sessionFile` and an injected
+  `childSessions` reader. The reader lives in the Pi layer and the composition
+  root injects it, because integrations may not read Pi session sources. No
+  report DTO, JSON output, or schema version changes.
+
+### Security
+
+- Child-file reads are confined and bounded. The path must be an absolute,
+  normalized `.jsonl` beneath the directory named after the parent session file.
+  A symlinked root is rejected (a symlinked ancestor is fine), FIFOs and other
+  non-regular files are refused, and the file is opened without following the
+  last link and then verified. On Linux the check uses the kernel's own record
+  of where the open descriptor lives (`/proc/self/fd`): exactly the expected
+  path inside the root, no symlinked component, no "(deleted)" suffix. The
+  path is not looked up a second time, so a directory swapped in around the
+  open, even one swapped back and forth, cannot redirect the read; a Linux
+  without procfs reads nothing. Node has no such record on macOS or Windows,
+  so there the path is looked up again and must equal the expected path and
+  name the opened inode. A directory swapped back and forth around that lookup
+  can defeat it (accepted residual: the header and chain rules are the
+  attribution proof). The file's size is checked before and after the read.
+- A session reads at most 64 child files serially, 4 MiB and 10,000 lines each
+  and 32 MiB in total. A file over the line bound is refused before it is
+  parsed, so millions of tiny records cannot be turned into millions of
+  objects. Every byte the read returned is spent, including those of a file
+  rejected after its read; a file that shrinks before its read costs nothing.
+  The History view replays sessions concurrently, so at most four child files
+  are read at once across all of them; each session keeps its own budget, and
+  there is no request-wide byte total.
+- A conflicting claim (one path claimed by several runs, several paths for one
+  run, or a run repeated inside one notice, even with identical rows) withholds
+  those runs, and a repeated run's path stays claimed. More than 512 distinct
+  runs or paths withholds every locator, and more than 512 observations in one
+  session withholds every child fill.
+- Every read failure is swallowed and leaves the run unchanged. Paths, raw run
+  ids, and file contents never reach reports, JSON, diagnostics, or the WAL.
+- Accepted residual: a hard link to a file under the directory is
+  indistinguishable from the file itself and is accepted; the header and chain
+  rules above still apply.
+
 ## [1.7.1] - 2026-11-06
 
 ### Added

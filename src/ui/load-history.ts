@@ -76,6 +76,8 @@ export type SessionEvidenceRequest = {
   directory: string;
   /** Parsed Pi entries in L1 tree scope, after the tracking marker. */
   entries: readonly SessionEntry[];
+  /** Parent Pi session file as Pi names it; absent when the source cannot be verified. */
+  sessionFile?: string;
 };
 
 /**
@@ -469,6 +471,9 @@ async function scanDiscoveredSession(
   // validated moments earlier, never a cross-load cache, and the next load
   // re-reads the source. Without it the full check below runs unchanged.
   let parsed: ParsedSession;
+  // The verified parent file, kept so the evidence provider can follow durable
+  // child session files; a prevalidated parse verifies it lazily at replay.
+  let resolvedSource: string | undefined;
   try {
     // Replay accepts a reused parse only when it passed the same identity and
     // readability checks the fallback below runs; otherwise it re-reads.
@@ -490,6 +495,7 @@ async function scanDiscoveredSession(
           sessionId,
           reason: "manifest-unavailable",
         };
+      resolvedSource = source;
       // Same stages as discovery's read, so every source read is measured.
       const contents = await measureAsync(
         options.instrumentation,
@@ -531,6 +537,10 @@ async function scanDiscoveredSession(
         // throws or cannot supply this session is an unavailable session,
         // never a report with fabricated zeros.
         const sessionEvidence = options.sessionEvidence;
+        resolvedSource ??= await resolveManifestSourceFile({
+          sourceFile,
+          sessionDirectory: options.sessionDirectory(),
+        });
         const supplied =
           sessionEvidence === undefined
             ? undefined
@@ -543,6 +553,16 @@ async function scanDiscoveredSession(
                     root: options.root,
                     directory,
                     entries: selectScope(parsed.entries, null, "tree"),
+                    // Pi writes this unresolved path into a child's header; the
+                    // resolved one only guards the read above.
+                    ...(resolvedSource === undefined
+                      ? {}
+                      : {
+                          sessionFile: join(
+                            options.sessionDirectory(),
+                            sourceFile,
+                          ),
+                        }),
                   }),
               );
         if (sessionEvidence !== undefined && supplied === undefined) {

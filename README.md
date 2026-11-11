@@ -32,13 +32,16 @@ localhost UI, the TUI inside Pi, a self-contained immutable HTML snapshot, and
 the deterministic JSON report DTO — over the current session, one historical
 session, the session history, or the global aggregate.
 
-> **Status `1.7.1`:** current-session, history, global, ledger, localhost UI,
+> **Status `1.7.2`:** current-session, history, global, ledger, localhost UI,
 > in-Pi TUI, immutable HTML snapshots, deterministic JSON reports, the `mcp`
 > semantic integration, native token economics/cache accounting, and subagent
 > AgentRun observability are available: current async runs can use bounded
 > outcome, usage/cost, and effort from their exact referenced lifecycle artifact;
-> history remains persisted-source-only and child usage never affects native
-> totals. The Agents view states native subagent activity. Pi 1.2.0 and
+> current and history views also recover model, tokens, cost, and tool count
+> from the child Pi session file a completed async run explicitly references
+> (or, for a workflow child, the one the producer keys by its run id), when that
+> file proves one dedicated execution. Child usage never affects
+> native totals. The Agents view states native subagent activity. Pi 1.2.0 and
 > `pi-subagents` 0.78.0 terminal workflow notifications keep child runs visible
 > when summaries omit a complete inventory; source coverage remains partial.
 > Compatibility fixtures cover the Pi 1.2.0 baseline and Pi 1.5.0, plus
@@ -73,7 +76,7 @@ its own metadata — and are described under [Guarantees](#guarantees).
 The bare install tracks releases. To hold one version, pin it:
 
 ```bash
-pi install npm:@twkrash/pi-session-inspector@1.7.1
+pi install npm:@twkrash/pi-session-inspector@1.7.2
 ```
 
 `/session-inspector` with no arguments is `tui current` in active scope: the
@@ -326,8 +329,9 @@ What Inspector wants from a producer:
   counters, stable identifiers where correlation is required, and replayable
   persisted evidence wherever historical reporting matters.
 - **Bad evidence:** prompts, outputs, arbitrary tool arguments or results,
-  filesystem-path inference, regexing prose or error text, and UI presentation
-  labels. None of those becomes a canonical fact, and no presentation-only
+  filesystem-path inference (the one producer-keyed child session path of a
+  workflow child, ADR 0028, is the single exception), regexing prose or error
+  text, and UI presentation labels. None of those becomes a canonical fact, and no presentation-only
   heuristic is ever promoted into evidence.
 
 Privacy is the reason for that line: Inspector needs semantic facts, not payload

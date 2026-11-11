@@ -6,7 +6,7 @@ Accepted for PR B; amended for the single-run completion child-usage contract.
 
 ## Context
 
-Pi session JSONL is the historical authority for native accounting and persisted cooperative subagent facts (ADR 0002). The persisted pi-subagents adapter already recognizes supported parent-session publications and can derive bounded `AgentRun` rows. The existing adapter also reads only archive references published in supported results; temporary producer files do not themselves form durable history. ADR 0028 separately permits a bounded historical read of an explicitly referenced child Pi session JSONL file; that file remains Pi-owned source data, not a temporary producer artifact, and its reader is gated by the producer execution-boundary audit.
+Pi session JSONL is the historical authority for native accounting and persisted cooperative subagent facts (ADR 0002). The persisted pi-subagents adapter already recognizes supported parent-session publications and can derive bounded `AgentRun` rows. The existing adapter also reads only archive references published in supported results; temporary producer files do not themselves form durable history. ADR 0028 separately permits a bounded historical read of a child Pi session JSONL file, either explicitly referenced or, for a workflow child, the one the producer keys by the child run id; that file remains Pi-owned source data, not a temporary producer artifact, and its reader is gated by the producer execution-boundary audit.
 
 The Inspector needs one compatibility contract for any future live enrichment and one owner for repeated-run semantics. That boundary must preserve existing persisted parsing, public run IDs, report rows, native totals, archive verdicts, and privacy guarantees.
 

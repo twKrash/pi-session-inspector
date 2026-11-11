@@ -1,4 +1,5 @@
 import {
+  readDurableSubagentEvidence,
   readSubagentEvidence,
   readSubagentEvidenceWithArchives,
   type SubagentSourceEvidence,
@@ -52,9 +53,21 @@ export const subagentsIntegration = defineIntegration({
      * Archive validation needs the filesystem, so the contribution is async and
      * falls back to the persisted read without archive verdicts when it fails.
      */
-    canonical: async ({ entries, sessionId }: CanonicalIntegrationContext) => {
+    canonical: async ({
+      entries,
+      sessionId,
+      sessionFile,
+      childSessions,
+    }: CanonicalIntegrationContext) => {
       const evidence: SubagentSourceEvidence =
-        await readSubagentEvidenceWithArchives(entries, sessionId);
+        sessionFile === undefined
+          ? await readSubagentEvidenceWithArchives(entries, sessionId)
+          : await readDurableSubagentEvidence(
+              entries,
+              sessionId,
+              sessionFile,
+              childSessions,
+            );
       return {
         state: evidence.state,
         ...(evidence.coverage === "partial" ? { coverage: "partial" } : {}),

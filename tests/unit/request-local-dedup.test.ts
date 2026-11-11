@@ -317,6 +317,38 @@ test("replay reads again, and measures it, only when the parse is rejected", asy
   }
 });
 
+test("a reused parse reaches the evidence provider with its session file only when the source is verified", async () => {
+  const fixture = await createFixture();
+  try {
+    const { parseSessionJsonl } = await import("../../src/pi/adapter.ts");
+    const received = async (sourceFile: string) => {
+      const files: (string | undefined)[] = [];
+      await replayDiscoveredHistorySession(
+        {
+          root: fixture.root,
+          sessionDirectory: () => fixture.sessionDirectory,
+          maintenance,
+          sessionEvidence: async ({ sessionFile }) => {
+            files.push(sessionFile);
+            return { evidence: { atomic: [], folded: [] } };
+          },
+        },
+        { sessionId: SESSION_ID, availability: "available", sourceFile },
+        parseSessionJsonl(sessionBody(1)),
+      );
+      return files;
+    };
+    const present = `${SESSION_ID}.jsonl`;
+    assert.deepEqual(await received(present), [
+      join(fixture.sessionDirectory, present),
+    ]);
+    // The parse is accepted without a read, so only the lazy check can fail.
+    assert.deepEqual(await received("missing-source.jsonl"), [undefined]);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test("a failed current read leaves both views equally unavailable", async () => {
   const fixture = await createFixture();
   try {
