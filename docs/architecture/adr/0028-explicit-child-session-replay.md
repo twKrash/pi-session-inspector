@@ -13,8 +13,10 @@ Amended before release (user acceptance of the first build): a **workflow
 child** has no published locator, yet its session file sits in the directory the
 producer keys by the child's own run id. That path is derivable, and the same
 dedicated-execution rule vouches for the file, so workflow children are
-followed too (Decision, "Workflow children"). This narrows ADR 0022's rejection
-of paths derived from run ids; the reasons are recorded under that decision.
+followed too (Decision, "Workflow children"). ADR 0022 and ADR 0023 barred
+inferred paths to temporary artifacts and scanning; this amendment adds one
+durable, confined, self-proving file named by the producer's own directory
+keying, and the reasons are recorded under that decision.
 
 ## Context
 
@@ -99,7 +101,7 @@ evidence, not a general coverage guarantee.
   child defines. A custom producer `sessionDir` or `defaultSessionDir`, a
   pruned file, a follow-up,
   or a forked child falls out of those rules and stays `unavailable`.
-  **Why this does not reopen ADR 0022's rejection.** ADR 0022
+  **Why this stays within the intent of ADR 0022 and ADR 0023.** ADR 0022
   (referenced-locator-only reads) and ADR 0023 ("no filename is inferred" for
   the temporary `_meta.json`) barred inferred paths for temporary artifacts and
   scanning. This reads one durable Pi session file, named by a directory

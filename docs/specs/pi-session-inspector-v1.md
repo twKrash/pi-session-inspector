@@ -625,9 +625,10 @@ serially, one at a time. History never reads lifecycle artifacts; native totals
 and child-usage accounting remain unchanged.
 
 ADR 0028 defines a separate durable-source exception for a child Pi session
-file explicitly published by a plain-async `subagent-notify` `details.runs[]`
-entry (`sessionLabel` exactly `Session file`; share URLs and share errors are
-not paths). It may enrich only an already-proven single async or workflow-child
+file, either explicitly published by a plain-async `subagent-notify`
+`details.runs[]` entry (`sessionLabel` exactly `Session file`; share URLs and
+share errors are not paths) or, for a workflow child, derived as described
+below. It may enrich only an already-proven single async or workflow-child
 `AgentRun`, after exact run-ID matching and the checks below; any failure leaves
 the row unchanged. A workflow child publishes no path, so a child listed in
 `childRuns[]` of a workflow-run `subagent-notify` row (`workflowRunId` equal to

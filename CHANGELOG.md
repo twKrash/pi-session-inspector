@@ -49,7 +49,6 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
   whose file is missing, followed up, or forked. Duration is never derived, so
   it stays unavailable for these runs too.
 
-
   Tokens and cost sum only valid native assistant usage, and a missing value is
   partial coverage, never zero. A model is shown only when every assistant
   message reports the same one, and the tool count is the number of distinct

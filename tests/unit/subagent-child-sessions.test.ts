@@ -767,4 +767,18 @@ test("only a subagent-notify entry names workflow children or plain paths", () =
     locatorsOf([...launch, retyped("subagent-notify", "custom")]),
     [],
   );
+  // The same holds for a plain async run's published path.
+  const plain = (customType: string) =>
+    noticeLine([run("run-1")]).replace(
+      '"customType":"subagent-notify"',
+      `"customType":"${customType}"`,
+    );
+  assert.equal(
+    locatorsOf([...launchLines("run-1"), plain("subagent-notify")]).length,
+    1,
+  );
+  assert.deepEqual(
+    locatorsOf([...launchLines("run-1"), plain("other-extension")]),
+    [],
+  );
 });
