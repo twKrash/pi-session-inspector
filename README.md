@@ -329,8 +329,9 @@ What Inspector wants from a producer:
   counters, stable identifiers where correlation is required, and replayable
   persisted evidence wherever historical reporting matters.
 - **Bad evidence:** prompts, outputs, arbitrary tool arguments or results,
-  filesystem-path inference, regexing prose or error text, and UI presentation
-  labels. None of those becomes a canonical fact, and no presentation-only
+  filesystem-path inference (the one producer-keyed child session path of a
+  workflow child, ADR 0028, is the single exception), regexing prose or error
+  text, and UI presentation labels. None of those becomes a canonical fact, and no presentation-only
   heuristic is ever promoted into evidence.
 
 Privacy is the reason for that line: Inspector needs semantic facts, not payload

@@ -1,4 +1,4 @@
-# ADR 0028: explicit child-session replay for persisted async subagents
+# ADR 0028: explicit child-session replay for persisted async and workflow subagents
 
 ## Status
 
@@ -231,7 +231,7 @@ evidence, not a general coverage guarantee.
 
 ## Consequences
 
-- Eligible completed single async runs may gain native model/usage details in
+- Eligible completed single async runs and workflow children may gain native model/usage details in
   history even when Inspector did not observe execution and the temporary run
   directory is gone. Existing sessions without a structured notice, workflow
   children whose derived file is missing, forked, or followed up, unsafe files,
@@ -295,3 +295,7 @@ evidence, not a general coverage guarantee.
 3. Can the follow-up-message exclusion be relaxed (a steered child that is
    still one run) without admitting resumed files? Needs a producer-published
    run boundary; until then those runs stay `unavailable`.
+4. Can a workflow child's duration be shown? Only the workflow container's
+   `durationMs` is persisted, and the rule that duration is never derived from
+   a child file still applies. A durable per-child duration needs the producer
+   to persist one.
