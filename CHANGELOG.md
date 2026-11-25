@@ -4,6 +4,11 @@ All notable changes will follow [Keep a Changelog](https://keepachangelog.com/en
 
 ## [Unreleased]
 
+### Security
+
+- The release workflow checks out `refs/tags/<tag>`, so a manual run that
+  names a branch fails before publishing instead of qualifying that branch.
+
 ## [1.7.2] - 2026-11-10
 
 ### Added
