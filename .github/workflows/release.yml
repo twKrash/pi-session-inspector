@@ -38,7 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # Always the tag namespace: a manual run naming a branch fails here
+          # instead of publishing that branch's code.
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
           fetch-depth: 0
 
       - name: Refuse a tag that disagrees with the package version
